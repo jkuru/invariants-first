@@ -1,14 +1,11 @@
-"""Decorators: @inv.guard, @inv.transaction, @inv.model_call, @inv.edge, and inv.Checked.
+"""Decorators: @inv.guard, @inv.model_call, @inv.edge, and inv.Checked.
 
 Each works on sync and async functions. Provider timing: a pre_effect enforcer reads its
-providers before the call; a post_effect enforcer reads them after the effect (inside the
-transaction, for a transactional target), except `snapshot` providers, which are read once
-before the effect. Async providers are awaited by async guards, model calls and edges.
+providers before the call; a post_effect enforcer reads them after it. Async providers are
+awaited by async guards, model calls and edges.
 """
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import copy
 import dataclasses
 import datetime
@@ -21,143 +18,21 @@ import reprlib
 import types
 import typing
 import uuid
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, ParamSpec, TypeVar
+from typing import Any, Awaitable, Callable, Iterator, ParamSpec, TypeVar
 
 from .cel import CelError, values as cel_values
-from .errors import CoverageError, Escalation, InvariantError, ParseError, RolledBack
+from .errors import CoverageError, Escalation, ParseError
 from .evaluate import ablated, act, evaluate, report
 from .loader import closed_schema, literal_eq, schema_fields
 from .model import GUARD_POINTS, Outcome, Rule
-from .providers import ProviderFailed, fetch_providers, prefetch_async
+from .providers import ProviderFailed, prefetch_async
 from .registry import WRAPPED, Handoff, Registry, current
 from .snapshot import take_snapshot
 
 P = ParamSpec("P")
 R = TypeVar("R")
-SNAPSHOT_ONLY = frozenset({"snapshot"})
 
-# --- transactions -------------------------------------------------------------------------------
-_TXN: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar("inv_txn", default=())
-
-
-class _Frame:
-    __slots__ = ("key", "owner", "rollback_only", "rule", "closed", "savepoint")
-
-    def __init__(self, key: str, owner: Any, savepoint: bool = False) -> None:
-        self.key, self.owner, self.rollback_only = key, owner, False
-        self.rule: str | None = None
-        self.closed = False              # set on exit: a task that copied the context no longer sees it open
-        self.savepoint = savepoint       # a real savepoint: a failure inside dooms only up to here
-
-
-def _doom(frame: _Frame, rule_id: str) -> None:
-    """Mark frame and every enclosing open frame of the same boundary and owner rollback-only.
-
-    The walk stops at the first savepoint frame (inclusive): its generator can undo just its part.
-    """
-    stack = _TXN.get()
-    start = next((i for i in range(len(stack) - 1, -1, -1) if stack[i] is frame), None)
-    chain = [frame] if start is None else [stack[i] for i in range(start, -1, -1)]
-    for f in chain:
-        if f.closed or f.key != frame.key or f.owner is not frame.owner:
-            continue
-        f.rollback_only = True
-        f.rule = f.rule or rule_id
-        if f.savepoint:
-            break
-
-
-@typing.overload
-def transaction(fn: Callable[..., Any], *, savepoint: bool = False) -> Callable[..., Any]: ...
-@typing.overload
-def transaction(fn: None = None, *, savepoint: bool = False) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
-
-
-def transaction(fn: Callable[..., Any] | None = None, *, savepoint: bool = False) -> Any:
-    """@inv.transaction on a generator (or async generator) method that BEGINs, yields, and COMMITs.
-
-    It becomes a context manager (or async context manager). It marks the boundary so a guard can
-    confirm it runs inside it. A failed guard dooms the transaction even if the caller swallows
-    the exception (RolledBack at exit).
-
-    Nesting: each block on the same owner pushes a frame. A failed guard dooms the innermost frame
-    and every enclosing frame of the same boundary and owner, so a re-entrant boundary (only the
-    outermost block BEGINs and COMMITs) raises RolledBack at the outer exit even if an inner
-    failure was swallowed. Use @inv.transaction(savepoint=True) for a boundary whose nested block
-    is a real savepoint: the doom then stops at that block. Tasks and threads that copy the
-    context see the frame only while the block is open; after it exits their guards find no
-    boundary (rule_error, or WiringError under fail_closed).
-    """
-    if fn is None:
-        return lambda f: _transaction(f, savepoint)
-    return _transaction(fn, savepoint)
-
-
-def _transaction(fn: Callable[..., Any], savepoint: bool) -> Callable[..., Any]:
-    key = f"py:{fn.__module__}.{fn.__qualname__}"
-
-    def rolled_back(frame: _Frame) -> RolledBack:
-        return RolledBack(f"a guard failed inside {key}; the transaction was rolled back", rule=frame.rule)
-
-    if inspect.isasyncgenfunction(fn):
-        ainner = contextlib.asynccontextmanager(fn)
-
-        @functools.wraps(fn)
-        @contextlib.asynccontextmanager
-        async def awrapper(*a: Any, **kw: Any) -> AsyncIterator[Any]:
-            frame = _Frame(key, a[0] if a else None, savepoint)
-            token = _TXN.set(_TXN.get() + (frame,))
-            try:
-                async with ainner(*a, **kw) as v:
-                    yield v
-                    if frame.rollback_only:
-                        raise rolled_back(frame)
-            finally:
-                frame.closed = True
-                _TXN.reset(token)
-        awrapper.__inv_txn_key__ = key  # type: ignore[attr-defined]
-        awrapper.__inv_savepoint__ = savepoint  # type: ignore[attr-defined]
-        return awrapper
-    if not inspect.isgeneratorfunction(fn):
-        raise TypeError(f"@inv.transaction needs a generator or async generator function, not {fn.__qualname__}")
-    inner = contextlib.contextmanager(fn)
-
-    @functools.wraps(fn)
-    @contextlib.contextmanager
-    def wrapper(*a: Any, **kw: Any) -> Iterator[Any]:
-        frame = _Frame(key, a[0] if a else None, savepoint)
-        token = _TXN.set(_TXN.get() + (frame,))
-        try:
-            with inner(*a, **kw) as v:
-                yield v
-                if frame.rollback_only:
-                    raise rolled_back(frame)
-        finally:
-            frame.closed = True
-            _TXN.reset(token)
-
-    wrapper.__inv_txn_key__ = key  # type: ignore[attr-defined]
-    wrapper.__inv_savepoint__ = savepoint  # type: ignore[attr-defined]
-    return wrapper
-
-
-def _boundary(key: str | None, owner: Any) -> _Frame | None:
-    for f in reversed(_TXN.get()):
-        if not f.closed and f.key == key and (owner is None or f.owner is owner):
-            return f
-    return None
-
-
-def _needs_boundary(providers: dict[str, Any], rule: Rule, live: list[tuple[int, dict[str, Any]]]) -> str | None:
-    """Why a transactional rule needs its boundary: a post_effect enforcer or a same_txn provider."""
-    if any(e["timing"] == "post_effect" for _, e in live):
-        return "a post_effect check must run inside it to roll back"
-    same = sorted({p.split(".")[1] for i, _ in live for p in rule.names_for.get(i, {}).values()
-                   if p.startswith("provider.") and p.split(".")[1] in providers
-                   and providers[p.split(".")[1]].consistency == "same_txn"})
-    return f"same_txn provider(s) {', '.join(same)} must be read inside it" if same else None
-
-
+# --- guard --------------------------------------------------------------------------------------
 def _descriptor(fn: Any, deco: Callable[[Any], Any]) -> Any:
     """Wrap the function inside a classmethod or staticmethod and re-wrap it; None for a plain function."""
     if isinstance(fn, (classmethod, staticmethod)):
@@ -177,17 +52,17 @@ class _Call:
         # and this call's rules must keep binding the providers they were loaded with
         self.providers: dict[str, Any] = reg.providers
         self.base: dict[str, Any] = {"args": args, "self": self_}
-        self.rules: list[tuple[Rule, _Frame | None, list[tuple[int, dict[str, Any]]]]] = []
+        self.rules: list[tuple[Rule, list[tuple[int, dict[str, Any]]]]] = []
         self.snap: dict[str, Any] = {}
         self.pre: dict[Any, Any] = {}       # provider values read before the effect
-        self.post: dict[Any, Any] = {}      # provider values read after it (plus snapshot providers)
+        self.post: dict[Any, Any] = {}      # provider values read after it
         self.broken: dict[tuple[str, Any], str] = {}   # (rule id, enforcer) whose provider prefetch failed
 
-    def enforcers(self, timing: str) -> Iterator[tuple[Rule, _Frame | None, int, dict[str, Any]]]:
-        for rule, frame, live in self.rules:
+    def enforcers(self, timing: str) -> Iterator[tuple[Rule, int, dict[str, Any]]]:
+        for rule, live in self.rules:
             for i, enf in live:
                 if enf["timing"] == timing:
-                    yield rule, frame, i, enf
+                    yield rule, i, enf
 
     def env_base(self, rule: Rule, timing: str, result: Any = None) -> dict[str, Any]:
         base = {**self.base, "old_self": self.snap.get(rule.id)}
@@ -232,15 +107,7 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                     for _, enf in live:
                         ablated(reg, rule, enf.get("point"))
                     continue
-                frame = _boundary(rule.transaction, self_) if rule.effects == "transactional" else None
-                why = _needs_boundary(call.providers, rule, live) if rule.effects == "transactional" and frame is None else None
-                if why:
-                    out = Outcome("rule_error", rule.id, error=f"cannot confirm {rule.target_key} runs inside "
-                                  f"{rule.transaction} ({why}); the effect was not started")
-                    for _, enf in live:            # before the effect: enforce + fail_closed raises WiringError
-                        act(reg, rule, enf, out, wiring=True)
-                    continue
-                call.rules.append((rule, frame, live))
+                call.rules.append((rule, live))
                 if rule.snapshot:
                     try:
                         call.snap[rule.id] = take_snapshot(rule, self_)
@@ -250,23 +117,12 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                         call.snap[rule.id] = ProviderFailed(f"old_self snapshot raised {type(e).__name__}")
             return call
 
-        def snapshot_providers(call: _Call) -> None:
-            for rule, frame, i, _ in call.enforcers("post_effect"):
-                try:
-                    fetch_providers(call.reg, rule, rule.names_for[i], call.env_base(rule, "pre_effect"),
-                                    call.post, frame is not None, only=SNAPSHOT_ONLY, providers=call.providers)
-                except Exception as e:              # a rule defect is a rule_error, never an exception
-                    call.broken[(rule.id, i)] = f"binding snapshot providers raised {type(e).__name__}"
-
-        async def aprefetch(call: _Call, timing: str, result: Any = None,
-                            only: frozenset[str] | None = None) -> None:
+        async def aprefetch(call: _Call, timing: str, result: Any = None) -> None:
             cache = call.pre if timing == "pre_effect" else call.post
-            when = "pre_effect" if only is not None else timing     # snapshot providers: before the effect
-            for rule, frame, i, _ in call.enforcers(timing):
+            for rule, i, _ in call.enforcers(timing):
                 try:
                     why = await prefetch_async(call.reg, rule, rule.names_for[i],
-                                               call.env_base(rule, when, result), cache, frame is not None, only,
-                                               call.providers)
+                                               call.env_base(rule, timing, result), cache, call.providers)
                 except Exception as e:
                     why = f"binding providers raised {type(e).__name__}"
                 if why is not None:
@@ -274,18 +130,12 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
 
         def check(call: _Call, timing: str, result: Any = None) -> None:
             reg, cache = call.reg, call.pre if timing == "pre_effect" else call.post
-            for rule, frame, i, enf in call.enforcers(timing):
+            for rule, i, enf in call.enforcers(timing):
                 # a failed old_self snapshot errors only the clauses that read old_self
                 broken = call.broken.get((rule.id, i))
                 out = (Outcome("rule_error", rule.id, error=broken) if broken is not None else
-                       evaluate(rule, call.env_base(rule, timing, result), i, reg, cache, frame is not None,
-                                call.providers))
-                try:
-                    act(reg, rule, enf, out)
-                except InvariantError:
-                    if frame is not None:
-                        _doom(frame, rule.id)          # roll back on violation, out to the outermost block
-                    raise
+                       evaluate(rule, call.env_base(rule, timing, result), i, reg, cache, call.providers))
+                act(reg, rule, enf, out)
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
@@ -293,7 +143,6 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                 call = start(a, kw)
                 await aprefetch(call, "pre_effect")
                 check(call, "pre_effect")
-                await aprefetch(call, "post_effect", only=SNAPSHOT_ONLY)
                 result = await typing.cast(Callable[..., Awaitable[Any]], fn)(*a, **kw)
                 await aprefetch(call, "post_effect", result)
                 check(call, "post_effect", result)
@@ -304,7 +153,6 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
             def swrapper(*a: Any, **kw: Any) -> Any:
                 call = start(a, kw)
                 check(call, "pre_effect")
-                snapshot_providers(call)
                 result = fn(*a, **kw)
                 check(call, "post_effect", result)
                 return result

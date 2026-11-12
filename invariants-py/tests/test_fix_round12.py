@@ -1,7 +1,7 @@
 """Fix round 12 (evaluation findings): contract-granularity lock pins, the semantic lock diff with
-WEAKENED changes and --accept-weakening, lock version 2 and migration from version 1, resolved
-schema pins (a Literal alias counts), and raw-SQL checks per statement kind with a warning when a
-rule that protects stored data declares no mediation.tables."""
+WEAKENED changes and --accept-weakening, lock version 2 and migration from version 1, and resolved
+schema pins (a Literal alias counts). (Its raw-SQL checks were removed with mediation.tables: raw SQL
+is below the API.)"""
 from __future__ import annotations
 
 import dataclasses
@@ -70,7 +70,8 @@ def test_signature_change_names_the_target_and_shows_old_and_new(app):
      "mode: detect}\n", "rule L-3: enforcer decorator mode: 'enforce' -> 'detect'  WEAKENED"),
     ("on_violation: reject, on_error: fail_closed}", "on_violation: reject, on_error: fail_open_and_page}",
      "rule L-1: enforcer decorator on_error: 'fail_closed' -> 'fail_open_and_page'  WEAKENED (fail_open"),
-    ("      tables: [accounts]\n", "", "rule L-1: mediation.tables: [\"accounts\"] -> (none)  WEAKENED"),
+    ('      sink: "py:ledger.store.write_balance"\n', "",
+     'rule L-1: mediation.sink: ["py:ledger.store.write_balance"] -> (none)  WEAKENED'),
 ])
 def test_weakening_is_called_out_and_refused(app, old, new, expect):
     rf = app / "invariants.yaml"
@@ -123,11 +124,11 @@ def test_prose_edits_are_named_but_not_weakened(app):
     assert proc.returncode == 1 and "rule L-1: statement text edited" in proc.stderr and "WEAKENED" not in proc.stderr
 
 
-def test_provider_consistency_lowered_is_weakened():
+def test_an_old_lock_field_that_is_gone_is_a_possible_weakening():
     old = {"providers": {"p": {"consistency": "same_txn", "signature": "f(conn) -> int"}}}
-    new = {"providers": {"p": {"consistency": "stale_ok", "signature": "f(conn) -> str"}}}
+    new = {"providers": {"p": {"signature": "f(conn) -> str"}}}
     got = {str(c) for c in lockfile.changes(old, new)}
-    assert "provider p: consistency: 'same_txn' -> 'stale_ok'  WEAKENED (the provider may now read staler data)" in got
+    assert any(g.startswith("provider p: consistency: 'same_txn' -> (none)  WEAKENED") for g in got), got
     assert "provider p: signature: 'f(conn) -> int' -> 'f(conn) -> str'" in got
 
 
@@ -293,140 +294,6 @@ def test_openapi_contract_pins_only_the_operations_rules_name(tmp_path):
         lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["nope"])
 
 
-# --- 5. raw SQL per statement kind, and the missing-tables warning --------------------------------
-STORE = {
-    "app/__init__.py": "",
-    "app/store.py": textwrap.dedent("""
-        def insert_lease(conn, n):
-            conn.execute("INSERT INTO leases (n) VALUES (?)", (n,))
-        def delete_lease(conn, i):
-            conn.execute("DELETE FROM leases WHERE id = ?", (i,))
-        """),
-    "app/svc.py": textwrap.dedent("""
-        from app import store
-        def door(conn, n):
-            store.insert_lease(conn, n)
-        def release(conn, i):
-            store.delete_lease(conn, i)
-        """),
-}
-
-
-def _lease_doc(tables=None, storage=False):
-    med = {"chokepoint": "door", "residual_paths": [], "sink": "py:app.store.insert_lease", "door": "py:app.svc.door"}
-    if tables is not None:
-        med["tables"] = tables
-    enf = [{"point": "decorator", "timing": "pre_effect", "mode": "enforce"}]
-    if storage:
-        enf.append({"point": "storage", "timing": "pre_effect", "mode": "enforce"})
-    return {"targets": {"py:app.svc.door": {"effects": "external"}},
-            "rules": [{"id": "R-20", "status": "enforce", "subject": {"target": "py:app.svc.door"},
-                       "bad": "false", "enforcers": enf, "mediation": med}]}
-
-
-def _scan_with(tmp_path, extra, doc):
-    root = write_project(tmp_path, {**STORE, **{k: textwrap.dedent(v) for k, v in extra.items()}})
-    return scan.scan(doc, [root])
-
-
-PROBE = {"app/api.py": """
-    def bulk(conn, rows):
-        for n in rows:
-            conn.execute("INSERT INTO leases (n) VALUES (?)", (n,))
-    def bump(conn):
-        conn.execute("UPDATE main.leases SET n = n + 1")
-    def concat(conn):
-        conn.execute("INSERT INTO " + "leases (n) VALUES (1)")
-    def computed(conn, table):
-        conn.execute(f"INSERT INTO {table} (n) VALUES (1)")
-    def clear(conn):
-        conn.execute("DELETE FROM leases")
-    """}
-
-
-def test_the_raw_sql_probe_is_caught_per_statement_kind(tmp_path):
-    r = _scan_with(tmp_path, PROBE, _lease_doc(tables=[{"leases": ["insert", "update"]}], storage=True))
-    got = sorted((f.code, f.line) for f in r.findings if f.file == "app/api.py")
-    assert got == [("forbidden/raw-sql", 4), ("forbidden/raw-sql", 6), ("forbidden/raw-sql", 8),
-                   ("unresolved/computed-sql", 10)]            # the DELETE on line 12 is allowed
-    assert not any(f.file == "app/store.py" for f in r.findings)  # release's DELETE: allowed kind
-    assert "R-20" not in r.warnings
-    msg = next(f.message for f in r.findings if f.line == 4)
-    assert msg == "raw SQL INSERT on the protected table 'leases' outside the sink and door"
-
-
-def test_a_plain_table_name_forbids_every_kind(tmp_path):
-    r = _scan_with(tmp_path, PROBE, _lease_doc(tables=["leases"]))
-    codes = [(f.code, f.file, f.line) for f in r.findings]
-    assert ("forbidden/raw-sql", "app/api.py", 12) in codes
-    assert ("forbidden/raw-sql", "app/store.py", 5) in codes          # delete_lease is not a door
-
-
-def test_missing_tables_warns_and_the_probe_passes_unseen(tmp_path):
-    r = _scan_with(tmp_path, PROBE, _lease_doc(storage=True))
-    assert r.rule_result("R-20") == "pass"                           # the bypass the evaluation found
-    assert "declares no mediation.tables" in r.warnings["R-20"]
-    assert "cannot be reported as held on the scan alone" in r.warnings["R-20"]
-    assert "warning    R-20" in scan.to_text(r) and r.as_dict()["warnings"]["R-20"]
-
-
-def test_warning_only_for_rules_that_protect_stored_data(tmp_path):
-    # an external door with no storage enforcer: since fix round 13 the sink's own SQL (INSERT INTO
-    # leases) still makes the rule warn when mediation.tables does not cover it (test_fix_round13)
-    assert "its sink writes leases (insert)" in _scan_with(tmp_path, {}, _lease_doc()).warnings["R-20"]
-    assert _scan_with(tmp_path / "c", {}, _lease_doc(tables=["leases"])).warnings == {}
-    doc = _lease_doc()
-    doc["targets"]["py:app.svc.door"] = {"effects": "transactional", "transaction": "py:app.svc.txn"}
-    assert "a transactional door" in _scan_with(tmp_path / "t", {}, doc).warnings["R-20"]
-    del doc["rules"][0]["mediation"]["sink"], doc["rules"][0]["mediation"]["door"]
-    w = _scan_with(tmp_path / "u", {}, doc).warnings["R-20"]
-    assert "no mediation.sink or mediation.tables" in w
-    storage_only = {"rules": [{"id": "K-8", "status": "enforce", "subject": {"table": "facts"}, "bad": "x",
-                               "enforcers": [{"point": "storage", "timing": "pre_effect", "mode": "enforce"}]}]}
-    assert _scan_with(tmp_path / "v", {}, storage_only).warnings == {}  # a trigger is not bypassed by raw SQL
-
-
-def test_status_downgrades_a_rule_without_tables(app):
-    rf = app / "invariants.yaml"
-    _edit(rf, "      tables: [accounts]\n", "")
-    _edit(rf, "      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}\n",
-          "      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}\n"
-          "      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}\n")
-    proc = run_inv("status", rf, "--json")
-    assert proc.returncode == 0, proc.stderr
-    l1 = {r["id"]: r for r in json.loads(proc.stdout)["rules"]}["L-1"]
-    assert l1["standing"] == "enforce(known-callers)" and l1["scan"] == "pass"
-    assert any("declares no mediation.tables" in w for w in l1["reasons"]) and l1["scan_warning"]
-
-
-@pytest.mark.parametrize("tables,msg", [
-    ([{"leases": ["insert", "upsert"]}], "kinds from"),
-    ([{"a": ["insert"], "b": ["delete"]}], "one-key"),
-    ([3], "not a table name"),
-    ([], "non-empty"),
-])
-def test_bad_tables_are_refused(tables, msg):
-    with pytest.raises(scan.ScanConfigError, match=msg):
-        scan.table_specs(tables)
-
-
-def test_table_specs_merge_and_lower_case():
-    assert scan.table_specs(["Pools", {"leases": "insert"}, {"leases": ["update"]}]) == {
-        "pools": frozenset(scan.SQL_OPS), "leases": frozenset({"insert", "update"})}
-
-
-def test_tables_mapping_is_valid_in_the_json_schema():
-    import jsonschema
-    schema = json.loads(inv.loader.schema_path().read_text()) if hasattr(inv, "loader") else None
-    if schema is None:
-        from invariants.loader import schema_path
-        schema = json.loads(schema_path().read_text())
-    tables = schema["$defs"]["rule"]["properties"]["mediation"]["properties"]["tables"]
-    jsonschema.validate([{"leases": ["insert", "update"]}, "pools"], tables)
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate([{"leases": ["upsert"]}], tables)
-
-
 # --- 6. the lock file itself --------------------------------------------------------------------
 def test_lock_layout(app):                      # version 3 since fix round 13 (see test_fix_round13)
     lock = json.loads((app / "invariants.lock").read_text())
@@ -436,7 +303,7 @@ def test_lock_layout(app):                      # version 3 since fix round 13 (
     assert set(l1["doc"]) == {"statement", "owner", "class", "mediation.chokepoint"}
     assert "statement" not in l1["semantic"] and "chokepoint" not in l1["semantic"]["mediation"]
     assert l1["semantic"]["enforcers"][0]["on_error"] == "fail_closed"
-    assert l1["semantic"]["mediation"]["tables"] == ["accounts"]
+    assert l1["semantic"]["mediation"]["sink"] == "py:ledger.store.write_balance"
 
 
 def test_defaulted_enforcer_fields_do_not_count_as_a_change(app):

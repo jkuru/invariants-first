@@ -17,7 +17,6 @@
   "providers": {
     "chunk": {
       "args": {"chunk_id": "args.chunk_id"},
-      "consistency": "snapshot",
       "from": "py:fact_pipeline.providers.chunk",
       "signature": "chunk(chunk_id: 'str') -> 'ChunkInfo | None'",
       "type": "py:fact_pipeline.models.ChunkInfo | null",
@@ -34,7 +33,6 @@
         "store": "self",
         "subject_id": "args.proposal.subject_id"
       },
-      "consistency": "same_txn",
       "from": "py:fact_pipeline.providers.contradiction",
       "signature": "contradiction(store: 'Store', subject_id: 'str', predicate: 'str', obj: 'str', fact_id: 'str') -> 'Contradiction | None'",
       "type": "py:fact_pipeline.models.Contradiction | null",
@@ -49,7 +47,6 @@
     },
     "object_known": {
       "args": {"entity_id": "args.proposal.object", "store": "self"},
-      "consistency": "same_txn",
       "from": "py:fact_pipeline.providers.object_known",
       "signature": "object_known(store: 'Store', entity_id: 'str') -> 'bool'",
       "type": "bool",
@@ -57,7 +54,6 @@
     },
     "orphans": {
       "args": {"source_id": "args.source_id", "store": "self"},
-      "consistency": "same_txn",
       "from": "py:fact_pipeline.providers.orphans",
       "signature": "orphans(store: 'Store', source_id: 'str') -> 'int'",
       "type": "int",
@@ -65,7 +61,6 @@
     },
     "span": {
       "args": {"chunk_id": "args.chunk_id", "end": "reply.end", "start": "reply.start"},
-      "consistency": "snapshot",
       "from": "py:fact_pipeline.providers.span",
       "signature": "span(chunk_id: 'str', start: 'int', end: 'int') -> 'str | None'",
       "type": "str | null",
@@ -73,7 +68,6 @@
     },
     "stale_citations": {
       "args": {"fact_id": "args.fact_id", "store": "self"},
-      "consistency": "snapshot",
       "from": "py:fact_pipeline.providers.stale_citations",
       "signature": "stale_citations(store: 'Store', fact_id: 'str') -> 'int'",
       "type": "int",
@@ -81,7 +75,6 @@
     },
     "subject_known": {
       "args": {"entity_id": "args.proposal.subject_id", "store": "self"},
-      "consistency": "same_txn",
       "from": "py:fact_pipeline.providers.subject_known",
       "signature": "subject_known(store: 'Store', entity_id: 'str') -> 'bool'",
       "type": "bool",
@@ -89,7 +82,6 @@
     },
     "support": {
       "args": {"fact_id": "args.fact_id", "store": "self"},
-      "consistency": "same_txn",
       "from": "py:fact_pipeline.providers.support",
       "signature": "support(store: 'Store', fact_id: 'str') -> 'Support'",
       "type": "py:fact_pipeline.models.Support",
@@ -104,7 +96,7 @@
     "K-1": {
       "doc": {
         "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:9b85364e3e5dca89e7f4a91dad85c5aaa496b33f652bb1c1b9a83f4ecf978bfe",
+        "mediation.chokepoint": "sha256:7b264908c89e9064ad5205460e18c4cc64f937705486ea61d5ad7431f2fcccc7",
         "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
         "statement": "sha256:e66822f830e91dacff4e282a0ddf26159bf332617addc1c3b4b2c91b17f4ea7e",
         "why": "sha256:21a9af1d7174536969c3689bd02c20647b6bf06dfb3e3156052a01c0ada2490a"
@@ -119,18 +111,13 @@
           }
         ],
         "enforcers": [
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"},
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "storage", "timing": "pre_effect"}
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
         ],
-        "falsified_by": [
-          "tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence",
-          "tests/test_store_rules.py::test_k1_trigger_refuses_raw_fact_without_evidence"
-        ],
+        "falsified_by": ["tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence"],
         "mediation": {
           "door": "py:fact_pipeline.store.Store.ingest_door",
           "residual_paths": [],
-          "sink": ["py:fact_pipeline.store.insert_fact_row", "py:fact_pipeline.store.insert_evidence_row"],
-          "tables": ["facts", "evidence"]
+          "sink": ["py:fact_pipeline.store.insert_fact_row", "py:fact_pipeline.store.insert_evidence_row"]
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.ingest_door"}
@@ -141,7 +128,7 @@
     "K-11": {
       "doc": {
         "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:7b98db884e8395b18da72923deb39fe1fde6759bd2226cbe1e9ddf29cfb6962a",
+        "mediation.chokepoint": "sha256:e777d2fb2315abeee9e0bf061a3a69460b4b7004272647bf9ada297d903f3e7d",
         "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
         "statement": "sha256:e4bb5f49f266a3ab667650de345f92801cdfd871dadd839933613e68be94c297",
         "why": "sha256:d324543ab997e6e06270b80113e3208efaa6d76c29e832ec7d5cd0584dc39691"
@@ -156,8 +143,7 @@
         "mediation": {
           "door": "py:fact_pipeline.store.Store.ingest_door",
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.insert_fact_row",
-          "tables": [{"facts": ["insert", "update"]}, {"evidence": ["insert"]}]
+          "sink": "py:fact_pipeline.store.insert_fact_row"
         },
         "scope": "aggregate(key: subject_id, predicate)",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.ingest_door"}
@@ -184,8 +170,7 @@
         "mediation": {
           "door": ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"],
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.write_status",
-          "tables": ["fact_status"]
+          "sink": "py:fact_pipeline.store.write_status"
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.promote_door"}
@@ -196,31 +181,25 @@
     "K-15": {
       "doc": {
         "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:ccc51642db1ce5af329a3bc90bafee5a2247edaf744a7807ab0381048dbfee5a",
+        "mediation.chokepoint": "sha256:396e264a5bff7814adbe48a4281b989364084eaf7c1cb5fb72a7e78cb5d1d0fd",
         "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
         "statement": "sha256:2aa38b30b0e50a03fe84503da0536c0fd0fbb6789ca133548e322c587c6d2acf",
-        "why": "sha256:5addad6ffc4f96afe51a1429afdd0ebca094475defe1771d45049688c8f80c76"
+        "why": "sha256:8117db11e5db80802a769d0e201081fd603cfaaeec83f360ba96ae62d8384df4"
       },
       "rev": 1,
       "semantic": {
         "bad": "orphans > 0",
         "bind": {"orphans": "provider.orphans"},
         "enforcers": [
-          {
-            "mode": "enforce",
-            "on_error": "fail_closed",
-            "on_violation": "reject",
-            "point": "decorator",
-            "timing": "post_effect"
-          },
+          {"mode": "detect", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "post_effect"},
           {"mode": "detect", "on_error": "fail_closed", "on_violation": "reject", "point": "monitor", "timing": "post_effect"}
         ],
-        "falsified_by": ["tests/test_store_rules.py::test_k15_failed_retraction_rolls_back"],
+        "falsified_by": ["tests/test_store_rules.py::test_k15_failed_retraction_is_reported"],
         "mediation": {"residual_paths": []},
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.delete_source_door"}
       },
-      "status": "enforce",
+      "status": "detect",
       "targets": ["py:fact_pipeline.store.Store.delete_source_door"]
     },
     "K-16": {
@@ -242,8 +221,7 @@
         "mediation": {
           "door": ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"],
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.write_status",
-          "tables": [{"fact_status": ["insert", "update", "delete"]}]
+          "sink": "py:fact_pipeline.store.write_status"
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.promote_door"}
@@ -276,8 +254,7 @@
         "mediation": {
           "door": "py:fact_pipeline.store.Store.ingest_door",
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.insert_fact_row",
-          "tables": [{"facts": ["insert", "update"]}, {"evidence": ["insert"]}]
+          "sink": "py:fact_pipeline.store.insert_fact_row"
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.ingest_door"}
@@ -402,8 +379,7 @@
         "mediation": {
           "door": "py:fact_pipeline.store.Store.ingest_door",
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.insert_fact_row",
-          "tables": [{"facts": ["insert", "update"]}, {"evidence": ["insert"]}]
+          "sink": "py:fact_pipeline.store.insert_fact_row"
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.ingest_door"}
@@ -414,7 +390,7 @@
     "K-7": {
       "doc": {
         "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:5e675100894ea81e0b1b34f413581d156dd3976edd0522ffc607302fe726bd32",
+        "mediation.chokepoint": "sha256:09cc418d4504ab5d6818d3e66ca5a1f015ddbcbb0152576b8b64901116d49407",
         "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
         "statement": "sha256:53182203094b6c6b49955f688f0fed3ae3ea1eec7d575e90ec6414d2ad1f1977",
         "why": "sha256:b6b40b1438de560e8a2736db130307aa0d8d58d6bf6fff85fb76775ea54431d5"
@@ -423,69 +399,19 @@
       "semantic": {
         "bad": "args.proposal.valid_from != null && args.proposal.valid_to != null && args.proposal.valid_to < args.proposal.valid_from",
         "enforcers": [
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"},
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "storage", "timing": "pre_effect"}
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
         ],
-        "falsified_by": [
-          "tests/test_store_rules.py::test_k7_guard_refuses_inverted_interval",
-          "tests/test_store_rules.py::test_k7_check_refuses_raw_inverted_interval"
-        ],
+        "falsified_by": ["tests/test_store_rules.py::test_k7_guard_refuses_inverted_interval"],
         "mediation": {
           "door": "py:fact_pipeline.store.Store.ingest_door",
           "residual_paths": [],
-          "sink": "py:fact_pipeline.store.insert_fact_row",
-          "tables": [{"facts": ["insert", "update"]}, {"evidence": ["insert"]}]
+          "sink": "py:fact_pipeline.store.insert_fact_row"
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:fact_pipeline.store.Store.ingest_door"}
       },
       "status": "enforce",
       "targets": ["py:fact_pipeline.store.Store.ingest_door"]
-    },
-    "K-8": {
-      "doc": {
-        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:bdf826b91ef660ac239f857ef4ff8737f1dae6db48927468c149444e557e3fb1",
-        "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
-        "statement": "sha256:ae056cb29a310bb659e3a15f41e1ed153fa3795bc83031300bfcb9c3114a740e",
-        "why": "sha256:60a153426316e1421c6ee4f8df08b49a3fffeb1fba2d3b1d56f3663be0227820"
-      },
-      "rev": 1,
-      "semantic": {
-        "bad": "old_self.id != \"\"",
-        "enforcers": [
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "storage", "timing": "pre_effect"}
-        ],
-        "falsified_by": ["tests/test_store_rules.py::test_k8_facts_are_append_only"],
-        "mediation": {"residual_paths": []},
-        "scope": "row",
-        "subject": {"table": "facts"}
-      },
-      "status": "enforce",
-      "targets": []
-    },
-    "K-9": {
-      "doc": {
-        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:7ef849bfff0f72694ee6404e8e6932f392b1326855064bfd4675ea8bb5d3dd61",
-        "owner": "sha256:ecaf4dc8eefb48024d48157ec2471d81787a331a0ab4f4f3cec79139056ea16b",
-        "statement": "sha256:8eae8ce4adea0a26770f04a24b88c19b56d1ff11c3883c805afac0f604d41fe2",
-        "why": "sha256:af10ab9a52456ffeace51e3d62fabeb079fa339289ceb000c24daaf5c9893fdc"
-      },
-      "rev": 1,
-      "semantic": {
-        "bad": "size(rows) > 1",
-        "bind": {"rows": "args.rows"},
-        "enforcers": [
-          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "storage", "timing": "pre_effect"}
-        ],
-        "falsified_by": ["tests/test_store_rules.py::test_k9_one_external_record_one_entity"],
-        "mediation": {"residual_paths": []},
-        "scope": "aggregate(key: source_system, source_key)",
-        "subject": {"table": "xrefs"}
-      },
-      "status": "enforce",
-      "targets": []
     }
   },
   "schemas": {
@@ -654,27 +580,24 @@
       }
     },
     "py:fact_pipeline.store.Store.delete_source_door": {
-      "effects": "transactional",
+      "effects": "external",
       "signature": "Store.delete_source_door(self, source_id: 'str') -> 'RetractionReport'",
-      "transaction": "py:fact_pipeline.store.Store.txn",
       "types": {
         "return": {"$ref": "sha256:d1c8b705fc34668a29c63055a4ade379315c6a5d9e3a45e77f82fc171b004bb7"},
         "source_id": "str"
       }
     },
     "py:fact_pipeline.store.Store.ingest_door": {
-      "effects": "transactional",
+      "effects": "external",
       "signature": "Store.ingest_door(self, proposal: 'Proposal') -> 'str'",
-      "transaction": "py:fact_pipeline.store.Store.txn",
       "types": {
         "proposal": {"$ref": "sha256:00424e2364da02fe4533fb48236c67bd7c78bc4d44b2c864fc677c57a06330cd"},
         "return": "str"
       }
     },
     "py:fact_pipeline.store.Store.promote_door": {
-      "effects": "transactional",
+      "effects": "external",
       "signature": "Store.promote_door(self, fact_id: 'str') -> 'None'",
-      "transaction": "py:fact_pipeline.store.Store.txn",
       "types": {"fact_id": "str", "return": "null"}
     }
   }

@@ -27,17 +27,19 @@ Run it: `POOL_SERVICE_DB=pool.db uvicorn pool_service.main:app` (uvicorn is not 
 |---|---|---|
 | `POST /pools` | create a pool | H-2 (route), R-24 (door) |
 | `GET /pools/{id}` | size and leased slots | |
-| `POST /pools/{id}/leases` | lease slots | H-1 (route), R-20 (door + triggers) |
+| `POST /pools/{id}/leases` | lease slots | H-1 (route), R-20 (door) |
 | `DELETE /leases/{id}` | release a lease | |
 | `POST /pools/{id}/resizes` | propose a resize | |
 | `POST /resizes/{id}/approve` | approve it | |
-| `POST /resizes/{id}/apply` | apply it in one transaction | R-21, R-22 (transactional door), R-20 (trigger) |
+| `POST /resizes/{id}/apply` | apply it | R-21, R-22 (door) |
 | `POST /pools/{id}/split` | split `total_jobs` across the pool's leases | R-1 |
 | `POST /jobs` | record job facts (from the scheduler) | |
 | `POST /jobs/{id}/triage` | model proposes a cause, then remediation | R-7 |
 
-Guard outcomes come back as `application/problem+json`: 422 rejected, 202 escalated, 409 for a storage
-(trigger) conflict, which the app maps itself. The body names the rule, never the values.
+Guard outcomes come back as `application/problem+json`: 422 rejected, 202 escalated. The body names
+the rule, never the values. The store's own triggers also refuse an over-lease (two concurrent leases
+can both pass R-20's check); the app answers that with a plain 409 that names no rule, because it is
+below the API.
 
 ## Rules
 
@@ -45,10 +47,10 @@ Guard outcomes come back as `application/problem+json`: 422 rejected, 202 escala
 |---|---|---|
 | R-1 | split_work shares are non-negative, within capacity, sum to total | post-effect guard on a pure function |
 | R-7 | a model's cause never contradicts the recorded job facts | `@inv.model_call` with the pydantic `CauseReply`, `job` provider (held data, immutable), abstain `CANNOT_COMPLY`, `@inv.edge` re-check on `remediate` |
-| R-20 | leases never exceed pool size | door guard (snapshot providers, early refusal) + SQLite triggers (`view: rows`, pinned by sha256) |
-| R-21 | a resize needs an APPROVED proposal by someone else | pre-effect guard, `same_txn` approval provider, transactional target |
-| R-22 | one resize never grows a pool more than 4x | post-effect transition rule on `old_self.sizes`, rolled back |
-| R-23 | pools.size is written only through the doors | `inv scan` (sink/door/tables) |
+| R-20 | leases never exceed pool size | pre-effect guard on `lease_slots` with two providers; `inv scan` (sink `insert_lease`) |
+| R-21 | a resize needs an APPROVED proposal by someone else | pre-effect guard on `resize_door`, approval provider |
+| R-22 | one resize never grows a pool more than 4x | pre-effect guard: the requested size against the current size |
+| R-23 | pools.size is written only through the doors | `inv scan` (sink/door) |
 | R-24 | a new pool has 1..10000 slots | pre-effect guard on `create_pool` |
 | H-1, H-2 | lease size 1..64; pool id shape | FastAPI route guards (`point: middleware`) |
 

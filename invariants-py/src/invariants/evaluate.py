@@ -6,7 +6,7 @@ from typing import Any
 
 from .cel import CelError
 from .cel.errors import ALLOW_NON_FINITE
-from .errors import RAISE, WiringError
+from .errors import RAISE
 from .model import DEFAULT_NAMES, Outcome, Rule
 from .providers import ProviderFailed, fetch_providers, resolve_path
 from .registry import Handoff, Registry, current
@@ -26,8 +26,7 @@ class View(dict[str, Any]):
 
 
 def fill_view(rule: Rule, enf_index: Any, base: dict[str, Any], reg: Registry | None = None,
-              cache: dict[Any, Any] | None = None, in_txn: bool = False,
-              providers: dict[str, Any] | None = None) -> View:
+              cache: dict[Any, Any] | None = None, providers: dict[str, Any] | None = None) -> View:
     """Fill one enforcer's view as the SDK does (providers called now, or from the call's cache).
 
     A name that cannot be bound (a failed provider, snapshot or path) is left out and listed in
@@ -36,7 +35,7 @@ def fill_view(rule: Rule, enf_index: Any, base: dict[str, Any], reg: Registry | 
     """
     reg = reg or current()
     m = rule.names_for[enf_index]
-    base = {**base, "provider": fetch_providers(reg, rule, m, base, {} if cache is None else cache, in_txn,
+    base = {**base, "provider": fetch_providers(reg, rule, m, base, {} if cache is None else cache,
                                                      providers=providers)}
     env = View()
     for k, v in base.items():
@@ -136,11 +135,10 @@ def _evaluate_env(rule: Rule, env: dict[str, Any], reg: Registry) -> Outcome:
 
 
 def evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = "rule", reg: Registry | None = None,
-             cache: dict[Any, Any] | None = None, in_txn: bool = False,
-             providers: dict[str, Any] | None = None) -> Outcome:
+             cache: dict[Any, Any] | None = None, providers: dict[str, Any] | None = None) -> Outcome:
     """One evaluation, one of the four outcomes. A rule defect is rule_error, never an exception."""
     try:
-        env = fill_view(rule, enf_index, base, reg, cache, in_txn, providers)
+        env = fill_view(rule, enf_index, base, reg, cache, providers)
     except CelError as e:
         return Outcome("rule_error", rule.id, error=str(e))
     except Exception as e:
@@ -171,12 +169,10 @@ def ablated(reg: Registry, rule: Rule, point: str | None) -> None:
 
 
 def act(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
-        attempts: list[dict[str, Any]] | None = None, wiring: bool = False, refusal: bool = False) -> str:
+        attempts: list[dict[str, Any]] | None = None, refusal: bool = False) -> str:
     """Detect never blocks; enforce applies on_violation, or on_error for rule_error.
 
     route and escalate open a review in the registry's review store; page calls its pager.
-    wiring: the rule_error is a wiring bug (a missing transaction boundary); under fail_closed it
-    raises WiringError (a Rejected) whatever on_violation says, and opens no review.
     refusal: the outcome is a received verdict that is not ok (an edge given a Checked whose
     verdict is rule_error, say). Enforcing, that is refused by on_violation whatever on_error says:
     on_error covers only errors of this enforcer's own evaluation (guide 2.5, 2.6).
@@ -187,8 +183,6 @@ def act(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
         action = enf["on_violation"]
     elif out.kind == "rule_error" and enf["on_error"] == "fail_open_and_page":
         action = "page"
-    elif wiring and out.kind == "rule_error":
-        action = "reject"
     else:
         action = enf["on_violation"]
     ev = report(reg, rule, enf, out, action, attempts)
@@ -198,7 +192,6 @@ def act(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
         review = (reg.hand_off(Handoff(rule.id, action, out, dict(out.bound or {}), list(attempts or []), ev))
                   if action in ("route", "escalate") else None)
         what = "; ".join(out.messages) or out.error
-        exc = WiringError if wiring and action == "reject" and out.kind == "rule_error" else RAISE[action]
-        raise exc(f"{rule.id} {out.kind}: {what}" + (f" (opened {review})" if review else ""),
+        raise RAISE[action](f"{rule.id} {out.kind}: {what}" + (f" (opened {review})" if review else ""),
                             out, attempts, review, point=enf.get("point"))
     return action

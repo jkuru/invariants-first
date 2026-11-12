@@ -45,10 +45,6 @@ class Rejected(InvariantError):
     """on_violation: reject. The caller gets an error."""
 
 
-class WiringError(Rejected):
-    """A transactional target ran outside its declared boundary: a wiring bug, refused whatever on_violation says."""
-
-
 class Halted(InvariantError):
     """on_violation: halt. An internal invariant broke: a bug."""
 
@@ -72,10 +68,6 @@ class ReviewNotOpened(InvariantError):
     def __init__(self, msg: str, handoff: Any, **kw: Any) -> None:
         super().__init__(msg, **kw)
         self.handoff, self.action = handoff, getattr(handoff, "action", None)
-
-
-class RolledBack(InvariantError):
-    """A guard failed inside an @inv.transaction and the caller swallowed it; the SDK rolled back."""
 
 
 RAISE: dict[str, type[InvariantError]] = {"reject": Rejected, "halt": Halted, "escalate": Escalation,

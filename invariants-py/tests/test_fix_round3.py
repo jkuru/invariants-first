@@ -27,84 +27,6 @@ def load(*rules: dict[str, Any], **kw: Any) -> inv.Registry:
     return inv.load(r3.doc(*rules, **kw))
 
 
-S1 = r3.rule("S-1", "Store.write", "result > 10", timing="post_effect")
-S2 = r3.rule("S-2", "SpStore.spwrite", "result > 10", timing="post_effect")
-
-
-# --- major: a swallowed failure in a nested block dooms the outer transaction ---------------------
-def test_reentrant_transaction_swallowed_inner_failure_rolls_back_outer(iso):
-    load(S1)
-    s = r3.Store()
-    with pytest.raises(inv.RolledBack) as e:
-        with s.txn():
-            s.write(1)
-            try:
-                with s.txn():
-                    s.write(50)
-            except inv.InvariantError:
-                pass
-    assert e.value.rule == "S-1"
-    assert s.total() == 0
-
-
-def test_reentrant_transaction_failure_swallowed_inside_inner_block(iso):
-    load(S1)
-    s = r3.Store()
-    with pytest.raises(inv.RolledBack):
-        with s.txn():
-            try:
-                with s.txn():
-                    try:
-                        s.write(50)
-                    except inv.Rejected:
-                        pass
-            except inv.RolledBack:
-                pass                   # the inner exit raised; swallowing it must not commit
-    assert s.total() == 0
-
-
-def test_reentrant_transaction_clean_nested_blocks_commit(iso):
-    load(S1)
-    s = r3.Store()
-    with s.txn():
-        s.write(1)
-        with s.txn():
-            s.write(2)
-    assert s.total() == 3
-
-
-def test_savepoint_transaction_dooms_only_the_inner_block(iso):
-    load(S2)
-    s = r3.SpStore()
-    with s.sp():
-        s.spwrite(1)
-        try:
-            with s.sp():
-                s.spwrite(50)
-        except inv.InvariantError:
-            pass
-        s.spwrite(2)
-    assert s.total() == 3
-
-
-def test_savepoint_flag_is_recorded():
-    assert r3.SpStore.sp.__inv_savepoint__ is True
-    assert r3.Store.txn.__inv_savepoint__ is False
-
-
-def test_doom_skips_frames_of_another_owner(iso):
-    load(S1)
-    a, b = r3.Store(), r3.Store()
-    with a.txn():
-        a.write(1)
-        try:
-            with b.txn():
-                b.write(50)
-        except inv.InvariantError:
-            pass
-    assert a.total() == 1 and b.total() == 0
-
-
 # --- major: a py: guard with no rule file loaded fails closed ---------------------------------------
 def test_py_key_guard_with_nothing_loaded_fails_closed(iso):
     with pytest.raises(inv.LoadError, match="no rule file is loaded"):
@@ -258,7 +180,7 @@ def test_fastapi_integration_reexports_the_problem_surface():
 def test_readme_documents_exit_code_4_and_the_integration_surface():
     text = "\n".join(p.read_text(encoding="utf-8") for p in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))])
     assert "- 4: the scan skipped an `enforce` rule because it is ablated" in text
-    assert "PROBLEM_JSON" in text and "savepoint=True" in text and "## Performance" in text
+    assert "PROBLEM_JSON" in text and "## Performance" in text
 
 
 # --- minor: open-source hygiene ----------------------------------------------------------------------

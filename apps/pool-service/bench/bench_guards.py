@@ -72,7 +72,7 @@ def run(n: int) -> list[dict[str, object]]:
 
     def door_resize(i: int) -> None:
         svc.apply(next(it))
-    out.append(pair("R-21+R-22 resize (txn, same_txn provider, old_self)", raw_resize, door_resize, n))
+    out.append(pair("R-21+R-22 resize (approval provider, current size)", raw_resize, door_resize, n))
 
     store.insert_job(conn, "J", "bench", True, 1, 10, 137)
     triage.set_client(FakeModelClient())

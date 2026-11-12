@@ -24,8 +24,8 @@ def test_bypass_app_is_known_callers():
     rows = _rows(run_inv("status", BYPASS / "invariants.yaml", "--json"))
     f1 = rows["F-1"]
     assert f1["standing"] == "enforce(known-callers)" and f1["scan"] == "fail"
-    assert f1["reasons"] == ["inv scan fail: 1 bypass, 3 forbidden, 2 unresolved"]
-    assert f1["scan_counts"] == {"bypass": 1, "forbidden": 3, "unresolved": 2}
+    assert f1["reasons"] == ["inv scan fail: 1 bypass, 2 forbidden, 2 unresolved"]
+    assert f1["scan_counts"] == {"bypass": 1, "forbidden": 2, "unresolved": 2}
 
 
 def test_verify_failure_downgrades_held():

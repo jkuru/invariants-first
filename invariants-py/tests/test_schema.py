@@ -50,15 +50,18 @@ INVALID = {
     "negative retries": lambda d: rule(d, "R-7")["model_policy"].update(format_retries=-1),
     "held_data with resample": lambda d: rule(d, "R-7")["model_policy"].update(semantic_resamples=1),
     "target without effects": lambda d: d["targets"]["py:jobs.split_work"].pop("effects"),
-    "transactional without transaction": lambda d: d["targets"]["py:pool.PoolService.resize_door"].pop("transaction"),
-    "transaction on non-transactional": lambda d: d["targets"]["py:jobs.split_work"].update(
+    "effects transactional (removed)": lambda d: d["targets"]["py:pool.PoolService.resize_door"].update(
+        effects="transactional"),
+    "a transaction (removed)": lambda d: d["targets"]["py:jobs.split_work"].update(
         transaction="py:pool.PoolService.txn"),
-    "provider without consistency": lambda d: d["providers"]["job"].pop("consistency"),
-    "bad consistency": lambda d: d["providers"]["job"].update(consistency="eventual"),
+    "provider without type": lambda d: d["providers"]["job"].pop("type"),
+    "provider consistency (removed)": lambda d: d["providers"]["job"].update(consistency="same_txn"),
+    "storage enforcer (removed)": lambda d: rule(d, "R-20")["enforcers"].append(
+        {"point": "storage", "timing": "pre_effect", "mode": "enforce"}),
     "unknown mediation field": lambda d: rule(d, "R-1").update(mediation={"gate": "x"}),
     "sink not a py path": lambda d: rule(d, "R-1").update(mediation={"sink": "jobs.split_work"}),
     "empty door list": lambda d: rule(d, "R-1").update(mediation={"sink": "py:jobs.x", "door": []}),
-    "tables not a list": lambda d: rule(d, "R-1").update(mediation={"sink": "py:jobs.x", "tables": "pools"}),
+    "mediation tables (removed)": lambda d: rule(d, "R-1").update(mediation={"sink": "py:jobs.x", "tables": ["p"]}),
     "applies_to not a pattern": lambda d: rule(d, "R-1").update(applies_to=3),
 }
 
@@ -76,7 +79,7 @@ VALID_VARIANTS = {
                                                      for e in rule(d, "P-2")["enforcers"]],
     "scan mediation fields": lambda d: rule(d, "R-1").update(
         mediation={"chokepoint": "py:jobs.split_work", "sink": ["py:jobs.x"], "door": "py:jobs.split_work",
-                   "tables": ["pools"]}, applies_to=["py:jobs.*"]),
+                   "allow": ["py:jobs.y"]}, applies_to=["py:jobs.*"]),
     "no targets or providers": lambda d: (d.pop("targets"), d.pop("providers"), d.update(rules=[
         {"id": "C-1", "status": "candidate", "bad": "args.x > 1"}])),
 }

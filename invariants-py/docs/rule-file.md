@@ -1,7 +1,9 @@
 # Rule file reference
 
 A rule file is JSON or YAML. `inv validate` checks it against the bundled JSON Schema
-(`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere.
+(`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere. A field that an earlier release had and this one removed
+(`consistency`, `transaction`, `tables`, `effects: transactional`, `point: storage`, a `{type: sql}`
+contract) is a load error that says what to do instead.
 The design behind each field is in [the design guide](design-guide.md), sections 2.1 to 2.9 and 4.1.
 
 ## The short form
@@ -42,15 +44,18 @@ run time: `inv scan`, inside `inv check`, fails any call path from an entrypoint
 no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A structure rule may be
 `enforce` without `falsified_by`, because its check is the scan itself.
 
-- `allow` lists functions that already call a sink without a door. The scan lets them, and everything
-  inside them, through, so the code as it is passes and a new back door fails. An entry that no
-  longer reaches a sink without a door fails the check (`missing/allow-unused`) until it is deleted,
-  and so does an entry that names no function (`missing/allow`). An empty or null `allow` means none.
+- `allow` lists functions that already call a sink without a door: the call chain as it was when
+  `allow` was written. An allowed back door is not a door. A path to the sink is let through only
+  when every function on it is in `allow`, so a new caller of an allowed function, or new code an
+  allowed function calls that reaches the sink, is a `bypass`. Inside an allowed function, the ways
+  it reaches the sink (a direct call, `getattr` of the sink name, the sink used as a value) are
+  excused, but `forbidden/unwrap`, `forbidden/monkeypatch` and `unresolved/reflection` are still
+  reported. An entry that no longer reaches a sink without a door fails the check
+  (`missing/allow-unused`) until it is deleted, and so does an entry that names no function
+  (`missing/allow`). An empty or null `allow` means none.
 - With `guard:` as well, the guarded function is the door, and the rule also checks its arguments
   (give `bad`, and optionally `tests`). A door rule without `guard:` cannot have `bad`.
-- `tables` (optional, below the API) also forbids raw SQL writes to those tables outside the sinks
-  and doors; see [scan.md](scan.md#tables-and-raw-sql).
-- The lock reports these as weakenings: a new `allow` entry, a new door, a removed sink or table, and
+- The lock reports these as weakenings: a new `allow` entry, a new door, a removed sink, and
   removing the rule. Deleting an `allow` entry or a door is a tightening.
 
 `inv init` drafts door rules from the code: see [start.md](start.md#3-path-laws-doors-and-back-doors).
@@ -60,9 +65,9 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 | Field | Meaning |
 |---|---|
 | `spec` | `invariant/v0.1`. |
-| `contracts` | Named contracts: `{type: python \| pydantic \| dataclass \| schema \| openapi \| sql \| ..., ref: ...}`. A `pydantic` contract pins the model's constraints and a `sql` contract a schema file's constraints, and loosening either is a weakening ([lockfile.md](lockfile.md#weakening)). `inv lock` pins each one at contract granularity: see [lockfile.md](lockfile.md). |
-| `targets` | `"py:pkg.mod.fn": {effects: none \| transactional \| external, transaction: "py:..."}`. Effects belong to the target, once. `transactional` must name an `@inv.transaction` boundary. An unlisted target is `external`. |
-| `providers` | `name: {type, from, args, consistency}`. See below. |
+| `contracts` | Named contracts: `{type: python \| pydantic \| dataclass \| schema \| openapi \| ..., ref: ...}`. A `pydantic` contract pins the model's constraints, and loosening one is a weakening ([lockfile.md](lockfile.md#weakening)). `inv lock` pins each one at contract granularity: see [lockfile.md](lockfile.md). |
+| `targets` | `"py:pkg.mod.fn": {effects: none \| external}`. Effects belong to the target, once. An unlisted target is `external`. |
+| `providers` | `name: {type, from, args}`. See below. |
 | `rules` | The list of rules. |
 
 ## Providers
@@ -72,14 +77,13 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 | `type` | `int`, `str`, `bool`, `float`, `list`, `dict` or `py:mod.Class`, optionally `\| null`. The function's return annotation must match. |
 | `from` | `py:` path of a function marked `@inv.provider("name")` (sync or `async def`). Its parameters must be exactly the keys of `args`. |
 | `args` | Parameter -> binding path (`args.x`, `self`, `reply.y`, or a bound name). |
-| `consistency` | `same_txn`: read inside the target's transaction. `snapshot`: read once before the effect. `stale_ok`: any recent value. `immutable`: never changes. Only `same_txn` and `immutable` can make a rule held without a storage enforcer. |
 
-**When providers are read.** A `pre_effect` enforcer reads its providers before the call. A
-`post_effect` enforcer reads them after the effect (inside the transaction for a transactional
-target), except `snapshot` providers, which are read before the effect. A provider that raises or
+**When providers are read.** A provider is a plain typed read at its enforcer's timing: a
+`pre_effect` enforcer reads it before the call, a `post_effect` enforcer after it. A provider that raises or
 returns the wrong type is a `rule_error`; its exception message appears only with
 `inv.configure(debug=True)` or `INV_DEBUG=1`. An async provider is awaited by async guards, model
-calls and edges; a sync call that needs one gets a `rule_error`.
+calls and edges; a sync call that needs one gets a `rule_error`. A check that reads a provider is
+not a lock: two concurrent callers can both pass it.
 
 ## Rules
 
@@ -88,12 +92,12 @@ calls and edges; a sync call that needs one gets a `rule_error`.
 | `id`, `rev` | Identity and revision. |
 | `status` | Set by human review: `candidate`, `contested`, `detect`, `enforce`, `retired`. The loader computes the highest status the evidence allows (`Rule.max_status`) and refuses a higher one. `enforce` needs an enforcer with mode `enforce`, `falsified_by`, and a passing timing check. |
 | `class`, `owner`, `statement`, `why` | Documentation. `statement` is the default clause message. |
-| `subject` | `{target: "py:...", contract: name, operation: ..., table: ...}`. |
+| `subject` | `{target: "py:...", contract: name, operation: ...}`. |
 | `scope` | `call`, `transition`, `aggregate(key: ...)`: the scope of the property. |
 | `bind` | Name -> path, for names `bad` reads. A name that matches a provider is bound to it automatically. |
 | `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
 | `enforcers` | See below. |
-| `mediation` | `{chokepoint, residual_paths, sink, door, allow, tables}`. `allow` lists known back doors the scan lets through (see "The door form" above). `chokepoint` is the positive mediation argument. `sink`, `door` and `tables` drive `inv scan`. A `tables` item is a table name (every raw SQL write to it outside the sink and door is forbidden) or a one-key mapping `{table: [insert, update, delete, ddl]}` that forbids only those statement kinds. A rule gets a scan warning, and is not reported `held`, in two cases. One is when its sink's own SQL writes a table, or a statement kind, that `tables` does not cover, whatever the sink's `effects` are. The other is when its door guards stored data in process (a `transactional` door or sink, or a storage enforcer) and it declares no `tables`. SQL in a helper or module-level constant that only door or sink code reaches counts as door code (call-graph reachability). |
+| `mediation` | `{chokepoint, residual_paths, sink, door, allow}`. `allow` lists known back doors the scan lets through (see "The door form" above). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`. |
 | `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
 | `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |
@@ -139,12 +143,12 @@ or ISO 8601 `"PT90S"`, a `UUID` field its text).
 
 | Field | Meaning |
 |---|---|
-| `point` | `decorator` and `middleware` (`@inv.guard`), `model_call`, `edge` (needs `target`, and the rule must have `model_policy`: the edge re-checks that model call's schema), `monitor` (`inv.monitor`), `storage` (a CHECK, trigger or UNIQUE; map its error with `inv.storage_errors`), `structure` (`inv scan`), `type`, `gateway`, `build`. |
-| `timing` | `pre_effect` or `post_effect`. A post-effect enforcer that enforces needs `effects: none` or `transactional`. |
+| `point` | `decorator` and `middleware` (`@inv.guard`), `model_call`, `edge` (needs `target`, and the rule must have `model_policy`: the edge re-checks that model call's schema), `monitor` (`inv.monitor`), `structure` (`inv scan`), `type`, `gateway`, `build`. |
+| `timing` | `pre_effect` or `post_effect`. A post-effect enforcer that enforces needs `effects: none`; on an `external` target it can only detect. |
 | `mode` | `off`, `detect`, `enforce` (quote `"off"` in YAML). Effective mode is `min(mode, cap(status))`. |
 | `on_violation` | `reject`, `halt`, `escalate`, `route` (default `reject`). |
 | `on_error` | `fail_closed` (applies `on_violation`) or `fail_open_and_page` (proceeds and pages). Detect never blocks. |
-| `view` | Name -> path for this enforcer (in-process points and `monitor`), or `rows` for storage. |
+| `view` | Name -> path for this enforcer (in-process points and `monitor`). |
 | `artifact`, `conformance_test`, `generated` | For hand-written enforcers: `FILE#sha256:...` is checked at load; `inv lock --update-artifacts` rewrites a stale digest. |
 
 ## The lockfile

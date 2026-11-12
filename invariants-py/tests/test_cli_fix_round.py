@@ -48,16 +48,16 @@ def test_scan_skips_an_ablated_rule(tmp_path):
 
 
 def test_lock_update_artifacts_rewrites_a_stale_digest(tmp_path):
-    (tmp_path / "schema.sql").write_text("CREATE TABLE t (x INT);\n")
+    (tmp_path / "gateway.yaml").write_text("routes: []\n")
     doc = {"spec": "invariant/v0.1", "rules": [{"id": "S-1", "status": "candidate", "bad": "false",
-           "enforcers": [{"point": "storage", "timing": "pre_effect", "mode": "detect",
-                          "artifact": "schema.sql#sha256:" + "0" * 64}]}]}
+           "enforcers": [{"point": "gateway", "timing": "pre_effect", "mode": "detect",
+                          "artifact": "gateway.yaml#sha256:" + "0" * 64}]}]}
     rf = tmp_path / "invariants.yaml"
     rf.write_text(yaml.safe_dump(doc, sort_keys=False))
     assert run_inv("lock", rf).returncode == 1                       # stale digest: the load fails
     r = run_inv("lock", rf, "--update-artifacts")
     assert r.returncode == 0 and "updated S-1" in r.stdout, r.stderr
-    digest = hashlib.sha256((tmp_path / "schema.sql").read_bytes()).hexdigest()
+    digest = hashlib.sha256((tmp_path / "gateway.yaml").read_bytes()).hexdigest()
     assert digest in rf.read_text() and run_inv("lock", rf, "--check").returncode == 0
     assert cli.main(["lock", str(rf), "--update-artifacts", "--check"]) == cli.USAGE
 

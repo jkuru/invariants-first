@@ -6,20 +6,22 @@ import importlib.metadata
 import invariants as inv
 from invariants import cli
 
-GUIDE_API = ["provider", "guard", "transaction", "model_call", "edge", "Checked", "verify", "standing", "Routed",
-             "RolledBack", "WiringError", "Escalation", "load", "check_snapshot"]
+GUIDE_API = ["provider", "guard", "model_call", "edge", "Checked", "verify", "standing", "Routed",
+             "Escalation", "load", "check_snapshot"]
+REMOVED_API = ["transaction", "RolledBack", "WiringError", "storage_rejection", "storage_errors"]   # below the API
 
 
 def test_guide_api_is_exported():
     for name in GUIDE_API:
         assert hasattr(inv, name), name
     assert set(inv.__all__) <= set(dir(inv))
+    assert not any(hasattr(inv, name) for name in REMOVED_API)
 
 
 PUBLIC_API = {
     # guide section 4.4
-    "provider", "guard", "transaction", "model_call", "edge", "Checked", "verify", "standing", "load",
-    "check_snapshot", "Escalation", "Routed", "RolledBack", "WiringError",
+    "provider", "guard", "model_call", "edge", "Checked", "verify", "standing", "load",
+    "check_snapshot", "Escalation", "Routed",
     # the other outcomes and errors
     "InvariantError", "Rejected", "Halted", "LoadError", "CoverageError", "ParseError", "ReviewNotOpened",
     # loading, evaluation and records
@@ -29,7 +31,7 @@ PUBLIC_API = {
     "Registry", "current", "default_registry", "using", "isolated", "ablated", "is_ablated",
     # operations: hooks, hand-offs, test capture, out-of-call points, packaged rule files
     "configure", "observe", "capture", "Handoff", "ReviewStore", "MemoryReviews", "JsonlReviews", "ErrorSpike",
-    "monitor", "storage_rejection", "storage_errors", "load_resource",
+    "monitor", "load_resource",
     # CEL and metadata
     "cel", "CEL_BACKEND", "__version__",
 }

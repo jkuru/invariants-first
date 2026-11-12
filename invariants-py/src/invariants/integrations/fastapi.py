@@ -7,7 +7,7 @@
 The guard is @inv.guard, so args are the handler's parameters as FastAPI parsed them (the body
 as its pydantic model, path and query params by name) and result is the response model.
 pre_effect enforcers run before the handler; post_effect ones run on the response, and the
-loader allows them to enforce only on targets declared effects: none (or transactional).
+loader allows them to enforce only on targets declared effects: none.
 """
 from __future__ import annotations
 

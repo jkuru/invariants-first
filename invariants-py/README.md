@@ -152,12 +152,15 @@ both the changes and the rules, so read the method and the verdict in
 **The 10-minute path costs almost nothing.** Run against a copy of the pool-service example app,
 `inv init` pinned its 7 pydantic models (13 constraints) and wrote one door rule for its store: every
 write goes through 7 service functions. It found and froze 4 of the 6 bypasses planted in the app's
-`rogue.py` (the other 2 are raw SQL and a dropped trigger, below the API; `--sql` finds them too) and
+`rogue.py` (the other 2 are raw SQL and a dropped trigger: below the API, not reported) and
 3 real back doors: a benchmark and two endpoints that write the store directly. `inv check` passed
 straight away, and a new direct write failed it. On an app built on SQLAlchemy, a Django-style
 manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back
-doors in a worker and an admin script. It costs no rule lines and no decisions beyond reading the
-drafted file. It catches loosened limits and new back doors, not new bugs.
+doors in a worker and an admin script. On the tool-calling [support agent](../apps/support-agent),
+it found the 4 tool and plan schemas, both repository door rules with the 3 tools as callers, and the
+one real back door (a legacy admin refund), and all 12 defects seeded there are caught. It costs no
+rule lines and no decisions beyond reading the drafted file. It catches loosened limits and new back
+doors, not new bugs.
 
 **The full system pays off** when you have a few high-stakes properties (money, quotas, approvals, provenance),
 when agent-written code adds new paths without tests, and when reviewers really read rule and lock
@@ -171,15 +174,14 @@ flowchart LR
     RF["invariants.yaml<br/>rules · targets · providers"] --> ENF
     subgraph ENF["Enforcers (run time)"]
         D["decorator<br/>@inv.guard"]
-        DO["door<br/>transactional target"]
+        MW["middleware<br/>HTTP route"]
         ED["edge<br/>@inv.edge"]
-        ST["storage<br/>CHECK / trigger"]
         MC["model_call<br/>@inv.model_call"]
     end
     ENF --> CHK
     subgraph CHK["Checks (CI)"]
         V["inv verify<br/>every target guarded"]
-        S["inv scan<br/>no path around the door"]
+        S["inv scan<br/>no path around the door<br/>(door rules)"]
         L["inv lock<br/>no silent weakening"]
         A["pytest --inv-ablate<br/>guard is load-bearing"]
     end
@@ -309,18 +311,21 @@ Both exit 1, so CI goes red. More patterns are in the [cookbook](docs/cookbook.m
 - **Rule.** An `id`, a human-set `status`, and a CEL expression `bad` that is true when the property
   is broken. A rule says what must not happen, never what to do instead.
 - **Target and effects.** The `py:` function a rule guards, with its effects declared once:
-  `none`, `transactional` (a post-effect check can roll back) or `external` (only pre-effect checks
-  can stop it).
-- **Enforcers.** Where the rule runs: `decorator`, `middleware`, `model_call`, `edge`, `storage`,
-  `monitor` or `structure` (the scan). Each has a `timing`, a `mode` (`off`, `detect`, `enforce`)
+  `none` (a pure function: a post-effect check can stop the result) or `external` (only pre-effect
+  checks can stop it; a post-effect check reports).
+- **Enforcers.** Where the rule runs: `decorator`, `middleware`, `model_call`, `edge`, `monitor`,
+  `structure` (the scan), or outside the process (`type`, `gateway`, `build`). Each has a `timing`, a `mode` (`off`, `detect`, `enforce`)
   and an `on_violation` (`reject`, `halt`, `escalate`, `route`).
 - **Four outcomes.** `ok`, `violation`, `rule_error` (the rule could not be evaluated) and
   `parse_error` (a model reply). A rule error is never a violation, and `on_error` decides it.
-- **Providers.** Typed, read-only functions that give a rule data the call does not carry, each with
-  a `consistency` (`same_txn`, `snapshot`, `stale_ok`, `immutable`) that decides whether a race is
-  closed.
+- **Providers.** Typed, read-only functions that give a rule data the call does not carry (an
+  order, an approval), read at the enforcer's timing. A check on an API's arguments is not a lock:
+  two concurrent callers can both pass, and what the store does about that is its own business.
 - **Standing.** Computed, not claimed: `held` only when the rule is enforced, its chokepoint is
-  named, `inv verify` and `inv scan` pass, and no weak read is left without a storage backstop.
+  named, no residual path is listed, and `inv verify` and `inv scan` pass.
+- **Nothing below the API.** Storage enforcers, transactional targets, provider consistency levels,
+  `tables:` and `.sql` contracts were removed in this release; an old rule file that uses one fails
+  to load with a message saying what to do ([CHANGELOG](CHANGELOG.md)).
 
 All of it, including `old_self` transition rules, model calls and edges, is explained in
 [docs/concepts.md](docs/concepts.md).
@@ -331,7 +336,7 @@ All of it, including `old_self` transition rules, model calls and edges, is expl
   `--inv-ablate`, `--inv-report`, and the fixtures `inv_registry`, `inv_ablated` and `inv_events`.
 - **FastAPI.** `@inv_fastapi.guard` under the route decorator binds rules to the parsed parameters,
   and `inv_fastapi.install(app)` maps outcomes to `application/problem+json`: 422 reject, 202
-  route or escalate, 409 storage refusal or rollback, 503 fail-closed rule error. Bodies never echo
+  route or escalate, 500 halt, 503 fail-closed rule error. Bodies never echo
   values. `InvariantMiddleware` does the same for any ASGI app.
 - **Pydantic.** A model with `extra="forbid"` is a closed reply schema, validated strictly, and a
   contract type that `inv lock` pins by its JSON schema.
@@ -343,13 +348,13 @@ Details: [docs/api.md](docs/api.md#integrations).
 
 | Command | What it does |
 |---|---|
-| `inv init [--sql] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions), then locks it. `--sql` also pins `.sql` constraints. [More](docs/start.md) |
+| `inv init [--graphify GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
 | `inv check [--relock] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens; `--base` also fails on a weakening since REF. |
-| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
+| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening and any direct edit of `invariants.lock`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
 | `inv lock [--check] [--accept-weakening]` | Pins what each rule's meaning depends on; refuses a weakening unless accepted. [More](docs/lockfile.md) |
 | `inv verify --import MOD` | Every target carries its guard, and every guard names a rule. |
-| `inv scan [--format text\|json\|sarif]` | No call path reaches a sink around its door; flags `getattr`, `__wrapped__`, monkeypatching (and raw SQL to `tables`). [More](docs/scan.md) |
+| `inv scan [--format text\|json\|sarif]` | No call path reaches a sink around its door (an allowed back door is not a door: a new caller of one fails); flags `getattr`, `__wrapped__` and monkeypatching. [More](docs/scan.md) |
 | `inv status --import MOD` | The standing of each rule, with the reasons it is not `held`. |
 
 `validate`, `lock`, `verify` and `status` take `--path DIR` (repeatable) to import the app from DIR
@@ -378,12 +383,14 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 
 - **Coverage is only as good as the rules.** In the evaluation, no defect outside a rule was caught.
 - **The scan is approximate.** It types a method call's receiver only when it is sure (a constructor,
-  an annotated parameter, `self.x` set in `__init__`); it does not follow dependency injection
+  an annotated parameter, `self.x` set in `__init__`, an attribute chain such as `ctx.billing` on a
+  typed `ctx`, never an attribute some code sets from outside); it does not follow dependency injection
   containers, event buses or callbacks, and it cannot see callers outside the scanned roots. An
   unresolved call is reported as unresolved, never as a pass. [docs/scan.md](docs/scan.md#limitations)
 - **Door discovery is a heuristic.** It finds repositories by name (Repo, Store, Gateway, DAO, `repo`,
   `store`, `db` modules) and by the writes in their bodies, and prefers service-layer callers as
-  doors. Review what `inv init` proposes; [docs/start.md](docs/start.md#limits) has the details.
+  doors; a Graphify graph adds doors between communities. Review what `inv init` proposes;
+  [docs/start.md](docs/start.md#limits) has the details.
 - **`inv.Checked` is forgeable** (Python cannot prevent it), so every `@inv.edge` re-validates the
   schema and re-checks `bad` on what it receives.
 - **CEL subset.** Rule text must stay within the common grammar (`1e3`, `1u` and `b"..."` are parse
@@ -393,8 +400,8 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 - **The lockfile's weakening analysis is syntactic.** Anything it cannot decide counts as a possible
   weakening, never as safe. A behaviour change inside a function body does not change the lock.
   [docs/lockfile.md](docs/lockfile.md#limitations)
-- **Ablation.** The pytest plugin does not support pytest-xdist. A storage enforcer is ablated only
-  if its DDL checks `inv.is_ablated`. Ablating a rule held only by a closed schema (`point: type`)
+- **Ablation.** The pytest plugin does not support pytest-xdist. Ablating a rule held only by a
+  closed schema (`point: type`)
   does not relax parsing, so it reports not load-bearing. `INV_ABLATE` with `INV_ABLATE_TESTING=1`
   turns guards off, so never set both in production. [docs/concepts.md](docs/concepts.md#ablation)
 - **Providers are eager**, so every provider an enforcer reads is called on every call. Pydantic
@@ -413,7 +420,7 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [Rule file reference](docs/rule-file.md) | every field |
 | [CEL](docs/cel.md) | backends, the Python-to-CEL type mapping, NaN policy, numbers, time zones, cost limits |
 | [Lockfile](docs/lockfile.md) | the v3 format, field policy, weakening and migration |
-| [Scan](docs/scan.md) | mediation, tables, raw SQL, reachability |
+| [Scan](docs/scan.md) | door rules, allow, receiver typing, reachability |
 | [API](docs/api.md) | every public name, the pytest plugin and the integrations |
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
 | [Evaluation](docs/evaluation.md) | the measured experiment and its verdict |

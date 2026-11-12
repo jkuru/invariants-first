@@ -166,6 +166,78 @@ tests still do the work. The new costs are a lockfile about four times larger an
 for every relaxing rule edit. The limitations below still apply: one author, 24 changes and
 synthetic apps.
 
+## Addendum 2, 2026-11-12: nothing below the API, and a tool-calling agent
+
+This release removed the features that reached below the API (storage enforcers, transactional
+targets, provider consistency, `tables:`, `.sql` contracts and `inv init --sql`), fixed how `allow`
+lets paths through, typed attribute chains in the scan, and added Graphify input and module
+constants to `inv init`. The table in the previous addendum stands, except that the 2 raw-SQL
+bypasses in pool-service's `rogue.py`, and the ledger app's second back door, are no longer reported:
+they are below the API.
+
+**A defect found by review, fixed.** The scan treated an `allow` entry like a door, so a new caller
+of a frozen back door reached the sink unseen, and code inside an allowed function (unwrapping the
+door, monkeypatching it) was not reported. A path is now let through only when every function on it
+is allowed. Three scenarios were added for it below; all three failed `inv check` for the stated
+reason.
+
+**A false positive found by the new app, fixed.** On the first `inv init` of the support agent,
+every tool call `ctx.billing.refund(...)` was name-matched to `StripeGateway.refund`, so the tools
+were frozen as back doors and the service doors had 0 callers. Receiver types now follow attribute
+chains on a typed receiver, resolved where the class is written (the first attempt resolved them in
+the caller's module and still missed). After the fix, `inv init` on the agent's code, with no
+hints, wrote:
+
+| What | Found |
+|---|---|
+| contracts | the 4 pydantic models (3 tool inputs and the planner's `Plan`), 23 constraints |
+| door rules | `LedgerRepo`'s 3 writes through the 3 `BillingService` methods (3 callers: the tools); `StripeGateway.refund` through `BillingService.refund` |
+| back doors frozen | 1 real one, the legacy `admin.goodwill_refund`, with its caller `admin_goodwill` |
+| `inv check` as drafted | pass |
+
+The agent's 12 seeded defects were each caught for the stated reason, and its 2 safe changes (a new
+tool through the door, a tighter cap re-pinned by `--relock`) passed:
+
+| # | Defect | Caught by |
+|---|---|---|
+| 1 | a new tool calls the gateway directly (2 ways) | scan: bypass |
+| 2 | the gateway method put in the tool registry | scan: the sink used as a value (unresolved, `inv check` fails) |
+| 3 | the refund cap raised 10x | lock: WEAKENED, refused by `--relock` |
+| 4 | `semantic_resamples` 1 to 5 | lock: WEAKENED |
+| 5 | a new tool through the frozen back door; then allowing it | scan: bypass; lock: WEAKENED |
+| 6 | the model over-refunds, uses another customer's order, over-credits | PLAN-1: resampled once, then a person; BILL-1 and BILL-2 at the door for any caller |
+| 7 | invalid JSON, an unknown tool name, an extra field | the closed schema: retried with the parser error, at most 3 attempts |
+| 8 | the model abstains | a review is opened, nothing runs |
+| 9 | a forged plan, a plan checked for another customer | the executor edge |
+| 10 | the plan changed after the check, the ledger moved since | the executor edge re-checks on what it receives |
+| 11 | the guard deleted from a door | verify |
+| 12 | a rule deleted | lock: WEAKENED |
+
+Under `pytest --inv-ablate`, BILL-1, BILL-2 and PLAN-1 are each load-bearing: their falsifiers fail
+when the rule is switched off.
+
+**Three rounds.**
+
+| Round | What ran | Result |
+|---|---|---|
+| 1 | the test suite on Python 3.11 and 3.14 with each CEL backend (subset, cel-expr, celpy), `-O`, mypy | 3,930 to 3,932 passed per run (3 to 5 skipped); mypy clean |
+| 2 | 12 mutants of the code this release changed (the `allow` fix, chain typing, chain freezing, Graphify, constants, the hook, the removal errors); the 39 agent-style scenarios on the ledger and ORM apps; the three apps' CI | the 12 mutants caught (one survived at first, Graphify's community check, and a test was added); 39 of 39 scenarios as expected (20 ledger, 19 ORM); the apps' CI passed |
+| 3 | a freshly built wheel in a new venv: removed names absent, all three apps' CI, both scenario sets | 70, 86 and 32 app tests passed; 39 of 39 scenarios as expected |
+
+Of the 39 scenarios, the ones that loosen a law or open a back door were blocked, and these passed:
+raw SQL to the table in a new module and through a module constant (below the API), a unit test that
+calls the sink, an unrelated edit, a fixed back door with its `allow` entry removed, and `--base` on
+a clean tree.
+
+**Cost.** Typing attribute chains made `inv scan` slower: 1.17 s against 0.94 s for the library's
+own source and tests (104 modules, 1,852 functions).
+
+**What this does not show.** The same author wrote the library, the agent, its defects and the
+scenarios, and the agent's model is a deterministic fake. A check on an API's arguments is not a
+lock: two agents refunding one order at once can both pass BILL-1, and the ledger's transaction is
+what decides. Graphify was tested with graph files written for the tests in the shape its v8 source
+writes, not with a graph Graphify produced.
+
 ## Addendum, 2026-11-12: the adoption path
 
 This addendum measures only `inv init` and door rules (the CI-only first step), not the 24-change

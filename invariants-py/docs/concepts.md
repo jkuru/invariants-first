@@ -9,10 +9,10 @@ call, an external client. A rule is a law on one of those boundaries, and there 
   `sink`), checked by `inv scan`.
 
 Rules stay on the boundary. What happens inside an implementation, and below the lowest API (SQL,
-private fields, transaction settings), is the implementation's business. Some older parts of the
-library do reach below the API (storage enforcers, `tables`, `transactional` effects, provider
-consistency levels, `.sql` contracts); they still work, they are opt-in, and they are marked as such
-below. New rules should not need them.
+triggers, transactions, isolation levels, private fields), is the implementation's business. Earlier
+releases had features that reached below the API (storage enforcers, `tables`, `transactional`
+effects, provider consistency levels, `.sql` contracts). They were removed; a rule file that still
+uses one fails to load with a message that says what to do instead.
 
 This page explains the moving parts: what a rule is, where it runs, what it can answer, and how
 the library decides whether a rule really holds. Every rule-file field is listed in
@@ -24,8 +24,7 @@ the library decides whether a rule really holds. Every rule-file field is listed
 - [Outcomes](#outcomes)
 - [Status and mode](#status-and-mode)
 - [Standing](#standing)
-- [Providers and consistency](#providers-and-consistency)
-- [Transactions](#transactions)
+- [Providers](#providers)
 - [Views](#views)
 - [Transition rules: `old_self`](#transition-rules-old_self)
 - [Model calls](#model-calls)
@@ -48,8 +47,7 @@ Each rule has a subject **target**, a `py:` path. The target declares its **effe
 | Effects | Meaning | Who may enforce |
 |---|---|---|
 | `none` | pure | pre-effect and post-effect checks |
-| `transactional` | writes inside a named `@inv.transaction` boundary, so a post-effect check can roll back | pre-effect and post-effect checks |
-| `external` | cannot be undone; the default for a target that is not listed | pre-effect checks only |
+| `external` | cannot be undone; the default for a target that is not listed | pre-effect checks only; a post-effect check on it can only detect |
 
 ## Enforcers
 
@@ -60,7 +58,6 @@ An enforcer is where a rule is checked:
 | `decorator`, `middleware` | `@inv.guard` on a function, or `invariants.integrations.fastapi.guard` on a route |
 | `model_call` | `@inv.model_call`: parse, abstain, `bad`, with bounded retries |
 | `edge` | `@inv.edge` on the consumer of a model-call result |
-| `storage` | a CHECK, trigger or UNIQUE constraint; map its error with `inv.storage_errors` |
 | `monitor` | `inv.monitor(rule_id, rows)` over stored rows; it never blocks |
 | `structure` | `inv scan` ([scan.md](scan.md)) |
 | `type`, `gateway`, `build` | held elsewhere (a closed `Literal`, a gateway, a build step) and recorded for standing |
@@ -96,8 +93,8 @@ mode reports and always proceeds.
 `status` is what review decided: `candidate`, `contested`, `detect`, `enforce` or `retired`. The
 loader computes the highest status the evidence supports (`Rule.max_status`) and refuses a higher
 one. An `enforce` rule needs an enforcer whose mode is `enforce`, a `falsified_by` list, and a
-passing timing check (a post-effect enforcer that enforces needs `effects: none` or
-`transactional`).
+passing timing check (a post-effect enforcer that enforces needs `effects: none`; on an `external`
+target the loader refuses it, since the effect has already happened).
 
 An enforcer's effective mode is `min(mode, cap(status))` (`inv.effective_mode`), so a `detect`
 rule never blocks, whatever its enforcers say.
@@ -111,7 +108,7 @@ Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` re
 
 | Standing | When |
 |---|---|
-| `held` | enforced, `mediation.chokepoint` is named, `inv verify` and `inv scan` pass, and no weak provider is left without a storage enforcer |
+| `held` | enforced, `mediation.chokepoint` is named, and `inv verify` and `inv scan` pass |
 | `enforce(known-callers)` | enforced, but one of the conditions for `held` is missing; the reasons are listed |
 | `monitored` | the rule runs, but no enforcer is in effective mode `enforce` |
 | `candidate` | status `candidate` or `contested`, or every enforcer is `off` |
@@ -123,100 +120,40 @@ Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` re
 1. **Name the chokepoint.** `mediation.chokepoint` states the positive argument in words
    ("pools.size is written only by resize_door").
 2. **Declare what the scan checks.** `mediation.sink` is the protected effect (for example the
-   store function that runs the `UPDATE`), `mediation.door` is the guarded function or functions
-   every path must pass (by default, the rule's target), and `mediation.tables` lists the tables raw
-   SQL may not write outside the sink and the door. A rule on an `effects: none` target needs no
-   sink: the guard wraps the function itself. A rule whose door guards stored data (a
-   `transactional` door, or a storage enforcer) also needs `mediation.tables`; without it, raw SQL
-   can go around the door unseen, and the rule stays at `enforce(known-callers)`. See
-   [scan.md](scan.md).
-3. **Close the race.** A guard that reads shared state through a `snapshot` or `stale_ok` provider
-   needs a storage enforcer (a CHECK or trigger) behind it, or a `same_txn` provider.
-4. **Pass verify.** `inv verify --import your.app` (or `--inv-verify` in pytest) checks that every
+   repository method that writes), `mediation.door` is the guarded function or functions
+   every path must pass (by default, the rule's target), and `mediation.allow` lists the back doors
+   that were reviewed. A rule on an `effects: none` target needs no sink: the guard wraps the
+   function itself. See [scan.md](scan.md).
+3. **Pass verify.** `inv verify --import your.app` (or `--inv-verify` in pytest) checks that every
    target is wrapped by its guard, and that every guard names a rule whose target it is.
-5. **Prove it is load-bearing.** `pytest --inv-ablate` must report every `enforce` rule as caught.
+4. **Prove it is load-bearing.** `pytest --inv-ablate` must report every `enforce` rule as caught.
 
-While a rule lists any `mediation.residual_paths`, `inv status` withholds `held`. Storage-only rules
-get no mediation credit, and they show reach 0 in the plugin report.
+While a rule lists any `mediation.residual_paths`, `inv status` withholds `held`.
 
-## Providers and consistency
-
-> **Below the API (legacy, opt-in).** Consistency levels describe the storage under a provider. A
-> rule that only reads its API's `args` and `result` needs none of this.
+## Providers
 
 A provider is a typed, read-only function that gives a rule data the call does not carry (an
 approval, a job record). Mark it with `@inv.provider("name")` and declare it under `providers:`.
 The loader checks its name, its parameters (exactly the keys of `args`) and its return type.
 
-Each provider declares a `consistency`:
-
-| Consistency | Read | Closes the race? |
-|---|---|---|
-| `same_txn` | inside the target's transaction | yes |
-| `immutable` | any time; the data never changes once written | yes (there is no race) |
-| `snapshot` | once, at one consistent point before the effect | no: an early refusal only |
-| `stale_ok` | any recent value | no: an early refusal only |
-
-A guard that reads shared state through anything weaker than `same_txn` (or `immutable`) is only an
-early refusal: two callers can both pass. A storage enforcer must back it before the rule can be
-`held` (the race in section 2.7 of the design guide). A `same_txn` provider on a target that is not
-`effects: transactional` is a load error.
-
-**When providers are read.** A `pre_effect` enforcer reads its providers before the call. A
-`post_effect` enforcer reads them after the effect (inside the transaction, for a transactional
-target), except `snapshot` providers, which are read before the effect. Values are cached per
+**When providers are read.** A provider is a plain read at its enforcer's timing: a `pre_effect`
+enforcer reads it before the call, a `post_effect` enforcer after it. Values are cached per
 provider and resolved arguments, per call. A provider that raises or returns the wrong type is a
 `rule_error`.
 
+**A check is not a lock.** A rule on an API's arguments is checked per call. Two concurrent callers
+can both pass a check that reads shared state, and both proceed. Keeping concurrent writes
+consistent (the store's own constraints, its transactions) is the implementation's business.
+
 **Providers are eager.** Every provider an enforcer's names map reads is called, even when a clause
-would short-circuit without it. A sync provider called from an async guard runs on the event loop,
-so a `same_txn` read stays on the connection's thread. An async provider is awaited by async
-guards, model calls and edges. A rule whose sync target reads an `async def` provider is a
-`LoadError`, since a sync wrapper cannot await it.
-
-## Transactions
-
-> **Below the API (legacy, opt-in).** Transactional effects and rollback reach into the storage
-> layer. Prefer a pre-effect value law on the service method.
-
-
-`@inv.transaction` marks the boundary of a transactional target: a generator (or async generator)
-method that BEGINs, yields, and COMMITs, or ROLLBACKs on an exception.
-
-```python
-class PoolService:
-    @inv.transaction
-    def txn(self):
-        self.conn.execute("BEGIN")
-        try:
-            yield
-        except BaseException:
-            self.conn.execute("ROLLBACK")
-            raise
-        self.conn.execute("COMMIT")
-
-    @inv.guard("R-21")
-    def resize_door(self, pool_id: str, new_size: int) -> None: ...
-```
-
-- **Inside its boundary only.** A guard confirms it runs inside its own boundary. Outside it, the
-  outcome is a `rule_error` before the effect starts, raised as `inv.WiringError` (a subclass of
-  `Rejected`) whatever `on_violation` says.
-- **Post-effect checks see the new state.** A `post_effect` enforcer reads its providers after the
-  write, still inside the transaction. A violation rolls the transaction back.
-- **A failed guard dooms the transaction.** If the caller swallows the exception, `RolledBack` is
-  raised at the end of the block.
-- **Nested blocks.** In nested blocks of the same boundary and owner (a re-entrant `txn()` where only
-  the outermost block BEGINs and COMMITs), a failure dooms every enclosing block, so the outermost
-  one raises `RolledBack` even if an inner failure was swallowed. For a boundary whose nested blocks
-  are real savepoints, use `@inv.transaction(savepoint=True)`: the failure then dooms only up to that
-  block.
+would short-circuit without it. A sync provider called from an async guard runs on the event loop.
+An async provider is awaited by async guards, model calls and edges. A rule whose sync target reads
+an `async def` provider is a `LoadError`, since a sync wrapper cannot await it.
 
 ## Views
 
 One rule can have several enforcers, and each may bind the names `bad` reads its own way.
-`view: {leased: provider.pool_leased, n: args.slots}` binds names for a door, and `view: rows` says
-a trigger reads stored rows. `bind:` sets the names for the rule as a whole. When `bind:` is
+`view: {leased: provider.pool_leased, n: args.slots}` binds names for a door. `bind:` sets the names for the rule as a whole. When `bind:` is
 omitted, `args`, `result` (or `reply`, for a model call), `self` and `old_self` are bound
 automatically, and so is any provider name that `bad` references.
 
@@ -336,8 +273,8 @@ like any other. For edge tests, `invariants.testing.make_checked(cls, value, ver
 
 ## Async
 
-`model_call`, `edge`, `guard` and `transaction` also work on `async def` functions (and on async
-generator boundaries): replies and async providers are awaited. A generator function cannot be
+`model_call`, `edge` and `guard` also work on `async def` functions: replies and async providers
+are awaited. A generator function cannot be
 guarded, because its body runs after the guard returns.
 
 ## Ablation
@@ -360,8 +297,6 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   `inconclusive (rule_error, not violation)` when, on the control re-run, the rule's in-process
   evaluations gave `rule_error` and never `violation` or `parse_error`: the falsifier passed because
   the rule could not be evaluated, not because it caught the bad state.
-- **Storage enforcers** are turned off only if the DDL that installs them checks
-  `inv.is_ablated(rule_id)`.
 - **Schema-held rules.** Ablating a rule enforced by `point: type` (a closed `Literal`, or
   `extra="forbid"`) does not relax `inv.parse`, so a parse-error falsifier still passes and
   `--inv-ablate` reports the guard as not load-bearing. Give such a rule an in-process enforcer too,
@@ -432,7 +367,3 @@ inv.configure(
   it on for rules whose errors only your own code can cause.
 - **Monitors.** `inv.monitor(rule_id, rows)` evaluates a rule's `monitor` enforcer over
   `(key, base)` rows and records each outcome. It never blocks.
-- **Storage enforcers.** `inv.storage_errors({"R-20:": "R-20"}, (sqlite3.IntegrityError,))` turns a
-  trigger's error into `inv.storage_rejection`, a counted `Rejected` with `point == "storage"` that
-  the HTTP mapping answers with 409. Storage DDL can leave an enforcer out while
-  `inv.is_ablated(rule_id)`.

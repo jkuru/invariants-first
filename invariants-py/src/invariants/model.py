@@ -10,32 +10,31 @@ from .cel import Program
 DEFAULT_NAMES = frozenset({"args", "result", "reply", "self", "old_self"})
 PATH_ROOTS = DEFAULT_NAMES | {"provider"}
 FILE_FIELDS = frozenset({"spec", "contracts", "targets", "providers", "rules"})
-TARGET_FIELDS = frozenset({"effects", "transaction"})
-PROVIDER_FIELDS = frozenset({"type", "from", "args", "consistency"})
+TARGET_FIELDS = frozenset({"effects"})
+PROVIDER_FIELDS = frozenset({"type", "from", "args"})
 RULE_FIELDS = frozenset({"id", "rev", "status", "class", "owner", "statement", "why", "subject", "scope", "bind",
                          "bad", "compensable", "enforcers", "mediation", "model_policy", "compares_to",
                          "falsified_by", "evidence", "applies_to"})
 ENFORCER_FIELDS = frozenset({"point", "target", "timing", "mode", "on_violation", "on_error", "view", "artifact",
                              "generated", "conformance_test"})
-MEDIATION_FIELDS = frozenset({"chokepoint", "residual_paths", "sink", "door", "tables", "allow"})
+MEDIATION_FIELDS = frozenset({"chokepoint", "residual_paths", "sink", "door", "allow"})
 POLICY_FIELDS = frozenset({"schema", "format_retries", "semantic_resamples", "feedback", "abstain"})
 EVALUATED = frozenset({"decorator", "middleware", "model_call", "edge"})   # points the SDK evaluates in-process
 VIEW_POINTS = EVALUATED | {"monitor"}                          # points that bind names (and may take a view)
 GUARD_POINTS = frozenset({"decorator", "middleware"})          # points an @inv.guard can evaluate
 ENUMS: dict[str, set[str]] = {
-    "class": {"law", "policy"}, "effects": {"none", "transactional", "external"},
+    "class": {"law", "policy"}, "effects": {"none", "external"},
     "status": {"candidate", "contested", "detect", "enforce", "retired"},
-    "point": {"type", "storage", "gateway", "decorator", "middleware", "model_call", "edge", "build",
+    "point": {"type", "gateway", "decorator", "middleware", "model_call", "edge", "build",
               "structure", "monitor"},
     "timing": {"pre_effect", "post_effect"}, "mode": {"off", "detect", "enforce"},
     "on_violation": {"reject", "halt", "escalate", "route"},
     "on_error": {"fail_closed", "fail_open_and_page"},
-    "consistency": {"same_txn", "snapshot", "stale_ok", "immutable"}, "compares_to": {"held_data"},
+    "compares_to": {"held_data"},
 }
 MODES = ("off", "detect", "enforce")                           # off < detect < enforce
 CAP = {"candidate": "detect", "contested": "detect", "detect": "detect", "enforce": "enforce", "retired": "off"}
 STATUS_RANK = {"candidate": 0, "contested": 0, "detect": 1, "enforce": 2}
-HOLDS_RACE = frozenset({"same_txn", "immutable"})               # consistencies a held guard may read through
 
 
 def effective_mode(mode: str, status: str) -> str:
@@ -65,10 +64,6 @@ class Provider:
     nullable: bool
 
     @property
-    def consistency(self) -> str:
-        return self.raw["consistency"]
-
-    @property
     def is_async(self) -> bool:
         """True for an async def provider (read only by async guards, model calls and edges)."""
         return inspect.iscoroutinefunction(self.fn)
@@ -89,7 +84,6 @@ class Rule:
     names: set[str]
     target: Any = None
     effects: str = "external"
-    transaction: str | None = None
     snapshot: list[tuple[str, ...]] = dataclasses.field(default_factory=list)   # inferred old_self paths
     names_for: dict[Any, dict[str, str]] = dataclasses.field(default_factory=dict)  # enforcer index | "rule"
     notes: list[str] = dataclasses.field(default_factory=list)

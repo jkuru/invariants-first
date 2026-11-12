@@ -17,7 +17,7 @@ import weakref
 from typing import Any, Callable, Iterable, Iterator, Protocol
 
 from .errors import CoverageError, LoadError, ReviewNotOpened
-from .model import GUARD_POINTS, HOLDS_RACE, Provider, Rule
+from .model import GUARD_POINTS, Provider, Rule
 from .resolve import resolve
 
 ABLATE_ENV = "INV_ABLATE"
@@ -465,9 +465,9 @@ class Registry:
                     del self._reg_ablated[rule_id]
 
     def scope(self) -> set[str]:
-        """Top-level packages of the loaded targets, edge targets, boundaries and python contracts."""
+        """Top-level packages of the loaded targets, edge targets and python contracts."""
         out: set[str] = set()
-        keys = list(self.targets) + [t.get("transaction") for t in self.targets.values()]
+        keys: list[Any] = list(self.targets)
         for rule in self.rules.values():
             keys.append(rule.target_key)
             keys.extend(e.get("target") for e in rule.enforcers)
@@ -541,12 +541,6 @@ class Registry:
             why.append("mediation names no chokepoint")
         if med.get("residual_paths"):
             why.append(f"residual paths: {med['residual_paths']}")
-        weak = sorted({p.split(".")[1] for m in rule.names_for.values() for p in m.values()
-                       if p.startswith("provider.") and self.providers[p.split(".")[1]].consistency not in HOLDS_RACE})
-        if weak and not any(e["point"] == "storage" and rule.mode(e) == "enforce" for e in rule.enforcers):
-            why.append("reads shared state through "
-                       + ", ".join(f"{p} ({self.providers[p].consistency})" for p in weak)
-                       + " with no storage enforcer: the guard is an early refusal only")
         try:
             self.verify()
         except CoverageError as e:
@@ -713,7 +707,7 @@ def configure(reg: Registry | None = None, *, sink_size: int | None = _UNSET, re
 
 
 def is_ablated(rule_id: str, reg: Registry | None = None) -> bool:
-    """True while the rule is ablated. Storage DDL builders call this to leave out that rule's enforcer."""
+    """True while the rule is ablated (inv.ablated, INV_ABLATE or Registry.ablate)."""
     return (reg or current()).is_ablated(rule_id)
 
 

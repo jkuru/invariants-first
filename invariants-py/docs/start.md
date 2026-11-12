@@ -10,7 +10,7 @@ The rule file defines their *laws*, and there are only two kinds:
   `BillingService.refund` may call `BillingRepo.save_refund`").
 
 People own the laws at the boundaries, and coding agents are free inside the implementations. The
-rules never look below an API: not at SQL, private fields or transaction settings.
+rules never look below an API: not at SQL, triggers, transactions or private fields.
 
 Adoption comes in two steps, and the first one changes no production code.
 
@@ -42,7 +42,6 @@ installed.
 wrote invariants.yaml
   read 3 source file(s)
   pinned 1 pydantic model(s) with 5 constraint(s)
-  left 1 SQL file(s) unpinned: the schema is below the API (`inv init --sql` pins it)
   suggested 2 rule(s) from function preconditions (commented out; see the file)
   found no door (no function that two or more callers go through to a write)
 running `inv lock` to pin them ...
@@ -110,7 +109,9 @@ is the one support script that calls the gateway directly. `inv init` finds both
   functions go through;
 - a **back door** is any other caller of a sink.
 
-It proposes one rule per repository, runs the real scan on it, and freezes what it finds. This is
+It proposes one rule per repository, runs the real scan on it, and freezes what it finds. A back
+door is frozen with its whole call chain: if `admin_goodwill` calls `goodwill_refund`, which calls
+the gateway, both go in `allow`. This is
 real output from an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with
 no SQL anywhere:
 
@@ -167,8 +168,17 @@ its `allow` entry: that is a tightening and needs no one's approval. An `allow` 
 matches a back door fails the check until you delete it, so a regression in that function is caught
 again.
 
+`allow` is not a door. A path to the sink passes only when every function on it is in `allow`, so a
+new caller of an allowed function, or new code inside one that reaches the sink, is a bypass.
+
 At most five door rules are written, money, quota and approval names first (`--max-doors N` changes
 it); the rest are listed in the file. `--no-doors` skips this step.
+
+**Graphify (optional).** If the project has a Graphify
+graph at `graphify-out/graph.json`, `inv init` reads it as JSON (`--graphify PATH` names another
+file, `--no-graphify` turns it off). Its communities and call links help find doors where nothing
+is named Service. Every rule it suggests is still checked by the real scan before it is written,
+and `inv check` never reads the graph.
 
 ## 4. Make the check unskippable (5 minutes)
 
@@ -236,7 +246,7 @@ invariants.lock  @your-org/payments-owners
 {
   "hooks": {
     "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "inv hook pretool"}]}
+      {"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "inv hook pretool"}]}
     ],
     "Stop": [
       {"hooks": [{"type": "command", "command": "inv hook stop"}]}
@@ -248,6 +258,9 @@ invariants.lock  @your-org/payments-owners
 - **`inv hook pretool`** blocks any shell command containing `--accept-weakening`,
   `--allow-weakening` or `INV_ALLOW_WEAKENING`. The agent is told to report the weakening to
   you instead.
+  It also blocks any direct edit of `invariants.lock`: an edit or write tool on it, or a shell
+  command that writes it (`>`, `tee`, `sed -i`, `cp`, `mv`, `rm` and the like). Reading the lock and
+  `inv lock && git add invariants.lock` are fine: only `inv lock` and `inv check --relock` write it.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
   it sends the agent back with the failure, once per stop, so it can't loop.
 
@@ -292,8 +305,11 @@ That is the whole short form:
 
 Only conditions over the function's parameters are translated: comparisons, `and`, `or`, `not`,
 arithmetic, `len`, `is None`, and `in` over a literal list. Anything else, such as division (Python
-and CEL divide differently), a global constant or a helper call, is listed as not translated rather
-than guessed.
+and CEL divide differently) or a helper call, is listed as not translated rather than guessed. A
+module-level constant is inlined: with `MAX_REFUND = 10_000`, `if amount > MAX_REFUND: raise`
+becomes `args.amount > 10000`, so raising the constant later is a change to the rule file. A name
+that is bound more than once, rebound with `global`, imported, a loop variable or not a literal is
+not translated.
 
 A door rule and a guard rule combine: give a rule both `guard:` and `sink:`, and the
 guarded function is the door. The rule then checks the arguments at run time and the scan proves no
@@ -312,11 +328,10 @@ Start with the [README quickstart](../README.md#quickstart) and [concepts](conce
 form and the long form pin to the same lock, so switching a rule from one to the other isn't a
 change.
 
-**Below the API (legacy, opt-in).** Earlier versions also enforced rules inside the storage layer:
-pinned `.sql` constraints, `tables:` that forbid raw SQL to a table, storage triggers, `transactional`
-effects and provider consistency levels. They still work, and `inv init --sql` writes the first two,
-but they police an implementation rather than an API, and the plan is to retire them. New rules
-should not need them.
+Earlier versions also had rules below the API (pinned `.sql` constraints, `tables:`, storage
+enforcers, `transactional` effects, provider consistency levels). They were removed. A rule file
+that still uses one fails to load with a message that says what to do, and an old lock shows each
+removed pin once as a weakening (see [lockfile.md](lockfile.md#upgrading-from-a-release-with-rules-below-the-api)).
 
 ## Limits
 

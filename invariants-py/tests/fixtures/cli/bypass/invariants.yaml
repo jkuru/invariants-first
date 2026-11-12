@@ -20,5 +20,4 @@ rules:
       residual_paths: []
       sink: "py:fleet.store.set_size"
       door: "py:fleet.service.resize"
-      tables: [pools]
     falsified_by: ["tests/test_fleet.py::test_unapproved_resize"]

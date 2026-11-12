@@ -74,7 +74,7 @@ def test_routes_bind_their_rules(app) -> None:
 def test_standing_without_scan(rules_loaded: inv.Registry) -> None:
     standing, why = inv.standing("R-20", rules_loaded)
     assert standing == "enforce(known-callers)" and why[-1] == "inv scan not run"
-    assert any("DROP TRIGGER" in w for w in why)
+    assert any("concurrent leases" in w for w in why)
     assert inv.standing("R-21", rules_loaded, scan=True) == ("held", [])
 
 

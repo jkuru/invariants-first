@@ -1,4 +1,4 @@
-"""Door rules (door/sink/tables/allow), door discovery in `inv init`, and the scan's receiver types."""
+"""Door rules (door/sink/allow), door discovery in `inv init`, and the scan's receiver types."""
 from __future__ import annotations
 
 import ast
@@ -59,8 +59,7 @@ def _bank(tmp_path: pathlib.Path, batch: bool = True, **extra: str) -> pathlib.P
     return write_project(tmp_path / "bank", files)
 
 
-DOOR = {"id": "LEDGER", "door": "py:bank.service.apply_transfer", "sink": "py:bank.store.write_balance",
-        "tables": ["balances"]}
+DOOR = {"id": "LEDGER", "door": "py:bank.service.apply_transfer", "sink": "py:bank.store.write_balance"}
 
 
 def _scan(root: pathlib.Path, rule: dict) -> scan.Report:
@@ -71,10 +70,10 @@ def _scan(root: pathlib.Path, rule: dict) -> scan.Report:
 def test_door_rule_expands_to_a_structure_rule():
     r = expand_short_forms({"rules": [dict(DOOR, allow="py:bank.batch.refund_all")]})["rules"][0]
     assert r["mediation"] == {"sink": "py:bank.store.write_balance", "door": "py:bank.service.apply_transfer",
-                              "tables": ["balances"], "allow": ["py:bank.batch.refund_all"]}
+                              "allow": ["py:bank.batch.refund_all"]}
     assert r["bad"] == "false" and r["status"] == "enforce"
     assert r["enforcers"] == [{"point": "structure", "timing": "pre_effect", "mode": "enforce"}]
-    assert not {"door", "sink", "tables", "allow"} & set(r)
+    assert not {"door", "sink", "allow"} & set(r)
 
 
 @pytest.mark.parametrize("empty", [None, []])
@@ -85,8 +84,8 @@ def test_an_emptied_allow_list_means_no_known_back_doors(empty):
 
 def test_door_rule_with_guard_makes_the_guarded_function_the_door():
     r = expand_short_forms({"rules": [{"id": "R", "guard": "py:bank.service.apply_transfer", "bad": "args.cents <= 0",
-                                       "sink": "py:bank.store.write_balance", "tables": ["balances"]}]})["rules"][0]
-    assert r["mediation"] == {"sink": "py:bank.store.write_balance", "tables": ["balances"]}
+                                       "sink": "py:bank.store.write_balance"}]})["rules"][0]
+    assert r["mediation"] == {"sink": "py:bank.store.write_balance"}
     assert r["subject"] == {"target": "py:bank.service.apply_transfer"}
     assert r["enforcers"][0]["point"] == "decorator"
 
@@ -126,17 +125,56 @@ def test_back_doors_are_found_and_allow_freezes_them(tmp_path):
     root = _bank(tmp_path)
     rep = _scan(root, DOOR)
     got = {(f.kind, f.owner) for f in rep.for_rule("LEDGER")}
-    assert got == {("bypass", "bank.batch.refund_all"), ("forbidden", "bank.batch.fix_balance")}
-    frozen = dict(DOOR, allow=["py:bank.batch.refund_all", "py:bank.batch.fix_balance"])
+    assert got == {("bypass", "bank.batch.refund_all")}          # fix_balance's raw SQL is below the API
+    frozen = dict(DOOR, allow=["py:bank.batch.refund_all"])
     assert _scan(root, frozen).rule_result("LEDGER") == "pass"
-    part = dict(DOOR, allow=["py:bank.batch.refund_all"])
-    assert {f.owner for f in _scan(root, part).for_rule("LEDGER")} == {"bank.batch.fix_balance"}
+
+
+NEW_CALLER = '''\
+from bank.batch import refund_all
+
+def instant_refund(conn, account):
+    refund_all(conn, [(account, 10_000)])
+'''
+
+
+def test_an_allowed_back_door_is_not_a_door_for_new_callers(tmp_path):
+    root = _bank(tmp_path, **{"bank/new_api.py": NEW_CALLER})
+    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all"]))
+    (f,) = rep.for_rule("LEDGER")
+    assert f.kind == "bypass" and f.path == ["bank.new_api.instant_refund", "bank.batch.refund_all",
+                                             "bank.store.write_balance"]
+    both = dict(DOOR, allow=["py:bank.batch.refund_all", "py:bank.new_api.instant_refund"])
+    assert _scan(root, both).rule_result("LEDGER") == "pass"     # only a person can add it (a weakening)
+
+
+def test_new_code_called_from_an_allowed_back_door_is_a_bypass(tmp_path):
+    batch = BATCH.replace("        write_balance(conn, account, cents)\n",
+                          "        _helper(conn, account, cents)\n") + (
+        "\ndef _helper(conn, account, cents):\n    write_balance(conn, account, cents)\n")
+    root = _bank(tmp_path, **{"bank/batch.py": batch})
+    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all"]))
+    (f,) = rep.for_rule("LEDGER")
+    assert f.kind == "bypass" and f.owner == "bank.batch._helper"
+
+
+@pytest.mark.parametrize("trick,code", [
+    ("    setattr(svc, 'apply_transfer', lambda *a: None)\n", "forbidden/monkeypatch"),
+    ("    svc.apply_transfer.__wrapped__(conn, 'a', 'b', 1, {})\n", "forbidden/unwrap"),
+    ("    eval('1')\n", "unresolved/reflection"),
+])
+def test_an_allowed_back_door_still_cannot_tamper_with_the_door(tmp_path, trick, code):
+    batch = "import bank.service as svc\n" + BATCH.replace("def refund_all(conn, rows):\n",
+                                                         "def refund_all(conn, rows):\n" + trick)
+    root = _bank(tmp_path, **{"bank/batch.py": batch})
+    rule = dict(DOOR, allow=["py:bank.batch.refund_all"])
+    assert code in {f.code for f in _scan(root, rule).for_rule("LEDGER")}
 
 
 def test_a_bypass_message_names_the_door_not_the_allowed_back_doors(tmp_path):
     root = _bank(tmp_path, **{"bank/new.py": "from bank.store import write_balance\n\n"
                                             "def sneak(conn):\n    write_balance(conn, 'a', 1)\n"})
-    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all", "py:bank.batch.fix_balance"]))
+    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all"]))
     (f,) = rep.for_rule("LEDGER")
     assert f.kind == "bypass" and f.owner == "bank.new.sneak"
     assert f.message.endswith("without passing bank.service.apply_transfer")
@@ -144,20 +182,19 @@ def test_a_bypass_message_names_the_door_not_the_allowed_back_doors(tmp_path):
 
 def test_an_allow_entry_that_is_no_longer_a_back_door_fails(tmp_path):
     root = _bank(tmp_path, **{"bank/batch.py": BATCH.replace("write_balance(conn, account, cents)", "pass")})
-    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all", "py:bank.batch.fix_balance"]))
+    rep = _scan(root, dict(DOOR, allow=["py:bank.batch.refund_all"]))
     (f,) = rep.for_rule("LEDGER")
     assert (f.kind, f.code, f.owner) == ("missing", "missing/allow-unused", "bank.batch.refund_all")
-    gone = _scan(root, dict(DOOR, allow=["py:bank.batch.gone", "py:bank.batch.fix_balance"]))
+    gone = _scan(root, dict(DOOR, allow=["py:bank.batch.gone"]))
     assert [f.code for f in gone.for_rule("LEDGER")] == ["missing/allow"]
 
 
-def test_allow_covers_every_finding_inside_the_frozen_function(tmp_path):
+def test_allow_covers_the_ways_a_frozen_back_door_reaches_the_sink(tmp_path):
     root = _bank(tmp_path, batch=False, **{"bank/hack.py": textwrap.dedent('''\
         import bank.store as s
 
         def hack(conn):
             getattr(s, "write_balance")(conn, "a", 1)
-            conn.execute("DROP TRIGGER guard_balances")
         ''')})
     assert _scan(root, DOOR).rule_result("LEDGER") == "fail"
     assert _scan(root, dict(DOOR, allow="py:bank.hack.hack")).rule_result("LEDGER") == "pass"
@@ -166,7 +203,7 @@ def test_allow_covers_every_finding_inside_the_frozen_function(tmp_path):
 def test_findings_carry_their_function(tmp_path):
     root = _bank(tmp_path)
     data = _scan(root, DOOR).as_dict()
-    assert {f["owner"] for f in data["findings"]} == {"bank.batch.refund_all", "bank.batch.fix_balance"}
+    assert {f["owner"] for f in data["findings"]} == {"bank.batch.refund_all"}
 
 
 # --- receiver types --------------------------------------------------------------------------------
@@ -201,6 +238,14 @@ def _edges(tmp_path: pathlib.Path, code: str) -> dict[tuple[str, str], bool]:
     ("from q.repo import Repo\nclass S:\n    def __init__(self, r: Repo, n):\n        self.r, self.n = r, n\n"
      "    def go(self):\n        self.r.add('t', 1)\n", "q.use.S.go"),
     ("from q.repo import Repo\ndef f(c):\n    r, k = Repo(c), 1\n    r.add('t', k)\n", "q.use.f"),
+    # an attribute chain on a typed receiver: ctx.repo is a Repo because Ctx sets it so
+    ("from q.repo import Repo\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n"
+     "def f(ctx: Ctx): ctx.repo.add('t', 1)\n", "q.use.f"),
+    ("from q.repo import Repo\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n"
+     "class Outer:\n    def __init__(self, c):\n        self.ctx = Ctx(c)\n"
+     "    def go(self):\n        self.ctx.repo.add('t', 1)\n", "q.use.Outer.go"),
+    ("import dataclasses\nfrom q.repo import Repo\n@dataclasses.dataclass\nclass Ctx:\n    repo: Repo\n"
+     "def f(ctx: Ctx): ctx.repo.add('t', 1)\n", "q.use.f"),
 ])
 def test_a_receiver_of_known_class_is_an_extracted_edge(tmp_path, code, caller):
     assert _edges(tmp_path, code) == {(caller, "q.repo.Repo.add"): False}
@@ -216,6 +261,12 @@ def test_a_receiver_of_known_class_is_an_extracted_edge(tmp_path, code, caller):
     "        self.r, self.k = pair\n    def go(self):\n        self.r.add('t', 1)\n",
     "from q.repo import Repo\nclass S:\n    def __init__(self, c, o):\n        self.r = Repo(c)\n"
     "    def swap(self, o):\n        self.r = o\n    def go(self):\n        self.r.add('t', 1)\n",
+    # set from outside the class: ctx.repo may hold anything
+    "from q.repo import Repo\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n"
+    "def f(ctx: Ctx): ctx.repo.add('t', 1)\ndef patch(ctx, other):\n    ctx.repo = other\n",
+    "from q.repo import Repo\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n"
+    "def f(ctx: Ctx): ctx.repo.add('t', 1)\ndef patch(ctx, other):\n    setattr(ctx, 'repo', other)\n",
+    "from q.repo import Repo\ndef f(ctx): ctx.repo.add('t', 1)\n",                     # ctx untyped
 ])
 def test_an_unsure_receiver_stays_name_matched(tmp_path, code):
     got = _edges(tmp_path, code)
@@ -239,17 +290,22 @@ def test_discover_finds_the_door_and_freezes_the_back_doors(tmp_path):
     root = _bank(tmp_path)
     found = doors.discover([root], TEST_EXCLUDE)
     (d,) = found.doors
-    assert (d.rid, d.doors, d.sinks, d.tables) == ("BALANCES-DOOR", ["bank.service.apply_transfer"],
-                                                   ["bank.store.write_balance"], [])     # API only: no tables
-    assert d.allow == ["bank.batch.refund_all"] and d.active     # the call rule: fix_balance's raw SQL is below it
-    assert _scan(root, d.rule()).rule_result("BALANCES-DOOR") == "pass"
-    (d,) = doors.discover([root], TEST_EXCLUDE, tables=True).doors   # inv init --sql
-    assert d.tables == ["balances"]
-    assert d.callers == ["bank.api.payout", "bank.api.transfer"]
-    assert d.allow == ["bank.batch.fix_balance", "bank.batch.refund_all"] and d.active
-    assert len(d.back_doors) == 2 and all(b.startswith("bank/batch.py:") for b in d.back_doors)
+    assert (d.rid, d.doors, d.sinks) == ("BALANCES-DOOR", ["bank.service.apply_transfer"],
+                                         ["bank.store.write_balance"])
+    assert d.allow == ["bank.batch.refund_all"] and d.active     # fix_balance's raw SQL is below the API
+    assert d.callers == ["bank.api.payout", "bank.api.transfer"] and "tables" not in d.rule()
+    assert len(d.back_doors) == 1 and d.back_doors[0].startswith("bank/batch.py:")
     assert _scan(root, d.rule()).rule_result("BALANCES-DOOR") == "pass"
 
+
+def test_discover_freezes_the_call_chain_of_a_back_door(tmp_path):
+    cli = {"bank/cli.py": "from bank.batch import refund_all\n\ndef main():\n    refund_all(None, [])\n"}
+    (d,) = doors.discover([_bank(tmp_path, **cli)], TEST_EXCLUDE).doors
+    assert d.allow == ["bank.batch.refund_all", "bank.cli.main"] and d.active
+    root2 = _bank(tmp_path / "two", **cli, **{"bank/new_api.py": NEW_CALLER})
+    rep = _scan(root2, d.rule())                                  # an agent adds a new caller later
+    (f,) = rep.for_rule(d.rid)
+    assert f.kind == "bypass" and f.path[0] == "bank.new_api.instant_refund"
 
 def test_discover_gives_each_writer_its_own_door(tmp_path):
     root = write_project(tmp_path / "p", {
@@ -289,9 +345,9 @@ def test_discover_ranks_money_first_and_lists_what_it_drops(tmp_path):
 
 
 def test_a_back_door_outside_any_function_leaves_the_rule_commented_out(tmp_path):
-    root = _bank(tmp_path, **{"bank/boot.py": "import sqlite3\n"
-                                             "sqlite3.connect('x').execute('UPDATE balances SET cents = 0')\n"})
-    (d,) = doors.discover([root], TEST_EXCLUDE, tables=True).doors
+    root = _bank(tmp_path, **{"bank/boot.py": "from bank.store import write_balance\n\n"
+                                             "write_balance(None, 'a', 0)\n"})
+    (d,) = doors.discover([root], TEST_EXCLUDE).doors
     assert not d.active and "not inside a function" in d.why_inactive
     text = "\n".join(doors.render(doors.DoorsFound([d], [], {}, 1)))
     assert "  # - id: BALANCES-DOOR" in text and "\n  - id:" not in text
@@ -465,7 +521,7 @@ def test_an_orm_and_api_client_codebase_gets_door_rules_without_sql(tmp_path):
     # back door: nobody but a door may call any write of the repository
     assert o.sinks == ["shop.repo.OrderRepo.add", "shop.repo.OrderRepo.cancel", "shop.repo.OrderRepo.purge"]
     assert o.doors == ["shop.service.OrderService.place", "shop.service.OrderService.cancel"]
-    assert o.tables == [] and "tables" not in o.rule()
+    assert "tables" not in o.rule()
     assert o.allow == ["shop.api.admin_cancel", "shop.api.purge_all"] and o.active
     p = by_id["PAYMENT-GATEWAY-DOOR"]
     assert p.sinks == ["shop.repo.PaymentGateway.charge"] and p.back_doors == []
@@ -486,3 +542,13 @@ def test_default_excludes_reach_nested_tests_and_migrations(tmp_path):
         "app/alembic/versions/v1.py": "def upgrade(): pass\n", "app/migrations/0001.py": "X = 1\n"})
     names = [m for _, _, m in scan.iter_sources([root], DEFAULT_SCAN_EXCLUDE)]
     assert names == ["app", "app.x"]
+
+
+def test_an_attribute_chain_resolves_in_the_module_that_defines_the_class(tmp_path):
+    # Ctx imports Repo in its own module; the caller, elsewhere, never names Repo
+    root = write_project(tmp_path / "x", {
+        "q/__init__.py": "", "q/repo.py": REPO,
+        "q/ctx.py": "from q.repo import Repo\n\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n",
+        "q/use.py": "from q.ctx import Ctx\n\ndef f(ctx: Ctx):\n    ctx.repo.add('t', 1)\n"})
+    g = scan.graph([root])
+    assert {(e.caller, e.inferred) for e in g.edges if e.callee == "q.repo.Repo.add"} == {("q.use.f", False)}

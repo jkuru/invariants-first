@@ -3,11 +3,11 @@
 Lock version 3 pins, per entry, only what a rule's meaning depends on:
 
 - rules: the semantic content of each rule (bad, enforcers with their modes, on_violation, on_error and
-  views, bind, scope, subject, mediation sink/door/tables, model_policy with its defaults filled in,
+  views, bind, scope, subject, mediation sink/door/allow, model_policy with its defaults filled in,
   ...), its status, the expanded targets, and a digest per documentation field (statement, why, ...);
 - targets: each target's signature (unwrapped through its decorators) as text and as resolved types,
-  its declared effects and transaction, and the reply schema of a model-call target;
-- providers: each provider's declared type, args, consistency, and its function's signature;
+  its declared effects, and the reply schema of a model-call target;
+- providers: each provider's declared type, args, and its function's signature;
 - contracts: a pydantic, dataclass or {field: type} schema, an openapi file as the parameters, request
   body and response schemas of the operations rules name, a python module as its reference only (its
   targets are pinned above), any other file by its digest;
@@ -56,8 +56,7 @@ STATUS_RANK = {"retired": 0, "candidate": 1, "contested": 1, "detect": 2, "enfor
 MODE_RANK = {"off": 0, "detect": 1, "enforce": 2}
 VIOLATION_RANK = {"route": 1, "escalate": 1, "reject": 2, "halt": 2}
 ERROR_RANK = {"fail_open_and_page": 0, "fail_closed": 1}
-CONSISTENCY_RANK = {"stale_ok": 0, "snapshot": 1, "same_txn": 2, "immutable": 2}
-EFFECTS_RANK = {"none": 0, "external": 1, "transactional": 1}
+EFFECTS_RANK = {"none": 0, "external": 1}
 TIMING_RANK = {"post_effect": 0, "pre_effect": 1}
 COMPENSABLE_RANK = {"true": 0, "false": 1}
 ENFORCER_DEFAULTS = {"on_violation": "reject", "on_error": "fail_closed"}
@@ -87,17 +86,17 @@ FIELD_POLICY: dict[str, str] = {
     "file.rules": ANALYSED,
     "contract.type": WEAKENING, "contract.ref": WEAKENING,
     "contract.schema": PIN, "contract.operations": PIN, "contract.hash": PIN, "contract.signature": PIN,
-    "contract.types": PIN, "contract.constraints": ANALYSED,
+    "contract.types": PIN,
     # targets and providers
-    "target.effects": RANKED, "target.transaction": WEAKENING,
+    "target.effects": RANKED,
     "target.signature": PIN, "target.types": PIN, "target.reply_schema": PIN,
     "provider.type": WEAKENING, "provider.from": WEAKENING, "provider.args": WEAKENING,
-    "provider.consistency": RANKED, "provider.signature": PIN, "provider.types": PIN,
+    "provider.signature": PIN, "provider.types": PIN,
     # rules
     # the short form (guard, tests) is expanded by loader.expand_short_forms before the lock reads the file:
     # the lock judges the subject.target, enforcer and falsified_by it becomes
     "rule.guard": ANALYSED, "rule.tests": NEUTRAL,
-    "rule.door": ANALYSED, "rule.sink": ANALYSED, "rule.tables": ANALYSED, "rule.allow": ANALYSED,   # short door form
+    "rule.door": ANALYSED, "rule.sink": ANALYSED, "rule.allow": ANALYSED,   # short door form
     "rule.id": ANALYSED, "rule.rev": NEUTRAL, "rule.status": RANKED,
     "rule.class": PROSE, "rule.owner": PROSE, "rule.statement": PROSE, "rule.why": PROSE,
     "rule.subject": WEAKENING, "rule.subject.contract": WEAKENING, "rule.subject.target": WEAKENING,
@@ -107,7 +106,7 @@ FIELD_POLICY: dict[str, str] = {
     "rule.compares_to": PRESENCE, "rule.falsified_by": NEUTRAL, "rule.evidence": COMPUTED,
     "rule.applies_to": ANALYSED,
     "rule.mediation.chokepoint": PROSE, "rule.mediation.residual_paths": ANALYSED,
-    "rule.mediation.sink": ANALYSED, "rule.mediation.door": ANALYSED, "rule.mediation.tables": ANALYSED,
+    "rule.mediation.sink": ANALYSED, "rule.mediation.door": ANALYSED,
     "rule.mediation.allow": ANALYSED,
     "clause.when": ANALYSED, "clause.message": NEUTRAL,
     # enforcers (point and target identify the enforcer: a change is a removal plus an addition)
@@ -123,15 +122,17 @@ FIELD_POLICY: dict[str, str] = {
 }
 RANKS: dict[str, dict[str, int]] = {
     "rule.status": STATUS_RANK, "enforcer.mode": MODE_RANK, "enforcer.on_violation": VIOLATION_RANK,
-    "enforcer.on_error": ERROR_RANK, "enforcer.timing": TIMING_RANK, "provider.consistency": CONSISTENCY_RANK,
+    "enforcer.on_error": ERROR_RANK, "enforcer.timing": TIMING_RANK,
     "target.effects": EFFECTS_RANK, "rule.compensable": COMPENSABLE_RANK,
 }
+REMOVED_NOTE = ("removed in this version: it reached below the API (see the CHANGELOG); accept it once with "
+                "`inv lock --accept-weakening`")
 NOTES = {
     "rule.bind": "a binding changes what bad reads",
     "rule.subject": "the rule now checks a different contract, operation or target",
     "rule.scope": "the scope changes which calls or rows bad is evaluated over",
     "enforcer.view": "a view changes what bad reads at this enforcer",
-    "enforcer.artifact": "the storage artifact (trigger, constraint) that enforces the rule changed",
+    "enforcer.artifact": "the artifact that enforces the rule changed",
     "enforcer.conformance_test": "a different test now shows the artifact agrees with bad",
     "enforcer.generated": "whether the artifact is generated from bad changed",
     "enforcer.timing": "a post_effect check runs after the effect",
@@ -144,8 +145,10 @@ NOTES = {
     "modelPolicy.feedback": "what the model is told after a failure changed",
     "modelPolicy.abstain": "what counts as an abstention changed",
     "rule.compares_to": "the reply is no longer compared with held data",
-    "target.transaction": "the effect now runs in a different transaction",
     "contract.type": "the contract the rule names is read differently",
+    # below-the-API fields this version removed: a lock taken before shows them as gone, once
+    "rule.mediation.tables": REMOVED_NOTE, "target.transaction": REMOVED_NOTE, "provider.consistency": REMOVED_NOTE,
+    "contract.constraints": REMOVED_NOTE,
     "contract.ref": "the contract the rule names points elsewhere",
 }
 
@@ -360,15 +363,6 @@ def resolved_schema(schema: Any, defs: dict[str, Any] | None = None, seen: set[i
 
 
 # --- signatures ---------------------------------------------------------------------------------
-def signature_of(key: str) -> str:
-    """The pinned signature text of a 'py:' target (unwrapped through its decorators)."""
-    obj = inspect.unwrap(resolve(key))
-    try:
-        return f"{getattr(obj, '__qualname__', key)}{inspect.signature(obj)}"
-    except (TypeError, ValueError) as e:
-        raise LoadError(f"target {key}: no signature ({e})") from e
-
-
 def signature_types(obj: Any, pins: Schemas) -> dict[str, Any]:
     """Resolved parameter and return types of a callable: {param: type, "return": type}.
 
@@ -543,12 +537,6 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:
         entry["operations"] = _openapi_operations(name, f, sorted(set(operations)), pins)
-    elif ctype == "sql":
-        from .sql_constraints import constraints
-        try:
-            entry["constraints"] = constraints(f.read_text())
-        except UnicodeDecodeError as e:
-            raise LoadError(f"contract {name}: {ref} is not text ({e})") from e
     else:
         entry["hash"] = _sha(f.read_bytes())
     return entry
@@ -591,7 +579,7 @@ def _doc_digests(raw: dict[str, Any]) -> dict[str, str]:
 
 
 def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]:
-    entry = {k: p.get(k) for k in ("type", "from", "args", "consistency")}
+    entry = {k: p.get(k) for k in ("type", "from", "args")}
     src = p.get("from")
     if isinstance(src, str) and src.startswith("py:"):
         try:
@@ -623,8 +611,6 @@ def build(doc: dict[str, Any], base_dir: pathlib.Path) -> dict[str, Any]:
     for key in sorted(keys):
         t = declared.get(key, {"effects": "external"})
         pin: dict[str, Any] = {"effects": t.get("effects")}
-        if t.get("transaction") is not None:
-            pin["transaction"] = t["transaction"]
         obj = resolve(key)
         pin.update(_signature_pin(obj, f"target {key}", pins))
         schema = getattr(obj, "__inv_schema__", None)
@@ -1590,7 +1576,6 @@ def _keyed(enfs: Any) -> dict[str, dict[str, Any]]:
 
 def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
                        subject_new: Any = None) -> list[Change]:
-    from .scan import table_specs, ScanConfigError
     a, b = old if isinstance(old, dict) else {}, new if isinstance(new, dict) else {}
     out = []
 
@@ -1609,15 +1594,6 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         weak = bool(sinks_a) and bool(came)           # a new door on an existing scan lets more paths through
         out.append(Change(where, "mediation.door", as_list(a.get("door")) or None, as_list(b.get("door")) or None,
                           weak, "more doors may reach the sink" if weak else ""))
-    if not same(a.get("tables"), b.get("tables")):
-        try:
-            ta = table_specs(a["tables"]) if a.get("tables") else {}
-            tb = table_specs(b["tables"]) if b.get("tables") else {}
-        except ScanConfigError:
-            ta, tb = {"?": frozenset({"?"})}, {}             # unparseable: treat as a possible weakening
-        weak = any(t not in tb or not (ops <= tb[t]) for t, ops in ta.items())
-        out.append(Change(where, "mediation.tables", a.get("tables"), b.get("tables"), weak,
-                          "raw SQL to a table, or a statement kind, is no longer forbidden" if weak else ""))
     allow_a, allow_b = as_list(a.get("allow")), as_list(b.get("allow"))
     if sorted(allow_a) != sorted(allow_b):
         came = [x for x in allow_b if x not in allow_a]
@@ -1631,7 +1607,7 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         out.append(Change(where, "mediation.residual_paths", ra, rb, bool(gone),
                           "a documented residual path was removed; `inv status` withholds `held` while "
                           "one is listed, so this can raise the rule's standing" if gone else ""))
-    for k in sorted((set(a) | set(b)) - {"sink", "door", "tables", "residual_paths", "allow"}):
+    for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
     return out
@@ -1678,7 +1654,8 @@ def _rule_changes(rid: str, a: dict[str, Any], b: dict[str, Any], typer: Typer |
             for k in sorted(set(ka) | set(kb)):
                 ea, eb = ka.get(k), kb.get(k)
                 if eb is None:
-                    out.append(Change(where, f"enforcer {k} removed", ea, None, True))
+                    out.append(Change(where, f"enforcer {k} removed", ea, None, True,
+                                      REMOVED_NOTE if isinstance(ea, dict) and ea.get("point") == "storage" else ""))
                 elif ea is None:
                     out.append(Change(where, f"enforcer {k} added", None, eb))
                 else:
@@ -1720,12 +1697,6 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
         if same(x, y):
             continue
         loc = f"{kind}.{f}"
-        if loc == "contract.constraints":                  # a sql contract: losing a constraint weakens
-            for p, xv, yv in _json_paths(x if isinstance(x, list) else [], y if isinstance(y, list) else [], f):
-                weak = not p.endswith(" added")
-                out.append(Change(where, p, xv, yv, weak,
-                                  "the database now accepts rows it refused" if weak else ""))
-            continue
         if policy(loc) == PIN:
             found: list[tuple[str, str, str]] = []
             for p, xv, yv in _json_paths(x, y, f, found):
@@ -1736,11 +1707,8 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
         if loc == "target.effects":
             for c in cs:
                 if c.weakened:
-                    c.note = "declared pure, so the scan no longer needs a sink for it"
-        if loc == "provider.consistency":
-            for c in cs:
-                if c.weakened:
-                    c.note = "the provider may now read staler data"
+                    c.note = (REMOVED_NOTE if x == "transactional" else
+                              "declared pure, so the scan no longer needs a sink for it")
         out += cs
     return out
 
@@ -1915,7 +1883,7 @@ def _comparable(lock: dict[str, Any], v2: bool) -> dict[str, Any]:
             e["semantic"] = normalize_semantic(sem, sem.get("compares_to"))
         out["rules"][rid] = e
     for sec in ("targets", "providers", "contracts"):
-        out[sec] = {k: {f: v for f, v in e.items() if f not in _V3_ONLY and not (f == "transaction" and v is None)}
+        out[sec] = {k: {f: v for f, v in e.items() if f not in _V3_ONLY}
                     for k, e in (lock.get(sec) or {}).items()}
     return out
 

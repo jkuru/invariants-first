@@ -7,27 +7,27 @@ contracts:
 targets:
   "py:fact_pipeline.extract.propose_fact": {effects: none}
   "py:fact_pipeline.answer.compose_answer": {effects: none}
-  "py:fact_pipeline.store.Store.ingest_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
-  "py:fact_pipeline.store.Store.promote_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
-  "py:fact_pipeline.store.Store.delete_source_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
+  "py:fact_pipeline.store.Store.ingest_door": {effects: external}
+  "py:fact_pipeline.store.Store.promote_door": {effects: external}
+  "py:fact_pipeline.store.Store.delete_source_door": {effects: external}
 providers:
   subject_known: {type: bool, from: "py:fact_pipeline.providers.subject_known",
-                  args: {store: self, entity_id: args.proposal.subject_id}, consistency: same_txn}
+                  args: {store: self, entity_id: args.proposal.subject_id}}
   object_known: {type: bool, from: "py:fact_pipeline.providers.object_known",
-                 args: {store: self, entity_id: args.proposal.object}, consistency: same_txn}
+                 args: {store: self, entity_id: args.proposal.object}}
   contradiction: {type: "py:fact_pipeline.models.Contradiction | null", from: "py:fact_pipeline.providers.contradiction",
                   args: {store: self, subject_id: args.proposal.subject_id, predicate: args.proposal.predicate,
-                         obj: args.proposal.object, fact_id: args.proposal.id}, consistency: same_txn}
+                         obj: args.proposal.object, fact_id: args.proposal.id}}
   support: {type: "py:fact_pipeline.models.Support", from: "py:fact_pipeline.providers.support",
-            args: {store: self, fact_id: args.fact_id}, consistency: same_txn}
+            args: {store: self, fact_id: args.fact_id}}
   stale_citations: {type: int, from: "py:fact_pipeline.providers.stale_citations",
-                    args: {store: self, fact_id: args.fact_id}, consistency: snapshot}
+                    args: {store: self, fact_id: args.fact_id}}
   orphans: {type: int, from: "py:fact_pipeline.providers.orphans",
-            args: {store: self, source_id: args.source_id}, consistency: same_txn}
+            args: {store: self, source_id: args.source_id}}
   chunk: {type: "py:fact_pipeline.models.ChunkInfo | null", from: "py:fact_pipeline.providers.chunk",
-          args: {chunk_id: args.chunk_id}, consistency: snapshot}
+          args: {chunk_id: args.chunk_id}}
   span: {type: "str | null", from: "py:fact_pipeline.providers.span",
-         args: {chunk_id: args.chunk_id, start: reply.start, end: reply.end}, consistency: snapshot}
+         args: {chunk_id: args.chunk_id, start: reply.start, end: reply.end}}
 rules:
   - id: K-1
     rev: 1
@@ -43,15 +43,12 @@ rules:
       - {when: 'args.proposal.evidence.exists(e, size(e.quote) == 0 || e.end <= e.start)', message: an evidence span is empty}
     enforcers:
       - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
-      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
     mediation:
-      chokepoint: "facts and evidence are written only by Store.ingest_door; trigger k1_fact_needs_evidence backs it"
+      chokepoint: "facts and evidence are written only by Store.ingest_door (inv scan)"
       residual_paths: []
       sink: ["py:fact_pipeline.store.insert_fact_row", "py:fact_pipeline.store.insert_evidence_row"]
       door: "py:fact_pipeline.store.Store.ingest_door"
-      tables: [facts, evidence]
-    falsified_by: ["tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence",
-                   "tests/test_store_rules.py::test_k1_trigger_refuses_raw_fact_without_evidence"]
+    falsified_by: ["tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence"]
 
   - id: K-2
     rev: 1
@@ -97,7 +94,6 @@ rules:
       residual_paths: []
       sink: "py:fact_pipeline.store.insert_fact_row"
       door: "py:fact_pipeline.store.Store.ingest_door"
-      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
     falsified_by: ["tests/test_store_rules.py::test_k4_ingest_refuses_unknown_predicate"]
 
   - id: K-7
@@ -112,46 +108,12 @@ rules:
     bad: 'args.proposal.valid_from != null && args.proposal.valid_to != null && args.proposal.valid_to < args.proposal.valid_from'
     enforcers:
       - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
-      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
     mediation:
-      chokepoint: "CHECK constraint on facts"
+      chokepoint: "facts are written only by Store.ingest_door (inv scan)"
       residual_paths: []
       sink: "py:fact_pipeline.store.insert_fact_row"
       door: "py:fact_pipeline.store.Store.ingest_door"
-      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
-    falsified_by: ["tests/test_store_rules.py::test_k7_guard_refuses_inverted_interval",
-                   "tests/test_store_rules.py::test_k7_check_refuses_raw_inverted_interval"]
-
-  - id: K-8
-    rev: 1
-    status: enforce
-    class: law
-    owner: team-knowledge
-    statement: No fact, evidence or status row is ever updated or deleted.
-    why: History is an append-only log; status changes are new rows (guide 7.2).
-    subject: {table: facts}
-    scope: row
-    bad: 'old_self.id != ""'
-    enforcers:
-      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
-    mediation: {chokepoint: "BEFORE UPDATE/DELETE triggers on facts, evidence and fact_status", residual_paths: []}
-    falsified_by: ["tests/test_store_rules.py::test_k8_facts_are_append_only"]
-
-  - id: K-9
-    rev: 1
-    status: enforce
-    class: law
-    owner: team-knowledge
-    statement: One external record never maps to two canonical ids.
-    why: Two canonical ids for one record splits every fact about it.
-    subject: {table: xrefs}
-    scope: "aggregate(key: source_system, source_key)"
-    bad: 'size(rows) > 1'
-    bind: {rows: args.rows}
-    enforcers:
-      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
-    mediation: {chokepoint: "UNIQUE (source_system, source_key) on xrefs", residual_paths: []}
-    falsified_by: ["tests/test_store_rules.py::test_k9_one_external_record_one_entity"]
+    falsified_by: ["tests/test_store_rules.py::test_k7_guard_refuses_inverted_interval"]
 
   - id: K-11
     rev: 1
@@ -166,11 +128,10 @@ rules:
     enforcers:
       - {point: decorator, timing: pre_effect, mode: enforce, on_violation: route, on_error: fail_closed}
     mediation:
-      chokepoint: "ingest_door reads rivals inside its write transaction (SQLite: one writer)"
+      chokepoint: "ingest_door is the only writer of facts (inv scan)"
       residual_paths: []
       sink: "py:fact_pipeline.store.insert_fact_row"
       door: "py:fact_pipeline.store.Store.ingest_door"
-      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
     falsified_by: ["tests/test_store_rules.py::test_k11_contradiction_routes"]
 
   - id: K-12
@@ -194,25 +155,26 @@ rules:
       residual_paths: []
       sink: "py:fact_pipeline.store.write_status"
       door: ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"]
-      tables: [fact_status]
     falsified_by: ["tests/test_store_rules.py::test_k12_single_source_is_not_believed"]
 
   - id: K-15
     rev: 1
-    status: enforce
+    status: detect
     class: law
     owner: team-knowledge
     statement: No live fact rests only on a deleted source.
-    why: A withdrawn source must take its facts with it (guide 7.6, step 6).
+    why: A withdrawn source must take its facts with it (guide 7.6, step 6). It is a post-condition of a
+      door with an external effect, so it is reported (detect), not blocked; the monitor reconciles.
     subject: {contract: store_py, target: "py:fact_pipeline.store.Store.delete_source_door"}
     scope: call
     bind: {orphans: provider.orphans}
     bad: 'orphans > 0'
     enforcers:
-      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: decorator, timing: post_effect, mode: detect}
       - {point: monitor, timing: post_effect, mode: detect}
-    mediation: {chokepoint: "delete_source_door retracts inside its transaction; the monitor reconciles", residual_paths: []}
-    falsified_by: ["tests/test_store_rules.py::test_k15_failed_retraction_rolls_back"]
+    mediation: {chokepoint: "delete_source_door retracts what rested on the source; the monitor reconciles",
+                residual_paths: []}
+    falsified_by: ["tests/test_store_rules.py::test_k15_failed_retraction_is_reported"]
 
   - id: K-16
     rev: 1
@@ -232,7 +194,6 @@ rules:
       residual_paths: []
       sink: "py:fact_pipeline.store.write_status"
       door: ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"]
-      tables: [{fact_status: [insert, update, delete]}]
     falsified_by: ["tests/test_monitor.py::test_k16_detect_reports_but_promotes"]
 
   - id: K-18
@@ -255,7 +216,6 @@ rules:
       residual_paths: []
       sink: "py:fact_pipeline.store.insert_fact_row"
       door: "py:fact_pipeline.store.Store.ingest_door"
-      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
     falsified_by: ["tests/test_store_rules.py::test_k18_ingest_refuses_unminted_id"]
 
   - id: K-19

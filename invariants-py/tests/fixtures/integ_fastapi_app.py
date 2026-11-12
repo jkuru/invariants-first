@@ -94,7 +94,7 @@ RULES = {
                   "quote_op": {"type": "openapi", "ref": "integ_fastapi_app:app", "operation": "GET /quote/{sku}"}},
     "targets": {"py:integ_fastapi_app.quote": {"effects": "none"}},
     "providers": {"stock": {"type": "int", "from": "py:integ_fastapi_app.load_stock",
-                            "args": {"sku": "args.order.sku"}, "consistency": "snapshot"}},
+                            "args": {"sku": "args.order.sku"}}},
     "rules": [
         _order_rule("R-H1", '!(args.region in ["eu", "us"])', "unknown region", "reject"),
         _order_rule("R-H2", "args.order.quantity > stock", "more than in stock", "reject"),

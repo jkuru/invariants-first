@@ -47,15 +47,13 @@ fact-pipeline --db f.db monitor                         # exit 1 on any finding
 
 | Rule | Never exists | Enforcers |
 |---|---|---|
-| K-1 | a fact without an evidence span | ingest-door guard; trigger `k1_fact_needs_evidence`; `inv scan` (sink `insert_fact_row`) |
+| K-1 | a fact without an evidence span | ingest-door guard; `inv scan` (sink `insert_fact_row`) |
 | K-2 | a quote not at its offsets, or a stale source hash | `@inv.model_call` on `propose_fact` (1 fresh resample, 2 format retries); `@inv.edge` on `accept_fact` |
 | K-4 | a predicate outside the vocabulary | `Literal` in `FactReply` (rung 1); ingest-door re-check |
-| K-7 | `valid_to` before `valid_from` | ingest-door guard; `CHECK` on `facts` |
-| K-8 | an updated or deleted fact, evidence or status row | `BEFORE UPDATE/DELETE` triggers |
-| K-9 | one external record with two canonical ids | `UNIQUE (source_system, source_key)` |
+| K-7 | `valid_to` before `valid_from` | ingest-door guard |
 | K-11 | a contradiction on a functional property with no Conflict record | ingest-door guard, `on_violation: route`; the pipeline opens an owned Conflict |
 | K-12 | a BELIEVED fact without two independent trusted publishers | promotion door; monitor; `inv scan` (sink `write_status`) |
-| K-15 | a live fact resting only on a deleted source | post-effect guard on the transactional deletion door (rolls back); monitor reconciler |
+| K-15 | a live fact resting only on a deleted source | **detect mode**: post-effect check on the deletion door (an external effect, so it reports); monitor reconciler |
 | K-16 | a BELIEVED fact citing a stale source version | **detect mode**: promotion door plus monitor |
 | K-18 | a model-supplied id | no id field, `extra="forbid"` (rung 1); ingest door accepts only resolver-minted ids |
 | K-19 | an answer citing a chunk that was not retrieved | `@inv.model_call` on `compose_answer`; `@inv.edge` on `render_answer` |
@@ -63,7 +61,10 @@ fact-pipeline --db f.db monitor                         # exit 1 on any finding
 ## Layout
 
 - `src/fact_pipeline/`: the app.
-  - `store.py`: the doors and the storage enforcers.
+  - `store.py`: the doors. Its schema also keeps its own constraints (evidence before a fact,
+    append-only history, one canonical id per external record); they are below the API and no rule
+    names them. (Rules K-8 and K-9 used to declare them; they were removed with the library's
+    storage enforcers.)
   - `extract.py`, `answer.py`: the model calls and edges.
   - `pipeline.py`: the stages.
   - `monitor.py`: the nightly job.

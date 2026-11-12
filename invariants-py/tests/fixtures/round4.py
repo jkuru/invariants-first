@@ -51,7 +51,7 @@ async def adoor(n: int) -> int:
 
 
 def doc(*rules: dict[str, Any]) -> dict[str, Any]:
-    prov = {"args": {"n": "args.n"}, "consistency": "stale_ok"}
+    prov = {"args": {"n": "args.n"}}
     return {
         "spec": SPEC,
         "targets": {f"{M}.door": {"effects": "none"}, f"{M}.adoor": {"effects": "none"}},

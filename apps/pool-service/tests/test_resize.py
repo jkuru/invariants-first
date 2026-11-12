@@ -1,4 +1,5 @@
-"""R-21 (resize needs an independent approval) and R-22 (no more than 4x growth), on a transactional door."""
+"""R-21 (resize needs an independent approval) and R-22 (no more than 4x growth), checked on the door's
+arguments before the write."""
 from __future__ import annotations
 
 import sqlite3
@@ -72,33 +73,18 @@ def test_r21_forged_request_is_rejected(conn: sqlite3.Connection) -> None:
     assert store.size(conn, "p1") == 10
 
 
-def test_resize_door_outside_its_transaction_is_rule_error(conn: sqlite3.Connection) -> None:
-    """The same_txn approval cannot be read outside ResizeService.txn: rule_error, fail closed."""
+def test_resize_door_needs_no_transaction(conn: sqlite3.Connection) -> None:
+    """The approval is a plain read of the API's arguments: the door works with or without the caller's
+    transaction (the transaction is the implementation's)."""
     service.create_pool(conn, "p1", "P1", 10)
     pid = service.propose_resize(conn, "p1", 20, "alice")
     service.approve_resize(conn, pid, "bob")
-    with pytest.raises(inv.Rejected) as e:
-        service.ResizeService(conn).resize_door(service.ResizeRequest(pid, "p1", 20))
-    assert e.value.outcome.kind == "rule_error"
-    assert store.size(conn, "p1") == 10
+    service.ResizeService(conn).resize_door(service.ResizeRequest(pid, "p1", 20))
+    assert store.size(conn, "p1") == 20
 
 
-def test_swallowed_violation_still_rolls_back(conn: sqlite3.Connection) -> None:
-    service.create_pool(conn, "p1", "P1", 10)
-    pid = service.propose_resize(conn, "p1", 20, "alice")
-    svc = service.ResizeService(conn)
-    with pytest.raises(inv.RolledBack) as e:
-        with svc.txn():
-            try:
-                svc.resize_door(service.ResizeRequest(pid, "p1", 20))
-            except inv.Rejected:
-                pass                     # a careless caller
-    assert e.value.rule == "R-21"
-    assert store.size(conn, "p1") == 10
-
-
-def test_r22_growth_above_4x_is_rolled_back(client: TestClient) -> None:
-    """Falsifier: 10 -> 50 is approved but breaks R-22 after the write; the transaction rolls back."""
+def test_r22_growth_above_4x_is_rejected(client: TestClient) -> None:
+    """Falsifier: 10 -> 50 is approved but breaks R-22; the door refuses before the write."""
     make_pool(client, "gpu-a", 10)
     pid = propose(client, "gpu-a", 50)
     approve(client, pid)
@@ -115,13 +101,13 @@ def test_r22_allows_exactly_4x(client: TestClient) -> None:
     assert client.post(f"/resizes/{pid}/apply").json()["size"] == 40
 
 
-def test_shrink_below_leased_is_a_storage_conflict(client: TestClient) -> None:
+def test_shrink_below_leased_is_a_store_conflict(client: TestClient) -> None:
     make_pool(client, "gpu-a", 10)
     assert client.post("/pools/gpu-a/leases", json={"holder": "w", "slots": 8}).status_code == 201
     pid = propose(client, "gpu-a", 5)
     approve(client, pid)
     r = client.post(f"/resizes/{pid}/apply")
-    assert r.status_code == 409 and r.json()["rule"] == "R-20" and r.json()["point"] == "storage"
+    assert r.status_code == 409 and "rule" not in r.json() and "leases exceed" in r.json()["title"]
     assert client.get("/pools/gpu-a").json()["size"] == 10
 
 
@@ -129,9 +115,3 @@ def test_unknown_proposal(client: TestClient) -> None:
     assert client.post("/resizes/999/apply").status_code == 404
     assert client.post("/resizes/999/approve", json={"approver": "x"}).status_code == 404
     assert client.post("/pools/nope/resizes", json={"new_size": 1, "proposed_by": "x"}).status_code == 404
-
-
-def test_old_self_snapshot_is_plain_data(conn: sqlite3.Connection) -> None:
-    service.create_pool(conn, "p1", "P1", 10)
-    got = inv.check_snapshot("py:pool_service.service.ResizeService.resize_door", service.ResizeService(conn))
-    assert got == ["R-22:old_self.sizes"]

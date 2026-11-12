@@ -31,7 +31,6 @@ def pool_svc(reg: inv.Registry):
     svc = pool.PoolService(conn)
 
     def resize(pid: str, new: int) -> None:
-        with svc.txn():
-            svc.resize_door(pool.ResizePoolRequest(pid, new))
+        svc.resize_door(pool.ResizePoolRequest(pid, new))
     svc.resize = resize  # type: ignore[attr-defined]
     return svc

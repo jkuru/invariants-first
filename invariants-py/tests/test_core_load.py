@@ -85,17 +85,36 @@ def test_load_rejects_bare_has():
     assert load_error(lambda d: rule(d, "R-21").update(bad="!has(approval)")) is not None
 
 
+def _gateway(artifact: str):
+    return lambda d: rule(d, "R-20")["enforcers"].append(
+        {"point": "gateway", "timing": "pre_effect", "mode": "enforce", "artifact": artifact})
+
+
 def test_load_rejects_changed_artifact_hash():
-    def tamper(d):
-        enf = rule(d, "R-20")["enforcers"][1]
-        enf["artifact"] = enf["artifact"][:-4] + "beef"
-    e = load_error(tamper)
+    e = load_error(_gateway("pool_schema.sql#sha256:" + "0" * 64))
     assert e is not None and "changed" in str(e)
 
 
 def test_load_rejects_missing_artifact():
-    e = load_error(lambda d: rule(d, "R-20")["enforcers"][1].update(artifact="nope.sql"))
+    e = load_error(_gateway("nope.yaml"))
     assert e is not None and "missing" in str(e)
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda d: d["targets"]["py:pool.PoolService.resize_door"].update(effects="transactional"),
+     "effects: transactional was removed"),
+    (lambda d: d["targets"]["py:jobs.split_work"].update(transaction="py:pool.PoolService"),
+     "transaction: transactional targets were removed"),
+    (lambda d: d["providers"]["pool_leased"].update(consistency="same_txn"), "consistency levels were removed"),
+    (lambda d: rule(d, "R-20")["enforcers"].append({"point": "storage", "timing": "pre_effect", "mode": "enforce"}),
+     "storage enforcers were removed"),
+    (lambda d: rule(d, "R-21")["mediation"].update(sink="py:pool.set_size", tables=["pools"]),
+     "tables (raw SQL write checks) were removed"),
+    (lambda d: d["contracts"].update(schema={"type": "sql", "ref": "pool_schema.sql"}), "sql contracts were removed"),
+])
+def test_removed_below_the_api_fields_say_what_to_do(mutate, needle):
+    e = load_error(mutate)
+    assert e is not None and needle in str(e), str(e)
 
 
 def test_verify_fails_for_unguarded_target(reg):
@@ -150,20 +169,6 @@ def test_effects_on_a_rule_is_rejected():
     assert e is not None and "belongs to the target" in str(e)
 
 
-def test_transactional_target_needs_transaction():
-    assert load_error(lambda d: d["targets"]["py:pool.PoolService.resize_door"].pop("transaction")) is not None
-
-
-def test_transaction_must_be_an_inv_transaction():
-    e = load_error(lambda d: d["targets"]["py:pool.PoolService.resize_door"].update(transaction="py:pool.connect"))
-    assert e is not None and "not an @inv.transaction" in str(e)
-
-
-def test_only_transactional_takes_transaction():
-    e = load_error(lambda d: d["targets"]["py:jobs.split_work"].update(transaction="py:pool.PoolService.txn"))
-    assert e is not None
-
-
 def test_provider_return_type_must_match():
     e = load_error(lambda d: d["providers"]["approval"].update(type="py:pool.ResizePoolRequest | null"))
     assert e is not None and "returns" in str(e)
@@ -179,11 +184,6 @@ def test_provider_signature_must_match_args():
     assert e is not None and "signature" in str(e)
 
 
-def test_same_txn_provider_needs_transactional_target():
-    e = load_error(lambda d: d["providers"]["pool_leased"].update(consistency="same_txn"))
-    assert e is not None and "not effects: transactional" in str(e)
-
-
 @pytest.mark.parametrize("mutate,needle", [
     (lambda d: rule(d, "R-1").pop("status"), "missing status"),
     (lambda d: rule(d, "R-1").pop("bad"), "missing bad"),
@@ -194,14 +194,14 @@ def test_same_txn_provider_needs_transactional_target():
     (lambda d: rule(d, "R-1").update(status="approved"), "not in"),
     (lambda d: rule(d, "R-1")["enforcers"][0].pop("mode"), "needs point, timing, mode"),
     (lambda d: rule(d, "R-1")["enforcers"][0].update(target="py:jobs.split_work"), "edge enforcers"),
-    (lambda d: rule(d, "R-1")["enforcers"][0].update(view="rows"), "view rows"),
+    (lambda d: rule(d, "R-1")["enforcers"][0].update(view="rows"), "view must be a name map"),
     (lambda d: rule(d, "R-20")["enforcers"][0]["view"].update(n="argz.slots"), "bad root"),
     (lambda d: rule(d, "R-20")["enforcers"][0]["view"].update(n="provider.nope"), "no declared provider"),
     (lambda d: rule(d, "R-1").update(bad="nope > 1"), "undeclared name"),
     (lambda d: rule(d, "R-1").update(bad="args.x >"), "does not parse"),
     (lambda d: d.update(extra=1), "unknown field"),
     (lambda d: d["targets"]["py:jobs.split_work"].pop("effects"), "missing effects"),
-    (lambda d: d["providers"]["job"].pop("consistency"), "needs"),
+    (lambda d: d["providers"]["job"].pop("type"), "needs"),
     (lambda d: rule(d, "R-7").pop("model_policy"), "needs model_policy"),
     (lambda d: rule(d, "R-7")["model_policy"].update(format_retries=-1), "non-negative"),
     (lambda d: rule(d, "R-7")["model_policy"]["feedback"].update(semantic="hint"), "feedback"),

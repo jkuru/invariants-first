@@ -1,4 +1,5 @@
-"""R-20: leases never exceed pool size. Door guard (early refusal) plus the storage triggers (held)."""
+"""R-20: leases never exceed pool size, checked on lease_slots' arguments. The schema's own triggers
+also refuse an over-lease (concurrent writers); they are below the API, tested here as app code."""
 from __future__ import annotations
 
 import sqlite3
@@ -27,7 +28,7 @@ def test_lease_within_size(conn: sqlite3.Connection) -> None:
 
 
 def test_r20_door_rejects_over_lease(conn: sqlite3.Connection) -> None:
-    """Falsifier: the door refuses before the write. Ablated, the trigger raises IntegrityError instead."""
+    """Falsifier: the door refuses before the write. Ablated, the store's trigger refuses instead."""
     pid = pool(conn, 5)
     service.lease_slots(conn, pid, 3, "a")
     with pytest.raises(inv.Rejected) as e:
@@ -72,7 +73,7 @@ def _door(size: int, held: list[int], n: int) -> bool:
 
 
 def _trigger(size: int, held: list[int], n: int) -> bool:
-    """True if the storage enforcer lets the lease through (door ablated)."""
+    """True if the store's own trigger lets the lease through (door ablated)."""
     c = db.memory()
     pid = pool(c, size)
     for h in held:
@@ -88,7 +89,7 @@ def _trigger(size: int, held: list[int], n: int) -> bool:
 @settings(max_examples=150, deadline=None)
 @given(size=st.integers(1, 40), data=st.data())
 def test_r20_door_and_trigger_agree(size: int, data: st.DataObject) -> None:
-    """Conformance test of the storage enforcer: both views of R-20 give the same verdict (differential)."""
+    """The API check and the store's trigger give the same verdict (the app's own differential test)."""
     held: list[int] = []
     for h in data.draw(st.lists(st.integers(1, 10), max_size=6)):
         if sum(held) + h <= size:
@@ -130,8 +131,8 @@ def test_concurrent_leases_never_exceed_size(client: TestClient) -> None:
 
 
 def test_race_past_the_door_is_stopped_by_the_trigger(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the 2.7 interleaving: every request reads 'leased' before any writes. The door passes all of
-    them (snapshot read), so only the trigger stands between them and an over-lease."""
+    """Force the 2.7 interleaving: every request reads 'leased' before any writes. The API check passes all
+    of them (it is not a lock), so the store's own trigger refuses the over-lease: a plain 409."""
     make_pool(client, "racy", 4)
     n = 8
     barrier = threading.Barrier(n, timeout=10)
@@ -154,7 +155,7 @@ def test_race_past_the_door_is_stopped_by_the_trigger(client: TestClient, monkey
     codes = [c for c, _ in results]
     assert codes.count(201) == 4 and codes.count(409) == 4, codes
     conflicts = [b for c, b in results if c == 409]
-    assert all(b["rule"] == "R-20" and b["point"] == "storage" for b in conflicts)
+    assert all("rule" not in b and "exceed the pool size" in b["title"] for b in conflicts)
     assert client.get("/pools/racy").json()["leased"] == 4
 
 

@@ -1,4 +1,4 @@
-"""The low-friction path: the short rule form, pydantic and SQL constraints pinned by the lock,
+"""The low-friction path: the short rule form, pydantic constraints pinned by the lock,
 `inv init`, `inv check` (with --relock and --base) and `inv hook` for AI coding agents."""
 from __future__ import annotations
 
@@ -15,11 +15,15 @@ import pytest
 from invariants import bootstrap, lockfile
 from invariants.errors import LoadError
 from invariants.loader import expand_short_forms, schema_path
-from invariants.sql_constraints import constraints
 from cli_support import run_inv, write_project
 
 PAYMENTS = '''\
 import invariants as inv
+
+MAX_REFUND = 10_000
+CURRENCY = "usd"
+retries = 3
+retries = 4
 
 
 def refund(charge_id: str, charged: int, refunded: int, amount: int) -> None:
@@ -28,6 +32,13 @@ def refund(charge_id: str, charged: int, refunded: int, amount: int) -> None:
         raise ValueError("refund must be positive")
     if refunded + amount > charged:
         raise ValueError("refund exceeds what is left of the charge")
+    if amount > MAX_REFUND:
+        raise ValueError("refund above the cap")
+
+
+def pay(amount: int, currency: str) -> None:
+    if currency != CURRENCY or amount > retries:
+        raise ValueError("bad payment")
 
 
 def apply_credit(account: str, credit: int, limit: int) -> int:
@@ -55,16 +66,7 @@ class RefundRequest(BaseModel):
 class Plain(BaseModel):
     text: str
 '''
-SQL = '''\
--- the ledger
-CREATE TABLE IF NOT EXISTS refunds (
-  id TEXT PRIMARY KEY,
-  charge_id TEXT NOT NULL REFERENCES charges(id),
-  amount INTEGER NOT NULL CHECK (amount > 0),
-  CONSTRAINT one_per_key UNIQUE (charge_id, id)
-);
-ALTER TABLE refunds ADD CONSTRAINT small CHECK (amount <= 10000);
-'''
+SQL = "CREATE TABLE refunds (id TEXT PRIMARY KEY, amount INTEGER NOT NULL CHECK (amount > 0));\n"
 
 
 def _project(tmp_path: pathlib.Path, pkg: str) -> pathlib.Path:
@@ -160,20 +162,6 @@ def test_constraint_weakening(path, old, new, weak):
     assert (lockfile.constraint_weakening(path, old, new) is not None) is weak
 
 
-# --- SQL constraints -----------------------------------------------------------------------------
-def test_sql_constraints_reads_create_and_alter():
-    assert constraints(SQL) == [
-        "refunds.amount: CHECK (amount > 0)", "refunds.amount: NOT NULL", "refunds.charge_id: NOT NULL",
-        "refunds.id: PRIMARY KEY", "refunds: CHECK (amount <= 10000)", "refunds: UNIQUE (charge_id, id)"]
-
-
-def test_sql_constraints_ignores_comments_strings_and_layout():
-    a = constraints("create table t (a int not null check (a > 0), b text default 'x, y');")
-    b = constraints("CREATE TABLE \"t\" (\n  a INT NOT NULL CHECK (a   >   0), -- note\n  b TEXT DEFAULT 'x, y'\n);")
-    assert a == b == ["t.a: CHECK (a > 0)", "t.a: NOT NULL"]
-    assert constraints("create index i on t(a); /* create table x (a int not null) */") == []
-
-
 # --- Python -> CEL -------------------------------------------------------------------------------
 @pytest.mark.parametrize("src,cel", [
     ("amount <= 0", "args.amount <= 0"),
@@ -237,12 +225,13 @@ def test_discover_finds_sqlmodel_rootmodel_and_generic_bases(tmp_path):
 # --- inv init, check, hook (subprocess: the fixture app never enters this process) ----------------
 def test_init_drafts_a_rule_file_that_passes_check(tmp_path):
     root = _project(tmp_path, "adopt_init")
-    r = run_inv("init", "--sql", cwd=root)
+    r = run_inv("init", cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
     text = (root / "invariants.yaml").read_text()
     assert 'refund_request: {type: pydantic, ref: "adopt_init.models:RefundRequest"}' in text
     assert "plain:" not in text                                      # a model with no constraint is not pinned
-    assert 'schema: {type: sql, ref: "schema.sql"}' in text
+    assert '{when: "args.amount > 10000", message: "refund above the cap"}' in text   # a module constant
+    assert "retries is not a parameter or a module constant" in text                  # rebound: not a constant
     assert '#      - {when: "args.refunded + args.amount > args.charged"' in text
     assert '#      - {when: "args.credit > args.limit", message: "assert credit <= limit"}' in text
     assert "lookup" in text and "not translated" in text               # `name not in table` is reported, not guessed
@@ -253,13 +242,40 @@ def test_init_drafts_a_rule_file_that_passes_check(tmp_path):
     assert r.returncode == 2 and "never overwrites" in r.stderr
 
 
-def test_init_pins_api_boundaries_only_unless_asked_for_sql(tmp_path):
+def test_init_pins_api_boundaries_only(tmp_path):
     root = _project(tmp_path, "adopt_api")
     r = run_inv("init", "--no-lock", cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "left 1 SQL file(s) unpinned" in r.stdout and "--sql" in r.stdout
+    assert "SQL" not in r.stdout                                     # the schema is below the API: not read
     text = (root / "invariants.yaml").read_text()
-    assert "type: sql" not in text and "type: pydantic" in text
+    assert "type: sql" not in text and "schema.sql" not in text and "type: pydantic" in text
+    r = run_inv("init", "--sql", cwd=tmp_path / "proj")
+    assert r.returncode == 2                                         # the option is gone
+
+
+@pytest.mark.parametrize("consts,src,cel", [
+    ("CAP = 10\n", "x > CAP", "args.x > 10"),
+    ("CAP: int = -5\n", "x < CAP", "args.x < -5"),
+    ("NAME = 'a'\n", "s == NAME", 'args.s == "a"'),
+    ("ON = True\n", "f == ON", "args.f == true"),
+])
+def test_module_constants_are_inlined(consts, src, cel):
+    tree = ast.parse(consts + f"def f(x, s, f):\n    if {src}:\n        raise ValueError('no')\n")
+    (g,) = bootstrap._guards("m", tree)
+    assert g.clauses == [(cel, "no")]
+
+
+@pytest.mark.parametrize("consts", [
+    "CAP = 10\nCAP = 11\n",                                         # bound twice
+    "CAP = 10\ndef bump():\n    global CAP\n    CAP += 1\n",            # rebound from a function
+    "CAP = [10]\n",                                                  # not a literal
+    "for CAP in range(3):\n    pass\n",                                # a loop variable
+    "import CAP\n",
+])
+def test_names_that_are_not_constants_are_not_inlined(consts):
+    tree = ast.parse(consts + "def f(x):\n    if x > CAP:\n        raise ValueError('no')\n")
+    g = next(g for g in bootstrap._guards("m", tree) if g.qualname == "f")
+    assert g.clauses == [] and "CAP is not a parameter or a module constant" in g.skipped[0]
 
 
 def test_a_suggested_rule_works_once_uncommented(tmp_path):
@@ -281,7 +297,7 @@ def test_a_suggested_rule_works_once_uncommented(tmp_path):
 
 def test_check_refuses_a_loosened_model_and_relock_takes_a_tightened_one(tmp_path):
     root = _project(tmp_path, "adopt_relock")
-    assert run_inv("init", "--sql", cwd=root).returncode == 0
+    assert run_inv("init", cwd=root).returncode == 0
     models = root / "src/adopt_relock/models.py"
     _edit(models, "le=10_000", "le=5_000")                             # tighter: re-pinned without a person
     r = run_inv("check", "--relock", cwd=root)
@@ -290,9 +306,9 @@ def test_check_refuses_a_loosened_model_and_relock_takes_a_tightened_one(tmp_pat
     r = run_inv("check", "--relock", cwd=root)
     assert r.returncode == 1 and "maximum raised" in r.stdout and "WEAKENED" in r.stdout
     _edit(models, "le=100_000", "le=5_000")
-    _edit(root / "schema.sql", " CHECK (amount > 0)", "")
+    _edit(root / "schema.sql", " CHECK (amount > 0)", "")          # below the API: not a rule, not pinned
     r = run_inv("check", "--relock", cwd=root)
-    assert r.returncode == 1 and "the database now accepts rows it refused" in r.stdout
+    assert r.returncode == 0, r.stdout
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -327,6 +343,26 @@ def test_hook_pretool_blocks_accepting_a_weakening(tmp_path, command, blocked):
     r = _hook("pretool", {"tool_name": "Bash", "tool_input": {"command": command}}, tmp_path)
     assert r.returncode == (2 if blocked else 0)
     assert ("a person's decision" in r.stderr) is blocked
+
+
+@pytest.mark.parametrize("tool,tool_input,blocked", [
+    ("Edit", {"file_path": "/repo/invariants.lock", "old_string": "a", "new_string": "b"}, True),
+    ("Write", {"file_path": "invariants.lock", "content": "{}"}, True),
+    ("MultiEdit", {"file_path": "sub/invariants.lock", "edits": []}, True),
+    ("Edit", {"file_path": "/repo/invariants.yaml", "old_string": "a", "new_string": "b"}, False),
+    ("Edit", {"file_path": "/repo/invariants.lock.md"}, False),
+    ("Bash", {"command": "echo {} > invariants.lock"}, True),
+    ("Bash", {"command": "sed -i '' s/a/b/ invariants.lock"}, True),
+    ("Bash", {"command": "cp /tmp/x invariants.lock"}, True),
+    ("Bash", {"command": "git rm invariants.lock && rm invariants.lock"}, True),
+    ("Bash", {"command": "cat invariants.lock | jq ."}, False),
+    ("Bash", {"command": "git diff invariants.lock"}, False),
+    ("Bash", {"command": "inv lock && git add invariants.lock"}, False),
+])
+def test_hook_pretool_blocks_direct_lock_edits(tmp_path, tool, tool_input, blocked):
+    r = _hook("pretool", {"tool_name": tool, "tool_input": tool_input}, tmp_path)
+    assert r.returncode == (2 if blocked else 0), r.stderr
+    assert ("direct edit of invariants.lock" in r.stderr) is blocked
 
 
 def test_hook_stop_sends_the_agent_back_once(tmp_path):

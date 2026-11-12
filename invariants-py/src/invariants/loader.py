@@ -30,10 +30,33 @@ YAML_SUFFIXES = (".yaml", ".yml")
 _BUILTIN_TYPES: dict[str, type] = {"int": int, "str": str, "bool": bool, "float": float, "list": list, "dict": dict}
 
 
+# Below-the-API fields that 0.x accepted and this version removed, with what to do instead.
+REMOVED = {
+    "consistency": "provider consistency levels were removed: a provider is a plain read at the enforcer's "
+                   "timing; delete the field",
+    "transaction": "transactional targets were removed: rules live on API boundaries; check the service "
+                   "method's arguments (pre_effect) and delete the field",
+    "tables": "tables (raw SQL write checks) were removed: a door rule checks which API calls the "
+              "repository; delete the field",
+}
+REMOVED_VALUES = {
+    ("effects", "transactional"): "effects: transactional was removed (rules stay on the API boundary); "
+                                  "use effects: external, or none for a pure function",
+    ("point", "storage"): "storage enforcers were removed: the database's own constraints are the "
+                          "implementation's business; delete this enforcer or make it a pre_effect "
+                          "decorator check",
+}
+
+
 def _check_fields(obj: Any, allowed: frozenset[str] | set[str], where: str) -> None:
     if not isinstance(obj, dict):
         raise LoadError(f"{where}: expected a mapping")
     unknown = set(obj) - allowed
+    for k in sorted(unknown & set(REMOVED), key=str):
+        raise LoadError(f"{where}: {k}: {REMOVED[k]}")
+    for k, v in obj.items():
+        if isinstance(v, str) and (k, v) in REMOVED_VALUES:
+            raise LoadError(f"{where}: {REMOVED_VALUES[(k, v)]}")
     if unknown:
         raise LoadError(f"{where}: unknown field(s) {sorted(unknown, key=str)}")
     for k, v in obj.items():
@@ -65,9 +88,9 @@ def read_document(source: str | pathlib.Path) -> dict[str, Any]:
     return expand_short_forms(doc)
 
 
-SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "tables", "allow"})
+SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "allow"})
 SHORT_ENFORCER = {"point": "decorator", "timing": "pre_effect", "mode": "enforce"}
-DOOR_FIELDS = ("door", "sink", "tables", "allow")
+DOOR_FIELDS = ("door", "sink", "allow")
 STRUCTURE_ENFORCER = {"point": "structure", "timing": "pre_effect", "mode": "enforce"}
 
 
@@ -79,14 +102,14 @@ def _py_list(rid: str, key: str, v: Any) -> list[str]:
 
 
 def _expand_door(raw: dict[str, Any], rid: str) -> None:
-    """door/sink/tables/allow -> mediation; without guard or bad, a structure rule checked by the scan."""
+    """door/sink/allow -> mediation; without guard or bad, a structure rule checked by the scan."""
     if "sink" not in raw:
         raise LoadError(f"{rid}: a door rule names the sink it protects: add sink: py:module.function "
                         f"(the function that writes)")
     med = raw.get("mediation")
     if med is not None and not isinstance(med, dict):
         raise LoadError(f"{rid}: mediation must be a mapping")
-    clash = sorted({"sink", "door", "tables", "allow"} & set(med or {}))
+    clash = sorted({"sink", "door", "allow"} & set(med or {}))
     if clash:
         raise LoadError(f"{rid}: give {', '.join(clash)} at the top of the rule or under mediation, not both")
     sinks = _py_list(rid, "sink", raw.pop("sink"))
@@ -101,9 +124,6 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
     if not doors and "guard" not in raw:
         raise LoadError(f"{rid}: a door rule names its door: add door: py:module.function (the function every "
                         f"write must go through), or guard: to make the guarded function the door")
-    if "tables" in raw:
-        tables = raw.pop("tables")
-        new["tables"] = [tables] if isinstance(tables, (str, dict)) else tables
     raw["mediation"] = new
     if "guard" in raw or "bad" in raw or "subject" in raw:
         if "guard" not in raw and "bad" in raw:
@@ -138,12 +158,11 @@ def expand_short_forms(doc: dict[str, Any]) -> dict[str, Any]:
         - id: LEDGER-DOOR
           door: py:billing.service.apply_transfer
           sink: py:billing.store.write_balance
-          tables: [balances]
           allow: [py:billing.batch_refund.refund_all]     # known back doors, frozen
 
-    becomes mediation {sink, door, tables}, `bad: 'false'` and one structure enforcer: nothing runs in
-    production, and `inv scan` (inside `inv check`) fails any path to the sink that skips the door and any
-    raw SQL write to the tables outside them. `allow` lists known back doors (mediation.allow): the scan
+    becomes mediation {sink, door, allow}, `bad: 'false'` and one structure enforcer: nothing runs in
+    production, and `inv scan` (inside `inv check`) fails any call path to the sink that skips the
+    door. `allow` lists known back doors (mediation.allow): the scan
     lets them through, so today's code passes and a new back door fails; the lock reports an added
     entry as a weakening. With guard:
     as well, the guarded function is the door and the rule also checks its arguments."""
@@ -292,6 +311,10 @@ def load(source: str | pathlib.Path | dict[str, Any], install: bool = True,
     contracts = doc.get("contracts") or {}
     if not isinstance(contracts, dict):
         raise LoadError("contracts: expected a mapping")
+    for name, c in contracts.items():
+        if isinstance(c, dict) and c.get("type") == "sql":
+            raise LoadError(f"contract {name}: sql contracts were removed (the schema is below the API); pin "
+                            f"the pydantic model or OpenAPI operation the API takes instead, and delete it")
     reg.contracts = dict(contracts)
     targets = doc.get("targets") or {}
     if not isinstance(targets, dict):
@@ -301,14 +324,6 @@ def load(source: str | pathlib.Path | dict[str, Any], install: bool = True,
         if "effects" not in t:
             raise LoadError(f"target {key}: missing effects")
         resolve(key)
-        if t["effects"] == "transactional":
-            txn = t.get("transaction")
-            if not txn:
-                raise LoadError(f"target {key}: effects transactional must name its transaction boundary")
-            if getattr(resolve(txn), "__inv_txn_key__", None) != txn:
-                raise LoadError(f"target {key}: transaction {txn} is not an @inv.transaction boundary")
-        elif "transaction" in t:
-            raise LoadError(f"target {key}: only effects transactional takes a transaction")
         reg.targets[key] = dict(t)
     providers = doc.get("providers") or {}
     if not isinstance(providers, dict):
@@ -360,7 +375,7 @@ def _strings(v: Any, prefix: str = "") -> bool:
 
 
 def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
-    """Shapes of mediation (chokepoint, residual_paths, and the scan's sink, door, tables) and applies_to."""
+    """Shapes of mediation (chokepoint, residual_paths, and the scan's sink, door, allow) and applies_to."""
     if "applies_to" in raw and not _strings(raw["applies_to"]):
         raise LoadError(f"{rid}: applies_to must be a pattern or a non-empty list of patterns")
     med = raw.get("mediation")
@@ -375,14 +390,6 @@ def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     for k in ("sink", "door", "allow"):
         if k in med and not _strings(med[k], "py:"):
             raise LoadError(f"{rid}: mediation.{k} must be a 'py:' path or a non-empty list of them")
-    if "tables" in med:
-        from .scan import ScanConfigError, table_specs
-        if not isinstance(med["tables"], list):
-            raise LoadError(f"{rid}: mediation.tables must be a non-empty list of table names")
-        try:
-            table_specs(med["tables"], f"{rid}: mediation.tables")
-        except ScanConfigError as e:
-            raise LoadError(str(e)) from e
 
 
 def _calls(n: Any) -> Iterator[tuple[str, bool, int]]:
@@ -498,12 +505,9 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
                             f"value against that call's closed schema, and a rule without one has no schema")
         if ("target" in enf) != (point == "edge"):
             raise LoadError(f"{where}: exactly the edge enforcers name their own target")
-        if view == "rows":
-            if point != "storage":
-                raise LoadError(f"{where}: view rows is for storage enforcers")
-        elif view is not None:
+        if view is not None:
             if not isinstance(view, dict) or point not in VIEW_POINTS:
-                raise LoadError(f"{where}: view must be a name map or 'rows'")
+                raise LoadError(f"{where}: view must be a name map")
             for name, path in view.items():
                 _check_path(rid, f"view {name}", path, reg)
         if point in VIEW_POINTS:
@@ -524,7 +528,7 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     if target_key:
         rule.target = resolve(target_key)
         t = reg.targets.get(target_key, {"effects": "external"})     # unlisted target: external
-        rule.effects, rule.transaction = t["effects"], t.get("transaction")
+        rule.effects = t["effects"]
         for i, m in rule.names_for.items():                          # every args.<x> resolves
             enf = rule.enforcers[i] if i != "rule" else {}
             tk = enf.get("target", target_key)
@@ -535,9 +539,6 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
                     want.add(p.split(".")[1])
                 if p.startswith("provider."):
                     prov = reg.providers[p.split(".")[1]]
-                    if prov.consistency == "same_txn" and reg.targets.get(tk, {}).get("effects") != "transactional":
-                        raise LoadError(f"{rid}: provider {prov.name} is same_txn, but {tk} is not effects: "
-                                        f"transactional, so there is no transaction to read it in")
                     for a, ppath in prov.raw["args"].items():
                         _check_path(rid, f"provider {p.split('.')[1]} arg {a}", ppath, reg, roots=local)
                         if ppath.startswith("args."):
@@ -643,7 +644,7 @@ def _compute_max_status(rule: Rule, reg: Registry, target_key: str | None) -> No
             tk = str(e.get("target", target_key))
             eff = reg.targets.get(tk, {"effects": "external"})["effects"]
             if (e["mode"] == "enforce" and e["timing"] == "post_effect" and e["point"] in EVALUATED
-                    and eff not in ("none", "transactional")):
+                    and eff != "none"):
                 why_not.append(f"timing check fails: post_effect enforcer on {tk} (effects {eff}); "
                                f"rewrite as a precondition or use detect")
         rule.max_status = "detect" if why_not else "enforce"

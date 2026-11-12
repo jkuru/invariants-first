@@ -5,7 +5,7 @@ import pathlib
 import sqlite3
 
 SCHEMA_PATH = pathlib.Path(__file__).with_name("schema.sql")
-STORAGE_PREFIX = "R-20:"      # the message the R-20 triggers raise
+STORE_REFUSAL = "R-20:"       # the message the schema's triggers raise (the store's own check)
 
 
 def connect(path: str | pathlib.Path) -> sqlite3.Connection:

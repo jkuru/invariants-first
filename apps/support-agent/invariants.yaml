@@ -1,0 +1,121 @@
+# invariants.yaml, drafted by `inv init`. Review it, then run `inv lock` and commit both files.
+#
+# The contracts below pin rules your code already has. From now on `inv check` fails when a
+# change lets a model accept more than it does today (a raised limit, a removed
+# constraint, a new enum value), unless someone accepts it with `inv lock --accept-weakening`.
+spec: invariant/v0.1
+
+contracts:
+  # order_id: min_length=1, order_id: max_length=40, amount_cents: gt=0, amount_cents: le=50000, +2 more
+  refund_tool_input: {type: pydantic, ref: "support_agent.models:RefundToolInput"}
+  # customer_id: min_length=1, customer_id: max_length=40, amount_cents: gt=0, amount_cents: le=10000, +2 more
+  credit_tool_input: {type: pydantic, ref: "support_agent.models:CreditToolInput"}
+  # customer_id: min_length=1, customer_id: max_length=40, reason: min_length=1, reason: max_length=200
+  cancel_tool_input: {type: pydantic, ref: "support_agent.models:CancelToolInput"}
+  # customer_id: min_length=1, customer_id: max_length=40, order_id: max_length=40, amount_cents: ge=0, +3 more
+  plan: {type: pydantic, ref: "support_agent.models:Plan"}
+
+targets:
+  "py:support_agent.planner.plan_action": {effects: none}
+  "py:support_agent.graph.execute_plan": {effects: external}
+  "py:support_agent.service.BillingService.refund": {effects: external}
+  "py:support_agent.service.BillingService.credit": {effects: external}
+
+# Held data the rules compare against. Never from the model: read from the ledger by the app's own code.
+providers:
+  order: {type: "py:support_agent.models.Order | null", from: "py:support_agent.service.order",
+          args: {ledger: self.ledger, order_id: args.order_id}}
+  tier: {type: "py:support_agent.models.Tier | null", from: "py:support_agent.service.tier",
+         args: {ledger: self.ledger, customer_id: args.customer_id}}
+  planned_order: {type: "py:support_agent.models.Order | null", from: "py:support_agent.service.planned_order",
+                  args: {ledger: args.ctx.ledger, order_id: reply.order_id}}
+  planned_tier: {type: "py:support_agent.models.Tier | null", from: "py:support_agent.service.planned_tier",
+                 args: {ledger: args.ctx.ledger, customer_id: reply.customer_id}}
+
+rules:
+  # Doors: each repository below is written through a service function. `inv check` fails a new
+  # code path that calls a write without passing its door.
+  # Nothing runs in production: `inv check` reads the source. Delete a rule you do not want.
+  #
+  # support_agent.repo.LedgerRepo: written by support_agent.repo.LedgerRepo.cancel_subscription, support_agent.repo.LedgerRepo.insert_credit, support_agent.repo.LedgerRepo.record_refund
+  #   3 caller(s) go through support_agent.service.BillingService.cancel or support_agent.service.BillingService.credit or support_agent.service.BillingService.refund
+  - id: LEDGER-REPO-DOOR
+    door: ["py:support_agent.service.BillingService.cancel", "py:support_agent.service.BillingService.credit", "py:support_agent.service.BillingService.refund"]
+    sink: ["py:support_agent.repo.LedgerRepo.cancel_subscription", "py:support_agent.repo.LedgerRepo.insert_credit", "py:support_agent.repo.LedgerRepo.record_refund"]
+
+  # support_agent.repo.StripeGateway: written by support_agent.repo.StripeGateway.refund
+  #   1 caller(s) go through support_agent.service.BillingService.refund
+  # 1 back door(s) frozen in allow (fix each one, then delete it from allow):
+  #   support_agent/admin.py:12 support_agent.admin.admin_goodwill -> support_agent.admin.goodwill_refund -> support_agent.repo.StripeGateway.refund reaches the sink without passing support_agent.service.BillingService.refund
+  - id: STRIPE-GATEWAY-DOOR
+    door: "py:support_agent.service.BillingService.refund"
+    sink: "py:support_agent.repo.StripeGateway.refund"
+    allow:
+      - "py:support_agent.admin.admin_goodwill"
+      - "py:support_agent.admin.goodwill_refund"
+
+  # Value laws on the doors: whoever calls (a tool, a script, an admin page), checked before the write.
+  - id: BILL-1
+    guard: "py:support_agent.service.BillingService.refund"
+    statement: A refund is never for an unknown order or above what is left of the order.
+    bad:
+      - {when: 'order == null', message: no such order}
+      - {when: 'order != null && args.amount_cents > order.remaining_cents', message: refund above what is left of the order}
+    tests: ["tests/test_runtime_defects.py::test_d6_the_door_refuses_an_over_refund_whoever_calls"]
+
+  - id: BILL-2
+    guard: "py:support_agent.service.BillingService.credit"
+    statement: A credit never exceeds what the customer's tier still allows.
+    bad: 'tier == null || args.amount_cents > tier.credit_limit_cents'
+    tests: ["tests/test_runtime_defects.py::test_d6_the_door_refuses_an_over_credit"]
+
+  # The planner (a model call) and the only consumer of its plans (an edge).
+  - id: PLAN-1
+    status: enforce
+    class: law
+    owner: team-support
+    statement: A plan never refunds more than is left of the customer's own order, never credits more than the
+      tier allows, and never acts for another customer.
+    subject: {contract: plan, target: "py:support_agent.planner.plan_action"}
+    scope: call
+    bad:
+      - {when: 'reply.customer_id != args.customer_id', message: the plan acts for another customer}
+      - {when: 'reply.action == "REFUND" && planned_order == null', message: the plan refunds an order that does not exist}
+      - {when: 'reply.action == "REFUND" && planned_order != null && planned_order.customer_id != reply.customer_id',
+         message: the plan refunds another customer's order}
+      - {when: 'reply.action == "REFUND" && planned_order != null && reply.amount_cents > planned_order.remaining_cents',
+         message: the plan refunds more than is left of the order}
+      - {when: 'reply.action == "CREDIT" && (planned_tier == null || reply.amount_cents > planned_tier.credit_limit_cents)',
+         message: the plan credits more than the tier allows}
+    model_policy:
+      schema: Plan
+      format_retries: 2
+      semantic_resamples: 1
+      feedback: {format: parser_error, semantic: none}
+      abstain: {field: action, value: ESCALATE_TO_HUMAN}
+    enforcers:
+      - {point: model_call, timing: post_effect, mode: enforce, on_violation: escalate, on_error: fail_closed}
+      - {point: edge, target: "py:support_agent.graph.execute_plan", timing: pre_effect, mode: enforce,
+         on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: execute_plan, the only consumer of a CheckedPlan, is an @inv.edge that re-checks what it receives
+      residual_paths: []
+    falsified_by:
+      - "tests/test_runtime_defects.py::test_d6_an_over_refund_is_resampled_then_escalated"
+      - "tests/test_runtime_defects.py::test_d10_a_plan_changed_after_the_check_is_refused"
+
+# Suggested rules, from the preconditions at the top of these functions. Each one keeps the
+# check even if a later edit deletes the `if` or `assert`. To turn one on:
+#   1. uncomment it,
+#   2. put @inv.guard("<id>") on the function (import invariants as inv),
+#   3. write a test that calls it with bad input and expects inv.Rejected, and list it in `tests:`
+#      (until a rule names a test it only logs; with one it blocks, and `pytest --inv-ablate`
+#      proves the test fails when the guard is switched off),
+#   4. run `inv lock`.
+#
+#  - id: TOOL-EXECUTOR-NODE
+#    guard: "py:support_agent.graph.tool_executor_node"
+#    statement: "assert state.plan is not None"
+#    bad: "args.state.plan == null"
+#    tests: []
+#

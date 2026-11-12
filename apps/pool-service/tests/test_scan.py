@@ -26,7 +26,7 @@ def test_r23_scan_finds_the_bypass_module() -> None:
     assert rc == 1
     assert report["rules"]["R-23"]["result"] == "fail"
     codes = {f["code"] for f in report["findings"] if f["rule"] == "R-23"}
-    assert "bypass" in codes or "forbidden/raw-sql" in codes
+    assert "bypass" in codes
 
 
 def test_clean_scan_passes_for_r23() -> None:

@@ -43,12 +43,8 @@ def rule_status(reg: Registry, report: Report, rule_id: str) -> dict[str, Any]:
         if why:
             reasons.append(why)
             standing = DOWNGRADE.get(standing, standing)
-        if rule_id in report.scanned and rule_id in report.warnings:
-            reasons.append(f"inv scan: {report.warnings[rule_id]}")
-            standing = DOWNGRADE.get(standing, standing)
     return {"id": rule_id, "status": rule.status, "standing": standing, "reasons": reasons,
-            "scan": report.rule_result(rule_id), "scan_counts": report.counts(rule_id),
-            "scan_warning": report.warnings.get(rule_id)}
+            "scan": report.rule_result(rule_id), "scan_counts": report.counts(rule_id)}
 
 
 def build(reg: Registry, report: Report) -> dict[str, Any]:

@@ -79,51 +79,22 @@ def test_capture_collects_events_without_the_sink(iso):
     assert [e["rule"] for e in events] == ["D-2"]
 
 
-# --- major: a transactional target outside its boundary never runs its effect ---------------------
-def test_transactional_target_outside_boundary_has_no_effect(iso):
-    load(fx.T1)
-    s = fx.Svc()
-    e = raises(inv.Rejected, s.door, 1)
-    assert e is not None and e.outcome.kind == "rule_error" and "effect was not started" in e.outcome.error
-    assert s.count() == 0
-
-
-def test_transactional_target_under_another_owners_txn_has_no_effect(iso):
-    load(fx.T1)
-    s, other = fx.Svc(), fx.Svc()
-    with other.txn():
-        e = raises(inv.Rejected, s.door, 1)
-    assert e is not None and s.count() == 0
-
-
-def test_transactional_outside_boundary_in_detect_reports_and_proceeds(iso):
-    load(fx.rule("T-1", "Svc.door", "rows > 3", fx.enf(timing="post_effect", mode="detect"), status="detect"))
-    s = fx.Svc()
-    with inv.capture(iso) as events:
-        assert s.door(1) == 1
-    assert [e["outcome"] for e in events] == ["rule_error"] and s.count() == 1
-
-
 # --- major: post-effect rules read providers after the effect -------------------------------------
 def test_post_effect_provider_reads_state_after_the_effect(iso):
     load(fx.T1)
     s = fx.Svc()
-    with s.txn():
+    with inv.capture(iso) as events:
         s.door(2)                              # rows == 2 after: ok
-    with pytest.raises(inv.RolledBack):
-        with s.txn():
-            try:
-                s.door(2)                      # rows == 4 after the effect: the rule fires
-            except inv.Rejected as e:
-                assert e.outcome.kind == "violation"
-    assert s.count() == 2                       # rolled back
+        s.door(2)                              # rows == 4 after the effect: the rule fires (detect)
+    assert [e["outcome"] for e in events] == ["ok", "violation"] and s.count() == 4
 
 
-def test_snapshot_provider_is_read_before_the_effect(iso):
-    load(fx.T2)
+def test_pre_effect_provider_is_read_before_the_effect(iso):
+    load(fx.rule("T-2", "Svc.door2", "rows_before != 0", fx.enf()))
     s = fx.Svc()
-    with s.txn():
-        assert s.door2(3) == 3                  # rows (after) == rows_before (before) + n
+    assert s.door2(3) == 3                      # rows_before is 0 before the first insert
+    e = raises(inv.Rejected, s.door2, 1)
+    assert e is not None and s.count() == 3
 
 
 # --- major: no exception escapes; detect never blocks ---------------------------------------------
@@ -194,7 +165,7 @@ def test_non_cel_backend_exception_is_rule_error(iso):
     assert out.kind == "rule_error" and "ZeroDivisionError" in out.error
 
 
-# --- major: async model calls, edges, transactions and providers ----------------------------------
+# --- major: async model calls, edges and providers ----------------------------------------------
 def test_async_model_call_awaits_replies_and_async_providers(iso):
     load(fx.M1)
     fx.REPLIES[:] = ['{"v": 3, "cause": "x"}']
@@ -219,32 +190,22 @@ def test_async_edge_rechecks_a_forged_value(iso):
     assert fx.CONSUMED == []
 
 
-def test_async_transaction_and_async_provider_in_async_guard(iso):
+def test_async_provider_in_async_guard_reads_after_the_effect(iso):
     load(fx.A1)
     s = fx.ASvc()
 
     async def main() -> None:
-        async with s.atxn():
-            await s.adoor(2)
-        with pytest.raises(inv.RolledBack):
-            async with s.atxn():
-                try:
-                    await s.adoor(2)       # arows == 4 after the effect
-                except inv.Rejected:
-                    pass
-    run(main())
-    assert s.count() == 2
+        await s.adoor(2)
+        await s.adoor(2)                   # arows == 4 after the effect
+    with inv.capture(iso) as events:
+        run(main())
+    assert [e["outcome"] for e in events] == ["ok", "violation"] and s.count() == 4
 
 
 def test_async_provider_in_a_sync_call_is_refused_at_load(iso):
     # fix round 4: this used to load and give rule_error on every call; it is now a LoadError
     with pytest.raises(inv.LoadError, match="async def.*sync"):
         load(fx.rule("D-2", "probe2", "alimit > args.x", fx.enf(mode="detect"), status="detect"))
-
-
-def test_transaction_needs_a_generator():
-    with pytest.raises(TypeError):
-        inv.transaction(lambda self: None)
 
 
 # --- minor: generators refused; verify checks the target ------------------------------------------
@@ -344,21 +305,6 @@ def test_monitor_evaluates_rows_through_its_view_and_records(iso):
     assert [(k, o.kind) for k, o in out] == [("a", "violation"), ("b", "ok")]
     assert [(e["point"], e["key"], e["action"]) for e in events] == [("monitor", "a", "report"),
                                                                      ("monitor", "b", "report")]
-
-
-def test_storage_rejection_counts_and_maps_to_409(iso):
-    import sqlite3
-
-    from invariants.integrations.asgi import problem
-    load(fx.rule("D-2", "probe2", "false", fx.enf(), fx.enf("storage", mode="enforce")))
-    with pytest.raises(inv.Rejected) as ei:
-        with inv.storage_errors({"D-2:": "D-2"}, (sqlite3.IntegrityError,)):
-            raise sqlite3.IntegrityError("D-2: too many")
-    assert ei.value.point == "storage" and iso.counts("D-2")["violation"] == 1
-    assert problem(ei.value)[0] == 409
-    with pytest.raises(sqlite3.IntegrityError):            # no marker: the error passes through
-        with inv.storage_errors({"D-2:": "D-2"}, (sqlite3.IntegrityError,)):
-            raise sqlite3.IntegrityError("UNIQUE failed")
 
 
 def test_load_resource_reads_a_rule_file_inside_a_package(tmp_path, monkeypatch, iso):

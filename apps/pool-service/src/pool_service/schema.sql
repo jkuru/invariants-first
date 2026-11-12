@@ -1,6 +1,5 @@
--- pool-service schema. The triggers are the R-20 storage enforcer (view: rows).
--- invariants.yaml pins this file by sha256; re-run tests/test_lease.py::test_r20_door_and_trigger_agree
--- and `inv lock` after any change.
+-- pool-service schema. The triggers are the store's own over-lease check, for concurrent writers. They
+-- are below the API: no rule names them, and the R-20 check on lease_slots does not depend on them.
 CREATE TABLE IF NOT EXISTS pools (
     id   TEXT PRIMARY KEY,
     name TEXT NOT NULL,

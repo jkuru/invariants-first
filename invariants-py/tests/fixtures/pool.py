@@ -1,17 +1,15 @@
 """Example targets for R-20 (leases never exceed pool size), R-21 (resize needs approval) and P-1, guide 6.2.
-Guards read shared state through providers (D1); resize_door is transactional (D3)."""
+Guards read shared state through providers (D1), on the API's arguments."""
 import dataclasses, pathlib, sqlite3
 import invariants as inv
 
 SCHEMA = pathlib.Path(__file__).with_name("pool_schema.sql").read_text()
-MARK = "-- triggers"
 _AFTER_READ = []      # test seam: callbacks run right after pool_leased reads (forces the 2.7 interleaving)
 
-def connect(triggers=True, schema=SCHEMA):
-    conn = sqlite3.connect(":memory:", isolation_level=None)   # autocommit unless a txn is open
+def connect(schema=SCHEMA):
+    conn = sqlite3.connect(":memory:", isolation_level=None)   # autocommit
     conn.execute("PRAGMA foreign_keys = ON")
-    tables, trig = schema.split(MARK)
-    conn.executescript(tables + (MARK + trig if triggers else ""))
+    conn.executescript(schema)
     return conn
 
 def leased(conn, pool_id):
@@ -55,7 +53,7 @@ def approve(conn, pool_id, new_size, state="APPROVED"):
 
 @inv.provider("approval")
 def load_approval(conn: sqlite3.Connection, pool_id: str) -> Approval | None:
-    """The latest approval for the pool, read inside the write's transaction (consistency same_txn)."""
+    """The latest approval for the pool."""
     row = conn.execute("SELECT pool_id, new_size, state FROM approvals WHERE pool_id = ? ORDER BY id DESC LIMIT 1",
                        (pool_id,)).fetchone()
     return Approval(*row) if row else None
@@ -66,17 +64,8 @@ class PoolService:
 
     @property
     def sizes(self):
-        """Plain data read from the database (inside the current transaction): P-1 snapshots old_self.sizes."""
+        """Plain data read from the database: P-1 reads the current size of the pool being resized."""
         return {r[0]: r[1] for r in self.conn.execute("SELECT id, size FROM pools")}
-
-    @inv.transaction
-    def txn(self):
-        """The declared transaction boundary for resize_door (targets: in invariants.json)."""
-        self.conn.execute("BEGIN IMMEDIATE")
-        try: yield self
-        except BaseException:
-            self.conn.execute("ROLLBACK"); raise
-        else: self.conn.execute("COMMIT")
 
     @inv.guard("py:pool.PoolService.resize_door")    # target form: every rule on this target (R-21, P-1)
     def resize_door(self, req: ResizePoolRequest) -> None:

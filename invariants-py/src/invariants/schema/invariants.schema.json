@@ -21,22 +21,17 @@
       "additionalProperties": false,
       "required": ["effects"],
       "properties": {
-        "effects": {"enum": ["none", "transactional", "external"]},
-        "transaction": {"type": "string", "pattern": "^py:"}
-      },
-      "if": {"properties": {"effects": {"const": "transactional"}}},
-      "then": {"required": ["transaction"], "properties": {"transaction": {"minLength": 4}}},
-      "else": {"not": {"required": ["transaction"]}}
+        "effects": {"enum": ["none", "external"]}
+      }
     },
     "provider": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "from", "args", "consistency"],
+      "required": ["type", "from", "args"],
       "properties": {
         "type": {"type": "string"},
         "from": {"type": "string", "pattern": "^py:"},
-        "args": {"type": "object", "additionalProperties": {"type": "string"}},
-        "consistency": {"enum": ["same_txn", "snapshot", "stale_ok", "immutable"]}
+        "args": {"type": "object", "additionalProperties": {"type": "string"}}
       }
     },
     "clause": {
@@ -53,14 +48,14 @@
       "additionalProperties": false,
       "required": ["point", "timing", "mode"],
       "properties": {
-        "point": {"enum": ["type", "storage", "gateway", "decorator", "middleware", "model_call", "edge", "build",
+        "point": {"enum": ["type", "gateway", "decorator", "middleware", "model_call", "edge", "build",
                            "structure", "monitor"]},
         "target": {"type": "string", "pattern": "^py:"},
         "timing": {"enum": ["pre_effect", "post_effect"]},
         "mode": {"enum": ["off", "detect", "enforce"]},
         "on_violation": {"enum": ["reject", "halt", "escalate", "route"]},
         "on_error": {"enum": ["fail_closed", "fail_open_and_page"]},
-        "view": {"oneOf": [{"const": "rows"}, {"$ref": "#/$defs/nameMap"}]},
+        "view": {"$ref": "#/$defs/nameMap"},
         "artifact": {"type": "string"},
         "generated": {"type": "boolean"},
         "conformance_test": {"type": "string"}
@@ -69,8 +64,6 @@
         {"if": {"properties": {"point": {"const": "edge"}}},
          "then": {"required": ["target"]},
          "else": {"not": {"required": ["target"]}}},
-        {"if": {"properties": {"view": {"const": "rows"}}, "required": ["view"]},
-         "then": {"properties": {"point": {"const": "storage"}}}},
         {"if": {"properties": {"view": {"type": "object"}}, "required": ["view"]},
          "then": {"properties": {"point": {"enum": ["decorator", "model_call", "edge"]}}}}
       ]
@@ -111,13 +104,8 @@
         "door": {"$ref": "#/$defs/pyRefs",
                  "description": "Door rule: the function(s) every write to the sink must go through. Expands to mediation.door; checked by inv scan, nothing runs in production."},
         "sink": {"$ref": "#/$defs/pyRefs", "description": "Door rule: the function(s) that write. Expands to mediation.sink."},
-        "tables": {"type": "array", "minItems": 1, "items": {"oneOf": [
-                     {"type": "string", "minLength": 1},
-                     {"type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": {
-                       "type": "array", "minItems": 1, "items": {"enum": ["insert", "update", "delete", "ddl"]}}}]},
-                   "description": "Door rule: tables no raw SQL may write outside the door and sink. Expands to mediation.tables."},
         "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"type": "null"}, {"type": "array", "maxItems": 0}],
-                  "description": "Door rule: known back doors, frozen (empty or null: none left). They are added to the doors, and adding one is a weakening."},
+                  "description": "Door rule: known back doors, frozen (empty or null: none left). Each may keep its own path to the sink; a new caller that reaches the sink through one is still a back door. Adding one is a weakening."},
         "rev": {"type": "integer"},
         "status": {"enum": ["candidate", "contested", "detect", "enforce", "retired"]},
         "class": {"enum": ["law", "policy"]},
@@ -141,12 +129,7 @@
             "residual_paths": {"type": "array", "items": {"type": "string"}},
             "sink": {"$ref": "#/$defs/pyRefs"},
             "door": {"$ref": "#/$defs/pyRefs"},
-            "allow": {"$ref": "#/$defs/pyRefs"},
-            "tables": {"type": "array", "minItems": 1, "items": {"oneOf": [
-              {"type": "string", "minLength": 1},
-              {"type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": {
-                "type": "array", "minItems": 1,
-                "items": {"enum": ["insert", "update", "delete", "ddl"]}}}]}}
+            "allow": {"$ref": "#/$defs/pyRefs"}
           }
         },
         "model_policy": {"$ref": "#/$defs/modelPolicy"},

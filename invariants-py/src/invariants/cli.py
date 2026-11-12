@@ -11,6 +11,7 @@ import contextlib
 import importlib
 import json
 import pathlib
+import re
 import sys
 from typing import Any, Callable, Iterator, Sequence
 
@@ -422,9 +423,6 @@ def cmd_scan(a: argparse.Namespace) -> int:
         pathlib.Path(a.output).write_text(text + "\n")
     else:
         _out(text)
-    if a.format != "text":
-        for rid, why in report.warnings.items():
-            _err(f"warning: {rid} {why}")
     kinds = {f.kind for f in report.findings}
     if kinds & {"bypass", "forbidden", "missing"}:
         return FAILED
@@ -458,14 +456,17 @@ def cmd_init(a: argparse.Namespace) -> int:
         if not r.exists():
             raise Usage(f"source root {r} does not exist")
     found = bootstrap.discover(project, roots, a.exclude)
-    if not a.sql:                                 # API boundaries only: the schema below them is opt-in
-        found.sql_skipped, found.sql, found.sql_in_code = len(found.sql), {}, []
     if not a.no_doors:
         from . import doors
         # the same roots and excludes `inv check` will scan, so what init freezes is what check sees
-        found.doors = doors.discover(_roots(argparse.Namespace(root=a.root), path),
-                                     _exclude(argparse.Namespace(exclude=a.exclude), path), limit=a.max_doors,
-                                     tables=a.sql)
+        from . import graphify
+        graph = None if a.no_graphify else graphify.find(project, a.graphify)
+        try:
+            found.doors = doors.discover(_roots(argparse.Namespace(root=a.root), path),
+                                         _exclude(argparse.Namespace(exclude=a.exclude), path), limit=a.max_doors,
+                                         graph=graph, project=project)
+        except graphify.GraphifyError as e:
+            raise Usage(f"--graphify: {e}") from e
     path.write_text(bootstrap.render(found))
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
@@ -622,11 +623,18 @@ def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Seq
 WEAKENING_SWITCHES = ("--accept-weakening", "--allow-weakening", ALLOW_WEAKENING_ENV)
 
 
+# a shell command that writes the lock itself: a redirect, an in-place edit, a copy, move or delete onto it
+LOCK_WRITE = re.compile(r"(?:>>?|\btee\b|\bsed\s+(?:-\w+\s+)*-i|\bperl\s+-\w*i|\bcp\b|\bmv\b|\brm\b|\btruncate\b|"
+                        r"\bdd\b)[^|;&]*\binvariants\.lock\b")
+
+
 def cmd_hook(a: argparse.Namespace) -> int:
     """An AI coding agent's hook (Claude Code's JSON on stdin; exit 2 blocks and tells the agent why).
 
     pretool: refuse a shell command that accepts a weakening (--accept-weakening, --allow-weakening,
-             INV_ALLOW_WEAKENING), so only a person can.
+             INV_ALLOW_WEAKENING), so only a person can, and any direct edit of invariants.lock (an edit
+             or write tool on it, or a shell command that writes it): only `inv lock` and
+             `inv check --relock` write the lock, and they refuse a weakening.
     stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop)."""
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     try:
@@ -639,6 +647,12 @@ def cmd_hook(a: argparse.Namespace) -> int:
         tool_input: dict[str, Any] = given if isinstance(given, dict) else {}
         command = str(tool_input.get("command") or "")
         hit = next((s for s in WEAKENING_SWITCHES if s in command), None)
+        paths = [str(tool_input.get(k) or "") for k in ("file_path", "path", "notebook_path")]
+        if any(pathlib.PurePath(p).name == lockfile.LOCK_NAME for p in paths if p) or LOCK_WRITE.search(command):
+            _err(f"invariants: blocked a direct edit of {lockfile.LOCK_NAME}. The lock is written only by "
+                 f"`inv lock` or `inv check --relock`, which refuse a weakening; edit invariants.yaml or the "
+                 f"code, then run one of them.")
+            return 2
         if hit:
             _err(f"invariants: blocked `{hit}`. Accepting a weakened rule is a person's decision. Tell the user "
                  f"which rule your change weakens and why (run `inv check` to list it), and let them accept it.")
@@ -703,8 +717,8 @@ def parser() -> argparse.ArgumentParser:
                          "[tool.invariants.scan] exclude in pyproject.toml)")
     sc.add_argument("--format", choices=("text", "json", "sarif"), default="text")
     sc.add_argument("--output", metavar="FILE", help="write the report to FILE")
-    it = add("init", cmd_init, "draft invariants.yaml from the pydantic constraints, SQL constraints, doors and "
-             "function preconditions the code already has, then lock it")
+    it = add("init", cmd_init, "draft invariants.yaml from the pydantic constraints, doors and function "
+             "preconditions the code already has, then lock it")
     it.add_argument("--root", action="append", default=[], metavar="DIR",
                     help="source root to read (repeatable; default: src/ or the current directory)")
     it.add_argument("--exclude", action="append", default=[], metavar="GLOB",
@@ -713,9 +727,10 @@ def parser() -> argparse.ArgumentParser:
     it.add_argument("--no-doors", action="store_true",
                     help="do not look for doors (the service functions every call to a repository's writes "
                          "goes through)")
-    it.add_argument("--sql", action="store_true",
-                    help="also pin .sql schema constraints and add the tables raw SQL writes to door rules (below "
-                         "the API: off by default)")
+    it.add_argument("--graphify", metavar="GRAPH",
+                    help="read a Graphify graph.json for door hints (default: graphify-out/graph.json when it "
+                         "exists); every suggested door is still checked by the scan")
+    it.add_argument("--no-graphify", action="store_true", help="do not read a Graphify graph")
     it.add_argument("--max-doors", type=int, default=5, metavar="N",
                     help="write at most N door rules, the most important first (default 5); the rest are listed")
     ck = add("check", cmd_check, "validate, lock --check, verify and scan with one exit code: for CI, "

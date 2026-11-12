@@ -11,8 +11,6 @@ It reads the source (it does not import it) and finds:
   only reads the parameters. Each function's preconditions become one short-form rule (guard + bad),
   translated from Python to CEL. These are written commented out: a rule needs `@inv.guard("ID")` on the
   function before `inv check` passes, so `inv init` leaves that decision, and the edit, to a person.
-- with `--sql` only (below the API): SQL schema files with CHECK, NOT NULL, UNIQUE or PRIMARY KEY
-  constraints, each a `sql` contract pinned the same way.
 
 The file it writes passes `inv check` as written. It never overwrites a rule file.
 """
@@ -26,7 +24,6 @@ import re
 from typing import Any, Iterable
 
 from .scan import anywhere, iter_sources
-from .sql_constraints import constraints as sql_constraints
 
 EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py", "examples", "docs",
                    "scripts", "migrations", "alembic", "benchmarks", "bench", "noxfile.py", "setup.py")
@@ -34,7 +31,6 @@ FIELD_CONSTRAINTS = frozenset({"gt", "ge", "lt", "le", "min_length", "max_length
                                "max_digits", "decimal_places", "min_items", "max_items", "strict",
                                "allow_inf_nan", "union_mode"})
 CON_TYPES = frozenset({"conint", "confloat", "constr", "conlist", "conset", "condecimal", "conbytes", "condate"})
-SQL_SKIP_DIRS = frozenset({"node_modules", "site-packages", "build", "dist", "venv", "__pycache__"})
 
 
 class Unsupported(Exception):
@@ -50,10 +46,13 @@ _METHODS = {"startswith": "startsWith", "endswith": "endsWith"}
 
 
 class _Cel:
-    """Translate one condition. Parameters read as args.<name>; `self` stays `self`."""
+    """Translate one condition. Parameters read as args.<name>; `self` stays `self`; a module constant
+    (NAME = <literal>, assigned once) is written as its value, so the rule keeps today's limit even if
+    the constant is later raised (that is a change to the law, made in the rule file)."""
 
-    def __init__(self, params: set[str]) -> None:
+    def __init__(self, params: set[str], consts: dict[str, Any] | None = None) -> None:
         self.params = params
+        self.consts = consts or {}
 
     def expr(self, n: ast.expr) -> str:
         if isinstance(n, ast.BoolOp):
@@ -131,7 +130,9 @@ class _Cel:
                 return "self"
             if n.id in self.params:
                 return f"args.{n.id}"
-            raise Unsupported(f"name {n.id} is not a parameter")
+            if n.id in self.consts:
+                return self._value(ast.Constant(self.consts[n.id]))
+            raise Unsupported(f"name {n.id} is not a parameter or a module constant")
         if isinstance(n, ast.Attribute):
             if n.attr.startswith("_"):
                 raise Unsupported(f"private attribute {n.attr}")
@@ -162,9 +163,50 @@ def negate(n: ast.expr) -> ast.expr:
     return ast.UnaryOp(op=ast.Not(), operand=n)
 
 
-def to_cel(cond: ast.expr, params: set[str]) -> str:
-    """The CEL form of a Python condition over the parameters; raises Unsupported."""
-    return _Cel(params).expr(cond)
+def to_cel(cond: ast.expr, params: set[str], consts: dict[str, Any] | None = None) -> str:
+    """The CEL form of a Python condition over the parameters (and module constants); raises Unsupported."""
+    return _Cel(params, consts).expr(cond)
+
+
+def _literal(n: ast.expr | None) -> tuple[bool, Any]:
+    """(True, value) for an int, float, str or bool literal (a negative number too); else (False, None)."""
+    if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub) and isinstance(n.operand, ast.Constant):
+        v = n.operand.value
+        if type(v) is int or type(v) is float:
+            return True, -v
+    if isinstance(n, ast.Constant) and type(n.value) in (int, float, str, bool):
+        return True, n.value
+    return False, None
+
+
+def module_constants(tree: ast.Module) -> dict[str, Any]:
+    """Module-level NAME = <literal> bound exactly once and never rebound anywhere in the module (no
+    second assignment, augmented assignment, `global`, loop, `with`, import or def of that name)."""
+    found: dict[str, Any] = {}
+    for st in tree.body:
+        if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
+            name, value = st.targets[0].id, st.value
+        elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) and st.value is not None:
+            name, value = st.target.id, st.value
+        else:
+            continue
+        ok, v = _literal(value)
+        if ok:
+            found[name] = v
+    binds: dict[str, int] = {}
+    for n in ast.walk(tree):
+        names: list[str] = []
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            names = [n.id]
+        elif isinstance(n, ast.Global):
+            names = list(n.names) * 2                 # rebinding from a function: never a constant
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [n.name]
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            names = [(a.asname or a.name).split(".")[0] for a in n.names]
+        for x in names:
+            binds[x] = binds.get(x, 0) + 1
+    return {k: v for k, v in found.items() if binds.get(k, 0) == 1}
 
 
 # --- finding existing checks ---------------------------------------------------------------------
@@ -216,6 +258,7 @@ def _params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
 
 def _guards(module: str, tree: ast.Module) -> list[Guard]:
     out: list[Guard] = []
+    consts = module_constants(tree)
 
     def visit(body: list[ast.stmt], prefix: str, in_class: bool) -> None:
         for n in body:
@@ -229,7 +272,7 @@ def _guards(module: str, tree: ast.Module) -> list[Guard]:
                 clauses, skipped = [], []
                 for cond, msg, st in _preconditions(n):
                     try:
-                        clauses.append((to_cel(cond, params), msg))
+                        clauses.append((to_cel(cond, params, consts), msg))
                     except Unsupported as e:
                         skipped.append(f"line {st.lineno}: {ast.unparse(st).splitlines()[0]} ({e})")
                 if clauses or skipped:
@@ -285,15 +328,12 @@ def _models(module: str, tree: ast.Module, known: set[str]) -> list[Model]:
 class Found:
     guards: list[Guard]
     models: list[Model]
-    sql: dict[str, list[str]]               # schema file (relative to the project) -> its constraints
-    sql_in_code: list[str]                  # Python files holding CREATE TABLE text
     files: int
     doors: Any = None                       # doors.DoorsFound, when door discovery ran
-    sql_skipped: int = 0                    # .sql files with constraints left unpinned (no --sql)
 
 
 def discover(project: pathlib.Path, roots: list[pathlib.Path], exclude: Iterable[str] = ()) -> Found:
-    """Read every source file under the roots (not importing anything) and every .sql file in the project."""
+    """Read every source file under the roots (not importing anything)."""
     exclude = [*EXCLUDE, *exclude]
     trees: list[tuple[str, ast.Module, pathlib.Path]] = []
     for _, f, mod in iter_sources(roots, exclude):
@@ -308,24 +348,12 @@ def discover(project: pathlib.Path, roots: list[pathlib.Path], exclude: Iterable
         if not more:
             break
         known |= more
-    guards, models, in_code = [], [], []
-    for mod, tree, f in trees:
+    guards: list[Guard] = []
+    models: list[Model] = []
+    for mod, tree, _ in trees:
         guards += _guards(mod, tree)
-        models += [m for m in _models(mod, tree, known)]
-        if re.search(r"create\s+table", f.read_text(errors="replace"), re.I):
-            in_code.append(str(f.relative_to(project)) if f.is_relative_to(project) else str(f))
-    sql: dict[str, list[str]] = {}
-    for f in sorted(project.rglob("*.sql")):
-        rel = f.relative_to(project)
-        if any(p in SQL_SKIP_DIRS or p.startswith(".") for p in rel.parts[:-1]):
-            continue
-        try:
-            got = sql_constraints(f.read_text())
-        except UnicodeDecodeError:
-            continue
-        if got:
-            sql[rel.as_posix()] = got
-    return Found(guards, models, sql, in_code, len(trees))
+        models += _models(mod, tree, known)
+    return Found(guards, models, len(trees))
 
 
 # --- writing the rule file -----------------------------------------------------------------------
@@ -349,7 +377,7 @@ def render(found: Found) -> str:
     lines = ["# invariants.yaml, drafted by `inv init`. Review it, then run `inv lock` and commit both files.",
              "#",
              "# The contracts below pin rules your code already has. From now on `inv check` fails when a",
-             "# change lets a model or a table accept more than it does today (a raised limit, a removed",
+             "# change lets a model accept more than it does today (a raised limit, a removed",
              "# constraint, a new enum value), unless someone accepts it with `inv lock --accept-weakening`.",
              "spec: invariant/v0.1", ""]
     contracts: list[str] = []
@@ -366,12 +394,6 @@ def render(found: Found) -> str:
         if m.validators:
             contracts.append(f"  # (its {m.validators} validator function(s) are code, not schema: not pinned)")
         contracts.append(f"  {name}: {{type: pydantic, ref: {_q(f'{m.module}:{m.name}')}}}")
-    for rel, cons in found.sql.items():
-        name = _snake(re.sub(r"[^A-Za-z0-9]+", "_", pathlib.PurePosixPath(rel).stem)).strip("_") or "schema"
-        name = f"{name}_sql" if name in names else name
-        names.add(name)
-        contracts.append(f"  # {len(cons)} constraint(s): " + "; ".join(cons[:3]) + (" ..." if len(cons) > 3 else ""))
-        contracts.append(f"  {name}: {{type: sql, ref: {_q(rel)}}}")
     lines += ["contracts:", *contracts, ""] if contracts else ["contracts: {}", ""]
     rules = [g for g in found.guards if g.clauses]
     lines.append("rules:")
@@ -412,9 +434,6 @@ def render(found: Found) -> str:
         for g in untranslated:
             for s in g.skipped:
                 lines.append(f"#   {g.module}.{g.qualname} {s}")
-    if found.sql_in_code:
-        lines.append("# CREATE TABLE text inside Python (not pinned: move the DDL to a .sql file to pin it):")
-        lines += [f"#   {f}" for f in found.sql_in_code]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -424,9 +443,6 @@ def summary(found: Found) -> list[str]:
     rules = [g for g in found.guards if g.clauses]
     return [f"read {found.files} source file(s)",
             f"pinned {len(models)} pydantic model(s) with {n_cons} constraint(s)",
-            (f"pinned {len(found.sql)} SQL file(s) with {sum(len(c) for c in found.sql.values())} constraint(s)"
-             if not found.sql_skipped else
-             f"left {found.sql_skipped} SQL file(s) unpinned: the schema is below the API (`inv init --sql` pins it)"),
             f"suggested {len(rules)} rule(s) from function preconditions (commented out; see the file)",
             *(_doors_summary(found))]
 

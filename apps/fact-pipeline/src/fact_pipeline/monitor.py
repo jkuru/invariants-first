@@ -38,7 +38,7 @@ def run(store: Store, reg: inv.Registry | None = None) -> list[Finding]:
     findings = []
     with store.txn():
         for rid in MONITORED:
-            for key, out in inv.monitor(rid, _rows(store, rid), reg, in_txn=True):
+            for key, out in inv.monitor(rid, _rows(store, rid), reg):
                 if out.kind != "ok":
                     findings.append(Finding(rid, key, out.kind, out.messages, out.error))
     return findings

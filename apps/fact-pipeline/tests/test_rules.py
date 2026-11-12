@@ -8,7 +8,7 @@ import invariants as inv
 from fact_pipeline import rules_path
 from fact_pipeline.models import FUNCTIONAL, PREDICATES, FactReply
 
-REQUIRED = {"K-1", "K-2", "K-4", "K-7", "K-8", "K-9", "K-11", "K-12", "K-15", "K-18", "K-19"}
+REQUIRED = {"K-1", "K-2", "K-4", "K-7", "K-11", "K-12", "K-15", "K-18", "K-19"}
 
 
 def test_rule_file_has_the_catalog() -> None:

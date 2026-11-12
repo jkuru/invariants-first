@@ -12,12 +12,10 @@ from invariants import cli, scan
 from cli_support import BYPASS, CLEAN, run_inv, write_project
 
 
-def _doc(sink="py:app.store.write", door="py:app.svc.door", tables=None, **extra):
+def _doc(sink="py:app.store.write", door="py:app.svc.door", **extra):
     med = {"chokepoint": "door", "residual_paths": [], "sink": sink}
     if door is not None:
         med["door"] = door
-    if tables:
-        med["tables"] = tables
     return {"rules": [{"id": "R-9", "status": "enforce", "subject": {"target": "py:app.svc.door"},
                        "bad": "false", "mediation": {**med, **extra}}]}
 
@@ -32,7 +30,7 @@ BASE = {
 def _scan(tmp_path, extra, doc=None):
     files = {**BASE, **{k: textwrap.dedent(v) for k, v in extra.items()}}
     root = write_project(tmp_path, files)
-    return scan.scan(doc or _doc(tables=["things"]), [root])
+    return scan.scan(doc or _doc(), [root])
 
 
 def _codes(report):
@@ -52,7 +50,6 @@ def test_bypass_app_every_finding():
     assert _codes(r) == [
         ("bypass", "bypass", "fleet/retry.py", 11),
         ("forbidden", "forbidden/getattr-sink", "fleet/ops.py", 6),
-        ("forbidden", "forbidden/raw-sql", "fleet/ops.py", 10),
         ("forbidden", "forbidden/unwrap", "fleet/ops.py", 14),
         ("unresolved", "unresolved/computed-attribute", "fleet/ops.py", 18),
         ("unresolved", "unresolved/sink-escapes", "fleet/ops.py", 21),
@@ -60,7 +57,7 @@ def test_bypass_app_every_finding():
     bypass = r.findings[0]
     assert bypass.path == ["fleet.retry.main", "fleet.retry.retry_resize", "fleet.store.set_size"]
     assert r.rule_result("F-1") == "fail"
-    assert r.counts("F-1") == {"bypass": 1, "forbidden": 3, "unresolved": 2}
+    assert r.counts("F-1") == {"bypass": 1, "forbidden": 2, "unresolved": 2}
 
 
 def test_cli_exit_codes_and_text(capsys):
@@ -88,7 +85,7 @@ def test_json_format(tmp_path):
     out = tmp_path / "r.json"
     assert cli.main(["scan", str(BYPASS / "invariants.yaml"), "--format", "json", "--output", str(out)]) == 1
     data = json.loads(out.read_text())
-    assert data["rules"]["F-1"]["result"] == "fail" and len(data["findings"]) == 6
+    assert data["rules"]["F-1"]["result"] == "fail" and len(data["findings"]) == 5
 
 
 SARIF_MIN = {   # the parts of SARIF 2.1.0 that code-scanning uploads need
@@ -111,7 +108,7 @@ def test_sarif_output(tmp_path):
     jsonschema.validate(sarif, SARIF_MIN)
     run = sarif["runs"][0]
     ids = [r["id"] for r in run["tool"]["driver"]["rules"]]
-    assert "bypass" in ids and "forbidden/raw-sql" in ids
+    assert "bypass" in ids and "forbidden/unwrap" in ids and not any("sql" in i for i in ids)
     res = {r["ruleId"]: r for r in run["results"]}
     b = res["bypass"]
     assert b["level"] == "error" and b["properties"]["invRule"] == "F-1"
@@ -247,10 +244,6 @@ def test_door_defaults_to_subject_target(tmp_path):
     ("from app import svc\ndef f(c):\n    svc.door.__wrapped__(c, 1)\n", "forbidden/unwrap"),
     ("from app import svc\ndef f(c):\n    getattr(svc.door, '__wrapped__')(c, 1)\n", "forbidden/unwrap"),
     ("import operator\ndef f(s):\n    operator.methodcaller('write')(s)\n", "forbidden/getattr-sink"),
-    ("def f(c):\n    c.execute('DELETE FROM things')\n", "forbidden/raw-sql"),
-    ("def f(c):\n    c.execute('insert into \"things\" (v) values (1)')\n", "forbidden/raw-sql"),
-    ("def f(c, t):\n    c.execute(f'UPDATE things SET v = {t}')\n", "forbidden/raw-sql"),
-    ("def f(c):\n    c.execute('DROP TRIGGER guard_things')\n", "forbidden/raw-sql"),
     ("def f(code):\n    eval(code)\n", "unresolved/reflection"),
     ("def f(code):\n    exec(code)\n", "unresolved/reflection"),
     ("def f():\n    return globals()['x']\n", "unresolved/reflection"),
@@ -271,6 +264,9 @@ def test_idioms(tmp_path, src, code):
     "def f(o):\n    return hasattr(o, 'anything')\n",
     "def f(o):\n    return getattr(o, 'colour', None)\n",
     "def f(c):\n    print('please update things soon')\n",
+    "def f(c):\n    c.execute('DELETE FROM things')\n",              # raw SQL is below the API: never a finding
+    "def f(c, t):\n    c.execute(f'UPDATE things SET v = {t}')\n",
+    "def f(c):\n    c.execute('DROP TRIGGER guard_things')\n",
 ])
 def test_harmless_code_passes(tmp_path, src):
     assert _scan(tmp_path, {"app/x.py": src}).findings == []
@@ -292,17 +288,14 @@ def test_missing_sink_and_door(tmp_path):
     ({"sink": []}, "mediation.sink"),
     ({"sink": "app.store.write"}, "py:"),
     ({"sink": "py:a.b", "door": [1]}, "mediation.door"),
-    ({"sink": "py:a.b", "tables": "pools"}, None),
+    ({"sink": "py:a.b", "tables": ["pools"]}, "tables was removed"),
     ({"door": "py:a.b"}, "need mediation.sink"),
 ])
 def test_mediation_config(med, msg):
     doc = {"rules": [{"id": "R-9", "status": "enforce", "subject": {"target": "py:a.c"}, "bad": "x",
                       "mediation": med}]}
-    if msg is None:
-        assert scan.mediations(doc)[0]["R-9"].tables == ["pools"]
-    else:
-        with pytest.raises(scan.ScanConfigError, match=msg):
-            scan.mediations(doc)
+    with pytest.raises(scan.ScanConfigError, match=msg):
+        scan.mediations(doc)
 
 
 def test_retired_rules_are_not_scanned():

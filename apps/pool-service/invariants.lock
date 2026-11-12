@@ -44,7 +44,6 @@
   "providers": {
     "approval": {
       "args": {"conn": "self.conn", "proposal_id": "req.proposal_id"},
-      "consistency": "same_txn",
       "from": "py:pool_service.service.load_approval",
       "signature": "load_approval(conn: 'sqlite3.Connection', proposal_id: 'int') -> 'Approval | None'",
       "type": "py:pool_service.service.Approval | null",
@@ -56,7 +55,6 @@
     },
     "job": {
       "args": {"conn": "args.conn", "job_id": "args.job_id"},
-      "consistency": "immutable",
       "from": "py:pool_service.triage.load_job",
       "signature": "load_job(conn: 'sqlite3.Connection', job_id: 'str') -> 'JobFacts'",
       "type": "py:pool_service.triage.JobFacts",
@@ -68,7 +66,6 @@
     },
     "pool_leased": {
       "args": {"conn": "args.conn", "pool_id": "args.pool_id"},
-      "consistency": "snapshot",
       "from": "py:pool_service.service.pool_leased",
       "signature": "pool_leased(conn: 'sqlite3.Connection', pool_id: 'str') -> 'int'",
       "type": "int",
@@ -76,7 +73,6 @@
     },
     "pool_size": {
       "args": {"conn": "args.conn", "pool_id": "args.pool_id"},
-      "consistency": "snapshot",
       "from": "py:pool_service.service.pool_size",
       "signature": "pool_size(conn: 'sqlite3.Connection', pool_id: 'str') -> 'int'",
       "type": "int",
@@ -174,7 +170,7 @@
     "R-20": {
       "doc": {
         "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
-        "mediation.chokepoint": "sha256:7d6ab34bf4c7aa55d1ed581136950603d097ae0068e260a987da8381aa2ef72e",
+        "mediation.chokepoint": "sha256:22bd0b1741194258781ea12358c74af01c1579478fb6e8004f3853b9fdede64f",
         "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
         "statement": "sha256:99d9fb37180ded317e6cbce36b1ab770fb2f48cd3f12aaf19fb2f48da4e74400"
       },
@@ -190,27 +186,15 @@
             "point": "decorator",
             "timing": "pre_effect",
             "view": {"leased": "provider.pool_leased", "n": "args.slots", "size": "provider.pool_size"}
-          },
-          {
-            "artifact": "src/pool_service/schema.sql#sha256:f9aea6df1349d35d73aebeb774c76bc179ca480ebab91d59296bbffe4f4e7000",
-            "conformance_test": "tests/test_lease.py::test_r20_door_and_trigger_agree",
-            "generated": false,
-            "mode": "enforce",
-            "on_error": "fail_closed",
-            "on_violation": "reject",
-            "point": "storage",
-            "timing": "pre_effect",
-            "view": "rows"
           }
         ],
         "falsified_by": ["tests/test_lease.py::test_r20_door_rejects_over_lease"],
         "mediation": {
           "door": "py:pool_service.service.lease_slots",
           "residual_paths": [
-            "SQLite has no role grants: any connection can DROP TRIGGER (inv scan flags it only in scanned code)"
+            "two concurrent leases can both pass the check; the store's own triggers refuse the second (below the API, the implementation's business)"
           ],
-          "sink": "py:pool_service.store.insert_lease",
-          "tables": [{"leases": ["insert", "update"]}]
+          "sink": "py:pool_service.store.insert_lease"
         },
         "scope": "aggregate(key: pool_id)",
         "subject": {"contract": "pool_py", "target": "py:pool_service.service.lease_slots"}
@@ -245,7 +229,7 @@
           "tests/test_resize.py::test_r21_apply_without_approval_is_rejected",
           "tests/test_resize.py::test_r21_self_approval_is_rejected"
         ],
-        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size", "tables": [{"pools": ["update"]}]},
+        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size"},
         "scope": "call",
         "subject": {"contract": "pool_py", "target": "py:pool_service.service.ResizeService.resize_door"}
       },
@@ -255,26 +239,20 @@
     "R-22": {
       "doc": {
         "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
-        "mediation.chokepoint": "sha256:bf5fbd3e725b32b7fcf54935ee0af0cbf289d4c8bfcd2346c375ebffb13c9214",
+        "mediation.chokepoint": "sha256:352036b180cfe0a6598f0ebae16baffe0707c7695f0d64de58c3f3525c6929c7",
         "owner": "sha256:e48e19a0a0cbab6db585a48e6e0243516fa3676a35274b5194b7080afbe8b265",
-        "statement": "sha256:0a3db96c259ecb1878b18fcc3c788408fcd31c1ffcc79d52fe545dfefc4588d6"
+        "statement": "sha256:a29e1ca2bcc9417edf4e2cdd46e22330cf886b3c1bfd28516b4a3ecf94b9f14b"
       },
       "rev": 1,
       "semantic": {
-        "bad": "old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 4 * old_self.sizes[req.pool_id]",
+        "bad": "self.sizes[req.pool_id] > 0 && req.new_size > 4 * self.sizes[req.pool_id]",
         "bind": {"req": "args.req"},
         "enforcers": [
-          {
-            "mode": "enforce",
-            "on_error": "fail_closed",
-            "on_violation": "reject",
-            "point": "decorator",
-            "timing": "post_effect"
-          }
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
         ],
-        "falsified_by": ["tests/test_resize.py::test_r22_growth_above_4x_is_rolled_back"],
-        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size", "tables": [{"pools": ["update"]}]},
-        "scope": "transition",
+        "falsified_by": ["tests/test_resize.py::test_r22_growth_above_4x_is_rejected"],
+        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size"},
+        "scope": "call",
         "subject": {"contract": "pool_py", "target": "py:pool_service.service.ResizeService.resize_door"}
       },
       "status": "enforce",
@@ -297,8 +275,7 @@
         "mediation": {
           "door": ["py:pool_service.service.ResizeService.resize_door", "py:pool_service.service.create_pool"],
           "residual_paths": [],
-          "sink": ["py:pool_service.store.set_size", "py:pool_service.store.insert_pool"],
-          "tables": ["pools"]
+          "sink": ["py:pool_service.store.set_size", "py:pool_service.store.insert_pool"]
         },
         "scope": "call",
         "subject": {"contract": "store_py", "target": "py:pool_service.store.set_size"}
@@ -377,8 +354,7 @@
         "mediation": {
           "door": "py:pool_service.triage.remediate",
           "residual_paths": [],
-          "sink": "py:pool_service.store.insert_remediation",
-          "tables": [{"remediations": ["insert", "update"]}]
+          "sink": "py:pool_service.store.insert_remediation"
         },
         "model_policy": {
           "abstain": {"field": "cause", "value": "CANNOT_COMPLY"},
@@ -590,9 +566,8 @@
       }
     },
     "py:pool_service.service.ResizeService.resize_door": {
-      "effects": "transactional",
+      "effects": "external",
       "signature": "ResizeService.resize_door(self, req: 'ResizeRequest') -> 'None'",
-      "transaction": "py:pool_service.service.ResizeService.txn",
       "types": {"req": {"$ref": "sha256:fe54791ea9ef146f49a21fe1d2b4bd73855fb0ee927600939055cb4cec87bc1c"}, "return": "null"}
     },
     "py:pool_service.service.create_pool": {

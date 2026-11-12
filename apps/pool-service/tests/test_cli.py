@@ -54,9 +54,8 @@ def test_scan_flags_the_bypass_module() -> None:
     codes = {(rule, code) for rule, code, _ in found}
     assert ("R-23", "bypass", "pool_service.rogue.emergency_resize") in found
     assert ("R-20", "bypass", "pool_service.rogue.overbook") in found
-    assert {("R-23", "forbidden/raw-sql"), ("R-23", "forbidden/unwrap"), ("R-23", "forbidden/getattr-sink")} <= codes
-    messages = [f["message"] for f in json.loads(r.stdout)["findings"]]
-    assert any("drops a trigger" in m for m in messages)
+    assert {("R-23", "forbidden/unwrap"), ("R-23", "forbidden/getattr-sink")} <= codes
+    assert not any("sql" in code for _, code in codes)         # raw SQL is below the API: not a finding
 
 
 def test_sarif_output(tmp_path: pathlib.Path) -> None:
@@ -71,7 +70,7 @@ def test_status() -> None:
     assert r.returncode == 0, r.stderr
     rows = {row["id"]: row for row in json.loads(r.stdout)["rules"]}
     assert rows["R-21"]["standing"] == "held"
-    assert rows["R-20"]["standing"] == "enforce(known-callers)"          # the DROP TRIGGER residual path
+    assert rows["R-20"]["standing"] == "enforce(known-callers)"          # the concurrent-writers residual path
     assert any("residual paths" in why for why in rows["R-20"]["reasons"])
 
 
@@ -84,7 +83,8 @@ def _rogue():
 
 
 def test_the_bypass_really_bypasses(conn: sqlite3.Connection) -> None:
-    """Why the scan matters: the rogue resize skips R-21 at run time; only the trigger still holds R-20."""
+    """Why the scan matters: the rogue resize skips R-21 at run time (only the store's own trigger still
+    refuses an over-lease, which no rule relies on)."""
     rogue = _rogue()
     service.create_pool(conn, "p1", "P1", 10)
     rogue.emergency_resize(conn, "p1", 1000)            # no approval, 100x growth: nothing at run time stops it

@@ -86,15 +86,13 @@ Pending = list[tuple[Any, Provider, dict[str, Any]]]
 
 
 def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str, Any],
-                    cache: dict[Any, Any], in_txn: bool = False, only: frozenset[str] | None = None,
-                    pending: Pending | None = None,
+                    cache: dict[Any, Any], pending: Pending | None = None,
                     providers: dict[str, Provider] | None = None) -> dict[str, Any]:
     """Call every provider the names map reads; return {name: value} for this rule.
 
     Provider args resolve in this rule's binding environment. Values are cached per
     (provider, resolved args) for the call. A provider that raises or returns the wrong
-    type gives a value that turns into rule_error when read. only: fetch just providers of
-    these consistencies. pending: collect async provider calls there (prefetch_async awaits
+    type gives a value that turns into rule_error when read. pending: collect async provider calls there (prefetch_async awaits
     them) instead of failing them. providers: the provider table of the registry generation the
     call started under (a reload mid-call must not swap it); default reg.providers.
     Never raises: anything that goes wrong becomes a ProviderFailed for that provider.
@@ -117,8 +115,6 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
         if prov is None:
             out[name] = ProviderFailed(f"provider {name} is not declared in the rules this call started under")
             continue
-        if only is not None and prov.consistency not in only:
-            continue
         try:
             args = {a: resolve_path(local, ap) for a, ap in prov.raw["args"].items()}
         except CelError as e:
@@ -129,10 +125,7 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
             continue
         key = (name, tuple(sorted((a, _arg_key(v)) for a, v in args.items())))   # names unique: no value compare
         if key not in cache:
-            if prov.consistency == "same_txn" and not in_txn:
-                cache[key] = ProviderFailed(f"provider {name} is same_txn, but the call is not inside its target's "
-                                            f"declared transaction")
-            elif prov.is_async:
+            if prov.is_async:
                 if pending is not None:
                     pending.append((key, prov, args))
                     continue
@@ -148,8 +141,7 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
 
 
 async def prefetch_async(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str, Any],
-                         cache: dict[Any, Any], in_txn: bool = False, only: frozenset[str] | None = None,
-                         providers: dict[str, Provider] | None = None) -> str | None:
+                         cache: dict[Any, Any], providers: dict[str, Provider] | None = None) -> str | None:
     """Fill cache for one names map, awaiting async providers. Sync providers run inline.
 
     Never raises (a provider's own exception is cached as a ProviderFailed); returns why, when the
@@ -157,7 +149,7 @@ async def prefetch_async(reg: Registry, rule: Rule, m: dict[str, str], base: dic
     """
     pending: Pending = []
     try:
-        fetch_providers(reg, rule, m, base, cache, in_txn, only, pending, providers)
+        fetch_providers(reg, rule, m, base, cache, pending, providers)
     except Exception as e:
         return f"binding providers raised {type(e).__name__}"
     for key, prov, args in pending:

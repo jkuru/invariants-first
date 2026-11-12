@@ -1,4 +1,4 @@
-"""Raw storage. set_size and insert_pool are the protected sinks of R-23: only the doors in service call them."""
+"""The repository. set_size and insert_pool are the protected sinks of R-23: only the doors in service call them."""
 from __future__ import annotations
 
 import sqlite3

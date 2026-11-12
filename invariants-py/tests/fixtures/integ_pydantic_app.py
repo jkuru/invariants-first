@@ -97,7 +97,7 @@ RULES = {
     "contracts": {"triage": {"type": "pydantic", "ref": "integ_pydantic_app:CauseReply"}},
     "targets": {"py:integ_pydantic_app.propose_cause": {"effects": "none"}},
     "providers": {"job": {"type": "py:integ_pydantic_app.JobFacts", "from": "py:integ_pydantic_app.load_job",
-                          "args": {"job_id": "args.job_id"}, "consistency": "immutable"}},
+                          "args": {"job_id": "args.job_id"}}},
     "rules": [{
         "id": "R-P7", "rev": 1, "status": "enforce", "class": "law", "owner": "team-sre",
         "statement": "A proposed cause never contradicts what the scheduler and the kernel recorded.",

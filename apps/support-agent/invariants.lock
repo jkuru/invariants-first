@@ -1,0 +1,314 @@
+{
+  "contracts": {
+    "cancel_tool_input": {
+      "ref": "support_agent.models:CancelToolInput",
+      "schema": {"$ref": "sha256:824fd849323881992283a975a920c7ff6a0f14e3b6c4ae3b9dde5618eea2b121"},
+      "type": "pydantic"
+    },
+    "credit_tool_input": {
+      "ref": "support_agent.models:CreditToolInput",
+      "schema": {"$ref": "sha256:5f22fc1892576b4dbc093677aeac796794aff66bda751d17e58b62b2057b3cbe"},
+      "type": "pydantic"
+    },
+    "plan": {
+      "ref": "support_agent.models:Plan",
+      "schema": {"$ref": "sha256:b1a4730b77739f71abd02647178452f442d520dbb5c97397ae704fdc19ce61a3"},
+      "type": "pydantic"
+    },
+    "refund_tool_input": {
+      "ref": "support_agent.models:RefundToolInput",
+      "schema": {"$ref": "sha256:98ede4296299030936dd133b0c153db00b989799ee4a9ff9ce164e144023d785"},
+      "type": "pydantic"
+    }
+  },
+  "lock_version": 3,
+  "providers": {
+    "order": {
+      "args": {"ledger": "self.ledger", "order_id": "args.order_id"},
+      "from": "py:support_agent.service.order",
+      "signature": "order(ledger: 'LedgerRepo', order_id: 'str') -> 'Order | None'",
+      "type": "py:support_agent.models.Order | null",
+      "types": {
+        "ledger": "LedgerRepo",
+        "order_id": "str",
+        "return": {"anyOf": ["null", {"$ref": "sha256:e305aceaa1447b9ef655984c08cab07eebbe40c4c5a8543c30b4e9d338089016"}]}
+      }
+    },
+    "planned_order": {
+      "args": {"ledger": "args.ctx.ledger", "order_id": "reply.order_id"},
+      "from": "py:support_agent.service.planned_order",
+      "signature": "planned_order(ledger: 'LedgerRepo', order_id: 'str') -> 'Order | None'",
+      "type": "py:support_agent.models.Order | null",
+      "types": {
+        "ledger": "LedgerRepo",
+        "order_id": "str",
+        "return": {"anyOf": ["null", {"$ref": "sha256:e305aceaa1447b9ef655984c08cab07eebbe40c4c5a8543c30b4e9d338089016"}]}
+      }
+    },
+    "planned_tier": {
+      "args": {"customer_id": "reply.customer_id", "ledger": "args.ctx.ledger"},
+      "from": "py:support_agent.service.planned_tier",
+      "signature": "planned_tier(ledger: 'LedgerRepo', customer_id: 'str') -> 'Tier | None'",
+      "type": "py:support_agent.models.Tier | null",
+      "types": {
+        "customer_id": "str",
+        "ledger": "LedgerRepo",
+        "return": {"anyOf": ["null", {"$ref": "sha256:14b55b896df9a783a4766363096ff2a28ee2b2038c6ea7ce718ccc2bf012c174"}]}
+      }
+    },
+    "tier": {
+      "args": {"customer_id": "args.customer_id", "ledger": "self.ledger"},
+      "from": "py:support_agent.service.tier",
+      "signature": "tier(ledger: 'LedgerRepo', customer_id: 'str') -> 'Tier | None'",
+      "type": "py:support_agent.models.Tier | null",
+      "types": {
+        "customer_id": "str",
+        "ledger": "LedgerRepo",
+        "return": {"anyOf": ["null", {"$ref": "sha256:14b55b896df9a783a4766363096ff2a28ee2b2038c6ea7ce718ccc2bf012c174"}]}
+      }
+    }
+  },
+  "rules": {
+    "BILL-1": {
+      "doc": {"statement": "sha256:8850a81a7e784d67d1f5f9cb94b42b669ae96c61c51853c8b5f2402607871ac8"},
+      "rev": null,
+      "semantic": {
+        "bad": [
+          {"message": "no such order", "when": "order == null"},
+          {
+            "message": "refund above what is left of the order",
+            "when": "order != null && args.amount_cents > order.remaining_cents"
+          }
+        ],
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
+        ],
+        "falsified_by": ["tests/test_runtime_defects.py::test_d6_the_door_refuses_an_over_refund_whoever_calls"],
+        "subject": {"target": "py:support_agent.service.BillingService.refund"}
+      },
+      "status": "enforce",
+      "targets": ["py:support_agent.service.BillingService.refund"]
+    },
+    "BILL-2": {
+      "doc": {"statement": "sha256:3a21975935e60bcdb8a84433bd55b5331dc87c4f43812b81306d373775bce0bf"},
+      "rev": null,
+      "semantic": {
+        "bad": "tier == null || args.amount_cents > tier.credit_limit_cents",
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
+        ],
+        "falsified_by": ["tests/test_runtime_defects.py::test_d6_the_door_refuses_an_over_credit"],
+        "subject": {"target": "py:support_agent.service.BillingService.credit"}
+      },
+      "status": "enforce",
+      "targets": ["py:support_agent.service.BillingService.credit"]
+    },
+    "LEDGER-REPO-DOOR": {
+      "doc": {},
+      "rev": null,
+      "semantic": {
+        "bad": "false",
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "structure", "timing": "pre_effect"}
+        ],
+        "mediation": {
+          "door": [
+            "py:support_agent.service.BillingService.cancel",
+            "py:support_agent.service.BillingService.credit",
+            "py:support_agent.service.BillingService.refund"
+          ],
+          "sink": [
+            "py:support_agent.repo.LedgerRepo.cancel_subscription",
+            "py:support_agent.repo.LedgerRepo.insert_credit",
+            "py:support_agent.repo.LedgerRepo.record_refund"
+          ]
+        }
+      },
+      "status": "enforce",
+      "targets": []
+    },
+    "PLAN-1": {
+      "doc": {
+        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
+        "mediation.chokepoint": "sha256:bf2663ebc595c07ae3865bed4c40ecccddd4d69baa0e61b581dabaea8750a7e1",
+        "owner": "sha256:9769e38310b7d060269951201f71e21b86206f0d669838f5de2629d69e57ab07",
+        "statement": "sha256:6c3d7bee1f3ea151fd30c6fa649941de5806c5e4408e0068847b9e2101d08fac"
+      },
+      "rev": null,
+      "semantic": {
+        "bad": [
+          {"message": "the plan acts for another customer", "when": "reply.customer_id != args.customer_id"},
+          {
+            "message": "the plan refunds an order that does not exist",
+            "when": "reply.action == \"REFUND\" && planned_order == null"
+          },
+          {
+            "message": "the plan refunds another customer's order",
+            "when": "reply.action == \"REFUND\" && planned_order != null && planned_order.customer_id != reply.customer_id"
+          },
+          {
+            "message": "the plan refunds more than is left of the order",
+            "when": "reply.action == \"REFUND\" && planned_order != null && reply.amount_cents > planned_order.remaining_cents"
+          },
+          {
+            "message": "the plan credits more than the tier allows",
+            "when": "reply.action == \"CREDIT\" && (planned_tier == null || reply.amount_cents > planned_tier.credit_limit_cents)"
+          }
+        ],
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "escalate",
+            "point": "model_call",
+            "timing": "post_effect"
+          },
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "edge",
+            "target": "py:support_agent.graph.execute_plan",
+            "timing": "pre_effect"
+          }
+        ],
+        "falsified_by": [
+          "tests/test_runtime_defects.py::test_d6_an_over_refund_is_resampled_then_escalated",
+          "tests/test_runtime_defects.py::test_d10_a_plan_changed_after_the_check_is_refused"
+        ],
+        "mediation": {"residual_paths": []},
+        "model_policy": {
+          "abstain": {"field": "action", "value": "ESCALATE_TO_HUMAN"},
+          "feedback": {"format": "parser_error", "semantic": "none"},
+          "format_retries": 2,
+          "schema": "Plan",
+          "semantic_resamples": 1
+        },
+        "scope": "call",
+        "subject": {"contract": "plan", "target": "py:support_agent.planner.plan_action"}
+      },
+      "status": "enforce",
+      "targets": ["py:support_agent.graph.execute_plan", "py:support_agent.planner.plan_action"]
+    },
+    "STRIPE-GATEWAY-DOOR": {
+      "doc": {},
+      "rev": null,
+      "semantic": {
+        "bad": "false",
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "structure", "timing": "pre_effect"}
+        ],
+        "mediation": {
+          "allow": ["py:support_agent.admin.admin_goodwill", "py:support_agent.admin.goodwill_refund"],
+          "door": "py:support_agent.service.BillingService.refund",
+          "sink": "py:support_agent.repo.StripeGateway.refund"
+        }
+      },
+      "status": "enforce",
+      "targets": []
+    }
+  },
+  "schemas": {
+    "sha256:14b55b896df9a783a4766363096ff2a28ee2b2038c6ea7ce718ccc2bf012c174": {
+      "dataclass": "Tier",
+      "fields": {"credit_limit_cents": "int", "customer_id": "str", "tier": "str"},
+      "name": "support_agent.models.Tier",
+      "required": ["credit_limit_cents", "customer_id", "tier"]
+    },
+    "sha256:5f22fc1892576b4dbc093677aeac796794aff66bda751d17e58b62b2057b3cbe": {
+      "name": "support_agent.models.CreditToolInput",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_cents": {"exclusiveMinimum": 0, "maximum": 10000, "type": "integer"},
+          "customer_id": {"maxLength": 40, "minLength": 1, "type": "string"},
+          "reason": {"maxLength": 200, "minLength": 1, "type": "string"}
+        },
+        "required": ["customer_id", "amount_cents", "reason"],
+        "type": "object"
+      }
+    },
+    "sha256:824fd849323881992283a975a920c7ff6a0f14e3b6c4ae3b9dde5618eea2b121": {
+      "name": "support_agent.models.CancelToolInput",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "customer_id": {"maxLength": 40, "minLength": 1, "type": "string"},
+          "reason": {"maxLength": 200, "minLength": 1, "type": "string"}
+        },
+        "required": ["customer_id", "reason"],
+        "type": "object"
+      }
+    },
+    "sha256:98ede4296299030936dd133b0c153db00b989799ee4a9ff9ce164e144023d785": {
+      "name": "support_agent.models.RefundToolInput",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_cents": {"exclusiveMinimum": 0, "maximum": 50000, "type": "integer"},
+          "order_id": {"maxLength": 40, "minLength": 1, "type": "string"},
+          "reason": {"maxLength": 200, "minLength": 1, "type": "string"}
+        },
+        "required": ["order_id", "amount_cents", "reason"],
+        "type": "object"
+      }
+    },
+    "sha256:b1a4730b77739f71abd02647178452f442d520dbb5c97397ae704fdc19ce61a3": {
+      "name": "support_agent.models.Plan",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {"enum": ["REFUND", "CREDIT", "CANCEL", "ESCALATE_TO_HUMAN"], "type": "string"},
+          "amount_cents": {"maximum": 500000, "minimum": 0, "type": "integer"},
+          "customer_id": {"maxLength": 40, "minLength": 1, "type": "string"},
+          "order_id": {"maxLength": 40, "type": "string"},
+          "reason": {"maxLength": 200, "minLength": 1, "type": "string"}
+        },
+        "required": ["action", "customer_id", "order_id", "amount_cents", "reason"],
+        "type": "object"
+      }
+    },
+    "sha256:e305aceaa1447b9ef655984c08cab07eebbe40c4c5a8543c30b4e9d338089016": {
+      "dataclass": "Order",
+      "fields": {
+        "customer_id": "str",
+        "order_id": "str",
+        "refunded_cents": "int",
+        "remaining_cents": "int",
+        "total_cents": "int"
+      },
+      "name": "support_agent.models.Order",
+      "required": ["customer_id", "order_id", "refunded_cents", "remaining_cents", "total_cents"]
+    }
+  },
+  "spec": "invariant/v0.1",
+  "targets": {
+    "py:support_agent.graph.execute_plan": {
+      "effects": "external",
+      "signature": "execute_plan(ctx: 'AgentContext', plan: 'CheckedPlan', customer_id: 'str') -> 'str'",
+      "types": {"ctx": "AgentContext", "customer_id": "str", "plan": "CheckedPlan", "return": "str"}
+    },
+    "py:support_agent.planner.plan_action": {
+      "effects": "none",
+      "reply_schema": {"$ref": "sha256:b1a4730b77739f71abd02647178452f442d520dbb5c97397ae704fdc19ce61a3"},
+      "signature": "plan_action(ctx: 'AgentContext', ticket: 'str', customer_id: 'str', inv_feedback: 'str | None' = None) -> 'CheckedPlan'",
+      "types": {
+        "ctx": "AgentContext",
+        "customer_id": "str",
+        "inv_feedback": {"anyOf": ["null", "str"]},
+        "return": "CheckedPlan",
+        "ticket": "str"
+      }
+    },
+    "py:support_agent.service.BillingService.credit": {
+      "effects": "external",
+      "signature": "BillingService.credit(self, customer_id: 'str', amount_cents: 'int', reason: 'str') -> 'None'",
+      "types": {"amount_cents": "int", "customer_id": "str", "reason": "str", "return": "null"}
+    },
+    "py:support_agent.service.BillingService.refund": {
+      "effects": "external",
+      "signature": "BillingService.refund(self, order_id: 'str', amount_cents: 'int', reason: 'str') -> 'str'",
+      "types": {"amount_cents": "int", "order_id": "str", "reason": "str", "return": "str"}
+    }
+  }
+}

@@ -1,9 +1,9 @@
-"""Fixture app for the fix-round tests: transactions, provider timing, async paths and failure modes."""
+"""Fixture app for the fix-round tests: provider timing, async paths and failure modes."""
 from __future__ import annotations
 
 import dataclasses
 import sqlite3
-from typing import Any, Iterator, AsyncIterator
+from typing import Any
 
 import invariants as inv
 
@@ -15,20 +15,10 @@ def _conn() -> sqlite3.Connection:
 
 
 class Svc:
-    """A transactional door: door(n) inserts n rows inside txn()."""
+    """A door: door(n) inserts n rows; post-effect rules read the row count after it."""
 
     def __init__(self) -> None:
         self.conn = _conn()
-
-    @inv.transaction
-    def txn(self) -> Iterator[None]:
-        self.conn.execute("BEGIN")
-        try:
-            yield
-        except BaseException:
-            self.conn.execute("ROLLBACK")
-            raise
-        self.conn.execute("COMMIT")
 
     def count(self) -> int:
         return self.conn.execute("SELECT count(*) FROM t").fetchone()[0]
@@ -55,17 +45,7 @@ def rows_before(svc: Svc) -> int:
 
 
 class ASvc(Svc):
-    """The same door, async: an async transaction and an async provider."""
-
-    @inv.transaction
-    async def atxn(self) -> AsyncIterator[None]:
-        self.conn.execute("BEGIN")
-        try:
-            yield
-        except BaseException:
-            self.conn.execute("ROLLBACK")
-            raise
-        self.conn.execute("COMMIT")
+    """The same door, async, with an async provider."""
 
     @inv.guard("A-1")
     async def adoor(self, n: int) -> int:
@@ -162,19 +142,18 @@ def doc(*rules: dict[str, Any]) -> dict[str, Any]:
     return {
         "spec": SPEC,
         "targets": {
-            f"{m}.Svc.door": {"effects": "transactional", "transaction": f"{m}.Svc.txn"},
-            f"{m}.Svc.door2": {"effects": "transactional", "transaction": f"{m}.Svc.txn"},
-            f"{m}.ASvc.adoor": {"effects": "transactional", "transaction": f"{m}.ASvc.atxn"},
+            f"{m}.Svc.door": {"effects": "external"},
+            f"{m}.Svc.door2": {"effects": "external"},
+            f"{m}.ASvc.adoor": {"effects": "external"},
             f"{m}.probe": {"effects": "none"}, f"{m}.probe2": {"effects": "none"},
             f"{m}.plain": {"effects": "none"},
         },
         "providers": {
-            "rows": {"type": "int", "from": f"{m}.rows", "args": {"svc": "self"}, "consistency": "same_txn"},
-            "rows_before": {"type": "int", "from": f"{m}.rows_before", "args": {"svc": "self"},
-                            "consistency": "snapshot"},
-            "arows": {"type": "int", "from": f"{m}.arows", "args": {"svc": "self"}, "consistency": "same_txn"},
-            "alimit": {"type": "int", "from": f"{m}.alimit", "args": {}, "consistency": "stale_ok"},
-            "echo": {"type": "int", "from": f"{m}.echo", "args": {"v": "args.obj.boom"}, "consistency": "stale_ok"},
+            "rows": {"type": "int", "from": f"{m}.rows", "args": {"svc": "self"}},
+            "rows_before": {"type": "int", "from": f"{m}.rows_before", "args": {"svc": "self"}},
+            "arows": {"type": "int", "from": f"{m}.arows", "args": {"svc": "self"}},
+            "alimit": {"type": "int", "from": f"{m}.alimit", "args": {}},
+            "echo": {"type": "int", "from": f"{m}.echo", "args": {"v": "args.obj.boom"}},
         },
         "rules": list(rules),
     }
@@ -190,9 +169,10 @@ def rule(rid: str, target: str, bad: Any, *enforcers: dict[str, Any], status: st
             "enforcers": list(enforcers), "falsified_by": ["tests/test_fix_round.py"], **kw}
 
 
-T1 = rule("T-1", "Svc.door", "rows > 3", enf(timing="post_effect"))
-T2 = rule("T-2", "Svc.door2", "rows != rows_before + args.n", enf(timing="post_effect"))
-A1 = rule("A-1", "ASvc.adoor", "arows > 3", enf(timing="post_effect"))
+# a post_effect check on an external effect only reports (detect): the effect has happened
+T1 = rule("T-1", "Svc.door", "rows > 3", enf(timing="post_effect", mode="detect"), status="detect")
+T2 = rule("T-2", "Svc.door2", "rows != args.n", enf(timing="post_effect", mode="detect"), status="detect")
+A1 = rule("A-1", "ASvc.adoor", "arows > 3", enf(timing="post_effect", mode="detect"), status="detect")
 POLICY = {"schema": "Reply", "format_retries": 0, "semantic_resamples": 0, "feedback": {"format": "none"},
           "abstain": {"field": "cause", "value": "CANNOT_COMPLY"}}
 M1 = rule("M-1", "amodel", "reply.v > alimit", enf("model_call", on_violation="reject"),

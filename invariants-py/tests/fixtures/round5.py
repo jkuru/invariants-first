@@ -81,8 +81,8 @@ def hostile_doc() -> dict[str, Any]:
     pa = {"args": {"k": "args.d.k"}}
     return {"spec": SPEC,
             "targets": {f"{M}.{t}": {"effects": "none"} for t in ("door", "adoor", "sdoor", "asdoor")},
-            "providers": {"lim": {"type": "int", "from": f"{M}.lim", "consistency": "stale_ok", **pa},
-                          "snap": {"type": "int", "from": f"{M}.snap", "consistency": "snapshot", **pa}},
+            "providers": {"lim": {"type": "int", "from": f"{M}.lim", **pa},
+                          "snap": {"type": "int", "from": f"{M}.snap", **pa}},
             "rules": [_rule("Q-1", "door", "lim > 5"), _rule("Q-2", "adoor", "lim > 5"),
                       _rule("Q-3", "sdoor", "snap > 5", "post_effect"),
                       _rule("Q-4", "asdoor", "snap > 5", "post_effect")]}
@@ -92,7 +92,7 @@ def reload_doc(pname: str) -> dict[str, Any]:
     """S-1/S-2: result > <pname>; reloading with another pname swaps the provider table."""
     return {"spec": SPEC,
             "targets": {f"{M}.reload": {"effects": "none"}, f"{M}.areload": {"effects": "none"}},
-            "providers": {pname: {"type": "int", "from": f"{M}.{pname}", "consistency": "stale_ok",
+            "providers": {pname: {"type": "int", "from": f"{M}.{pname}",
                                   "args": {"k": "args.n"}}},
             "rules": [_rule("S-1", "reload", f"result > {pname}", "post_effect", "fail_open_and_page"),
                       _rule("S-2", "areload", f"result > {pname}", "post_effect", "fail_open_and_page")]}

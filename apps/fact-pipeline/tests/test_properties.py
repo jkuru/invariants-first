@@ -1,4 +1,4 @@
-"""Hypothesis properties: each guard agrees with its rule, and storage agrees with the CEL bad (2.7)."""
+"""Hypothesis properties: each guard agrees with its rule, and the store's own schema agrees with it too."""
 from __future__ import annotations
 
 import datetime as dt

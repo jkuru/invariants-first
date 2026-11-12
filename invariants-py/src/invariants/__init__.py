@@ -7,12 +7,12 @@ from importlib import metadata as _metadata
 
 from . import cel
 from .errors import (CoverageError, Escalation, Halted, InvariantError, LoadError, ParseError, Rejected,
-                     ReviewNotOpened, RolledBack, Routed, WiringError)
+                     ReviewNotOpened, Routed)
 from .evaluate import evaluate, evaluate_env, fill_view
-from .guard import Checked, edge, guard, model_call, parse, transaction
+from .guard import Checked, edge, guard, model_call, parse
 from .loader import load, read_document, schema_path
 from .model import Outcome, Provider, Rule, effective_mode
-from .operations import load_resource, monitor, storage_errors, storage_rejection
+from .operations import load_resource, monitor
 from .providers import provider
 from .registry import (ErrorSpike, Handoff, JsonlReviews, MemoryReviews, Registry, ReviewStore, ablated, capture,
                        configure, current, default_registry, is_ablated, isolated, observe, standing, using,
@@ -26,13 +26,13 @@ except _metadata.PackageNotFoundError:      # running from a source tree that is
 CEL_BACKEND = "subset"     # the default backend name; see invariants.cel.get_backend
 
 __all__ = [
-    "provider", "guard", "transaction", "model_call", "edge", "Checked", "parse",
+    "provider", "guard", "model_call", "edge", "Checked", "parse",
     "load", "load_resource", "read_document", "schema_path", "verify", "verify_coverage", "standing",
     "check_snapshot", "evaluate", "evaluate_env", "fill_view", "effective_mode",
     "Registry", "current", "default_registry", "using", "isolated", "ablated", "is_ablated",
-    "configure", "observe", "capture", "monitor", "storage_rejection", "storage_errors",
+    "configure", "observe", "capture", "monitor",
     "Handoff", "ReviewStore", "MemoryReviews", "JsonlReviews", "ErrorSpike",
     "Outcome", "Rule", "Provider",
     "LoadError", "CoverageError", "ParseError", "InvariantError", "Rejected", "Halted", "Escalation", "Routed",
-    "RolledBack", "ReviewNotOpened", "WiringError", "cel", "CEL_BACKEND", "__version__",
+    "ReviewNotOpened", "cel", "CEL_BACKEND", "__version__",
 ]

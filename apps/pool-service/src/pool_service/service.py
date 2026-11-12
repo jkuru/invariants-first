@@ -1,11 +1,13 @@
 """The doors. Every write that an invariant protects goes through a guarded function here.
 
-R-20 lease_slots: leases never exceed pool size (door guard; the schema triggers are the storage enforcer).
+R-20 lease_slots: leases never exceed pool size (checked on the API's arguments; the schema's own triggers
+also refuse an over-lease, which is the store's business).
 R-21 / R-22 ResizeService.resize_door: a resize needs an approval, and never grows a pool more than 4x.
 R-24 create_pool: a new pool has a size between 1 and 10000.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import sqlite3
 from typing import Iterator
@@ -22,7 +24,7 @@ class NotFound(LookupError):
 # --- providers (read-only, typed) ---------------------------------------------------------------
 @inv.provider("pool_leased")
 def pool_leased(conn: sqlite3.Connection, pool_id: str) -> int:
-    """Slots currently leased in the pool (a snapshot read: the door is an early refusal only)."""
+    """Slots currently leased in the pool."""
     return store.leased(conn, pool_id)
 
 
@@ -49,7 +51,7 @@ class Approval:
 
 @inv.provider("approval")
 def load_approval(conn: sqlite3.Connection, proposal_id: int) -> Approval | None:
-    """The proposal, read inside the resize transaction (consistency same_txn)."""
+    """The proposal the resize names."""
     row = store.get_proposal(conn, proposal_id)
     return None if row is None else Approval(**row)
 
@@ -108,12 +110,12 @@ class ResizeService:
 
     @property
     def sizes(self) -> dict[str, int]:
-        """Every pool's size, read inside the current transaction (R-22 snapshots it as old_self.sizes)."""
+        """Every pool's size (R-22 reads the current size of the pool being resized)."""
         return store.all_sizes(self.conn)
 
-    @inv.transaction
+    @contextlib.contextmanager
     def txn(self) -> Iterator["ResizeService"]:
-        """The transaction boundary that resize_door is declared to run in."""
+        """One SQLite write transaction (the implementation's; no rule depends on it)."""
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield self

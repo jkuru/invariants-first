@@ -15,6 +15,7 @@ def force_believe(conn: sqlite3.Connection, fact_id: str) -> None:
 
 
 def raw_believe(conn: sqlite3.Connection, fact_id: str) -> None:
-    """The same, through raw SQL on the protected table."""
+    """The same, through raw SQL. Below the API: no rule names the table, so the scan does not report it
+    (the monitor still finds the BELIEVED row it leaves; database permissions are what stop it)."""
     conn.execute("INSERT INTO fact_status (fact_id, status, reason) VALUES (?, 'BELIEVED', 'raw backfill')",
                  (fact_id,))

@@ -12,6 +12,7 @@ a rule.
 - [How each field is judged](#how-each-field-is-judged)
 - [How `bad` is compared](#how-bad-is-compared)
 - [Migration](#migration)
+- [Upgrading from a release with rules below the API](#upgrading-from-a-release-with-rules-below-the-api)
 - [Where the CLI imports from](#where-the-cli-imports-from)
 - [Limitations](#limitations)
 
@@ -38,9 +39,9 @@ rewrite is itself a possible weakening).
 
 | Section | Pinned |
 |---|---|
-| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, tables and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`, `mediation.chokepoint`). |
-| `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, `effects`, `transaction`, and a model-call target's reply schema. |
-| `providers` | `type`, `from`, `args`, `consistency`, and the function's signature and resolved types. |
+| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`, `mediation.chokepoint`). |
+| `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, `effects`, and a model-call target's reply schema. |
+| `providers` | `type`, `from`, `args`, and the function's signature and resolved types. |
 | `contracts` | A pydantic, dataclass, TypedDict or `{field: type}` schema; an `openapi` file as the parameters, request body and response schemas of the operations rules name; a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
 
@@ -60,9 +61,9 @@ what each rule's meaning depends on, entry by entry:
     `feedback: {format: parser_error, semantic: none}`.
   - `doc` holds a digest of each of `statement`, `why`, `owner`, `class` and
     `mediation.chokepoint`.
-- `targets.<key>`: `signature` (text), `types`, `effects`, `transaction` and, for a model-call
+- `targets.<key>`: `signature` (text), `types`, `effects` and, for a model-call
   target, `reply_schema`.
-- `providers.<name>`: `type`, `from`, `args`, `consistency`, and the `from` function's `signature`
+- `providers.<name>`: `type`, `from`, `args`, and the `from` function's `signature`
   and `types`.
 - `contracts.<name>`: `{type, ref}` plus, by type:
   - `schema` for a pydantic model, a dataclass, a TypedDict or a `{field: type}` mapping;
@@ -111,8 +112,7 @@ These changes are marked **WEAKENED**:
 - a lower status or enforcer mode, or a removed enforcer, clause or rule;
 - an `on_violation` below reject, or `on_error: fail_open_and_page`;
 - `timing` moved to `post_effect`;
-- a provider moved to a staler consistency;
-- a removed sink or table, or a narrower statement kind;
+- a removed sink;
 - a new door on a scanned sink, or a new `allow` entry (a back door is now let through);
 - a target declared `effects: none`, or a target no longer covered;
 - `compares_to` removed, `compensable` set to true, or more `format_retries` or
@@ -121,7 +121,8 @@ These changes are marked **WEAKENED**:
   so removing it can raise the rule's standing);
 - a `bad` that now matches fewer cases;
 - a pinned pydantic schema that now accepts more input (see below);
-- a removed or changed constraint in a `sql` contract.
+- a pin for a feature this release removed (see
+  [Upgrading](#upgrading-from-a-release-with-rules-below-the-api)).
 
 **Constraints the code already has.** A `pydantic` contract (or a pydantic model in a target's
 signature) is pinned as its JSON Schema, so its constraints are pinned too.
@@ -139,11 +140,6 @@ Adding a constraint or tightening one is not a weakening. Other schema changes, 
 value or a new optional field, are reported as pin changes. Changing `le` to `lt` with the same
 bound shows as a removed `maximum` and is treated as a weakening; the check is conservative.
 
-A `{type: sql, ref: schema.sql}` contract is pinned as the sorted list of its constraints (CHECK,
-NOT NULL, UNIQUE, PRIMARY KEY, from `CREATE TABLE` and `ALTER TABLE ... ADD`; see
-`invariants.sql_constraints`). Removing or editing a constraint is a weakening; adding one is not.
-Indexes, comments and the rest of the file are not pinned.
-
 **Comparing with a base branch.** `inv lock --check` compares with the lock in the working tree, which
 the change itself may have re-pinned with `--accept-weakening`. `inv check --base REF` compares the
 rule file with the lock committed at `REF` instead, and fails on any weakening since then. It passes
@@ -152,8 +148,7 @@ example from a pull-request label), not the change's author.
 
 Any change to a field that changes what `bad` reads, or how a check runs, is a possible
 weakening: `bind`, an enforcer's `view`, `artifact`, `conformance_test` or `generated`, a
-provider's `args`, `from` or `type`, `subject` (contract, operation, target), `scope`, a target's
-`transaction`, and `model_policy`'s `schema`, `feedback` and `abstain`. That includes an
+provider's `args`, `from` or `type`, `subject` (contract, operation, target), `scope`, and `model_policy`'s `schema`, `feedback` and `abstain`. That includes an
 `artifact` digest rewritten by `inv lock --update-artifacts`. Every field of the rule-file schema
 is classified in `lockfile.FIELD_POLICY`, and a field that is not classified is a possible
 weakening. A test walks the schema, so a new field cannot ship unclassified.
@@ -167,21 +162,21 @@ change unless `--accept-weakening` is given.
 
 | Class | Fields | Marked `WEAKENED` when |
 |---|---|---|
-| possible weakening | `bind`; `subject` (`contract`, `operation`, `target`); `scope`; enforcer `view`, `artifact`, `conformance_test`, `generated`; provider `type`, `from`, `args`; target `transaction`; `model_policy.schema`, `feedback`, `abstain`; contract `type`, `ref` | any change. These change what `bad` reads or how a check runs. This covers an `artifact` digest rewritten by `--update-artifacts`. |
+| possible weakening | `bind`; `subject` (`contract`, `operation`, `target`); `scope`; enforcer `view`, `artifact`, `conformance_test`, `generated`; provider `type`, `from`, `args`; `model_policy.schema`, `feedback`, `abstain`; contract `type`, `ref` | any change. These change what `bad` reads or how a check runs. This covers an `artifact` digest rewritten by `--update-artifacts`. |
 | ranked | `status` | it moves down `enforce > detect > candidate/contested > retired` |
 | ranked | enforcer `mode` | it moves down `enforce > detect > off` |
 | ranked | enforcer `on_violation` | it moves from `reject`/`halt` to `escalate`/`route` |
 | ranked | enforcer `on_error` | it becomes `fail_open_and_page` |
 | ranked | enforcer `timing` | it becomes `post_effect` |
-| ranked | provider `consistency` | it moves down `same_txn/immutable > snapshot > stale_ok` |
 | ranked | target `effects` | it becomes `none` |
 | ranked | `compensable` | it becomes `true` |
 | more is weaker | `model_policy.format_retries`, `semantic_resamples` | it goes up |
 | presence | `compares_to` | it is removed |
 | analysed | `bad` (`when`) | it now matches fewer cases, or the direction cannot be decided |
 | analysed | enforcer `point`, `target` (identity), a `bad` clause, a rule (`id`) | it is removed |
-| analysed | `mediation.sink`, `mediation.tables` | a sink or table, or a statement kind of a table, is removed |
+| analysed | `mediation.sink` | a sink is removed |
 | analysed | `mediation.door` | a door is added to a rule that already had a sink |
+| analysed | `mediation.allow` | an entry is added |
 | analysed | rule `targets`, `applies_to` | a target is no longer covered |
 | analysed | `mediation.residual_paths` | an entry is removed (it can raise the rule's standing to `held`) |
 | neutral | `rev`, `spec`, clause `message`, `falsified_by` | never (recorded as a change) |
@@ -224,7 +219,7 @@ or a uint-typed field): `> 4 * size(x)` to `> 10 * size(x)` is weaker, while `> 
 
 `inv lock --check` refuses an older lock with a hint, and `inv lock` migrates it:
 - **Version 2.** The migration compares rule semantics (with the loader's defaults filled in),
-  effects, transactions, signature text, provider fields and contract references, so the weakening
+  effects, signature text, provider fields and contract references, so the weakening
   gate holds across the migration. Types and schemas are re-pinned in the version-3 form.
 - **Version 1** (whole-module hashes). Each rule is compared against its hash. A rule that changed
   since that pin (version 1 cannot show how) or went away needs `--accept-weakening`.
@@ -232,6 +227,16 @@ or a uint-typed field): `> 4 * size(x)` to `> 10 * size(x)` is weaker, while `> 
 A lock with a newer version is refused. So is a malformed lock: a `lock_version` that is not an
 integer (`true` included), or a section or entry of the wrong shape, is a `LockError` that names
 the file and the place.
+
+## Upgrading from a release with rules below the API
+
+This release removed the features that reached below the API: provider `consistency`, target
+`transaction`, `effects: transactional`, `mediation.tables` (and the `tables:` short form), storage
+enforcers and `{type: sql}` contracts. First remove them from the rule file: each one is a load
+error that says what to do. Then run `inv lock`. A lock taken before this release shows each
+removed pin once as a **WEAKENED** change, with the note "removed in this version: it reached
+below the API (see the CHANGELOG); accept it once with `inv lock --accept-weakening`". Review the
+list, and have a person run `inv lock --accept-weakening` once.
 
 ## Where the CLI imports from
 
@@ -267,7 +272,5 @@ The full synopsis is `inv lock [file] [--check] [--accept-weakening] [--lock FIL
   any fields are still accepted, while `args.region in ["xx", "yy"]` to
   `args.region in ["xx", "yy", args.cfg.extra]`, `size(s) / 2 > 1` to `size(s) / 0 > 1` and
   `args.n + 1 > 5` to `args.n + 2 > 5` are not.
-- A class-level SQL constant (`self.SQL`) is not resolved to its uses, so the scan judges it where
-  it is defined.
 - A behaviour change inside a target's body, or in a provider's body, does not change the lock. The
   guards, the tests and `inv scan` check that.

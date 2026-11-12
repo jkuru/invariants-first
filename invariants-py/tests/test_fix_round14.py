@@ -243,7 +243,7 @@ def _doc():
     return {"targets": {"py:app.store.door": {"effects": "external"}},
             "rules": [{"id": "T-1", "status": "enforce", "subject": {"target": "py:app.store.door"},
                        "bad": "false", "enforcers": [{"point": "decorator", "timing": "pre_effect", "mode": "enforce"}],
-                       "mediation": {"sink": "py:app.store.sink", "door": "py:app.store.door", "tables": ["leases"]}}]}
+                       "mediation": {"sink": "py:app.store.sink", "door": "py:app.store.door"}}]}
 
 
 def _scan(tmp_path, body):
@@ -257,19 +257,20 @@ def _scan(tmp_path, body):
     ("store.sink.__call__(c)", ("bypass", "app/bypass.py")),
     ("store.sink.__call__.__call__(c)", ("bypass", "app/bypass.py")),
     ("getattr(store.sink, '__call__')(c)", ("bypass", "app/bypass.py")),
-    ("store.only_door.__call__(c)", ("forbidden/raw-sql", "app/store.py")),
-    ("getattr(store.only_door, '__call__')(c)", ("forbidden/raw-sql", "app/store.py")),
+    ("store.only_door.__call__(c)", None),                       # the door's own helper reaches no sink: fine
+    ("getattr(store.only_door, '__call__')(c)", None),                       # the door's own helper reaches no sink: fine
     ("store.sink.__get__(1)(c)", ("unresolved/sink-escapes", "app/bypass.py")),
     ("f = store.sink.__call__; f(c)", ("unresolved/sink-escapes", "app/bypass.py")),
-    ("store.only_door.__func__", ("forbidden/raw-sql", "app/store.py")),
-    ("getattr(store.only_door, '__get__')(1)(c)", ("forbidden/raw-sql", "app/store.py")),
+    ("store.only_door.__func__", None),                       # the door's own helper reaches no sink: fine
+    ("getattr(store.only_door, '__get__')(1)(c)", None),                       # the door's own helper reaches no sink: fine
     ("operator.methodcaller('__call__', c)(store.sink)", ("unresolved/sink-escapes", "app/bypass.py")),
     ("store.sink.__wrapped__(c)", ("forbidden/unwrap", "app/bypass.py")),
     ("getattr(store.sink, '__wrapped__')(c)", ("forbidden/unwrap", "app/bypass.py")),
     ("operator.methodcaller('__wrapped__')", ("forbidden/unwrap", "app/bypass.py")),
 ])
 def test_dunder_spellings_of_a_call_are_seen(tmp_path, body, want):
-    assert want in _scan(tmp_path, body)
+    got = _scan(tmp_path, body)
+    assert want in got if want is not None else got == set(), got
 
 
 def test_harmless_dunders_do_not_escape(tmp_path):

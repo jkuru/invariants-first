@@ -100,3 +100,5 @@ jobs:
         run: apps/pool-service/ci.sh
       - name: fact-pipeline
         run: apps/fact-pipeline/ci.sh
+      - name: support-agent
+        run: apps/support-agent/ci.sh

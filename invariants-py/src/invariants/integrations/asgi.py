@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any, Awaitable, Callable, MutableMapping
 
-from ..errors import Escalation, Halted, InvariantError, ReviewNotOpened, RolledBack, Routed
+from ..errors import Escalation, Halted, InvariantError, ReviewNotOpened, Routed
 from ..registry import Registry, using
 
 PROBLEM_JSON = "application/problem+json"
@@ -28,7 +28,6 @@ _TITLES = {
     "halted": "An internal invariant failed",
     "routed": "The request was sent for review",
     "escalated": "The request was sent to a person",
-    "rolled-back": "The request was rolled back",
     "review-unavailable": "The request needs review, but no review could be opened",
 }
 
@@ -42,8 +41,6 @@ class StatusMap:
     halt: int = 500
     route: int = 202
     escalate: int = 202
-    rolled_back: int = 409
-    storage: int = 409          # a storage enforcer's refusal (inv.storage_rejection)
     review_unavailable: int = 503   # route/escalate whose review store (and fallback) failed: ReviewNotOpened
 
     def __post_init__(self) -> None:
@@ -56,8 +53,7 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
     """(status, problem+json body) for a guard's exception.
 
     Routed and Escalation -> 202 (with review_id); ReviewNotOpened -> 503; a rule_error under
-    fail_closed -> 503; Halted -> 500; RolledBack -> 409; a storage rejection -> statuses.storage (409);
-    Rejected -> statuses.reject.
+    fail_closed -> 503; Halted -> 500; Rejected -> statuses.reject.
     Clause messages are included only with expose_messages (they are rule-file text).
     """
     s = statuses or StatusMap()
@@ -72,10 +68,6 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
         status, slug = s.rule_error, "rule-error"
     elif isinstance(exc, Halted):
         status, slug = s.halt, "halted"
-    elif isinstance(exc, RolledBack):
-        status, slug = s.rolled_back, "rolled-back"
-    elif exc.point == "storage":
-        status, slug = s.storage, "rejected"
     else:
         status, slug = s.reject, "rejected"
     body: dict[str, Any] = {"type": f"urn:invariants:{slug}", "title": _TITLES[slug], "status": status}
@@ -83,8 +75,6 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
         body["rule"] = exc.rule
     if out is not None:
         body["outcome"] = out.kind
-    if exc.point == "storage":
-        body["point"] = "storage"
     if exc.review_id:
         body["review_id"] = exc.review_id
     if expose_messages and out is not None and out.kind == "violation" and out.messages:

@@ -7,7 +7,7 @@ def force_resize(conn, pool_id: str, n: int) -> None:
 
 
 def raw_resize(conn, pool_id: str, n: int) -> None:
-    conn.execute("UPDATE pools SET size = ? WHERE id = ?", (n, pool_id))   # forbidden: raw SQL
+    conn.execute("UPDATE pools SET size = ? WHERE id = ?", (n, pool_id))   # below the API: not a finding
 
 
 def unguarded_resize(conn, pool_id: str, n: int) -> None:

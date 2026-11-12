@@ -37,7 +37,8 @@ IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit
              "payout", "account", "wallet", "fund", "quota", "usage", "limit", "budget", "allowance", "approv",
              "permission", "role", "grant", "order", "stock", "inventory", "subscription", "billing", "price",
              "lease", "pool", "seat", "token", "expense")
-MIN_CALLERS = 2           # a door is shared: at least two callers go through it
+MIN_CALLERS = 2                   # a door is shared: at least two callers go through it
+MAX_FREEZE_ROUNDS = 5             # freeze, re-scan: a path found later through other callers is frozen too
 
 REPO_CLASS = re.compile(r"(Repo|Repository|Store|Storage|Dao|DAO|Gateway|Persistence|Table|Collection)$")
 REPO_MODULE = frozenset({"repo", "repos", "repository", "repositories", "store", "stores", "storage", "dao", "daos",
@@ -111,7 +112,6 @@ class Door:
     doors: list[str]                         # module.qualname of each door
     sinks: list[str]
     callers: list[str]                       # the doors' callers (the paths that do go through them)
-    tables: list[str] = dataclasses.field(default_factory=list)       # tables the sinks write with raw SQL
     allow: list[str] = dataclasses.field(default_factory=list)
     back_doors: list[str] = dataclasses.field(default_factory=list)   # "file:line message"
     active: bool = True                      # written as a rule (False: commented out, with the reason)
@@ -123,8 +123,6 @@ class Door:
         out: dict[str, Any] = {"id": self.rid,
                                "door": [f"py:{d}" for d in self.doors] if len(self.doors) > 1 else f"py:{self.doors[0]}",
                                "sink": [f"py:{s}" for s in self.sinks] if len(self.sinks) > 1 else f"py:{self.sinks[0]}"}
-        if self.tables:
-            out["tables"] = list(self.tables)
         if self.allow:
             out["allow"] = [f"py:{a}" for a in self.allow]
         return out
@@ -136,6 +134,7 @@ class DoorsFound:
     dropped: list[Door]                      # found, but beyond the limit
     no_door: dict[str, list[str]]            # repository -> its write functions, when no shared door exists
     files: int
+    graph: str | None = None                 # what was read from a Graphify graph, when one was
 
 
 SERVICE_MODULE = re.compile(r"^(services?|managers?|use_?cases?|domain|logic|workflows?|interactors?|commands?|"
@@ -153,13 +152,21 @@ def _service_like(fid: str) -> bool:
     return bool(segs) and bool(SERVICE_MODULE.match(segs[-1]))
 
 
-def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set[str]) -> list[str]:
+def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set[str],
+               community: dict[str, int] | None = None) -> list[str]:
     """The doors of writer w. Every service-layer caller is one (the service layer is allowed to call the
-    repository). Without one, the caller the most other functions go through (at least MIN_CALLERS)."""
+    repository). With a Graphify graph, so is every caller in another community than w that is itself
+    called (a function between two layers, whatever it is named). Without either, the caller the most
+    other functions go through (at least MIN_CALLERS)."""
     cands = sorted(c for c in callers[w] - inside if c in real)
     svc = [c for c in cands if _service_like(c)]
     if svc:
         return svc
+    if community and w in community:
+        bridges = [c for c in cands if c in community and community[c] != community[w]
+                   and callers[c] - {c} - inside]
+        if bridges:
+            return bridges
     best: tuple[int, int, str] | None = None
     for cand in cands:
         n = len(callers[cand] - {cand})
@@ -216,9 +223,12 @@ def sinks_of(g: scanner.Graph) -> tuple[dict[str, set[str]], dict[str, set[str]]
 
 
 def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: int = 5,
-             tables: bool = False) -> DoorsFound:
-    """Door rules for the repositories in the roots. tables: also forbid raw SQL to the tables the sinks
-    write (below the API, so off by default; the rule is then the API-to-API call rule alone)."""
+             graph: pathlib.Path | None = None, project: pathlib.Path | None = None) -> DoorsFound:
+    """Door rules for the repositories in the roots: which service API every call to a repository's
+    write API must pass. Raw SQL in a function's body only marks it as a writer (a sink).
+
+    graph: a Graphify graph.json; its communities and resolved calls propose more doors (see
+    graphify.py). Each proposal is still checked by the scan before it is written."""
     roots, exclude = list(roots), list(exclude)
     g = scanner.graph(roots, exclude)
     real = set(g.functions())
@@ -226,6 +236,13 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
     for e in g.edges:
         if not e.inferred and e.caller != e.callee:
             callers[e.callee].add(e.caller)
+    hint = None
+    if graph is not None:
+        from . import graphify
+        hint = graphify.hints(graph, g, [b for b in (project, *roots) if b is not None])
+        for a, b in hint.calls:                  # calls the graph resolved: discovery only, never the scan
+            callers[b].add(a)
+    community = hint.community if hint else None
     groups, written = sinks_of(g)
     found: list[Door] = []
     no_door: dict[str, list[str]] = {}
@@ -234,7 +251,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         inside = {f for f in real if _resource(g, f) == res} | members      # the repository's own code
         door_list: list[str] = []
         for w in sorted(members):
-            for door in _doors_for(w, callers, real, inside):
+            for door in _doors_for(w, callers, real, inside, community):
                 if door not in door_list:
                     door_list.append(door)
         if not door_list:
@@ -244,11 +261,12 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         repo = not res.startswith("table ") and _resource(g, sorted(members)[0]) == res
         # a repository's write methods are all sinks: nobody but a door may call any of them. Outside a
         # repository, only the writers that have a door are (the rest are listed with no door).
-        sinks = sorted(members) if repo else sorted(w for w in members if _doors_for(w, callers, real, inside))
+        sinks = sorted(members) if repo else sorted(w for w in members
+                                                    if _doors_for(w, callers, real, inside, community))
         via = sorted({c for d in door_list for c in callers[d]} - set(door_list))
         ts = sorted({t for s in sinks for t in written.get(s, ())})
         generic = res.rsplit(".", 1)[-1] in REPO_MODULE or res.startswith("table ")
-        found.append(Door("", res, door_list, sinks, via, ts if tables else [],
+        found.append(Door("", res, door_list, sinks, via,
                           score=_score(res, *door_list, *sinks, *ts),
                           label=ts[0] if len(ts) == 1 and generic else ""))
     found.sort(key=lambda d: (-d.score, -len(d.callers), d.resource))
@@ -258,7 +276,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         d.rid = _rule_id(d, taken)
     for d in kept:
         _freeze(d, g, roots, exclude)
-    return DoorsFound(kept, dropped, no_door, len(g.idx.modules))
+    return DoorsFound(kept, dropped, no_door, len(g.idx.modules), hint.summary() if hint else None)
 
 
 def _check(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str]) -> scanner.Report:
@@ -272,15 +290,24 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     report = _check(d, g, roots, exclude)
     found = report.for_rule(d.rid)
     d.back_doors = [f"{f.file}:{f.line} {f.message}" if f.file else f.message for f in found]
-    owners = {f.owner for f in found if f.owner}
     unowned = [f for f in found if not f.owner]
     if unowned:
         d.active = False
         d.why_inactive = ("a finding is not inside a function (module-level code or a missing name), so it "
                           "cannot be frozen in allow")
         return
-    d.allow = sorted(owners - {*d.doors, *d.sinks})
-    if d.allow and _check(d, g, roots, exclude).rule_result(d.rid) != "pass":
+    # a back door is frozen with the call chain that reaches it today: allow lets a path through only
+    # when every function on it is allowed, so a new caller of a frozen back door is still caught
+    keep = {*d.doors, *d.sinks}
+    frozen: set[str] = set()
+    for _ in range(MAX_FREEZE_ROUNDS):
+        frozen |= {n for f in found for n in [f.owner, *f.path] if n} - keep
+        d.allow = sorted(frozen)
+        report = _check(d, g, roots, exclude)
+        found = report.for_rule(d.rid)
+        if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found):
+            break
+    if d.allow and report.rule_result(d.rid) != "pass":
         d.active = False
         d.why_inactive = "the scan still fails with the back doors frozen; review the findings by hand"
 
@@ -294,12 +321,11 @@ def render(found: DoorsFound) -> list[str]:
     if not found.doors and not found.dropped and not found.no_door:
         return []
     lines = ["  # Doors: each repository below is written through a service function. `inv check` fails a new",
-             "  # code path that calls a write without passing its door (and raw SQL to a listed table).",
+             "  # code path that calls a write without passing its door.",
              "  # Nothing runs in production: `inv check` reads the source. Delete a rule you do not want.",
              "  #"]
     for d in found.doors:
-        what = d.resource + (f" (tables {', '.join(d.tables)})" if d.tables else "")
-        lines.append(f"  # {what}: written by {', '.join(d.sinks)}")
+        lines.append(f"  # {d.resource}: written by {', '.join(d.sinks)}")
         lines.append(f"  #   {len(d.callers)} caller(s) go through {' or '.join(d.doors)}")
         if d.back_doors:
             verb = "frozen in allow (fix each one, then delete it from allow)" if d.active else "found"
@@ -309,8 +335,6 @@ def render(found: DoorsFound) -> list[str]:
         body = [f"- id: {r['id']}",
                 f"  door: {json.dumps(r['door']) if isinstance(r['door'], str) else _yaml_list(r['door'])}",
                 f"  sink: {json.dumps(r['sink']) if isinstance(r['sink'], str) else _yaml_list(r['sink'])}"]
-        if d.tables:
-            body.append(f"  tables: {_yaml_list(r['tables'])}")
         if d.allow:
             body.append("  allow:")
             body += [f"    - {json.dumps(a)}" for a in r["allow"]]
@@ -333,7 +357,7 @@ def render(found: DoorsFound) -> list[str]:
 
 
 def summary(found: DoorsFound) -> list[str]:
-    out = []
+    out = [found.graph] if found.graph else []
     for d in found.doors:
         state = "" if d.active else " (commented out: see the file)"
         out.append(f"door {d.rid}: {d.resource} through {' or '.join(d.doors)} ({len(d.callers)} "

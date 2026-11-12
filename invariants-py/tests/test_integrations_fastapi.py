@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 import integ_fastapi_app as app
 import invariants as inv
-from invariants.errors import Escalation, Halted, Rejected, RolledBack, Routed
+from invariants.errors import Escalation, Halted, Rejected, Routed
 from invariants.integrations import fastapi as inv_fastapi
 from invariants.integrations.asgi import PROBLEM_JSON, InvariantMiddleware, StatusMap, problem
 from invariants.model import Outcome
@@ -247,7 +247,6 @@ def test_rules_without_openapi_contract_are_ignored():
     (Halted("x", Outcome("rule_error", "R")), 503, "rule-error"),
     (Routed("x", Outcome("violation", "R"), review_id="review-9"), 202, "routed"),
     (Escalation("x", None, [{"attempt": 1}]), 202, "escalated"),
-    (RolledBack("x"), 409, "rolled-back"),
     (Rejected("x", Outcome("parse_error", "R", error="bad")), 422, "rejected"),
 ])
 def test_problem(exc, status, slug):
@@ -259,7 +258,7 @@ def test_problem(exc, status, slug):
 def test_problem_names_rule_without_outcome():
     _, body = problem(Escalation("x", None, [{"attempt": 1}], rule="R-P7"))
     assert body["rule"] == "R-P7" and "outcome" not in body
-    _, body = problem(RolledBack("x", rule="R-H2"))
+    _, body = problem(Rejected("x", rule="R-H2"))
     assert body["rule"] == "R-H2"
 
 

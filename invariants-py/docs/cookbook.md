@@ -3,12 +3,12 @@
 Ten short recipes. Each one was run as written, and the output shown is what it printed. Every recipe is a directory of its own: save the files, then run the commands from that directory (`pip install 'invariants-first[fastapi]' pytest` covers them all: the `[fastapi]` extra brings pydantic, and httpx for `fastapi.testclient`).
 
 1. [Roll a new rule out in detect mode](#1-roll-a-new-rule-out-in-detect-mode)
-2. [Guard a database write, and roll it back](#2-guard-a-database-write-and-roll-it-back)
+2. [Guard a service method before it writes](#2-guard-a-service-method-before-it-writes)
 3. [Compare before and after with `old_self`](#3-compare-before-and-after-with-old_self)
 4. [Send a case to a person instead of failing](#4-send-a-case-to-a-person-instead-of-failing)
 5. [Check an LLM reply, retry it, and re-check it at the edge](#5-check-an-llm-reply-retry-it-and-re-check-it-at-the-edge)
 6. [Guard a FastAPI route](#6-guard-a-fastapi-route)
-7. [Back a rule with a database constraint](#7-back-a-rule-with-a-database-constraint)
+7. [Lock a repository behind its service](#7-lock-a-repository-behind-its-service)
 8. [Find old rows that break a new rule](#8-find-old-rows-that-break-a-new-rule)
 9. [Assert which rule fired](#9-assert-which-rule-fired)
 10. [Run every check in CI](#10-run-every-check-in-ci)
@@ -69,86 +69,75 @@ SHIP-1   detect     monitored
 verify: pass
 ```
 
-## 2. Guard a database write, and roll it back
+## 2. Guard a service method before it writes
 
-A `transactional` target lets a `post_effect` check see the new state and roll it back. The `same_txn` provider reads inside the same transaction, so two callers cannot race past it. Called outside its transaction, the door refuses before it writes.
+A `pre_effect` value law runs before the method, so a refused call writes nothing. A provider gives the rule data the call does not carry (here, the current balance); it is read just before the call. A `post_effect` check on an `external` effect can only detect, since the write has already happened: the loader refuses one that enforces ("post_effect enforcer on py:accounts.Bank.withdraw (effects external); rewrite as a precondition or use detect").
+
+A check on a method's arguments is not a lock: two concurrent callers can both pass it. Keeping concurrent writes consistent (the store's constraints, its transactions) is the implementation's business.
 
 `invariants.yaml`:
 
 ```yaml
 spec: invariant/v0.1
 targets:
-  "py:accounts.Bank.withdraw": {effects: transactional, transaction: "py:accounts.Bank.txn"}
+  "py:accounts.Bank.withdraw": {effects: external}
 providers:
   balance:
     type: int
-    from: "py:accounts.load_balance"
-    args: {conn: self.conn, account: args.account}
-    consistency: same_txn          # read inside the same transaction as the write: no race
+    from: "py:accounts.current_balance"
+    args: {ledger: self.ledger, account: args.account}
 rules:
   - id: BANK-1
     status: enforce
-    statement: an account balance never goes negative
+    statement: a withdrawal is positive and never more than the balance
     subject: {target: "py:accounts.Bank.withdraw"}
-    bad: 'balance < 0'
+    bad:
+      - {when: 'args.amount <= 0', message: a withdrawal must be positive}
+      - {when: 'args.amount > balance', message: a withdrawal cannot overdraw the account}
     enforcers:
-      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject}
-    falsified_by: [test_accounts.py::test_overdraft_rolls_back]
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject}
+    falsified_by: [test_accounts.py::test_overdraft_is_refused]
 ```
 
 `accounts.py`:
 
 ```python
-import sqlite3
 import invariants as inv
 
 
+class Ledger:                                   # stands in for the repository and its database
+    def __init__(self) -> None:
+        self.balances: dict[str, int] = {"alice": 100}
+
+
 @inv.provider("balance")
-def load_balance(conn: sqlite3.Connection, account: str) -> int:
-    return conn.execute("SELECT balance FROM accounts WHERE id = ?", (account,)).fetchone()[0]
+def current_balance(ledger: Ledger, account: str) -> int:
+    return ledger.balances[account]
 
 
 class Bank:
     def __init__(self) -> None:
-        self.conn = sqlite3.connect(":memory:", isolation_level=None)
-        self.conn.execute("CREATE TABLE accounts (id TEXT PRIMARY KEY, balance INTEGER)")
-        self.conn.execute("INSERT INTO accounts VALUES ('alice', 100)")
-
-    @inv.transaction
-    def txn(self):
-        self.conn.execute("BEGIN")
-        try:
-            yield
-        except BaseException:
-            self.conn.execute("ROLLBACK")
-            raise
-        self.conn.execute("COMMIT")
+        self.ledger = Ledger()
 
     @inv.guard("BANK-1")
     def withdraw(self, account: str, amount: int) -> None:
-        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", (amount, account))
+        self.ledger.balances[account] -= amount
 ```
 
 `run.py`:
 
 ```python
 import invariants as inv
-from accounts import Bank, load_balance
+from accounts import Bank
 
 inv.load("invariants.yaml")
 bank = Bank()
-with bank.txn():
-    bank.withdraw("alice", 30)                       # ok: balance 70
+bank.withdraw("alice", 30)                           # ok: balance 70
 try:
-    with bank.txn():
-        bank.withdraw("alice", 500)                  # the post-effect check sees -430
+    bank.withdraw("alice", 500)                      # refused before the write
 except inv.Rejected as e:
     print("rejected:", e)
-print("balance:", load_balance(bank.conn, "alice"))  # 70: the write was rolled back
-try:
-    bank.withdraw("alice", 10)                       # outside its transaction
-except inv.WiringError as e:
-    print("wiring:", e)
+print("balance:", bank.ledger.balances["alice"])     # 70: nothing was written
 ```
 
 `test_accounts.py`:
@@ -156,21 +145,20 @@ except inv.WiringError as e:
 ```python
 import pytest
 import invariants as inv
-from accounts import Bank, load_balance
+from accounts import Bank
 
 
-def test_overdraft_rolls_back():
+def test_overdraft_is_refused():
     bank = Bank()
-    with pytest.raises(inv.Rejected), bank.txn():
+    with pytest.raises(inv.Rejected):
         bank.withdraw("alice", 500)
-    assert load_balance(bank.conn, "alice") == 100
+    assert bank.ledger.balances["alice"] == 100
 ```
 
 ```text
 $ python run.py
-rejected: BANK-1 violation: an account balance never goes negative
+rejected: BANK-1 violation: a withdrawal cannot overdraw the account
 balance: 70
-wiring: BANK-1 rule_error: cannot confirm py:accounts.Bank.withdraw runs inside py:accounts.Bank.txn (a post_effect check must run inside it to roll back); the effect was not started
 ```
 
 ```text
@@ -178,51 +166,40 @@ $ pytest -q --inv-rules invariants.yaml --inv-ablate
 .                                                                        [100%]
 ----------------------------- invariants ablation ------------------------------
   BANK-1: load-bearing
-      caught         test_accounts.py::test_overdraft_rolls_back
+      caught         test_accounts.py::test_overdraft_is_refused
 1 passed in 0.06s
 ```
 
 ## 3. Compare before and after with `old_self`
 
-A transition rule reads `old_self.<path>`. Only those paths are copied before the call, and `inv.check_snapshot` proves at test time that they are plain data.
+A transition rule reads `old_self.<path>`. Only those paths are copied before the call, and `inv.check_snapshot` proves at test time that they are plain data. The check runs after the effect, so on an `external` target it detects and reports; to refuse the edit, write the rule over the arguments as a `pre_effect` check (`args.cents * 2 > self.prices[args.sku] * 3`).
 
 `invariants.yaml`:
 
 ```yaml
 spec: invariant/v0.1
 targets:
-  "py:prices.Catalog.set_price": {effects: transactional, transaction: "py:prices.Catalog.txn"}
+  "py:prices.Catalog.set_price": {effects: external}
 rules:
   - id: PRICE-2
-    status: enforce
+    status: detect               # a post-effect check on an external effect can only detect
     statement: one edit never raises a price by more than 50%
     subject: {target: "py:prices.Catalog.set_price"}
     scope: transition
     bad: 'self.prices[args.sku] * 2 > old_self.prices[args.sku] * 3'
     enforcers:
-      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject}
-    falsified_by: [test_prices.py::test_a_big_jump_is_rolled_back]
+      - {point: decorator, timing: post_effect, mode: detect}
 ```
 
 `prices.py`:
 
 ```python
-import copy
 import invariants as inv
 
 
 class Catalog:
     def __init__(self) -> None:
         self.prices: dict[str, int] = {"tea": 400}
-
-    @inv.transaction
-    def txn(self):
-        saved = copy.deepcopy(self.prices)
-        try:
-            yield
-        except BaseException:
-            self.prices = saved                       # roll back
-            raise
 
     @inv.guard("PRICE-2")
     def set_price(self, sku: str, cents: int) -> None:
@@ -238,20 +215,16 @@ from prices import Catalog
 inv.load("invariants.yaml")
 c = Catalog()
 print("snapshot paths:", inv.check_snapshot("PRICE-2", c))   # only old_self.prices is copied
-with c.txn():
+with inv.capture() as events:
     c.set_price("tea", 550)                                  # +37%: ok
-try:
-    with c.txn():
-        c.set_price("tea", 900)                              # +64%: rejected, rolled back
-except inv.Rejected as e:
-    print("rejected:", e)
+    c.set_price("tea", 900)                                  # +64%: reported, not blocked
+print([(e["rule"], e["outcome"]) for e in events])
 print(c.prices)
 ```
 
 `test_prices.py`:
 
 ```python
-import pytest
 import invariants as inv
 from prices import Catalog
 
@@ -260,26 +233,21 @@ def test_snapshot_paths_are_plain_data():
     inv.check_snapshot("PRICE-2", Catalog())         # raises LoadError if old_self.prices is not plain data
 
 
-def test_a_big_jump_is_rolled_back():
-    c = Catalog()
-    with pytest.raises(inv.Rejected), c.txn():
-        c.set_price("tea", 900)
-    assert c.prices["tea"] == 400
+def test_a_big_jump_is_reported(inv_events):
+    Catalog().set_price("tea", 900)
+    assert [(e["rule"], e["outcome"]) for e in inv_events] == [("PRICE-2", "violation")]
 ```
 
 ```text
 $ python run.py
 snapshot paths: ['PRICE-2:old_self.prices']
-rejected: PRICE-2 violation: one edit never raises a price by more than 50%
-{'tea': 550}
+[('PRICE-2', 'ok'), ('PRICE-2', 'violation')]
+{'tea': 900}
 ```
 
 ```text
-$ pytest -q --inv-rules invariants.yaml --inv-ablate
+$ pytest -q --inv-rules invariants.yaml
 ..                                                                       [100%]
------------------------------ invariants ablation ------------------------------
-  PRICE-2: load-bearing
-      caught         test_prices.py::test_a_big_jump_is_rolled_back
 2 passed in 0.05s
 ```
 
@@ -568,88 +536,96 @@ $ pytest -q --inv-rules invariants.yaml --inv-ablate
 1 passed in 0.14s
 ```
 
-## 7. Back a rule with a database constraint
+## 7. Lock a repository behind its service
 
-A storage enforcer is a CHECK, trigger or UNIQUE constraint. `inv.storage_errors` maps its error to a counted `Rejected` with `point == "storage"`, and the DDL leaves the constraint out while the rule is ablated, so `--inv-ablate` can prove the constraint is load-bearing.
+A door rule is a path law: only the service method may call the repository write. Nothing runs in production; `inv scan` (inside `inv check`) reads the source. `allow` freezes the back doors that exist today. An allowed function is not a door: a path to the sink passes only when every function on it is in `allow`, so a new caller of `fix_counts` is a bypass too. When `fix_counts` is fixed, its entry fails the scan (`missing/allow-unused`) until it is deleted.
 
 `invariants.yaml`:
 
 ```yaml
 spec: invariant/v0.1
-targets:
-  "py:stock.add_item": {effects: external}
 rules:
-  - id: STOCK-1
-    status: enforce
-    statement: stock on hand is never negative
-    subject: {target: "py:stock.add_item"}
-    bind: {on_hand: args.on_hand}
-    bad: 'on_hand < 0'          # what the CHECK below enforces, in CEL
-    enforcers:
-      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject, view: rows}
-    falsified_by: [test_stock.py::test_negative_stock_is_refused_by_the_database]
+  - id: STOCK-DOOR
+    door: py:stock_service.StockService.receive     # the upper API: it checks the quantity
+    sink: py:stock_repo.StockRepo.save              # the lower API it protects
+    allow: [py:admin.fix_counts]                    # the one back door today, frozen
 ```
 
-`stock.py`:
+`stock_repo.py`:
 
 ```python
-import sqlite3
-import invariants as inv
+class StockRepo:
+    def __init__(self) -> None:
+        self.on_hand: dict[str, int] = {}
 
-
-def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    check = "" if inv.is_ablated("STOCK-1") else ", CONSTRAINT stock_1 CHECK (on_hand >= 0)"
-    conn.execute(f"CREATE TABLE stock (sku TEXT PRIMARY KEY, on_hand INTEGER{check})")
-    return conn
-
-
-def add_item(conn: sqlite3.Connection, sku: str, on_hand: int) -> None:
-    with inv.storage_errors({"stock_1": "STOCK-1"}, (sqlite3.IntegrityError,)):
-        conn.execute("INSERT INTO stock VALUES (?, ?)", (sku, on_hand))
+    def save(self, sku: str, on_hand: int) -> None:
+        self.on_hand[sku] = on_hand
 ```
 
-`run.py`:
+`stock_service.py`:
 
 ```python
-import invariants as inv
-from stock import add_item, connect
+from stock_repo import StockRepo
 
-inv.load("invariants.yaml")
-conn = connect()
-add_item(conn, "tea", 5)
-try:
-    add_item(conn, "mug", -2)
-except inv.Rejected as e:
-    print("rejected:", e.rule, "at", e.point)
+
+class StockService:
+    def __init__(self, repo: StockRepo) -> None:
+        self.repo = repo
+
+    def receive(self, sku: str, qty: int) -> None:
+        if qty <= 0:
+            raise ValueError("qty must be positive")
+        self.repo.save(sku, self.repo.on_hand.get(sku, 0) + qty)
 ```
 
-`test_stock.py`:
+`admin.py`:
 
 ```python
-import pytest
-import invariants as inv
-from stock import add_item, connect
+from stock_repo import StockRepo
 
 
-def test_negative_stock_is_refused_by_the_database():
-    with pytest.raises(inv.Rejected):
-        add_item(connect(), "mug", -2)
+def fix_counts(repo: StockRepo, sku: str, on_hand: int) -> None:
+    repo.save(sku, on_hand)                          # skips the service: a known back door
 ```
 
 ```text
-$ python run.py
-rejected: STOCK-1 at storage
+$ inv scan
+STOCK-DOOR: pass (no findings)
+scanned 3 file(s), 5 function(s)
+```
+
+Now add two files: `restock.py`, which calls the repository directly, and `nightly.py`, which calls the allowed back door.
+
+`restock.py`:
+
+```python
+from stock_repo import StockRepo
+
+
+def restock(repo: StockRepo, sku: str) -> None:
+    repo.save(sku, 100)                              # new code that skips the door
+```
+
+`nightly.py`:
+
+```python
+from admin import fix_counts
+from stock_repo import StockRepo
+
+
+def reset_all(repo: StockRepo) -> None:
+    fix_counts(repo, "tea", 0)                       # a new caller of the allowed back door
 ```
 
 ```text
-$ pytest -q --inv-rules invariants.yaml --inv-ablate
-.                                                                        [100%]
------------------------------ invariants ablation ------------------------------
-  STOCK-1: load-bearing
-      caught         test_stock.py::test_negative_stock_is_refused_by_the_database
-1 passed in 0.06s
+$ inv scan
+bypass     STOCK-DOOR admin.py:5:5  nightly.reset_all -> admin.fix_counts -> stock_repo.StockRepo.save reaches the sink without passing stock_service.StockService.receive
+bypass     STOCK-DOOR restock.py:5:5  restock.restock -> stock_repo.StockRepo.save reaches the sink without passing stock_service.StockService.receive
+STOCK-DOOR: fail (2 bypass)
+scanned 5 file(s), 7 function(s)
 ```
+
+The exit code is 1. If `reset_all` is a reviewed back door, add it to `allow`; the lock reports that as a weakening, so a person accepts it.
 
 ## 8. Find old rows that break a new rule
 

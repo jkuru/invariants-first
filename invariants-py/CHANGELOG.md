@@ -10,6 +10,79 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Nothing below the API
+
+Every layer is an API, and the rules stay on API boundaries: value laws on an API's inputs and
+outputs, path laws on which API may call which. The features that reached below the API are
+removed.
+
+- **Removed.** Storage enforcers (`point: storage`, `view: rows`, `inv.storage_rejection`,
+  `inv.storage_errors`, `StatusMap.storage`); transactional targets (`effects: transactional`, a
+  target's `transaction`, `@inv.transaction` and its savepoints, `inv.RolledBack`, `inv.WiringError`,
+  `StatusMap.rolled_back`); provider `consistency` (a provider is a plain typed read at its enforcer's
+  timing, and `inv.monitor` no longer takes `in_txn`); `tables:` and `mediation.tables` with the
+  scan's raw-SQL findings (`forbidden/raw-sql`, `unresolved/computed-sql`, DROP TRIGGER) and its
+  warnings (`Report.warnings`, `sink_writes`, `uncovered_tables`, `scan_warning` in `inv status`);
+  `.sql` contracts and the module `invariants.sql_constraints`; `inv init --sql`. `effects` is now
+  `none` or `external`, so a post-effect check enforces only on a pure function and reports on
+  anything else.
+- **Migration.** A rule file that still uses a removed field fails to load with a message saying
+  what to do (for example `consistency: provider consistency levels were removed: ... delete the
+  field`). A lock taken before this release shows each removed pin once as WEAKENED, with the note
+  "removed in this version: it reached below the API"; a person accepts it once with
+  `inv lock --accept-weakening`. The store's own constraints, triggers and transactions keep working
+  as the implementation's business; no rule names them.
+- **Example apps.** pool-service's R-22 is a pre-effect check of the requested size (it was a
+  rolled-back transition rule), and its store's trigger refusal is a plain 409 the app answers
+  itself. fact-pipeline drops K-8 (append-only rows) and K-9 (one canonical id per record), which
+  had no API: the schema keeps them as constraints. Its K-15, a post-condition of an external
+  effect, is now `detect`, with the monitor reconciling.
+
+### Security: an allowed back door is not a door
+
+- **`allow` no longer lets new code through a frozen back door.** The scan used to treat an `allow`
+  entry like a door, so a new caller of an allowed function reached the sink unseen, and anything
+  inside an allowed function (unwrapping the door, monkeypatching it, `eval`) was not reported. Now
+  a path to the sink is let through only when every function on it is allowed (the call chains
+  frozen when `allow` was written): a new caller of an allowed back door, or new code one calls, is
+  a `bypass`. Inside an allowed function, the ways it reaches the sink are still excused, but
+  `forbidden/unwrap`, `forbidden/monkeypatch` and `unresolved/reflection` are reported. `inv init`
+  freezes each back door with its call chain (re-scanning until the rule passes, at most 5 rounds).
+- **`inv hook pretool` blocks direct edits of `invariants.lock`.** An edit tool on the lock (Edit,
+  Write, MultiEdit, NotebookEdit) or a shell command that writes it (a redirect, `tee`, `sed -i`,
+  `perl -i`, `cp`, `mv`, `rm`, `truncate`, `dd`) is refused: only `inv lock` and
+  `inv check --relock` write the lock, and both refuse a weakening. Reading it is fine. The hook's
+  `PreToolUse` matcher in docs/start.md is now `Bash|Edit|Write|MultiEdit|NotebookEdit`, so an edit
+  tool reaches it.
+
+### Added
+
+- **Receiver types follow attribute chains.** `ctx.billing.refund()` with `ctx: AgentContext`, where
+  `AgentContext` sets `self.billing = BillingService(...)` or declares `billing: BillingService`
+  (a dataclass), is an extracted call. Attributes resolve in the module that defines the class. An
+  attribute that any code sets from outside its object (`obj.x = ...` outside the object's own
+  methods, or `setattr(obj, "x", ...)`) is never typed, so a swapped dependency stays unresolved.
+- **Graphify hints for `inv init`.** With `graphify-out/graph.json` in the project (or
+  `--graphify PATH`; `--no-graphify` turns it off), `inv init` reads a
+  [Graphify](https://github.com/Graphify-Labs/graphify) graph as plain JSON: nodes are matched to
+  functions by file and line, communities propose doors (a caller of a write in another community,
+  itself called, is a door even when nothing is named Service), and the calls Graphify resolved
+  (EXTRACTED or INFERRED, not AMBIGUOUS) count as callers. Every proposed rule is still checked by
+  the scan before it is written; `inv check` never reads the graph, and Graphify is never imported
+  or run (`invariants.graphify`).
+- **Module constants in `inv init`.** A precondition that compares with a module-level literal
+  bound once (`MAX_REFUND = 10_000`; `if amount > MAX_REFUND: raise`) is translated with the value
+  inlined (`args.amount > 10000`). A name bound twice, rebound with `global`, a loop variable or an
+  import is left untranslated and says so.
+- **apps/support-agent.** A tool-calling support agent: a graph of nodes registered as values, an
+  `@inv.model_call` planner (2 format retries, 1 resample, `ESCALATE_TO_HUMAN` hands off), an
+  `@inv.edge` executor, tools that call `BillingService` doors, and `StripeGateway` / `LedgerRepo`
+  sinks. `inv init` on its code found the tool and plan schemas, both door rules and the one real
+  back door. Twelve seeded defects (a tool that skips the door, the sink in the tool registry, a
+  raised cap, more resamples, a new caller of the frozen back door, an over-refund, bad JSON, an
+  abstention, a forged plan, a plan changed after the check, a deleted guard, a deleted rule) are
+  each caught, and safe changes pass. It runs in the monorepo's CI with the other two apps.
+
 ### API laws at every layer: doors without decorators
 
 The rules now stay on API boundaries: value laws on an API's inputs and outputs, and path laws on
@@ -21,8 +94,9 @@ which API may call which. Nothing in this section looks below a repository's API
   by `inv scan` inside `inv check`. `allow:` freezes known back doors: the scan lets them (and
   everything inside them) through, a new back door fails, an entry that is no longer a back door
   fails until deleted (`missing/allow-unused`), and an emptied `allow` means none. The lock reports a
-  new `allow` entry or a new door as a weakening and a removed one as a tightening. `tables:` stays
-  available and optional (below the API). With `guard:`, the guarded function is the door.
+  new `allow` entry or a new door as a weakening and a removed one as a tightening. With `guard:`,
+  the guarded function is the door. (How `allow` lets paths through changed: see the security entry
+  above.)
 - **`inv init` finds the doors.** For each repository (a Repo, Store, Gateway or DAO class, or a
   `repo`/`store`/`db` module, or the functions that write through an ORM session, a Django manager,
   a Mongo collection, a DynamoDB table, a client's `create` call or raw SQL), it proposes one door
@@ -31,8 +105,8 @@ which API may call which. Nothing in this section looks below a repository's API
   proposal and freezes what it finds in `allow`, so the drafted file passes `inv check` and a new
   back door fails it. At most five rules are written, money, quota and approval names first
   (`--max-doors`); `--no-doors` skips it.
-- **`inv init` is API-only by default.** `.sql` constraint contracts and `tables:` are written only
-  with `--sql`; the init summary says how many `.sql` files it left unpinned.
+- **`inv init` is API-only.** It never reads `.sql` files (`--sql` was removed with the other
+  below-the-API features, above).
 - **The scan types method receivers.** A call on a receiver of a known class is an extracted edge: a
   constructor call, a local variable or `self.x` bound only to one, or a parameter annotated with a
   scanned class (`Optional[...]`, `X | None` and string annotations too; tuple assignment pairs
@@ -53,8 +127,7 @@ which API may call which. Nothing in this section looks below a repository's API
 ### Adoption: a 10-minute start
 
 - **`inv init`** drafts `invariants.yaml` from what the code already has. It reads the source and
-  imports nothing. Pydantic models with constraints become `pydantic` contracts. With `--sql`, `.sql` files
-  with constraints become `sql` contracts. Leading `if ...: raise` and `assert` preconditions over the
+  imports nothing. Pydantic models with constraints become `pydantic` contracts. Leading `if ...: raise` and `assert` preconditions over the
   parameters become suggested short-form rules, translated to CEL and left commented out. Anything
   it cannot translate faithfully is listed, not guessed. It runs `inv lock` and never overwrites a
   rule file. Models are found through `BaseModel`, `RootModel` and `SQLModel` bases, subscripted
@@ -85,28 +158,29 @@ The first release of `invariants`: rule-file-driven invariant guards for Python,
 to show that each one holds.
 
 - **Rule files.** JSON or YAML (`spec: invariant/v0.1`) with targets and their effects, typed
-  read-only providers with a declared consistency, and rules whose `bad` is CEL. `inv.load` checks
+  read-only providers, and rules whose `bad` is CEL. `inv.load` checks
   everything at load time: targets, providers, the timing of every enforcer, the status the evidence
   allows, every CEL function against the chosen backend, and a type check of every clause.
-- **Enforcers.** `@inv.guard` (sync, async, methods), `@inv.transaction` boundaries with rollback
-  and savepoints, `@inv.model_call` (closed schemas, format retries with parser feedback, semantic
-  resamples, abstain) and `@inv.edge`, plus storage, monitor and FastAPI middleware points. Four
+- **Enforcers.** `@inv.guard` (sync, async, methods), `@inv.model_call` (closed schemas, format
+  retries with parser feedback, semantic resamples, abstain) and `@inv.edge`, plus monitor, FastAPI
+  middleware and structure (scan) points. Four
   outcomes (`ok`, `violation`, `rule_error`, `parse_error`) and four actions (reject, halt,
   escalate, route) with review stores and a durable fallback.
 - **CEL.** Three backends (`subset`, `cel-expr`, `celpy`) behind one front end, one Python-to-CEL
   value mapping, cost budgets on every backend, a non-finite policy that makes NaN a `rule_error`,
   and an 18-suite conformance corpus that every backend passes with no expected failures.
 - **CLI.** `inv validate`, `inv lock` (lock version 3: contract-level pins, a semantic diff, and a
-  weakening gate behind `--accept-weakening`), `inv verify`, `inv scan` (a static mediation check
-  with raw-SQL table rules, text, JSON and SARIF output) and `inv status` (computed standing).
+  weakening gate behind `--accept-weakening`), `inv verify`, `inv scan` (a static path-law check,
+  text, JSON and SARIF output), `inv status` (computed standing), and `inv init`, `inv check` and
+  `inv hook` for adoption.
 - **pytest plugin.** `--inv-verify`, `--inv-ablate` (each rule switched off; its falsifiers must
   fail because of it), `--inv-report`, and the `inv_registry`, `inv_ablated` and `inv_events`
   fixtures.
 - **Integrations.** Pydantic (strict closed schemas, contracts), FastAPI and ASGI
   (`application/problem+json` with no values echoed), and OpenTelemetry spans.
 - **Documentation and examples.** A front-page README with a runnable quickstart, reference pages
-  under `docs/`, a measured evaluation (`docs/evaluation.md`), and two standalone example apps under
-  `examples/`.
+  under `docs/`, a measured evaluation (`docs/evaluation.md`), and three standalone example apps
+  under `apps/` (pool-service, fact-pipeline, support-agent).
 
 Known limitations are listed in the README and in each reference page.
 

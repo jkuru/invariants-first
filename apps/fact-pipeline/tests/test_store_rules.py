@@ -1,4 +1,4 @@
-"""Ingest, promotion and deletion doors, and the storage enforcers behind them."""
+"""Ingest, promotion and deletion doors; the schema's own constraints are tested here as app code."""
 from __future__ import annotations
 
 import sqlite3
@@ -160,16 +160,16 @@ def test_k15_delete_retracts_orphans(store: Store, make_proposal: Callable[..., 
     assert store.status(p.id) == "RETRACTED"
 
 
-def test_k15_failed_retraction_rolls_back(store: Store, make_proposal: Callable[..., Proposal],
-                                          monkeypatch: pytest.MonkeyPatch) -> None:
+def test_k15_failed_retraction_is_reported(store: Store, make_proposal: Callable[..., Proposal],
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """A post-condition of an external effect is reported, never rolled back by the library."""
     p = make_proposal()
     store.ingest(p)
     monkeypatch.setattr(Store, "_retract_orphans", lambda self, sid: [])     # a retraction bug
-    with pytest.raises(inv.Rejected) as e:
+    with inv.capture() as events:
         store.delete_source(p.evidence[0].source_id)
-    assert e.value.rule == "K-15"
-    src = store.source(p.evidence[0].source_id)
-    assert src is not None and not src.deleted                               # rolled back
+    k15 = [e for e in events if e["rule"] == "K-15"]
+    assert [e["outcome"] for e in k15] == ["violation"] and k15[0]["mode"] == "detect"
 
 
 def test_k18_ingest_refuses_unminted_id(store: Store, make_proposal: Callable[..., Proposal]) -> None:
@@ -183,8 +183,7 @@ def test_k18_object_entity_must_be_minted(store: Store, make_proposal: Callable[
         store.ingest(make_proposal(predicate="acquired", object="ent_madeup", object_kind="entity"))
 
 
-def test_door_outside_its_transaction_fails_closed(store: Store, make_proposal: Callable[..., Proposal]) -> None:
-    """Calling the door directly, outside Store.txn: same_txn providers cannot be read, so it refuses."""
-    with pytest.raises(inv.InvariantError):
-        store.ingest_door(make_proposal())
-    assert store.facts() == []
+def test_a_door_needs_no_transaction(store: Store, make_proposal: Callable[..., Proposal]) -> None:
+    """The rules read the door's arguments and plain providers: the transaction is the store's own."""
+    fid = store.ingest_door(make_proposal())
+    assert [f["id"] for f in store.facts()] == [fid]

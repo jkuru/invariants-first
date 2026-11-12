@@ -175,9 +175,11 @@ The section above holds at every layer, not only at HTTP. A system is a stack of
 
 People own the boundaries. Agents are free inside the implementations, and what is below the lowest API (SQL, isolation levels, private fields) is that implementation's business. A rule that reaches below the boundary polices an implementation instead of a contract. It also ties the rule to one database, and it pulls in vocabulary (triggers, savepoints, consistency levels) that a team adopting the tool should not need.
 
-Earlier drafts went below the API to answer critiques about concurrent writers and raw SQL (2.7, 4.1). Those mechanisms are still in the library: storage enforcers, `tables:`, `transactional` effects, provider consistency levels and `.sql` contracts. They are now opt-in and marked legacy, and the plan is to retire them. A path law at the repository API answers the raw-SQL critique without them: the scan proves no call path reaches the repository's write methods except through the service, whatever the repository talks to. Representation invariants (1.8) stay with the implementation, as candidates an agent may propose.
+Earlier drafts went below the API to answer critiques about concurrent writers and raw SQL (2.7, 4.1). The library built those mechanisms and has now removed them: storage enforcers (`point: storage`, `view: rows`), `transactional` effects with their `@inv.transaction` boundary and rollback, provider consistency levels, `tables:` with the scan's raw-SQL findings, and `.sql` contracts with `inv init --sql`. A rule file that still uses one fails to load with a message saying what to do instead, and an old lock shows each removed pin once as `WEAKENED`, to be accepted once with `inv lock --accept-weakening`. A path law at the repository API answers the raw-SQL critique without them: the scan proves no call path reaches the repository's write methods except through the service, whatever the repository talks to. Representation invariants (1.8) stay with the implementation, as candidates an agent may propose.
 
-What this changes in practice (Appendix A): `inv init` writes only value laws (pinned pydantic schemas) and path laws (door rules from the service-to-repository calls the code already has); the door rule is four lines and needs no decorator; and the default check never parses SQL.
+Concurrency needs the same honesty. A check on an API's arguments is not a lock: two callers can both pass it against the same state and both write. Making check and write atomic is the store's job, through its own constraints and transactions, and that is the implementation's business, below every rule. A rule that knows of such a race says so in `residual_paths`. Likewise a `post_effect` check on an external effect can only detect, since the effect has already happened.
+
+What this changes in practice (Appendix A): `inv init` writes only value laws (pinned pydantic schemas) and path laws (door rules from the service-to-repository calls the code already has); the door rule is four lines and needs no decorator; it freezes known back doors with their whole call chains, so a new caller of one fails the scan; and no check parses SQL. Given a Graphify graph (`graphify-out/graph.json` or `--graphify`), `inv init` also proposes doors from its communities and resolved calls that the naming heuristics miss. Every proposal is still checked by the scan, `inv check` never reads the graph, and Graphify is never imported or run.
 
 ## 2. The approach
 
@@ -188,9 +190,9 @@ A rule is one record: the source of truth for the predicate and the oracle every
 ```yaml
 providers:                       # top level of the rule file: named, typed, read-only
   approval: {type: acme.pool.v1.Approval | null, from: "py:pool.providers.load_approval",
-             args: {pool_id: req.pool_id}, consistency: same_txn}
+             args: {pool_id: req.pool_id}}
 targets:                         # effects declared once per target (2.2)
-  "py:pool.PoolService.resize_door": {effects: transactional, transaction: "py:pool.PoolService.txn"}
+  "py:pool.PoolService.resize_door": {effects: external}
 rules:
 - id: R-21
   rev: 2
@@ -198,23 +200,22 @@ rules:
   class: policy                 # owner and change process; not applicability
   owner: ops-policy
   statement: A pool resize is never written without an APPROVED approval for that pool and size.
-  why: An operator script resized a pool without approval through an endpoint that skipped the door (the Day 9 incident in section 6.2). Rev 2 adds the storage enforcer.
+  why: An operator script resized a pool without approval through an endpoint that skipped the door (the Day 9 incident in section 6.2). Rev 2 adds the path law: the store's write is reached only through the door.
   subject: {contract: pool_api, rpc: acme.pool.v1.PoolService/ResizePool, target: "py:pool.PoolService.resize_door"}
   scope: call
   bind:                          # typed contract paths; a path that does not resolve fails the build
     req: request                 # acme.pool.v1.ResizePoolRequest
-    approval: provider.approval  # read inside the write's transaction
+    approval: provider.approval  # read by the door before the write
   bad: 'approval == null || approval.state != "APPROVED" || approval.pool_id != req.pool_id || approval.new_size != req.new_size'
   # CEL's has() takes a field selection (has(a.b)), not a bare name, so test the provider's value against null
   compensable: false
   enforcers:
     - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
-    - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed,
-       artifact: migrations/0042_resize_approval.sql#sha256:…,
-       generated: false, conformance_test: tests/inv/test_r21_storage_differential.py}
   mediation:
-    chokepoint: "table pools writable only by DB role pool_svc; trigger checks approvals"
+    chokepoint: "resize_door is the only caller of pool_store.set_size (inv scan)"
     residual_paths: []
+    sink: "py:pool.store.set_size"   # the path law: no call path reaches the sink around the door
+    door: "py:pool.PoolService.resize_door"
   falsified_by: [tests/inv/test_r21_property.py]
 ```
 
@@ -229,7 +230,7 @@ rules:
 | `bind` | Names in `bad` mapped to typed contract paths or to providers (`provider.<name>`) |
 | `bad` | CEL, true when the prohibited state exists, or a list of such clauses (4.1). Type-checked against `bind` at load |
 | `compensable` | Whether a violation can be repaired afterwards (1.5) |
-| `enforcers[]` | Each with `point` (type, storage, gateway, decorator, middleware, model_call, edge, build, structure, monitor), `timing` (`pre_effect` or `post_effect`), `mode` (`off`, `detect` or `enforce`), `on_violation`, `on_error`, an optional `view` (2.7), and artifact and conformance test if hand-written. Only an `edge` enforcer has its own `target`: the consumer it guards (2.6) |
+| `enforcers[]` | Each with `point` (type, gateway, decorator, middleware, model_call, edge, build, structure, monitor), `timing` (`pre_effect` or `post_effect`), `mode` (`off`, `detect` or `enforce`), `on_violation`, `on_error`, an optional `view` (2.7), and artifact and conformance test if hand-written. Only an `edge` enforcer has its own `target`: the consumer it guards (2.6) |
 | `mediation` | The chokepoint every path crosses, and `residual_paths` that go around it |
 | `model_policy`, `compares_to` | Model calls only: retry limits, feedback, abstain; `compares_to: held_data` for comparisons with data code holds (2.5) |
 | `falsified_by` | Tests that must fail when the guard is removed (checked by ablation) |
@@ -237,7 +238,7 @@ rules:
 
 Beside `rules:`, `targets:` declares each target's `effects` once (2.2), so two rules on one target cannot disagree, and `providers:` declares the state guards read.
 
-**Providers.** A guard often needs state the caller does not pass, such as R-21's approval; state the caller passes can be stale or forged. A provider is named, typed and read-only. Its `type` may be nullable (`T | null`; in Python, `T | None`). Its `consistency` is `same_txn` (read inside the transaction that performs the effect), `snapshot` (one consistent point before the effect), `stale_ok` (any recent value) or `immutable` (data that never changes once written, such as a finished job's facts). A `same_txn` provider on a target that is not `effects: transactional` is a load error. Its `args` resolve in the binding environment of the rule that reads it, so R-21's `req.pool_id` uses R-21's `req`. The SDK calls it before a pre-effect check and binds its value by name. Values are cached per (provider, resolved args) per call, so two rules that bind differently on one target never share a value. A provider that raises or returns the wrong type gives `rule_error`, never a violation.
+**Providers.** A guard often needs state the caller does not pass, such as R-21's approval; state the caller passes can be stale or forged. A provider is named, typed and read-only. Its `type` may be nullable (`T | null`; in Python, `T | None`). It is a plain typed read at its enforcer's timing: before the call for a `pre_effect` check, after it for a `post_effect` one. It is not a lock, so a value it reads can change before the write (1.9, 2.7). An earlier design gave providers consistency levels (`same_txn`, `snapshot`, `stale_ok`, `immutable`); the library no longer has them. Its `args` resolve in the binding environment of the rule that reads it, so R-21's `req.pool_id` uses R-21's `req`. The SDK calls it before a pre-effect check and binds its value by name. Values are cached per (provider, resolved args) per call, so two rules that bind differently on one target never share a value. A provider that raises or returns the wrong type gives `rule_error`, never a violation.
 
 **Outcomes.** `on_violation` is `reject` (refuse this call; the caller gets an error), `halt` (stop the run: an internal invariant broke, so this is a bug), `escalate` (send to a person), or `route` (stop the call and open a review or conflict record, 2.9). There is no `retry` value: retries belong only to `model_policy`, and `on_violation` applies once they are spent. `on_error` is `fail_closed` (apply `on_violation`; the default in enforce mode) or `fail_open_and_page`. Detect mode never blocks. With several enforcers, the first on the path acts and the others are backstops; conformance tests check they agree on `bad`.
 
@@ -252,7 +253,7 @@ From strongest to weakest:
 | Rung | Mechanism | Holds against |
 |---|---|---|
 | 1 Unrepresentable | Types, closed enums, constrained decoding | every path, statically |
-| 2 Atomic chokepoint at the data | DB constraint or trigger at adequate isolation, plus role grants | other programs and services, raw SQL |
+| 2 Atomic chokepoint at the data | DB constraint or trigger at adequate isolation, plus role grants; the implementation's, not a rule's (1.9) | other programs and services, raw SQL |
 | 3 Process or network gateway | Tool-call proxy, API gateway; agents hold no credentials | anything crossing the boundary |
 | 4 In-process pre-effect guard | Decorator or middleware; presence checked by scan | known callers in the process |
 | 5 Build gate on code shape | Scan, import rules, visibility | shipped code; code-structure rules only |
@@ -261,14 +262,14 @@ From strongest to weakest:
 | 8 Model judge | Code still decides | weakly |
 | 9 Prompt or convention | — | not enforcement |
 
-**The timing rule (critique 10).** A post-effect guard on a target with side effects is detection. The timing check fails for `mode: enforce` with `timing: post_effect`, capping the rule at `detect` (2.4), unless the target's entry in `targets:` declares `effects: none` (pure: the only "effect" is returning the result) or `effects: transactional`. A target missing from `targets:` is `external`. A transactional target names its boundary (`transaction: …`). The SDK's wrapper runs the post-effect guard inside it, before commit, and rolls back on violation, but only when it confirms at runtime that the target runs inside that boundary; otherwise the outcome is `rule_error`. If the caller swallows the guard's exception inside the transaction, the SDK marks it rollback-only and raises `RolledBack` at exit, so the bad write never commits. A declaration trusted without the runtime check goes under `residual_paths`. Otherwise rewrite the rule as a precondition or a check on the computed next state. Model calls are usually pure, so an after-guard on one can prevent; one on `restart_job` cannot.
+**The timing rule (critique 10).** A post-effect guard on a target with side effects is detection. The timing check fails for `mode: enforce` with `timing: post_effect`, capping the rule at `detect` (2.4), unless the target's entry in `targets:` declares `effects: none` (pure: the only "effect" is returning the result). A target missing from `targets:` is `external`, and a post-effect check on an external effect can only detect. An earlier design also let a post-effect guard enforce inside a declared transaction (`effects: transactional`, `@inv.transaction`, rollback on violation); the library no longer implements it (1.9). Rewrite such a rule as a precondition or a check on the computed next state. Model calls are usually pure, so an after-guard on one can prevent; one on `restart_job` cannot.
 
 ### 2.3 Where enforcers attach
 
 - **Types and schemas**, including structured outputs for model replies.
 - **Explicit decorators and middleware**, visible in review and stack traces.
 - **Gateways**: a tool-call proxy checks rules before the call. Agent rules belong here; in STAMP terms tool calls are control actions [29].
-- **Storage**: `CHECK`, `UNIQUE`, `FOREIGN KEY`, triggers with `SELECT … FOR UPDATE` or `SERIALIZABLE` [103][104], and role grants as proof of one door.
+- **Path laws** on the repository API: `inv scan` checks that every call path to the repository's write methods passes the door. The store's own `CHECK`, `UNIQUE`, `FOREIGN KEY`, triggers with `SELECT … FOR UPDATE` or `SERIALIZABLE` [103][104], and role grants are the implementation's business; the library attaches no enforcer there (1.9).
 - **Build**: import layering [70], architecture rules [69], visibility. Bazel fails a build that "violates the visibility" [71]: an unseen path cannot exist.
 
 **No weaving (critique 7).** The original rewrote the syntax tree to insert guards and shipped that "variant". Inlined monitors are sound only if the program cannot route around them [18], and Python allows `getattr`, monkeypatching, importing the unwoven module and `exec`. Weaving added no strength over a decorator, and shipped unreviewed code. Use explicit attachments. A rule needs two checks to be held. **`inv verify`** reads the runtime registry: every rule's target is wrapped by its guard, and every guard names a rule in the file. **`inv scan`** reads the code graph: no path from an entrypoint reaches a protected effect sink without passing the door (2.4). Only the scan sees code that calls the sink directly, such as R-23's bypass (6.2).
@@ -292,11 +293,11 @@ Only human review sets `status`, and every rule must have one: a missing status 
 
 **Status caps mode.** An enforcer's `mode` (`off`, `detect`, `enforce`) is what it would do. Its effective mode is `min(mode, cap(status))`, with `off < detect < enforce`. The cap is `detect` for `candidate`, `contested` and `detect`; `enforce` for `enforce`; `off` for `retired`.
 
-**Standing is a report.** `inv status` computes it (1.1). A rule is held only when its status is `enforce`, its `mediation` names a complete chokepoint, `inv verify` and `inv scan` both pass (2.3), and any guard reading through a provider other than `same_txn` or `immutable` has a storage enforcer behind it (2.7). Otherwise an `enforce` rule is `enforce(known-callers)`.
+**Standing is a report.** `inv status` computes it (1.1). A rule is held only when its status is `enforce`, its `mediation` names a complete chokepoint, `inv verify` and `inv scan` both pass (2.3), and it lists no `residual_paths`. Otherwise an `enforce` rule is `enforce(known-callers)`.
 
 **"No known unguarded path" was too weak (critique 4).** It made absence of knowledge a status, and syntax-only scans miss `getattr`, reflection, raw SQL and dependency injection [68]. Replace it with a **positive mediation argument** naming the chokepoint:
 
-- "table `leases` writable only by DB role `lease_svc`";
+- "`lease_slots` is the only caller of `store.insert_lease`" (a path law `inv scan` checks);
 - "`restart_job` accepts only `ApprovedRestart`, constructible only in `approvals.py`";
 - "tool calls pass through gateway X; agents hold no credentials".
 
@@ -358,11 +359,11 @@ Each agent is a node and each handoff an edge. Edge rules run before the next ag
 - **Provenance needs labels.** CaMeL checks provenance at each tool call, solving 77% of AgentDojo tasks with provable security against 84% undefended [33]; FIDES carries labels across agents [34]. Adopt such a layer for taint rules, or list them under `residual_paths`.
 - **Loops and callbacks.** Cap hops graph-wide; never call out mid-update [11].
 
-**The enforcement chain is attack surface.** A coding agent under pressure will add a bypass. Put the rule file, lockfile, falsifiers, guard library, hook configuration and CI workflow under human-only review, forbid bypass idioms in the scan, and back such rules with storage or a gateway.
+**The enforcement chain is attack surface.** A coding agent under pressure will add a bypass. Put the rule file, lockfile, falsifiers, guard library, hook configuration and CI workflow under human-only review, forbid bypass idioms in the scan, and back such rules with a path law or a gateway.
 
 ### 2.7 Concurrency and shared state (critique 6)
 
-Two callers can both pass a guard against the same stale state and both write. A rule over shared data needs check and commit as one atomic step.
+Two callers can both pass a guard against the same stale state and both write. A rule over shared data needs check and commit as one atomic step. This section records why that matters and how an earlier design answered it below the API. The library no longer does (1.9): atomicity is the store's job, and these mechanisms are the implementation's.
 
 | Mechanism | Covers |
 |---|---|
@@ -371,7 +372,7 @@ Two callers can both pass a guard against the same stale state and both write. A
 | Conditional write / version check | stores without triggers |
 | Single owner, or idempotency key + `UNIQUE` | one service's writes; retries |
 
-**Providers and the race.** Only a `same_txn` read happens inside the transaction that performs the effect, so only it closes the race. An `immutable` read has no race to close, so it counts the same. A guard that reads through a `snapshot` or `stale_ok` provider is an early refusal only: two callers can still both pass. Such an `enforce` rule counts as held only with a storage enforcer behind it. The record states the race.
+**Providers and the race.** A provider is a plain read at its enforcer's timing, so a guard that reads shared state through one is an early refusal: two callers can still both pass. The earlier design closed the race with a `same_txn` consistency level and a storage enforcer behind the guard; both are gone. The rule now states the race in `residual_paths`, as pool-service's R-20 does, and the store's own constraint or transaction refuses the second write.
 
 **One property, a view per enforcer.** The rule's `scope` is the scope of the property: for R-20, `aggregate(key: pool_id)`. Each enforcer may declare a `view`: how it obtains the bound values. `bad` is written once:
 
@@ -379,12 +380,10 @@ Two callers can both pass a guard against the same stale state and both write. A
 bad: 'leased + n > size'
 enforcers:
   - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject,
-     view: {leased: provider.pool_leased, n: args.slots, size: provider.pool_size}}   # snapshot reads: early refusal
-  - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject,
-     view: rows}                         # the trigger computes the same names from rows grouped by pool_id
+     view: {leased: provider.pool_leased, n: args.slots, size: provider.pool_size}}   # plain reads: early refusal
 ```
 
-The conformance test below fills each view and checks they agree.
+The earlier design added a second enforcer, `{point: storage, view: rows}`, whose trigger computed the same names from rows grouped by `pool_id`, and a conformance test filled each view and checked they agree. The rest of this section is that design's argument; the library keeps the oracle idea for its in-process enforcers and the monitor.
 
 "One record drives everything" broke here: the SQL is hand-written. The honest version is **one record is the oracle everything is tested against**:
 
@@ -410,7 +409,7 @@ Discover proposes candidate rules for existing code. Like generated OpenAPI, its
 
 **Why broken candidates go to a person (critique 9).** The original dropped them, inheriting Daikon's assumption that observed runs are correct [47]. TestGen-LLM can drop failing tests because they encode current behaviour [75]; rules cannot. Agentic property-based testing found 56% of its reports were valid bugs [72], ACH starts from a named concern and keeps tests that *fail on a mutant* [76], and incident-sourced rules are broken by construction. A person rules: bug (the rule enters detect), too strong (weaken it), or noise (dismiss and record).
 
-**What Discover cannot do (critique 1).** It cannot find a rule nobody proposed, and it is the least proven part of the design. So coverage is measured on **effects**: each sink needs a rule or a signed "no rule: accepted risk" entry, and a new sink with neither fails the build. On the code graph the metric is one query: effect sinks with no path through a guard and no storage constraint.
+**What Discover cannot do (critique 1).** It cannot find a rule nobody proposed, and it is the least proven part of the design. So coverage is measured on **effects**: each sink needs a rule or a signed "no rule: accepted risk" entry, and a new sink with neither fails the build. On the code graph the metric is one query: effect sinks with no path through a guard or door.
 
 ### 2.9 Rule errors are not violations (critique 12)
 
@@ -450,23 +449,23 @@ Kiro can "surface options to fix the spec" on a test failure [73]; Spec Kit's ga
 
 None of the parts. As far as the research found, no single product or paper does these:
 
-1. **One negated rule record tested against several mechanisms**: guard, gateway, storage, property tests, monitor. Existing tools each own one layer.
+1. **One negated rule record tested against several mechanisms**: guard, gateway, scan, property tests, monitor. Existing tools each own one layer.
 2. **A reviewed lifecycle the loader verifies**, with positive mediation, ablation-verified falsifiers and reach counts.
 3. **Discover for rules, filtered by replay and mutant kill, with a contested queue.** Meta filters *tests* this way.
-4. **Extending CEL-on-schema** to call sequences, model outputs, agent handoffs and storage.
+4. **Extending CEL-on-schema** to call sequences, model outputs and agent handoffs, with path laws between APIs.
 
 ## 4. Making it a library
 
-The library exists. `invariants-py/` is the Python SDK, version 0.1.0 and unreleased. Its distribution name is `invariants-first`, a placeholder until publishing, and its import name is `invariants`. It has a rule-file loader with load-time checks, five decorators, three CEL backends, the `inv` CLI, a pytest plugin, and FastAPI, pydantic and OpenTelemetry integrations. This section describes what was built. Where building or certifying it changed the design, the text says so, and why when that is a lesson. Section 4.3 ends with what the design proposed that v0.1 does not have. Every rule-file field is listed in `invariants-py/docs/rule-file.md`.
+The library exists. `invariants-py/` is the Python SDK, version 0.1.0 and unreleased. Its distribution name is `invariants-first`, a placeholder until publishing, and its import name is `invariants`. It has a rule-file loader with load-time checks, four decorators, three CEL backends, the `inv` CLI, a pytest plugin, and FastAPI, pydantic and OpenTelemetry integrations. This section describes what was built. Where building or certifying it changed the design, the text says so, and why when that is a lesson. Section 4.3 ends with what the design proposed that v0.1 does not have. Every rule-file field is listed in `invariants-py/docs/rule-file.md`.
 
 ### 4.1 The spec
 
 The template is protovalidate: a spec, a native runtime per language, a conformance suite run through an executor protocol, and a stability promise at 1.0 [50][51][52]. v0.1 has one runtime, Python.
 
 - **Files.** `invariants.yaml` (or JSON) is edited only by people. `invariants.lock` is generated by `inv lock` and reviewed in diffs (4.3). There is no candidates file yet, because there is no Discover. Besides `spec: invariant/v0.1`, a rule file has four top-level maps: `contracts`, `targets`, `providers` and `rules`. A bundled JSON Schema backs `inv validate`, and an unknown field is a load error at every level.
-- **Targets.** Each key is a `py:` path. Its entry declares `effects` once: `none` (pure), `transactional` (names its `@inv.transaction` boundary with `transaction:`) or `external`. An unlisted target is `external`.
+- **Targets.** Each key is a `py:` path. Its entry declares `effects` once: `none` (pure) or `external`. An unlisted target is `external`. `effects: transactional` and `transaction:` were removed (1.9); a file that uses them fails to load and says to use `external`.
 - **Contracts.** These are `python` (a module), `pydantic`, `dataclass`, `schema` (a TypedDict or `{field: type}` map) and `openapi`. Any other file is pinned by digest. Protobuf contracts and 2.1's `subject.rpc` are not in v0.1. An HTTP rule names an `openapi` contract and a `subject.operation`, but it binds to handler parameter names, not to OpenAPI JSON paths.
-- **Providers.** Each is `{type, from, args, consistency}`. `type` is a builtin or `py:mod.Class`, optionally `| null`, and must equal the function's return annotation. `from` must be marked `@inv.provider("<name>")`, and its parameters must be exactly the keys of `args`. A `pre_effect` enforcer reads its providers before the call. A `post_effect` enforcer reads them after the effect, inside the transaction, except `snapshot` providers, which are read before it. The first build read every provider before the call, so a post-effect provider check was vacuous; the two outside apps found that. Providers are eager: every provider an enforcer reads is called on every call, which costs time (8.2).
+- **Providers.** Each is `{type, from, args}`. `type` is a builtin or `py:mod.Class`, optionally `| null`, and must equal the function's return annotation. `from` must be marked `@inv.provider("<name>")`, and its parameters must be exactly the keys of `args`. A `pre_effect` enforcer reads its providers before the call, and a `post_effect` enforcer reads them after the effect. `consistency` was removed (1.9). The first build read every provider before the call, so a post-effect provider check was vacuous; the two outside apps found that. Providers are eager: every provider an enforcer reads is called on every call, which costs time (8.2).
 - **CEL only**, with a small extension library (`inv.sum`, `inv.zip`, `inv.unique_by`), each extension with conformance cases. Each extension's edge cases are part of the spec. `inv.zip` on lists of unequal length is a `rule_error`, not a silent truncation, so a rule that zips must also state the length as its own clause (see R-1). Prefer standard macros (`all`, `exists`, `filter`, `map`).
 - **All rule logic lives in the rule file.** No per-rule helper functions in the host language; the only functions beyond standard CEL are the fixed, conformance-tested extensions. A reviewer sees the whole predicate, and every SDK agrees. R-1 in 4.2 writes `inv.sum(result) != args.total_jobs || inv.zip(result, args.capacities).exists(p, p[0] < 0 || p[0] > p[1])` inline, not as a call to a Python `check_split()`.
 - **Why CEL fits the hot path.** It is not Turing-complete and has no side effects. It is type-checked ahead of time against the contract (2.9), and cost limits bound the work per call [48][53].
@@ -499,12 +498,12 @@ targets:                                  # effects declared once per target; pi
   "py:jobs.split_work":       {effects: none}     # pure, so a post-effect guard can enforce
   "py:triage.propose_cause":  {effects: none}
   "py:triage.remediate":      {effects: external}
-  "py:pool.PoolService.resize_door": {effects: transactional, transaction: "py:pool.PoolService.txn"}
+  "py:pool.PoolService.resize_door": {effects: external}
 providers:                                # R-21 binds approval: provider.approval (2.1)
   approval: {type: "py:pool.Approval | null", from: "py:pool.providers.load_approval",
-             args: {conn: self.conn, pool_id: req.pool_id}, consistency: same_txn}   # req: R-21's bind
+             args: {conn: self.conn, pool_id: req.pool_id}}   # req: R-21's bind
   job:      {type: "py:triage.models.JobFacts", from: "py:triage.providers.load_job",
-             args: {job_id: args.job_id}, consistency: immutable}   # a finished job's facts never change
+             args: {job_id: args.job_id}}   # a finished job's facts never change
 rules:
   - id: R-1
     rev: 3
@@ -550,20 +549,22 @@ rules:
       residual_paths: []
       sink: "py:triage.store.insert_remediation"       # inv scan: no path reaches the sink around the door
       door: "py:triage.remediate"
-      tables: [{remediations: [insert, update]}]       # raw SQL writing remediations elsewhere is forbidden
     falsified_by: [tests/test_triage.py::test_r7_held_data, tests/test_triage.py::test_r7_forged_checked]
 ```
 
-Building it changed `mediation`: it now carries `sink`, `door` and `tables` beside the `chokepoint` sentence, because `inv scan` needs names to check, not prose. Without R-7's `tables` entry, a raw `INSERT INTO remediations` elsewhere would skip the edge unseen (4.3).
+Building it changed `mediation`: it now carries `sink` and `door` beside the `chokepoint` sentence, because `inv scan` needs names to check, not prose. An earlier build also had `tables`, so the scan could flag a raw `INSERT INTO remediations` elsewhere (4.3). That was below the API and is gone (1.9): the path law covers every caller of the sink, and raw SQL from code that never calls it is for database permissions to stop.
 
 ### 4.3 Architecture
 
-- **SDK** (`invariants-py/src/invariants/`). The loader and a static type checker; context-local registries; the guard, model-call, edge and transaction wrappers; a four-outcome evaluator; providers and `old_self` snapshots; operations (review stores, a pager hook, a rule-error spike detector that is off by default, `inv.monitor` over rows, storage-error mapping); and an OpenTelemetry exporter. It never rewrites a syntax tree and never runs `eval` or `exec` on rule or source text.
+- **SDK** (`invariants-py/src/invariants/`). The loader and a static type checker; context-local registries; the guard, model-call and edge wrappers; a four-outcome evaluator; providers and `old_self` snapshots; operations (review stores, a pager hook, a rule-error spike detector that is off by default, `inv.monitor` over rows); and an OpenTelemetry exporter. It never rewrites a syntax tree and never runs `eval` or `exec` on rule or source text.
 - **CEL behind an adapter, three backends.** `subset` is the default: a standard-library tree walker with a cost budget, and a linear-time RE2 matcher for `matches()`. `cel-expr` runs cel-expr-python [49], Google's C++ runtime. `celpy` runs cel-python [129], a pure-Python interpreter. One shared front end parses every rule, so a rule parses the same way everywhere. `INV_CEL_BACKEND` picks the backend. There is no shared Rust core and no Go reference evaluator: the three backends check each other through one conformance suite (4.5). **The lesson:** the engines disagreed more than expected. Division by zero gave three answers, celpy took Unicode digits, and cel-expr cut strings at a NUL. Much of certification went into making them agree (8.4).
-- **`inv` CLI**: a Python console script with five commands. Standing is computed once, in `inv status`.
+- **`inv` CLI**: a Python console script. Standing is computed once, in `inv status`.
 
   | Command | What it does |
   |---|---|
+  | `inv init [--graphify GRAPH]` | drafts `invariants.yaml` from the laws the code already has (pydantic constraints, door rules with today's back doors frozen in `allow`, preconditions), then locks it |
+  | `inv check [--relock] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code, for CI, pre-commit and agent hooks |
+  | `inv hook pretool\|stop` | Claude Code hooks: refuse an agent's `--accept-weakening` and any direct edit of `invariants.lock`; refuse to stop while `inv check` fails |
   | `inv validate` | the JSON Schema check and every load-time check, listing every error |
   | `inv lock [--check] [--accept-weakening] [--update-artifacts]` | writes or checks `invariants.lock`, and prints a semantic diff against the stored lock |
   | `inv verify --import MOD` | imports the app; every target is wrapped by its guard, and every guard names a rule whose target it is |
@@ -571,16 +572,16 @@ Building it changed `mediation`: it now carries `sink`, `door` and `tables` besi
   | `inv status` | each rule's standing, `held` or `enforce(known-callers)`, with the reason |
 
   The exit codes are 0 for ok, 1 for a failed check and 2 for a usage error. A 3 means the scan found unresolved calls, and a 4 means it skipped an ablated enforce rule; neither is a pass. `validate`, `lock`, `verify` and `status` import the app from this checkout, ahead of site-packages. Before that fix, `inv lock --check` imported whatever copy the venv had installed, and reported "fresh" after an edit to this one.
-- **Scanner.** It reads source with Python's `ast` and never imports it. That is enough for one language and needs no dependency, so the design's generated ast-grep or Semgrep rules, and Semgrep's licence question [119], fell away. The output is text, JSON or SARIF 2.1.0. On an approximate call graph, it looks for any path from an entrypoint to `mediation.sink` that avoids every `mediation.door`. It flags bypass idioms: `.__wrapped__`, `getattr` on the sink, `sink.__call__`. A call it cannot resolve is `unresolved`, never a bypass. It reads raw SQL writes to `mediation.tables` per table and statement kind. So `tables: [{leases: [insert, update]}]` lets a release's `DELETE` through and still flags an `INSERT INTO leases` in a new endpoint. A computed table name is `unresolved`. Door code is decided by call-graph reachability, not by where the text sits. A rule whose sink SQL writes a table that `tables` does not cover, or one that guards stored data and declares no `tables`, gets a warning and is not reported held. **The lesson:** in the evaluation, an endpoint that ran `INSERT INTO leases` passed the scan, because tables were all-or-nothing and declaring one would have flagged a legitimate `DELETE`. Statement kinds fixed that.
-- **The lockfile (version 3).** It pins only what a rule's meaning depends on. For a target, that is its signature, resolved types (aliases expanded, and the fields of every model a signature names), effects, transaction and reply schema. It also pins each provider's declaration and signature, each contract's resolved schema or named OpenAPI operations, and each rule's semantic content, with prose as digests. A content-addressed `schemas` table stores each schema once. **The lesson:** the first lock hashed whole modules. In the evaluation, `inv lock --check` failed on 18 of 24 changes, 16 times only because a module had changed. That teaches people to re-pin by reflex, and the reflex re-pinned a real rule weakening. Contract-granular pins cut the failures to 2 of 24 (8.3).
-- **The weakening gate.** `inv lock --check` lists each change as `<where>: <what>: old -> new`. It marks a change that relaxes a rule `WEAKENED`. Examples are a lower status or mode, a removed enforcer, clause or table, `fail_open_and_page`, a staler consistency, more retries, or a `bad` that matches fewer cases. Plain `inv lock` refuses a weakening, and only `--accept-weakening` records one. Every schema field has a class in `lockfile.FIELD_POLICY`, and a field with no class is a possible weakening. A polarity analysis over a canonical parse tree decides the direction of a `bad` edit. Whitespace, commuted operands, regrouping, De Morgan and split clauses count as the same condition. Anything it cannot decide is a possible weakening. **Two lessons.** First, a rebound `bind`, `view`, provider `args` or `model_policy` changes what `bad` reads, yet it was re-pinned with exit 0. Any such edit is now a possible weakening. Second, the canonical tree compared literals with Python's `==`, where `true == 1 == 1.0`. So `approved == true` to `approved == 1` passed as an "equivalent rewrite", and the new rule never fires. Each literal now carries its CEL type, and integer-only rewrites apply only to provable integers.
+- **Scanner.** It reads source with Python's `ast` and never imports it. That is enough for one language and needs no dependency, so the design's generated ast-grep or Semgrep rules, and Semgrep's licence question [119], fell away. The output is text, JSON or SARIF 2.1.0. On an approximate call graph, it looks for any path from an entrypoint to `mediation.sink` that avoids every `mediation.door`. It flags bypass idioms: `.__wrapped__`, `getattr` on the sink, `sink.__call__`. A call it cannot resolve is `unresolved`, never a bypass. Door code is decided by call-graph reachability, not by where the text sits. A known back door frozen in `allow` is not a door: a path is let through only if every function on it is allowed (the frozen call chain), so a new caller of an allowed back door is a bypass, and unwrapping, monkeypatching or reflection inside an allowed function are still reported. Receiver types follow attribute chains (`ctx.billing.refund()` with `ctx: AgentContext`), resolved in the defining module; an attribute set from outside its object is never typed. **The lesson, since removed:** in the evaluation, an endpoint that ran `INSERT INTO leases` passed the scan, and an earlier build answered with raw-SQL checks per table and statement kind (`mediation.tables`). That was below the API, and the scan no longer reads SQL (1.9).
+- **The lockfile (version 3).** It pins only what a rule's meaning depends on. For a target, that is its signature, resolved types (aliases expanded, and the fields of every model a signature names), effects and reply schema. It also pins each provider's declaration and signature, each contract's resolved schema or named OpenAPI operations, and each rule's semantic content, with prose as digests. A content-addressed `schemas` table stores each schema once. **The lesson:** the first lock hashed whole modules. In the evaluation, `inv lock --check` failed on 18 of 24 changes, 16 times only because a module had changed. That teaches people to re-pin by reflex, and the reflex re-pinned a real rule weakening. Contract-granular pins cut the failures to 2 of 24 (8.3).
+- **The weakening gate.** `inv lock --check` lists each change as `<where>: <what>: old -> new`. It marks a change that relaxes a rule `WEAKENED`. Examples are a lower status or mode, a removed enforcer or clause, a new door or `allow` entry, `fail_open_and_page`, more retries, or a `bad` that matches fewer cases. A lock written before this release shows each pin of a removed mechanism (1.9) once as `WEAKENED`, "removed in this version". Plain `inv lock` refuses a weakening, and only `--accept-weakening` records one. Every schema field has a class in `lockfile.FIELD_POLICY`, and a field with no class is a possible weakening. A polarity analysis over a canonical parse tree decides the direction of a `bad` edit. Whitespace, commuted operands, regrouping, De Morgan and split clauses count as the same condition. Anything it cannot decide is a possible weakening. **Two lessons.** First, a rebound `bind`, `view`, provider `args` or `model_policy` changes what `bad` reads, yet it was re-pinned with exit 0. Any such edit is now a possible weakening. Second, the canonical tree compared literals with Python's `==`, where `true == 1 == 1.0`. So `approved == true` to `approved == 1` passed as an "equivalent rewrite", and the new rule never fires. Each literal now carries its CEL type, and integer-only rewrites apply only to provable integers.
 - **Ablation, not mutation.** The design's `inv status --mutate` became `pytest --inv-ablate`. It turns each rule off everywhere, subprocesses included, and re-runs its `falsified_by` tests. A falsifier that still passes, or an `enforce` rule with no caught falsifier, fails the session. **The lesson:** the first version counted any failed re-run as caught, so a flaky or stateful test that never touched the guard made the rule look load-bearing. Now each falsifier must pass on a control re-run without ablation, and the ablated run must reach the rule. Otherwise, or when the control run gave only `rule_error`, the row is `inconclusive`.
 - **Telemetry.** `invariants.integrations.otel.exporter()` writes one span per evaluation, `invariant.<point>`, with `invariant.rule_id`, `rule_rev`, `outcome`, `mode` and `attempts`. `gen_ai.*` is not mapped while those conventions are at Development status [111].
 
 **Not in v0.1.**
 - **Commands and files:** `inv gen`, `discover`, `monitor`, `serve-mcp` and `conformance`; the candidates file.
 - **SDKs:** the Go and TypeScript SDKs.
-- **Generators:** Hypothesis tests per rule [41], CEL to `CHECK`, and the differential harness. The apps hand-write their property and differential tests.
+- **Generators:** Hypothesis tests per rule [41] and the differential harness. The apps hand-write their property tests. CEL to `CHECK` is no longer planned: it is below the API (1.9).
 - **Contracts:** protobuf contracts.
 - **Status checks:** the detect-to-enforce soak evidence (reach N times, zero rule errors). The loader checks `falsified_by`, an enforcing enforcer and the timing check, not traffic.
 - **Runtime:** a sampled mode, and pytest-xdist.
@@ -604,20 +605,18 @@ def propose_cause(log_excerpt: str, job_id: str, inv_feedback: str | None = None
 def remediate(cause: CheckedCause, job_id: str): ...
 
 class PoolService:
-    @inv.transaction                   # the boundary named in targets: (2.2)
-    def txn(self): ...                 # BEGIN; yield; COMMIT, or ROLLBACK on an exception
-    @inv.guard("R-21")                 # pre-effect; approval from its same_txn provider, inside self.txn
-    def resize_door(self, req: ResizePoolRequest) -> None: ...
+    @inv.guard("R-21")                 # pre-effect; approval read through its provider before the write
+    def resize_door(self, req: ResizePoolRequest) -> None: ...   # the door; R-21's path law names it
 
 inv.load("invariants.yaml")            # every load-time check; raises inv.LoadError
 inv.verify()                           # every target guarded, every guard names a rule; raises inv.CoverageError
 ```
 
-The decorators also work on `async def`. `invariants.integrations.fastapi` guards routes and answers with `application/problem+json`: 422 for a rejection, 202 for an escalation, 409 for a storage conflict and 503 for a fail-closed error. The body names the rule, never the values.
+The decorators also work on `async def`. `invariants.integrations.fastapi` guards routes and answers with `application/problem+json`: 422 for a rejection (409 is the usual alternative), 202 for an escalation and 503 for a fail-closed error. The body names the rule, never the values.
 
-**The four outcomes.** Every evaluation is `ok`, `violation`, `rule_error` or `parse_error`, and a clause list follows CEL's commutative error rules (4.1). `on_violation` raises `inv.Rejected`, `inv.Halted`, `inv.Escalation` or `inv.Routed`. Each carries `.rule`, `.outcome`, `.attempts`, `.point` and `.bound`. `Routed` and `Escalation` also carry the `.review_id` of a review opened in the configured store (`inv.MemoryReviews`, `inv.JsonlReviews`, or a fallback). When no review can be opened, the call raises `inv.ReviewNotOpened`. The first build raised `Routed` with no id, and the work then survived only in a log line. `inv.RolledBack` reports a swallowed failure inside `@inv.transaction`, and a failure in a nested block dooms the outermost one. No other exception leaves a guard: a raising provider, a hostile reply or a cost limit becomes one of the four outcomes, so retry, escalation and the event always run. Errors, events and logs carry no request or reply values unless `debug` is on.
+**The four outcomes.** Every evaluation is `ok`, `violation`, `rule_error` or `parse_error`, and a clause list follows CEL's commutative error rules (4.1). `on_violation` raises `inv.Rejected`, `inv.Halted`, `inv.Escalation` or `inv.Routed`. Each carries `.rule`, `.outcome`, `.attempts`, `.point` and `.bound`. `Routed` and `Escalation` also carry the `.review_id` of a review opened in the configured store (`inv.MemoryReviews`, `inv.JsonlReviews`, or a fallback). When no review can be opened, the call raises `inv.ReviewNotOpened`. The first build raised `Routed` with no id, and the work then survived only in a log line. (`inv.RolledBack` and `@inv.transaction` were removed with transactional effects, 1.9.) No other exception leaves a guard: a raising provider, a hostile reply or a cost limit becomes one of the four outcomes, so retry, escalation and the event always run. Errors, events and logs carry no request or reply values unless `debug` is on.
 
-**Status and mode.** The loader computes the highest status the evidence allows (`Rule.max_status`) and refuses a higher one. `enforce` needs an enforcer with mode `enforce`, `falsified_by`, and a passing timing check. The effective mode is `inv.effective_mode` = `min(mode, cap(status))`, as in 2.4, and detect never blocks. `inv status` reports `held` only under 2.4's conditions plus a scan with no table warning; otherwise `enforce(known-callers)`, with the reason.
+**Status and mode.** The loader computes the highest status the evidence allows (`Rule.max_status`) and refuses a higher one. `enforce` needs an enforcer with mode `enforce`, `falsified_by`, and a passing timing check. The effective mode is `inv.effective_mode` = `min(mode, cap(status))`, as in 2.4, and detect never blocks. `inv status` reports `held` only under 2.4's conditions; otherwise `enforce(known-callers)`, with the reason.
 
 **Edges fail closed.** In an early build, an edge with `on_error: fail_open_and_page` paged and let through a `Checked` whose verdict was `rule_error`, even when `bad` held on its value. Now an enforcing edge refuses any received verdict but `ok`, whatever its `on_error`. `on_error` covers only the edge's own re-evaluation. The edge also re-validates the value against the model call's closed schema before it re-checks `bad`. Forged extra fields, out-of-enum values, cyclic values and NaNs are refused. The consumer then gets a new `Checked` over the copy the rule judged, so a value mutated after the model call never reaches it. A forged `Checked` that fits the schema and passes `bad` still gets through: that is what an edge can check.
 
@@ -652,12 +651,12 @@ Planned, not built:
 | Channel | Plan |
 |---|---|
 | MCP server | `inv serve-mcp` (MCP now sits in the Agentic AI Foundation [116]): rules as resources; `check`, `explain`, `status` and `propose_candidate` (candidates file only) as tools. No tool edits `invariants.yaml` |
-| Coding-agent hooks | A Claude Code plugin. `PreToolUse` on Edit/Write denies changes to protected paths; `PostToolUse` runs `inv scan`; `Stop` runs the `falsified_by` tests of rules whose targets an edit reaches [96]. Set `"onFailure": "block"`: "a stalled or timed-out PreToolUse command hook doesn't block by default" [96]. The hook configuration is itself a protected path. Kiro has comparable hooks [73] |
+| Coding-agent hooks, beyond `inv hook` | `inv hook pretool` and `inv hook stop` are built: the first refuses an agent's `--accept-weakening` and any direct edit of `invariants.lock`, the second refuses to stop while `inv check` fails. Planned: a Claude Code plugin whose `PostToolUse` runs `inv scan` and whose `Stop` runs the `falsified_by` tests of rules whose targets an edit reaches [96]. Set `"onFailure": "block"`: "a stalled or timed-out PreToolUse command hook doesn't block by default" [96]. The hook configuration is itself a protected path. Kiro has comparable hooks [73] |
 | Sidecar | `inv serve --http` for languages without an SDK, the OPA pattern [118]. Deferred |
 | Rule registry | Versioned rule packs (`llm/closed-set-reply`, `authz/no-effect-before-auth`), each tested, pulled in with `extends:`. Apache-2.0 or CC0, never relicensed |
 | Governance | RFCs; maintainers from two organisations before 1.0; a neutral foundation, as OPA's CNCF home showed when its creators joined Apple in 2025 [118] |
 
-**Roadmap.** v0.1 delivered the spec, the lockfile, the Python SDK, the pytest plugin and the core CLI. It did not deliver the GitHub Action or a conformance executor. "One real service with measured numbers" became two synthetic apps and a controlled experiment (8.3). Guard latency, ablation and benign-change false positives were measured; the false-positive rate on real traffic and the accepted-after-retry rate wait for a real deployment. v0.2–0.3: the MCP server, the Claude Code plugin, a TypeScript SDK and a SQL generator. v0.4+: Discover, a Go SDK and the registry.
+**Roadmap.** v0.1 delivered the spec, the lockfile, the Python SDK, the pytest plugin and the core CLI. It did not deliver the GitHub Action or a conformance executor. "One real service with measured numbers" became two synthetic apps and a controlled experiment (8.3). Guard latency, ablation and benign-change false positives were measured; the false-positive rate on real traffic and the accepted-after-retry rate wait for a real deployment. v0.2–0.3: the MCP server, the Claude Code plugin, a TypeScript SDK. v0.4+: Discover, a Go SDK and the registry.
 
 ## 6. Across the development lifecycle
 
@@ -669,9 +668,9 @@ Planned, not built:
 | Design review | Rules beside the API spec; `why` links a design record | Lint: a rule no enforcer can see |
 | Coding | Hooks run the scan and the property tests of rules whose targets the edit reaches (reverse call edges, 5); CI still runs all | Hook denies the tool call |
 | Code review | Rule diffs, violations, the **coverage delta**, what no rule covers | CODEOWNERS [100]; push rulesets [101] |
-| CI | `inv verify` and `inv scan` (held needs both), property tests, ablation, storage interleaving tests | Required check |
+| CI | `inv verify` and `inv scan` (held needs both), property tests, ablation | Required check |
 | Release | Promotion detect → enforce, optionally via a warning step like Kubernetes' Audit/Warn/Deny [53]; per-rule canary [108] | Promotion and **demotion** both reviewed |
-| Deploy | Storage rules `NOT VALID`, monitor, then `VALIDATE` [102]; config rules via Conftest [122] | Validation fails |
+| Deploy | Monitor over old data before promotion (the store's own new constraints ship `NOT VALID`, then `VALIDATE` [102], as the implementation's business, 1.9); config rules via Conftest [122] | Validation fails |
 | Observability | Each break an event [110] | A detect-mode hit on live data pages |
 | Incident | Postmortem adds `prohibited_state`, `existing_rule?`, `path_around_enforcer` [109] | Open until each action is a rule or a recorded decision |
 | Maintenance | Rule debt: zero-reach or ownerless rules, bind drift | Build fails on drift |
@@ -683,18 +682,18 @@ STPA fits partly [30]: unsafe actions and ordering map to prohibitions; omission
 ### 6.2 A day in the life
 
 **Day 1.** A new `ResizePool` RPC: a model proposes a pool size, a person approves, a writer applies it. `invariants/pool.yaml` gains:
-- R-20: leases exceed pool size. Storage trigger plus a door guard: one `bad`, two views (2.7).
+- R-20: leases exceed pool size. A door guard on `lease_slots`; the concurrent-lease race is stated in `residual_paths` and left to the store (2.7).
 - R-21: a write with no APPROVED approval for `(pool_id, new_size)`. Pre-effect guard; a policy rule.
 - R-22: the model's `new_size` outside `[current, quota]`. Closed schema `ResizeProposal{new_size, reason_code}`.
-- R-23: no call to `pool_store.set_size` outside `resize_door`, and no raw SQL on `pools.size`.
+- R-23: a path law: no call path reaches `pool_store.set_size` except through `resize_door`.
 
 **Coding.** A test fails, and the agent tries to loosen R-22's bound in `invariants/pool.yaml`. The `PreToolUse` hook denies it: "protected path; propose a rule change in the PR description". Later the `PostToolUse` scan flags R-23: a retry helper calls `pool_store.set_size` directly, bypassing the door. The agent routes it through the door.
 
-**PR and deploy.** The bot comment shows no rule diffs, one uncovered effect (signed off as accepted risk), and every rule killed by ablation. The reviewer reads for intent, which no rule covers. R-20 ships `NOT VALID`; two old oversubscribed pools go to the owner as bugs.
+**PR and deploy.** The bot comment shows no rule diffs, one uncovered effect (signed off as accepted risk), and every rule killed by ablation. The reviewer reads for intent, which no rule covers. A monitor run of R-20 over existing pools finds two old oversubscribed ones; they go to the owner as bugs.
 
 **Day 2, release.** A canary runs R-21 and R-22 in detect mode. R-22 fires on 3% of replies. Of the replies accepted on a second attempt, the owner samples 20 and finds 4 valid but wrong, sized to exactly the quota: R-22 lacked `compares_to: held_data` and had been set to feed the bound back. The owner adds the mark, which forbids the feedback and the resample (2.5), and a reviewed change promotes R-21 and R-22 to enforce.
 
-**Day 9, incident.** An operator script resizes a pool through an old endpoint that skips the door, bypassing R-21's in-process check. The postmortem's `path_around_enforcer` becomes a rule change: R-21 rev 2 adds a storage trigger joining `approvals` (the record in 2.1). The old endpoint goes under `residual_paths`. Until the trigger lands, R-21 is `enforce(known-callers)`.
+**Day 9, incident.** An operator script resizes a pool through an old endpoint that skips the door, bypassing R-21's in-process check. The postmortem's `path_around_enforcer` becomes a rule change: R-21 rev 2 adds the path law that `pool_store.set_size` is reached only through `resize_door` (the record in 2.1). The old endpoint's path now fails `inv scan` until it is routed through the door. Until then it is frozen in `allow` and listed under `residual_paths`, and R-21 is `enforce(known-callers)`.
 
 ## 7. Information to knowledge
 
@@ -702,7 +701,7 @@ The original promised this use case and did not develop it.
 
 ### 7.1 What is different
 
-1. **Knowledge rules are mostly state rules over a shared store**, so storage is the main enforcer.
+1. **Knowledge rules are mostly state rules over a shared store**, so the store's write API is the main door: value laws on what the ingest and promote doors accept, and path laws so every write goes through them. The store's own constraints below that API are its implementation (1.9).
 2. **The polarity already exists.** A dbt data test is "a select statement that seeks to grab 'failing' records" [81]; a SHACL-SPARQL constraint is a SELECT whose solutions are violations [82]. Both are `bad`.
 3. **An OWL reasoner is not an enforcer**: under the open-world assumption, violations become inferences [87]. Use SHACL, ShEx or database constraints.
 4. **Wikidata chose detect.** Its constraints are "hints, not firm restrictions" [86]. Model exceptions as waiver or conflict records with an owner and expiry, referenced by `bad`.
@@ -751,7 +750,7 @@ Provenance maps onto PROV-O [88]. History is an append-only event log [89], with
 
 "Detect only" rules are monitored, not held (1.1). K-11 shows the route pattern: `bad` is "a contradiction with no Conflict record", which can be made never to exist.
 
-Store-side enforcers are hand-written (SHACL, triggers, a single writer; on Neo4j some constraints are Enterprise-only [95]), each with a differential test against CEL `bad`.
+The store-side entries in the table (`CHECK`, `UNIQUE`, FK, triggers, SHACL, a single writer; on Neo4j some constraints are Enterprise-only [95]) are the store implementation's, not rules the library checks (1.9). The library holds those prohibitions at the store's write API, with a path law that every write goes through it; a monitor detects what got in another way.
 
 ### 7.4 Where each rule runs
 
@@ -799,7 +798,7 @@ Source S1, a trusted newswire: "Acme Corp said Tuesday it completed its acquisit
 
 - **The coverage gap moves** (section 0). Measure coverage on effects (2.8) and keep risk-weighted human sampling [31]. The experiment in 8.3 shows the same thing: no invariants mechanism caught any of the 8 uncovered defects.
 - **Discover is unproven**: AgentSpec's 70.96% recall is one data point [36]. v0.1 has no Discover.
-- **Scans are syntax-only.** `inv scan`'s call graph is approximate: it does not follow calls through variables or see callers outside its roots, and it matches raw SQL per table, not per column. Rely on positive mediation at a boundary (2.4).
+- **Scans are syntax-only.** `inv scan`'s call graph is approximate: it does not follow calls through variables or see callers outside its roots, and it does not read SQL, so raw SQL from code that never calls the repository is for database permissions to stop (1.9). Rely on positive mediation at a boundary (2.4).
 - **The code graph is static.** It is only as complete as its extractor plus recorded traces. A missing edge hides a bypass, and untested dynamic paths stay dark (2.4, 2.8).
 - **Meaning** needs closed fields, people and evals (7.5).
 - **Retry pressure**: bounded, reported retries (2.5).
@@ -808,7 +807,7 @@ Source S1, a trusted newswire: "Acme Corp said Tuesday it completed its acquisit
 - **A rule can give false comfort.** In two of the experiment's defects a rule covered the property but could not see the break: the enforcement point was in the wrong place, or the provider itself was the bug (8.3).
 - **Rule conflicts** can deadlock (1.7).
 - **Rules are a target** for coding agents: protected paths, held-out falsifiers (2.6), and a lock that refuses a weakening without a named flag (4.3).
-- **Storage conformance** covers only the histories it generates (2.7).
+- **A check is not a lock.** A guard on API arguments does not stop two concurrent callers both passing it; atomicity is the store's, below every rule (1.9, 2.7).
 
 ### 8.2 Run-time cost
 
@@ -836,7 +835,7 @@ Providers add their own cost, because each one an enforcer reads is called on ev
 - **Where it beat plain code.** `inv scan` caught two bypasses: a new endpoint calling the lease store directly, and a bulk import skipping the ingest door. No test exercised either new path. The lock caught a rule weakened in both the YAML and its falsifier (R-22's cap from 4x to 10x), but only for a human who reads the diff. A load check caught a signature change that broke a rule's binding, a defect the library's own wiring makes possible.
 - **Where it did not.** The runtime guards fired on 2 changes, and plain `if`s with the same tests would have caught both. They earn their keep in production, on inputs no test tries, and this experiment cannot measure that. `inv verify` and `--inv-ablate` never fired on a change: they protect the rule set's integrity, not individual changes. 5 of the 16 defects escaped everything.
 - **False positives.** No benign change failed a test or the scan; the noise was the lock.
-- **Lock churn, then the redesign.** Before the redesign, `inv lock --check` failed on 18 of the 24 changes, 16 times only because a whole-module hash moved. 6 of the 8 benign changes stayed red until a re-pin, and a reflex re-pin turned the R-22 weakening green. After contract-granular pins and the weakening gate (4.3), it failed on 2 of 24: the R-22 weakening and a legitimate vocabulary widening. Each failure named its change, and plain `inv lock` refused both. A raw-SQL bypass probe outside the 24 is now caught too. One cost got worse: the locks grew from about 165 lines to 645 and 681 lines after the version-3 compaction.
+- **Lock churn, then the redesign.** Before the redesign, `inv lock --check` failed on 18 of the 24 changes, 16 times only because a whole-module hash moved. 6 of the 8 benign changes stayed red until a re-pin, and a reflex re-pin turned the R-22 weakening green. After contract-granular pins and the weakening gate (4.3), it failed on 2 of 24: the R-22 weakening and a legitimate vocabulary widening. Each failure named its change, and plain `inv lock` refused both. A raw-SQL bypass probe outside the 24 was then caught too, by raw-SQL checks this release removed (1.9). One cost got worse: the locks grew from about 165 lines to 645 and 681 lines after the version-3 compaction.
 
 **The human-cost ledger.**
 
@@ -882,7 +881,7 @@ It adds human work when:
 - the defects that matter are business logic no rule states;
 - a provider or an enforcement point is itself buggy, so the rule gives false comfort and the tests still do the work.
 
-**Bias caveats.** One author wrote all 24 changes and the ground truth, after reading the rules and the scan semantics. In effect, the same author also wrote the rules. The two caught bypasses have exactly the shape the scan models, and a slightly different bypass (raw SQL) was missed until the fix. 24 changes in 2 apps is small: one case moves a rate by 12 points. Both apps were built to demonstrate the library, and their tests assert rule ids, so B1 had to drop about half the tests, and B2 is a judgement, not a measurement. It does not measure production value or the time spent reading lock diffs, and the library was changing during the run. Read the numbers as a direction, not a rate.
+**Bias caveats.** One author wrote all 24 changes and the ground truth, after reading the rules and the scan semantics. In effect, the same author also wrote the rules. The two caught bypasses have exactly the shape the scan models, and a slightly different bypass (raw SQL) was missed until the fix, a fix this release removed as below the API (1.9). 24 changes in 2 apps is small: one case moves a rate by 12 points. Both apps were built to demonstrate the library, and their tests assert rule ids, so B1 had to drop about half the tests, and B2 is a judgement, not a measurement. It does not measure production value or the time spent reading lock diffs, and the library was changing during the run. Read the numbers as a direction, not a rate.
 
 ## 9. Starting tomorrow
 
@@ -892,26 +891,27 @@ It adds human work when:
 4. Write the mediation sentence: which chokepoint every path crosses, and what goes around it.
 5. Run it in detect mode; send violations to a person as possible bugs.
 6. Add a property test that fails, by ablation, without the guard.
-7. If the rule touches shared data, add the storage enforcer and its interleaving tests.
+7. If the rule touches shared data, add a path law so every write goes through the door, and leave atomicity to the store's own constraints or transactions: a check on API arguments is not a lock (1.9).
 8. Protect the rule file, tests, hooks and CI config from agents.
 9. Promote to enforce through review. Count attempts on model-call accepts and sample the rescued ones.
 10. List your effect sinks. Each one without a rule is a candidate or a signed accepted risk.
 
-## Appendix A. The v0.1 library and two apps
+## Appendix A. The v0.1 library and three apps
 
 Paths are relative to the directory that holds this guide.
 
 | Path | Holds |
 |---|---|
-| `invariants-py/src/invariants/` | `loader.py` and `typecheck.py`, `guard.py` (guard, model call, edge, transaction), `registry.py`, `lockfile.py`, `scan.py`, `bootstrap.py` and `doors.py` (`inv init`), `cli.py`, `pytest_plugin.py`, `cel/` (three backends and the value mapping), `integrations/` and the JSON Schema |
+| `invariants-py/src/invariants/` | `loader.py` and `typecheck.py`, `guard.py` (guard, model call, edge), `registry.py`, `lockfile.py`, `scan.py`, `bootstrap.py`, `doors.py` and `graphify.py` (`inv init`), `cli.py`, `pytest_plugin.py`, `cel/` (three backends and the value mapping), `integrations/` and the JSON Schema |
 | `invariants-py/tests/` | About 3,920 tests: unit and integration tests, `conformance/cel/` (17 YAML suites), and one `test_fix_round*.py` per fix round, each encoding what that round's probes showed broken |
 | `invariants-py/docs/` | `rule-file.md` (every field), `evaluation.md` (8.3) and a copy of this guide |
 | `invariants-py/` | README, CHANGELOG (one section per fix round), RELEASING (the publishing checklist), SECURITY, CONTRIBUTING, and `.github/workflows/ci.yml` |
 | `apps/pool-service/` | A FastAPI and SQLite service that leases worker-pool slots, resizes pools through approvals, splits job batches and triages failed jobs with a model. 9 rules (R-1, R-7, R-20 to R-24, H-1, H-2), all `enforce`, and 72 tests |
 | `apps/fact-pipeline/` | A batch CLI that extracts facts from documents with a deterministic fake model (with fault injection), resolves entities, stores and promotes facts, and answers with citations. It has 12 of section 7.3's knowledge rules (K-1 to K-19; 11 `enforce`, K-16 `detect`) and 86 tests |
+| `apps/support-agent/` | A tool-calling support agent that issues refunds, credits and cancellations: a graph, an `@inv.model_call` planner with abstain, an `@inv.edge` executor, `BillingService` doors and `StripeGateway` and `LedgerRepo` sinks. A fake model stands in, so it needs no API key. Its README lists its 12 seeded defects and the test for each |
 | `prototype/` | The standard-library prototype the first draft described: a JSON rule file, a CEL subset, and `demo.py` with 65 checks. It is kept as a teaching artifact |
 
-Each app has an `invariants.yaml`, an `invariants.lock`, a `ci.sh` and a `FRICTION.md`. FRICTION.md records what was hard to express or run, with what each library fix round changed for that app. The FRICTION files were the input to fix round 1. Each app also has a `bypass/` tree that the clean scan leaves out on purpose, so its tests can show `inv scan` catching a bypass. The apps import only the library's public API.
+Each app has an `invariants.yaml`, an `invariants.lock` and a `ci.sh`; pool-service and fact-pipeline also have a `FRICTION.md`. FRICTION.md records what was hard to express or run, with what each library fix round changed for that app. The FRICTION files were the input to fix round 1. Each app also has a `bypass/` tree that the clean scan leaves out on purpose, so its tests can show `inv scan` catching a bypass. The apps import only the library's public API.
 
 **Test counts.** About 3,915 tests pass, with 3 to 5 skipped (engine-matrix cases that run only when CI sets their flags), on each of the three backends (`subset`, `cel-expr`, `celpy`), on Python 3.11 and 3.14, and also under `python -O`. mypy is clean. GitHub CI runs the same matrix on 3.11 to 3.14, plus the wheel build and both apps.
 
@@ -925,12 +925,13 @@ for b in subset cel-expr celpy; do INV_CEL_BACKEND=$b python -m pytest tests -q;
 python -m mypy
 cd ../apps/pool-service && pip install -e '.[dev]' && ./ci.sh
 cd ../fact-pipeline   && pip install -e '.[dev]' && ./ci.sh
+cd ../support-agent   && pip install -e '.[dev]' && ./ci.sh
 cd ../../prototype    && python3 demo.py          # the teaching prototype; no dependencies
 ```
 
 Run pool-service with `POOL_SERVICE_DB=pool.db uvicorn pool_service.main:app` (uvicorn is not a dependency). Try fact-pipeline with `fact-pipeline --db f.db --inject drop_qualifier ingest examples/s1.txt --publisher newswire-a`, then `promote`, `ask` and `monitor`.
 
-**The adoption path, measured.** `inv init` was run on four codebases. On a copy of pool-service it pinned 7 pydantic models and wrote one door rule for the store (7 service doors). It froze 4 of the 6 bypasses planted in the app's `rogue.py` and 3 real back doors: a benchmark and two endpoints writing the store directly. The other 2 planted bypasses are raw SQL, below the API; `--sql` finds them. On an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back doors in a worker and an admin script. On a raw-SQL ledger app it found the door and the batch script that skips it. On the open-source full-stack FastAPI template (SQLModel) it pinned 9 models with 26 constraints and wrote no door rule, correctly: its routes write through the session or call `crud` directly, so there is no service layer to lock yet, and the file lists those writes instead (it was read only; its code was not installed or run). The three files that were locked passed `inv check` as written. In three rounds of 52 scripted agent-style changes over the ledger and ORM apps, all 35 that loosen a law or add a back door were blocked for the stated reason, and all 17 safe ones passed (new code through a door, reads, unit tests, tightenings, a reviewer's approval). The blocked ones were direct calls, aliases, constructors, `self.repo` (also tuple-assigned), annotated and unannotated parameters, `getattr`, monkeypatching, a new service method that skips the checked door, self-allowing, an added door, a deleted rule, a stale `allow` entry, and an agent re-pinning its own weakening (caught by `--base`). The third round ran on a wheel installed into a fresh venv.
+**The adoption path, measured.** `inv init` was run on four codebases. On a copy of pool-service it pinned 7 pydantic models and wrote one door rule for the store (7 service doors). It froze 4 of the 6 bypasses planted in the app's `rogue.py` and 3 real back doors: a benchmark and two endpoints writing the store directly. The other 2 planted bypasses are raw SQL, below the API, and are no longer reported: database permissions are what stop them (1.9). On an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back doors in a worker and an admin script. On a raw-SQL ledger app it found the door and the batch script that skips it. On the open-source full-stack FastAPI template (SQLModel) it pinned 9 models with 26 constraints and wrote no door rule, correctly: its routes write through the session or call `crud` directly, so there is no service layer to lock yet, and the file lists those writes instead (it was read only; its code was not installed or run). The three files that were locked passed `inv check` as written. In three rounds of 52 scripted agent-style changes over the ledger and ORM apps, all 35 that loosen a law or add a back door were blocked for the stated reason, and all 17 safe ones passed (new code through a door, reads, unit tests, tightenings, a reviewer's approval). The blocked ones were direct calls, aliases, constructors, `self.repo` (also tuple-assigned), annotated and unannotated parameters, `getattr`, monkeypatching, a new service method that skips the checked door, self-allowing, an added door, a deleted rule, a stale `allow` entry, and an agent re-pinning its own weakening (caught by `--base`). The third round ran on a wheel installed into a fresh venv. On the support-agent app's code, before any rule was written by hand, `inv init` found the 4 pydantic models (23 constraints), the two repository door rules with the 3 tools as their callers, and the one real back door, the legacy admin goodwill refund and its caller, frozen in `allow`. Each of its 12 seeded defects is caught: 5 by `inv check`'s path and lock rules, 2 more by its verify and lock steps, and 5 at run time. Its safe changes pass.
 
 **What the prototype taught, and what the library added.** Building the prototype fixed three rules in this guide. R-21's bare `has()` does not compile in CEL. R-1 needed its length clause, because `inv.zip` on unequal lists is a `rule_error`. And R-7 now reads held data through a provider and is re-checked at an edge. The fourteen questions it raised are answered in sections 2.1 to 2.9, and the library implements each answer. The library adds what the prototype left out: `inv scan`, the lockfile, YAML, the CLI, real CEL engines and a type checker.
 

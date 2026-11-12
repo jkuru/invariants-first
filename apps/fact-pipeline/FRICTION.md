@@ -1,5 +1,9 @@
 # Friction with `invariants` (0.1.0)
 
+> **Since this was written:** the library removed every feature that reached below the API
+> (storage enforcers, transactional targets and rollback, provider consistency, `tables:`, `.sql`
+> contracts). Entries about those features no longer apply; see the library's CHANGELOG.
+
 These are the places where using the library from outside was awkward, hard or impossible.
 Each entry says what I tried, what happened, and what the library should do. The library was
 not patched. The app uses only `import invariants as inv`. It reads `Registry` attributes

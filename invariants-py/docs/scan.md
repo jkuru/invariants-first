@@ -7,9 +7,7 @@ never imported or run.
 
 - [Mediation](#mediation)
 - [Findings](#findings)
-- [Tables and raw SQL](#tables-and-raw-sql)
-- [Reachability: what counts as door code](#reachability-what-counts-as-door-code)
-- [Warnings that withhold `held`](#warnings-that-withhold-held)
+- [Allowed back doors](#allowed-back-doors)
 - [Configuration and output](#configuration-and-output)
 - [Limitations](#limitations)
 
@@ -22,8 +20,7 @@ mediation:
   chokepoint: pools.size is written only by resize_door    # the positive argument, in words
   sink:   "py:pkg.store.set_size"           # the protected effect: a string or a list
   door:   "py:pkg.service.resize"           # the chokepoint function(s); defaults to subject.target
-  allow:  ["py:pkg.batch.refund_all"]       # known back doors, let through with everything in them
-  tables: [pools, {leases: [insert, update]}]  # below the API, optional: raw SQL writes to these are forbidden outside sink and door
+  allow:  ["py:pkg.batch.refund_all"]       # known back doors: the call chain, frozen
   residual_paths: []                        # known gaps, in words; while any is listed, the rule is not held
 ```
 
@@ -46,8 +43,8 @@ Findings have four kinds:
 | Kind | Meaning | Codes |
 |---|---|---|
 | `bypass` | a path of extracted call edges from an entrypoint to the sink that avoids every door | `bypass` |
-| `forbidden` | a bypass idiom | `forbidden/getattr-sink` (and `getattr` on a door), `forbidden/unwrap` (`.__wrapped__`), `forbidden/monkeypatch`, `forbidden/raw-sql` |
-| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/computed-sql`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/parse-error` |
+| `forbidden` | a bypass idiom | `forbidden/getattr-sink` (and `getattr` on a door), `forbidden/unwrap` (`.__wrapped__`), `forbidden/monkeypatch` |
+| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/parse-error` |
 | `missing` | a declared sink, door or `allow` entry that does not exist in the scanned code, or an `allow` entry that no longer reaches a sink without a door | `missing/sink`, `missing/door`, `missing/allow`, `missing/allow-unused` |
 
 Each finding carries the function it is in (`owner`, in `--format json`), which is what `allow`
@@ -64,6 +61,14 @@ so the call also reaches every scanned subclass's override. Anything else (an un
 a rebinding, unpacking it cannot pair) is a name-matched edge, which the scan reports as unresolved
 rather than trusting.
 
+Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
+and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
+`billing: BillingService` at class level, as a dataclass does), the call is an extracted edge to
+`BillingService.refund`. An attribute is resolved in the module that defines the class. An
+attribute that any code sets from outside its object (`obj.x = ...` in a function that is not one
+of that object's methods, or `setattr(obj, "x", ...)`) is never typed: calls through it stay
+name-matched, so they are unresolved.
+
 A call such as `store.sink.__call__(c)` (or `getattr(store.sink, "__call__")(c)`) is a call of the
 sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 `store.__dict__["sink"]`, `store.__dict__.get("sink")`, `store.__getattribute__("sink")` and
@@ -75,37 +80,23 @@ The exit code is 1 on any bypass, forbidden or missing finding, and 3 when nothi
 calls are unresolved (not a pass). It is 4 when the scan skipped an `enforce` rule because it is
 ablated (`INV_ABLATE`), which is not a pass either.
 
-## Tables and raw SQL
+## Allowed back doors
 
-This part is below the API, and optional: a door rule without `tables` checks only which API calls
-which. `inv init` adds `tables` only with `--sql`.
+`mediation.allow` freezes the back doors that exist when it is written: each function on the call
+chain from an entrypoint to the sink. An allowed function is not a door. A path to the sink is let
+through only when every function on it is in `allow`. So these are a `bypass`:
 
-`mediation.tables` items are table names, which forbid every raw SQL write (INSERT, UPDATE,
-DELETE and DDL) outside the sink and door, or one-key mappings that forbid only some statement
-kinds: `tables: [pools, {leases: [insert, update]}]` lets a release `DELETE FROM leases` through
-and still flags an `INSERT INTO leases` in a new endpoint. The scan reads concatenated literals,
-schema-qualified and quoted names (`main.leases`, `"leases"`), SQL comments between keywords,
-`MERGE INTO` (insert, update and delete), `INSERT` without `INTO`, `UPDATE t AS x SET`,
-`UPDATE ONLY`, `DELETE FROM ONLY` and `ALTER TABLE IF EXISTS`. A write to a computed table name
-(`f"INSERT INTO {t}"`, `"... {table}".format(...)`, `{0}`, `%s`, `%(t)s`) is `unresolved`.
+- a new caller of an allowed function (a new script that calls `admin_goodwill`);
+- new code that an allowed function calls and that reaches the sink.
 
-## Reachability: what counts as door code
+Inside an allowed function, the ways it reaches the sink are excused with it: a direct call, a
+`getattr` of the sink name, or the sink used as a value. `forbidden/unwrap`, `forbidden/monkeypatch`
+and `unresolved/reflection` in it are still reported.
 
-What counts as door code is decided by the call graph, not by where the text is. SQL in a helper
-that only the door or sink reaches (it is not reachable from any entrypoint without them, and it is
-never used as a value) is door code, and so is a module-level constant (`INSERT_LEASE = "..."`)
-that only door or sink code uses. The same constant used anywhere else, or never used in the
-scanned code, is flagged where it is defined.
-
-## Warnings that withhold `held`
-
-Two cases make `inv scan` print a warning, and then `inv status` does not report the rule `held`:
-- The sink's own SQL writes a table, or a statement kind, that `mediation.tables` does not cover.
-  This applies whatever the sink's `effects` are, `external` included. A raw write to that table
-  elsewhere would go around the door unseen. The JSON report lists `sink_writes` and
-  `uncovered_tables` per rule.
-- A rule guards stored data in process (a `transactional` door or sink, or a storage enforcer)
-  and declares no `mediation.tables` at all.
+`inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
+`goodwill_refund` it calls, say), re-scanning up to five rounds until nothing new is found. An
+entry that no longer reaches the sink without a door is `missing/allow-unused` and fails the check
+until it is deleted. Deleting it is a tightening; adding one is a weakening the lock reports.
 
 ## Configuration and output
 
@@ -130,7 +121,7 @@ roots = ["src"]
 exclude = ["*/legacy/*"]
 ```
 
-`--format json` gives one record per rule (with `sink_writes` and `uncovered_tables`), and
+`--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
 `--format sarif` gives SARIF 2.1.0 for code-scanning tools. A rule ablated through `INV_ABLATE` is
 not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still needs a `bad` and a
 `structure` enforcer.
@@ -142,10 +133,6 @@ not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still
 - It does not follow calls through dependency injection containers, event buses, callbacks or
   values it cannot type (see "Method calls" above).
 - Callers outside the scanned roots are invisible to it.
-- Tables are matched per table and statement kind, not per column. `archive.leases` counts as
-  `leases`, because the schema qualifier is ignored.
-- SQL text in a log message is read like any other string.
-- A class-level SQL constant (`self.SQL`) is not resolved to its uses, so it is judged where it is
-  defined.
-- Each finding is reported under every scanned rule it affects. A dropped trigger is attributed to
-  the rule with `tables`.
+- It checks which function calls which. It does not read SQL or any other query text: what a
+  repository does below its API is the implementation's business.
+- Each finding is reported under every scanned rule it affects.

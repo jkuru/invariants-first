@@ -1,14 +1,17 @@
 """SQLite store. The doors (ingest_door, promote_door, delete_source_door) are the only writers of facts,
-evidence and fact statuses; the storage enforcers (K-1, K-7, K-8, K-9) back them up.
+evidence and fact statuses: the rules check their arguments, and `inv scan` checks nothing else calls the
+row writers. The schema's own triggers and constraints (append-only rows, one canonical id per external
+record, evidence before a fact) are the store's business, below the API: no rule depends on them.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 import invariants as inv
@@ -34,10 +37,10 @@ def fact_id(subject_id: str, predicate: str, obj: str, qualifier: str, valid_fro
     return "fact_" + sha(json.dumps([subject_id, predicate, obj, qualifier, valid_from, valid_to]))[:16]
 
 
-def ddl(ablated: Callable[[str], bool]) -> str:
-    """The schema. Each storage enforcer is left out while its rule is ablated (falsifier checks)."""
-    k7 = "" if ablated("K-7") else ",\n  CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from)"
-    k9 = "" if ablated("K-9") else ",\n  UNIQUE (source_system, source_key)"
+def ddl() -> str:
+    """The schema, with the store's own constraints and triggers."""
+    k7 = ",\n  CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from)"
+    k9 = ",\n  UNIQUE (source_system, source_key)"
     parts = [f"""
 CREATE TABLE IF NOT EXISTS sources (
   id TEXT PRIMARY KEY, uri TEXT NOT NULL, hash TEXT NOT NULL, text TEXT NOT NULL,
@@ -77,16 +80,14 @@ CREATE TABLE IF NOT EXISTS reviews (
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, rule TEXT, payload TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'open');
 """]
-    if not ablated("K-1"):
-        parts.append("""
+    parts.append("""
 CREATE TRIGGER IF NOT EXISTS k1_fact_needs_evidence BEFORE INSERT ON facts
 WHEN NOT EXISTS (SELECT 1 FROM evidence WHERE fact_id = NEW.id AND end_ > start AND length(quote) > 0)
 BEGIN SELECT RAISE(ABORT, 'K-1: a fact needs an evidence span'); END;
 """)
-    if not ablated("K-8"):
-        for table in ("facts", "evidence", "fact_status"):
-            for op in ("UPDATE", "DELETE"):
-                parts.append(f"""
+    for table in ("facts", "evidence", "fact_status"):          # history is append-only
+        for op in ("UPDATE", "DELETE"):
+            parts.append(f"""
 CREATE TRIGGER IF NOT EXISTS k8_{table}_no_{op.lower()} BEFORE {op} ON {table}
 BEGIN SELECT RAISE(ABORT, 'K-8: {table} is append-only'); END;
 """)
@@ -125,12 +126,12 @@ class Store:
         self.lock = threading.RLock()
         self._depth = 0
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(ddl(inv.is_ablated))
+        self.conn.executescript(ddl())
 
     def close(self) -> None:
         self.conn.close()
 
-    @inv.transaction
+    @contextlib.contextmanager
     def txn(self) -> Iterator[sqlite3.Connection]:
         """BEGIN IMMEDIATE ... COMMIT, or ROLLBACK on an exception. Nested calls join the outer one."""
         with self.lock:
@@ -226,7 +227,7 @@ class Store:
         return eid
 
     def link_xref(self, source_system: str, source_key: str, eid: str) -> None:
-        """Link an external record to an entity. UNIQUE (K-9) refuses a second canonical id."""
+        """Link an external record to an entity. The schema's UNIQUE refuses a second canonical id."""
         with self.txn() as c:
             c.execute("INSERT INTO xrefs (source_system, source_key, entity_id) VALUES (?, ?, ?)",
                       (source_system, source_key, eid))
@@ -333,7 +334,8 @@ class Store:
 
     @inv.guard("py:fact_pipeline.store.Store.delete_source_door")
     def delete_source_door(self, source_id: str) -> RetractionReport:
-        """Mark the source deleted, retract its orphans, demote BELIEVED facts that lost support (K-15 after)."""
+        """Mark the source deleted, retract its orphans, demote BELIEVED facts that lost support (K-15 reports
+        any orphan left after)."""
         self.conn.execute("UPDATE sources SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
                           (source_id,))
         retracted = self._retract_orphans(source_id)

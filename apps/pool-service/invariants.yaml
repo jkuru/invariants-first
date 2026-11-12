@@ -13,9 +13,7 @@ targets:
   "py:pool_service.work.split_work": {effects: none}
   "py:pool_service.service.create_pool": {effects: external}
   "py:pool_service.service.lease_slots": {effects: external}
-  "py:pool_service.service.ResizeService.resize_door":
-    effects: transactional
-    transaction: "py:pool_service.service.ResizeService.txn"
+  "py:pool_service.service.ResizeService.resize_door": {effects: external}
   "py:pool_service.triage.propose_cause": {effects: none}
   "py:pool_service.triage.remediate": {effects: external}
   "py:pool_service.api.create_pool": {effects: external}
@@ -27,22 +25,18 @@ providers:
     type: int
     from: "py:pool_service.service.pool_leased"
     args: {conn: args.conn, pool_id: args.pool_id}
-    consistency: snapshot
   pool_size:
     type: int
     from: "py:pool_service.service.pool_size"
     args: {conn: args.conn, pool_id: args.pool_id}
-    consistency: snapshot
   approval:
     type: "py:pool_service.service.Approval | null"
     from: "py:pool_service.service.load_approval"
     args: {conn: self.conn, proposal_id: req.proposal_id}
-    consistency: same_txn
   job:
     type: "py:pool_service.triage.JobFacts"
     from: "py:pool_service.triage.load_job"
     args: {conn: args.conn, job_id: args.job_id}
-    consistency: immutable
 
 rules:
   - id: R-1
@@ -103,7 +97,6 @@ rules:
       residual_paths: []
       sink: "py:pool_service.store.insert_remediation"
       door: "py:pool_service.triage.remediate"
-      tables: [{remediations: [insert, update]}]   # the sink's INSERT; a raw write elsewhere skips the edge check
     falsified_by:
       - "tests/test_triage.py::test_r7_contradicting_reply_escalates"
       - "tests/test_triage.py::test_r7_forged_checked_refused_at_edge"
@@ -125,22 +118,12 @@ rules:
         on_violation: reject
         on_error: fail_closed
         view: {leased: provider.pool_leased, n: args.slots, size: provider.pool_size}
-      - point: storage
-        timing: pre_effect
-        mode: enforce
-        on_violation: reject
-        on_error: fail_closed
-        view: rows
-        artifact: "src/pool_service/schema.sql#sha256:f9aea6df1349d35d73aebeb774c76bc179ca480ebab91d59296bbffe4f4e7000"
-        generated: false
-        conformance_test: "tests/test_lease.py::test_r20_door_and_trigger_agree"
     mediation:
-      chokepoint: triggers r20_lease and r20_resize run on every insert into leases and every update of pools.size
-      residual_paths: ['SQLite has no role grants: any connection can DROP TRIGGER (inv scan flags it only in
-          scanned code)']
+      chokepoint: lease_slots is the only caller of store.insert_lease (inv scan)
+      residual_paths: ['two concurrent leases can both pass the check; the store''s own triggers refuse the
+          second (below the API, the implementation''s business)']
       sink: "py:pool_service.store.insert_lease"
       door: "py:pool_service.service.lease_slots"
-      tables: [{leases: [insert, update]}]     # release's DELETE shrinks leases, so it is allowed
     falsified_by: ["tests/test_lease.py::test_r20_door_rejects_over_lease"]
 
   - id: R-21
@@ -166,7 +149,6 @@ rules:
       chokepoint: resize_door is the only writer of pools.size (R-23, checked by inv scan)
       residual_paths: []
       sink: "py:pool_service.store.set_size"
-      tables: [{pools: [update]}]              # create_pool's INSERT is R-24's, not a resize
     falsified_by:
       - "tests/test_resize.py::test_r21_apply_without_approval_is_rejected"
       - "tests/test_resize.py::test_r21_self_approval_is_rejected"
@@ -176,19 +158,18 @@ rules:
     status: enforce
     class: policy
     owner: ops-policy
-    statement: One resize never grows a pool to more than four times its size; such a write is rolled back.
+    statement: One resize never grows a pool to more than four times its current size.
     subject: {contract: pool_py, target: "py:pool_service.service.ResizeService.resize_door"}
-    scope: transition
+    scope: call
     bind: {req: args.req}
-    bad: 'old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 4 * old_self.sizes[req.pool_id]'
+    bad: 'self.sizes[req.pool_id] > 0 && req.new_size > 4 * self.sizes[req.pool_id]'
     enforcers:
-      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
     mediation:
-      chokepoint: resize_door, inside ResizeService.txn; the write is rolled back before commit
+      chokepoint: resize_door is the only writer of pools.size (R-23); the check runs before the write
       residual_paths: []
       sink: "py:pool_service.store.set_size"
-      tables: [{pools: [update]}]
-    falsified_by: ["tests/test_resize.py::test_r22_growth_above_4x_is_rolled_back"]
+    falsified_by: ["tests/test_resize.py::test_r22_growth_above_4x_is_rejected"]
 
   - id: R-23
     rev: 1
@@ -207,7 +188,6 @@ rules:
       residual_paths: []
       sink: ["py:pool_service.store.set_size", "py:pool_service.store.insert_pool"]
       door: ["py:pool_service.service.ResizeService.resize_door", "py:pool_service.service.create_pool"]
-      tables: [pools]
     falsified_by: ["tests/test_scan.py::test_r23_scan_finds_the_bypass_module"]
 
   - id: R-24

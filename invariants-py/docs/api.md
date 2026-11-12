@@ -19,9 +19,6 @@ Key behaviours that the one-line docstrings leave out:
   sync and async functions, on methods, and above or below `@classmethod` or `@staticmethod`. A
   call raises `LoadError` when a rule-id key is not loaded, or when a `py:` key matches no loaded
   rule and no `targets:` entry, so a guard never runs open because nothing was loaded.
-- `@inv.transaction` and `@inv.transaction(savepoint=True)`: a failed guard rolls the transaction
-  back, out to the outermost block of the same boundary (or to the nearest savepoint block).
-  See [concepts.md](concepts.md#transactions).
 - `@inv.model_call(id, schema=...)`: `schema` is a dataclass, a `{field: type}` map or a pydantic
   model. See [concepts.md](concepts.md#model-calls).
 - `inv.verify(reg=None, modules=None)`: by default it checks the guards in the packages of the
@@ -41,7 +38,6 @@ Key behaviours that the one-line docstrings leave out:
 |---|---|---|
 | `guard(*keys: str, points: tuple[str, ...] = ('decorator',)) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.guard("R-1", ...) or @inv.guard("py:jobs.split_work"): pre- and post-effect checks. |
 | `provider(name: str) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. |
-| `transaction(fn: Callable[..., Any] \| None = None, *, savepoint: bool = False) -> Any` | function | @inv.transaction on a generator (or async generator) method that BEGINs, yields, and COMMITs. |
 | `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply): parse -> abstain -> bad -> accept, with bounded retries. |
 | `edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async). |
 | `Checked(*a: Any, **k: Any) -> None` | class | Base for refined types built by inv.model_call; carries value, attempts, rule and verdict. |
@@ -64,9 +60,9 @@ Key behaviours that the one-line docstrings leave out:
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = 'rule', reg: Registry \| None = None, cache: dict[Any, Any] \| None = None, in_txn: bool = False, providers: dict[str, Any] \| None = None) -> Outcome` | function | One evaluation, one of the four outcomes. A rule defect is rule_error, never an exception. |
+| `evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = 'rule', reg: Registry \| None = None, cache: dict[Any, Any] \| None = None, providers: dict[str, Any] \| None = None) -> Outcome` | function | One evaluation, one of the four outcomes. A rule defect is rule_error, never an exception. |
 | `evaluate_env(rule: Rule, env: dict[str, Any], reg: Registry \| None = None) -> Outcome` | function | Run every clause. Any true -> violation (all fired); else any error -> rule_error; else ok. |
-| `fill_view(rule: Rule, enf_index: Any, base: dict[str, Any], reg: Registry \| None = None, cache: dict[Any, Any] \| None = None, in_txn: bool = False, providers: dict[str, Any] \| None = None) -> View` | function | Fill one enforcer's view as the SDK does (providers called now, or from the call's cache). |
+| `fill_view(rule: Rule, enf_index: Any, base: dict[str, Any], reg: Registry \| None = None, cache: dict[Any, Any] \| None = None, providers: dict[str, Any] \| None = None) -> View` | function | Fill one enforcer's view as the SDK does (providers called now, or from the call's cache). |
 | `effective_mode(mode: str, status: str) -> str` | function | Effective mode = min(enforcer.mode, cap(status)). |
 
 ### Registries and ablation
@@ -79,7 +75,7 @@ Key behaviours that the one-line docstrings leave out:
 | `using(reg: Registry) -> Iterator[Registry]` | function | Run guards against reg inside the block (context-local), then restore. |
 | `isolated() -> Iterator[Registry]` | function | A fresh, empty registry for the block; inv.load() inside it installs there. |
 | `ablated(rule_id: str, reg: Registry \| None = None, *, scope: str = 'context') -> contextlib.AbstractContextManager[None]` | function | Disable one rule's guards (what `pytest --inv-ablate` does per rule); its falsifiers must then fail. |
-| `is_ablated(rule_id: str, reg: Registry \| None = None) -> bool` | function | True while the rule is ablated. Storage DDL builders call this to leave out that rule's enforcer. |
+| `is_ablated(rule_id: str, reg: Registry \| None = None) -> bool` | function | True while the rule is ablated (inv.ablated, INV_ABLATE or Registry.ablate). |
 
 ### Operations
 
@@ -88,9 +84,7 @@ Key behaviours that the one-line docstrings leave out:
 | `configure(reg: Registry \| None = None, *, sink_size: int \| None = ..., review_store: ReviewStore \| None = ..., pager: Pager \| None = ..., exporter: Exporter \| None = ..., error_spike: ErrorSpike \| None = ..., violation_log_level: int = ..., debug: bool = ..., review_fallback: ReviewStore \| None = ..., max_reply_size: int = ..., allow_non_finite: bool = ...) -> Registry` | function | Set the operational hooks of reg (default: the current registry). Unnamed settings are kept. |
 | `observe(fn: Observer) -> Callable[[], None]` | function | Call fn(rule_id, kind, event) on every evaluation in any registry; returns an unsubscribe. |
 | `capture(reg: Registry \| None = None) -> Iterator[list[dict[str, Any]]]` | function | Collect every event recorded in the block (in reg only, when given) into a list. For tests. |
-| `monitor(rule_id: str, rows: Iterable[tuple[Any, dict[str, Any]]], reg: Registry \| None = None, in_txn: bool = False) -> list[tuple[Any, Outcome]]` | function | Evaluate a rule's monitor enforcer over (key, base) rows; record each outcome. Never blocks. |
-| `storage_rejection(rule_id: str, exc: BaseException \| None = None, reg: Registry \| None = None, message: str \| None = None) -> Rejected` | function | A Rejected for a storage enforcer's refusal (a CHECK, trigger or UNIQUE), counted in the reach report. |
-| `storage_errors(markers: Mapping[str, str], types: tuple[type[BaseException], ...] = (Exception,), reg: Registry \| None = None) -> Iterator[None]` | function | Turn a database error whose text contains a marker into that rule's storage_rejection. |
+| `monitor(rule_id: str, rows: Iterable[tuple[Any, dict[str, Any]]], reg: Registry \| None = None) -> list[tuple[Any, Outcome]]` | function | Evaluate a rule's monitor enforcer over (key, base) rows; record each outcome. Never blocks. |
 | `Handoff(rule: str, action: str, outcome: Any = None, bound: dict[str, Any] = <factory>, attempts: list[dict[str, Any]] = <factory>, event: dict[str, Any] = <factory>, reason: str = '') -> None` | class | What route, escalate and page hand to the review store or the pager. |
 | `ReviewStore(*args, **kwargs)` | class(Protocol) | Where route and escalate open a review. open() returns the review id. |
 | `MemoryReviews(maxlen: int = 1000) -> None` | class | The default review store: in memory and bounded (the oldest are dropped). Not durable. |
@@ -102,7 +96,7 @@ Key behaviours that the one-line docstrings leave out:
 | Name | Kind | Purpose |
 |---|---|---|
 | `Outcome(kind: str, rule: str, messages: list[str] = <factory>, error: str = '', bound: dict[str, Any] \| None = None) -> None` | class | One evaluation result: ok \| violation \| rule_error \| parse_error. |
-| `Rule(raw: dict[str, Any], clauses: list[tuple[Program, str]], names: set[str], target: Any = None, effects: str = 'external', transaction: str \| None = None, snapshot: list[tuple[str, ...]] = <factory>, names_for: dict[Any, dict[str, str]] = <factory>, notes: list[str] = <factory>, max_status: str = 'candidate', semantic_resamples: int = 0, refs: frozenset[tuple[str, ...]] = frozenset(), reads: frozenset[tuple[str, ...]] = frozenset()) -> None` | class | A loaded rule: the raw record plus what the loader computed. |
+| `Rule(raw: dict[str, Any], clauses: list[tuple[Program, str]], names: set[str], target: Any = None, effects: str = 'external', snapshot: list[tuple[str, ...]] = <factory>, names_for: dict[Any, dict[str, str]] = <factory>, notes: list[str] = <factory>, max_status: str = 'candidate', semantic_resamples: int = 0, refs: frozenset[tuple[str, ...]] = frozenset(), reads: frozenset[tuple[str, ...]] = frozenset()) -> None` | class | A loaded rule: the raw record plus what the loader computed. |
 | `Provider(name: str, raw: dict[str, Any], fn: Callable[..., Any], type: type, nullable: bool) -> None` | class | A declared, typed, read-only provider bound to its function. |
 
 ### Errors
@@ -114,12 +108,10 @@ Key behaviours that the one-line docstrings leave out:
 | `ParseError` | class(Exception) | A model reply does not parse into the closed schema. |
 | `InvariantError` | class(Exception) | Base for guard outcomes that stop a call. |
 | `Rejected` | class(InvariantError) | on_violation: reject. The caller gets an error. |
-| `WiringError` | class(Rejected) | A transactional target ran outside its declared boundary: a wiring bug, refused whatever on_violation says. |
 | `Halted` | class(InvariantError) | on_violation: halt. An internal invariant broke: a bug. |
 | `Escalation` | class(InvariantError) | on_violation: escalate (and abstain, always). Carries the attempt record. |
 | `Routed` | class(InvariantError) | on_violation: route. A review was opened (review_id); the call does not proceed. |
 | `ReviewNotOpened` | class(InvariantError) | route or escalate (or an abstain) could not open a review: the review store failed, and so did the review_fallback if one is configured. The call does not proceed, as with Routed/Escalation. |
-| `RolledBack` | class(InvariantError) | A guard failed inside an @inv.transaction and the caller swallowed it; the SDK rolled back. |
 
 ### Module attributes
 
@@ -161,11 +153,9 @@ or `args.region`. They bind to handler parameter names, not to OpenAPI JSON path
 |---|---|
 | reject | 422, configurable within 4xx |
 | route or escalate | 202, with `review_id` |
-| a storage enforcer's refusal (`inv.storage_rejection`) | 409, configurable |
 | `rule_error` under `fail_closed` | 503 |
 | no review could be opened (`ReviewNotOpened`) | 503 |
 | halt | 500 |
-| rolled back | 409 |
 
 The response body names the rule and the outcome, and never includes error text or values.
 `inv_fastapi.verify_routes(app, doc)` checks that each openapi-bound rule matches exactly one
@@ -181,7 +171,7 @@ guarded route. The module re-exports `PROBLEM_JSON`, `StatusMap` and `problem` f
 | `operation_of(rule_raw: dict[str, Any], contracts: dict[str, Any]) -> str \| None` | function | The operation a rule binds to: subject.operation, else its openapi contract's operation. |
 | `Operation(path: str, methods: frozenset[str], operation_id: str, endpoint: Callable[..., Any]) -> None` | class | One HTTP operation of an app: full path template, methods, operationId and handler. |
 | `PROBLEM_JSON` | `str` | currently `'application/problem+json'` |
-| `StatusMap(reject: int = 422, rule_error: int = 503, halt: int = 500, route: int = 202, escalate: int = 202, rolled_back: int = 409, storage: int = 409, review_unavailable: int = 503) -> None` | class | HTTP status per outcome. reject is 422 by default; 409 is the usual alternative. |
+| `StatusMap(reject: int = 422, rule_error: int = 503, halt: int = 500, route: int = 202, escalate: int = 202, review_unavailable: int = 503) -> None` | class | HTTP status per outcome. reject is 422 by default; 409 is the usual alternative. |
 | `problem(exc: InvariantError, statuses: StatusMap \| None = None, expose_messages: bool = False) -> tuple[int, dict[str, Any]]` | function | (status, problem+json body) for a guard's exception. |
 
 ### `invariants.integrations.asgi`
@@ -191,7 +181,7 @@ guarded route. The module re-exports `PROBLEM_JSON`, `StatusMap` and `problem` f
 | Name | Kind | Purpose |
 |---|---|---|
 | `PROBLEM_JSON` | `str` | currently `'application/problem+json'` |
-| `StatusMap(reject: int = 422, rule_error: int = 503, halt: int = 500, route: int = 202, escalate: int = 202, rolled_back: int = 409, storage: int = 409, review_unavailable: int = 503) -> None` | class | HTTP status per outcome. reject is 422 by default; 409 is the usual alternative. |
+| `StatusMap(reject: int = 422, rule_error: int = 503, halt: int = 500, route: int = 202, escalate: int = 202, review_unavailable: int = 503) -> None` | class | HTTP status per outcome. reject is 422 by default; 409 is the usual alternative. |
 | `problem(exc: InvariantError, statuses: StatusMap \| None = None, expose_messages: bool = False) -> tuple[int, dict[str, Any]]` | function | (status, problem+json body) for a guard's exception. |
 | `encode(body: dict[str, Any]) -> bytes` | function | The JSON bytes of a problem body. |
 | `InvariantMiddleware(app: ASGIApp, *, registry: Registry \| None = None, reject_status: int = 422, statuses: StatusMap \| None = None, expose_messages: bool = False) -> None` | class | Pure ASGI middleware: guard exceptions become problem+json responses. |
@@ -272,9 +262,9 @@ The plugin does not support pytest-xdist.
 
 | Command | Synopsis |
 |---|---|
-| `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--sql] [--no-doors] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; never overwrites. See [start.md](start.md). |
+| `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--no-doors] [--graphify GRAPH] [--no-graphify] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; reads `graphify-out/graph.json` for door hints when it exists; never overwrites. See [start.md](start.md). |
 | `inv check` | `inv check [file] [--relock] [--base REF] [--allow-weakening] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--path DIR]...`: `validate`, `lock --check`, `verify` and `scan` with one exit code; `--base` also fails on a weakening since the lock at REF unless `--allow-weakening` or `INV_ALLOW_WEAKENING=1`. |
-| `inv hook` | `inv hook pretool\|stop`: Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening; `stop` runs `inv check --relock` once per stop. |
+| `inv hook` | `inv hook pretool\|stop`: Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening, and any direct edit of `invariants.lock`; `stop` runs `inv check --relock` once per stop. |
 | `inv validate` | `inv validate [file] [--path DIR]`: runs the JSON Schema check and every load-time check, and lists every error. |
 | `inv lock` | `inv lock [file] [--check] [--accept-weakening] [--lock FILE] [--update-artifacts] [--path DIR]...`: see [lockfile.md](lockfile.md). |
 | `inv verify` | `inv verify [file] [--import MOD]... [--json] [--path DIR]...`: imports the app, then checks that every target is guarded and every guard names a rule. |

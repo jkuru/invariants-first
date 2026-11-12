@@ -24,8 +24,7 @@ def _fresh_pool_svc() -> Any:
     svc = pool.PoolService(conn)
 
     def resize(pid: str, new: int) -> None:
-        with svc.txn():
-            svc.resize_door(pool.ResizePoolRequest(pid, new))
+        svc.resize_door(pool.ResizePoolRequest(pid, new))
     svc.resize = resize
     return svc
 
@@ -60,11 +59,6 @@ def test_falsifier_fails_when_ablated(reg, monkeypatch, rid, name, fn):
 
 def test_every_enforced_rule_has_a_falsifier(reg):
     assert set(FALSIFIERS) == {rid for rid, r in reg.rules.items() if r.status == "enforce"}
-
-
-def test_storage_enforcer_survives_door_ablation(reg):
-    with inv.ablated("R-20"):
-        assert r20.interleaving(True) == (60, 1)
 
 
 def test_inv_ablate_env_var(monkeypatch):

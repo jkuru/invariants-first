@@ -2,11 +2,9 @@
 
 The rule file declares, per rule, under `mediation`:
 
-    sink:   "py:pkg.store.set_size"          # protected effect sink(s): a string or a list
-    door:   "py:pkg.service.resize"          # the chokepoint(s); defaults to subject.target
-    tables: [pools, {leases: [insert, update]}]  # optional: raw SQL writes to these are forbidden
-                                             # (a mapping limits it to statement kinds: insert, update,
-                                             # delete, ddl)
+    sink:   "py:pkg.store.set_size"          # protected API(s): a string or a list
+    door:   "py:pkg.service.resize"          # the API(s) every call must pass; defaults to subject.target
+    allow:  ["py:pkg.jobs.backfill"]         # optional: known back doors, frozen
 
 The source is parsed with `ast` and never imported or run. Findings have four kinds:
 bypass (a path of extracted call edges from an entrypoint to the sink that avoids every door),
@@ -29,7 +27,6 @@ SKIP_DIRS = frozenset({"__pycache__", "node_modules", "site-packages", "build", 
 REFLECTION = frozenset({"eval", "exec", "compile", "__import__", "globals", "vars", "locals"})
 DYNAMIC_IMPORT = frozenset({"importlib.import_module", "importlib.__import__"})
 _BUILTINS = frozenset(dir(builtins))
-SQL_OPS = ("insert", "update", "delete", "ddl")
 # a table reference: optional schema qualifier, optional quotes, and a name that may hold placeholders
 _TABLE = r"""(?:["`\[]?\w+["`\]]?\.)?["`\[]?((?:\w|\{\w*\}|%(?:\(\w+\))?s)+|\?|:\w+)["`\]]?"""
 _SQL_FORMS: tuple[tuple[str, frozenset[str], re.Pattern[str]], ...] = tuple(
@@ -81,38 +78,6 @@ def sql_writes(text: str) -> list[SqlWrite]:
     return out
 
 
-def table_specs(tables: Any, where: str = "mediation.tables") -> dict[str, frozenset[str]]:
-    """mediation.tables -> {table (lower case): statement kinds forbidden outside the doors}.
-
-    An item is a table name (every kind: insert, update, delete, ddl) or a one-key mapping
-    {table: [kinds]} that forbids only those kinds, e.g. {leases: [insert, update]} lets a
-    release DELETE through while an INSERT outside the door is still a finding.
-    """
-    items = [tables] if isinstance(tables, (str, dict)) else tables
-    if not isinstance(items, list) or not items:
-        raise ScanConfigError(f"{where}: expected a non-empty list of table names or {{table: [kinds]}}")
-    out: dict[str, frozenset[str]] = {}
-    for it in items:
-        if isinstance(it, str) and it:
-            out[it.lower()] = frozenset(SQL_OPS)
-        elif isinstance(it, dict) and len(it) == 1:
-            (name, ops), = it.items()
-            ops = [ops] if isinstance(ops, str) else ops
-            if not isinstance(name, str) or not name or not isinstance(ops, list) or not ops \
-                    or not all(o in SQL_OPS for o in ops):
-                raise ScanConfigError(f"{where}: {it!r}: expected {{table: [kinds]}} with kinds from "
-                                      f"{', '.join(SQL_OPS)}")
-            out[name.lower()] = out.get(name.lower(), frozenset()) | frozenset(ops)
-        else:
-            raise ScanConfigError(f"{where}: {it!r} is not a table name or a one-key {{table: [kinds]}} mapping")
-    return out
-_DROP_TRIGGER = re.compile(r"\bDROP\s+TRIGGER\b", re.IGNORECASE)
-
-
-def _drops_trigger(text: str) -> bool:
-    return bool(_DROP_TRIGGER.search(_SQL_COMMENT.sub(" ", text)))
-
-
 class ScanConfigError(ValueError):
     """The rule file's mediation fields for the scan are malformed."""
 
@@ -143,12 +108,7 @@ class Mediation:
     rule: str
     sinks: list[str]
     doors: list[str]
-    tables: list[Any]
     allow: list[str] = dataclasses.field(default_factory=list)   # known back doors, let through
-
-    @property
-    def table_ops(self) -> dict[str, frozenset[str]]:
-        return table_specs(self.tables) if self.tables else {}
 
 
 @dataclasses.dataclass
@@ -160,9 +120,6 @@ class Report:
     not_scanned: dict[str, str]
     files: int = 0
     functions: int = 0
-    warnings: dict[str, str] = dataclasses.field(default_factory=dict)
-    sink_writes: dict[str, dict[str, list[str]]] = dataclasses.field(default_factory=dict)
-    uncovered_tables: dict[str, dict[str, list[str]]] = dataclasses.field(default_factory=dict)
 
     def for_rule(self, rule_id: str) -> list[Finding]:
         return [f for f in self.findings if f.rule == rule_id]
@@ -189,12 +146,9 @@ class Report:
         return {
             "files": self.files, "functions": self.functions,
             "rules": {rid: {"result": self.rule_result(rid), "sinks": m.sinks, "doors": m.doors,
-                            "tables": m.tables, "counts": self.counts(rid),
-                            "sink_writes": self.sink_writes.get(rid, {}),
-                            "uncovered_tables": self.uncovered_tables.get(rid, {})}
+                            "allow": m.allow, "counts": self.counts(rid)}
                       for rid, m in self.scanned.items()},
             "not_scanned": self.not_scanned,
-            "warnings": self.warnings,
             "findings": [f.as_dict() for f in self.findings],
         }
 
@@ -217,6 +171,9 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
         rid, med = raw["id"], raw.get("mediation") or {}
         if not isinstance(med, dict):
             raise ScanConfigError(f"{rid}: mediation must be a mapping")
+        if "tables" in med:
+            raise ScanConfigError(f"{rid}: mediation.tables was removed (raw SQL is below the API): a door rule "
+                                  f"checks which API calls the repository; delete it")
         if raw.get("status") == "retired":
             skipped[rid] = "retired"
             continue
@@ -227,8 +184,8 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
                             if raw.get("status") == "enforce" else "ablated (INV_ABLATE)")
             continue
         if "sink" not in med:
-            if "door" in med or "tables" in med or "allow" in med:
-                raise ScanConfigError(f"{rid}: mediation.door, tables and allow need mediation.sink")
+            if "door" in med or "allow" in med:
+                raise ScanConfigError(f"{rid}: mediation.door and allow need mediation.sink")
             skipped[rid] = "mediation declares no sink"
             continue
         sinks = _str_list(med["sink"], f"{rid}: mediation.sink")
@@ -243,52 +200,8 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
         for p in sinks + doors + allow:
             if not p.startswith("py:"):
                 raise ScanConfigError(f"{rid}: {p!r} must be a 'py:module.name' path")
-        tables = med["tables"] if "tables" in med else []
-        tables = [tables] if isinstance(tables, (str, dict)) else tables
-        if tables:
-            table_specs(tables, f"{rid}: mediation.tables")
-        scanned[rid] = Mediation(rid, sinks, doors, list(tables), allow)
+        scanned[rid] = Mediation(rid, sinks, doors, allow)
     return scanned, skipped
-
-
-_IN_PROCESS = frozenset({"decorator", "middleware", "model_call", "edge"})
-
-
-def table_warnings(doc: dict[str, Any], scanned: dict[str, Mediation], skipped: dict[str, str]) -> dict[str, str]:
-    """Rules whose door guards a transactional or storage effect in process but that declare no
-    mediation.tables. Raw SQL that writes the protected table outside the door goes around the guard
-    and the scan does not see it, so the scan alone cannot report such a rule held."""
-    targets = doc.get("targets") or {}
-    out: dict[str, str] = {}
-    for raw in doc.get("rules") or []:
-        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
-            continue
-        rid = raw["id"]
-        if rid in skipped and rid not in scanned and skipped[rid] != "mediation declares no sink":
-            continue                                     # retired or ablated: said already
-        enfs = [e for e in raw.get("enforcers") or [] if isinstance(e, dict)]
-        target = (raw.get("subject") or {}).get("target")
-        if not isinstance(target, str) or not any(e.get("point") in _IN_PROCESS for e in enfs):
-            continue                                     # storage-only rules are not bypassed by raw SQL
-        med: dict[str, Any] = raw["mediation"] if isinstance(raw.get("mediation"), dict) else {}
-        refs = [target]
-        for k in ("door", "sink"):
-            v = med.get(k)
-            refs += [v] if isinstance(v, str) else [x for x in v or [] if isinstance(x, str)]
-        txn = any((targets.get(r) or {}).get("effects") == "transactional" for r in refs)
-        storage = any(e.get("point") == "storage" for e in enfs)
-        if not (txn or storage) or med.get("tables"):
-            continue
-        kind = ", ".join(x for x, on in (("a transactional door", txn), ("a storage enforcer", storage)) if on)
-        if rid in scanned:
-            out[rid] = (f"protects stored data ({kind}) but declares no mediation.tables: raw SQL that writes its tables "
-                        f"outside the door is not checked, so it cannot be reported as held on the scan alone "
-                        f"(declare mediation.tables; {{table: [insert, update]}} limits it to statement kinds)")
-        else:
-            out[rid] = (f"protects stored data ({kind}) but declares no mediation.sink or mediation.tables: inv scan cannot "
-                        f"check that every write passes the door, so it cannot be reported as held on the scan "
-                        f"alone")
-    return out
 
 
 def _ablated() -> set[str]:
@@ -340,7 +253,6 @@ class _Site:
     line: int
     col: int
     detail: str = ""
-    const: str = ""              # a module-level string constant this sql site is the value of
 
 
 def anywhere(*patterns: str) -> tuple[str, ...]:
@@ -390,7 +302,8 @@ class _Index:
         self.classes: dict[str, dict[str, Any]] = {}     # id -> {methods: {name: id}, bases: [expr], module}
         self.methods_by_name: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
         self.parse_errors: list[tuple[pathlib.Path, pathlib.Path, int, str]] = []
-        self.consts: set[str] = set()                    # module-level string constants, 'mod.NAME'
+        self.attr_types: dict[str, dict[str, str]] = {}  # class -> {attribute: class}, shared by every walker
+        self.foreign: set[str] | None = None             # attribute names set from outside their object
 
     def add(self, root: pathlib.Path, file: pathlib.Path, name: str) -> None:
         try:
@@ -418,13 +331,6 @@ class _Index:
                     else:
                         mod.aliases[a.asname or a.name] = f"{src}.{a.name}" if src else a.name
         self._defs(mod, tree.body, prefix=name, cls=None)
-        for node in tree.body:                             # NAME = "INSERT ...": resolvable where it is used
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None \
-                    and _fold_str(node.value) is not None:
-                for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
-                    if isinstance(t, ast.Name):
-                        self.consts.add(f"{name}.{t.id}")
-                        mod.aliases.setdefault(t.id, f"{name}.{t.id}")
 
     @staticmethod
     def _absolute(mod: _Module, node: ast.ImportFrom) -> str:
@@ -446,7 +352,7 @@ class _Index:
                     self.methods_by_name[node.name].add(fid)
             elif isinstance(node, ast.ClassDef):
                 cid = f"{prefix}.{node.name}"
-                self.classes[cid] = {"methods": {}, "bases": node.bases, "module": mod.name}
+                self.classes[cid] = {"methods": {}, "bases": node.bases, "module": mod.name, "node": node}
                 if cls is None:
                     mod.aliases.setdefault(node.name, cid)
                 self._defs(mod, node.body, prefix=cid, cls=cid)
@@ -572,6 +478,16 @@ def _locals(fn: ast.AST) -> set[str]:
     return names - glob
 
 
+def _own_nodes(fn: ast.AST) -> Iterator[ast.AST]:
+    """The nodes of a function (or module) body, not descending into nested functions or classes."""
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
 def _pairs(node: ast.Assign) -> list[tuple[ast.expr, ast.expr | None]]:
     """(target, value) pairs of an assignment; `a, b = x, y` pairs element-wise, other unpacking has no
     value (None), so what it binds is unknown."""
@@ -673,10 +589,17 @@ class _Walker:
 
     def _attr_types(self, cls: str) -> dict[str, str]:
         """self.<attr> types for a class: every `self.attr = ...` in its methods has the same known class."""
-        key = f"attrs:{cls}"
-        if key in self._local_types:
-            return self._local_types[key]
+        if cls in self.idx.attr_types:
+            return self.idx.attr_types[cls]
+        home = self.idx.classes[cls]["module"]
+        if home != self.mod.name and home in self.idx.modules:   # names resolve where the class is written
+            return _Walker(self.idx, self.idx.modules[home])._attr_types(cls)
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
+        cnode = self.idx.classes[cls].get("node")
+        for st in getattr(cnode, "body", []):                  # class-level `billing: BillingService` (dataclasses)
+            if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+                ann = self._class_named(st.annotation, set(), None)
+                seen[st.target.id].add(ann if st.value is None else self._constructed(st.value, set(), None))
         for fid in self.idx.classes[cls]["methods"].values():
             fn = self.idx.funcs[fid].node
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
@@ -696,7 +619,7 @@ class _Walker:
                             if isinstance(x, ast.Attribute) and isinstance(x.value, ast.Name) and x.value.id == me_name:
                                 seen[x.attr].add(None)
         out = _single_types(seen)
-        self._local_types[key] = out
+        self.idx.attr_types[cls] = out
         return out
 
     def _receiver(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> tuple[str, bool] | None:
@@ -711,10 +634,47 @@ class _Walker:
                 self._local_types[owner] = self._types_in(fn, local, me)
             got = self._local_types[owner].get(node.id)
             return (got, False) if got else None
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
-            got = self._attr_types(me[1]).get(node.attr)
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
+                base: tuple[str, bool] | None = (me[1], False)
+            else:                                             # ctx.billing.refund(): ctx's class, then billing's
+                base = self._receiver(node.value, owner, local, me)
+            if base is None or node.attr in self._foreign_attrs():
+                return None
+            got = self._attr_types(base[0]).get(node.attr)
             return (got, False) if got else None
         return None
+
+    def _foreign_attrs(self) -> set[str]:
+        """Attribute names some code sets from outside the object (`obj.x = ...`, `setattr(obj, "x", ...)`):
+        such an attribute can hold anything, so it is never given a type."""
+        if self.idx.foreign is None:
+            out: set[str] = set()
+            for mod in self.idx.modules.values():
+                methods = {id(m) for c in ast.walk(mod.tree) if isinstance(c, ast.ClassDef) for m in c.body
+                           if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                for fn in ast.walk(mod.tree):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                        continue
+                    # only a method's first parameter is the object itself (self); in a plain function,
+                    # `ctx.repo = other` sets another object's attribute
+                    first = (fn.args.args[0].arg if not isinstance(fn, ast.Module) and id(fn) in methods
+                             and fn.args.args else None)
+                    for node in _own_nodes(fn):
+                        targets = node.targets if isinstance(node, ast.Assign) else \
+                            [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+                        for t in targets:
+                            for x in ast.walk(t):
+                                if isinstance(x, ast.Attribute) and isinstance(x.ctx, ast.Store) and not (
+                                        isinstance(x.value, ast.Name) and x.value.id == first):
+                                    out.add(x.attr)
+                        if isinstance(node, ast.Call) and _dotted(node.func) in ("setattr", "builtins.setattr") \
+                                and len(node.args) >= 2:
+                            name = node.args[1]
+                            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                                out.add(name.value)
+            self.idx.foreign = out
+        return self.idx.foreign
 
     def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
         out = []
@@ -761,16 +721,7 @@ class _Walker:
                     self._expr(d, owner, local, self_cls)
                 self._body(stmt.body, owner, local, self_cls, f"{prefix}.{stmt.name}")
             else:
-                before = len(self.sites)
                 self._node(stmt, owner, local, self_cls)
-                if owner.endswith(".<module>") and prefix == self.mod.name \
-                        and isinstance(stmt, (ast.Assign, ast.AnnAssign)):
-                    names = [t.id for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
-                             if isinstance(t, ast.Name)]
-                    if len(names) == 1 and f"{prefix}.{names[0]}" in self.idx.consts:
-                        for site in self.sites[before:]:
-                            if site.what == "sql":
-                                site.const = f"{prefix}.{names[0]}"
 
     def _node(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         if isinstance(node, ast.expr):
@@ -909,8 +860,6 @@ class _Walker:
             fq = self._resolve(node, local, me)
             if fq and fq in self.idx.funcs:
                 self._site("ref", owner, node, fq)
-            elif fq and fq in self.idx.consts:
-                self._site("const", owner, node, fq)
             if isinstance(node, ast.Attribute) and not _dotted(node):
                 self._expr(node.value, owner, local, me)
             return
@@ -1009,12 +958,9 @@ class Graph:
         return sorted(f for f, fn in self.idx.funcs.items() if fn.node is not None)
 
     def sql_writes(self) -> list[tuple[str, SqlWrite, int]]:
-        """(owner function, write, line) for every raw SQL write the scan resolved to a table."""
+        """(owner function, write, line) for every raw SQL write string; `inv init` reads it to find
+        repositories (a function that writes raw SQL is one). The scan's checks never read it."""
         return [(s.owner, w, s.line) for s in self.sites if s.what == "sql" for w in sql_writes(s.detail)]
-
-    def location(self, fid: str) -> str:
-        f = self.idx.funcs[fid]
-        return f"{f.file.relative_to(f.root).as_posix()}:{f.line}"
 
 
 def graph(roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Graph:
@@ -1039,24 +985,10 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     g = g or graph(roots, exclude)
     idx, edges, sites = g.idx, g.edges, g.sites
     report = Report([], scanned, skipped, files=len(idx.modules) + len(idx.parse_errors),
-                    functions=sum(1 for f in idx.funcs.values() if f.node is not None),
-                    warnings=table_warnings(doc, scanned, skipped))
+                    functions=sum(1 for f in idx.funcs.values() if f.node is not None))
     entries = g.entries
     for med in scanned.values():
         report.findings += _check_rule(idx, med, edges, sites, entries)
-        writes = sink_writes(idx, med, edges, sites)
-        report.sink_writes[med.rule] = {("(computed)" if t is None else t): sorted(o)
-                                        for t, o in sorted(writes.items(), key=lambda kv: str(kv[0]))}
-        gap = _uncovered(writes, med.table_ops)
-        if gap:
-            report.uncovered_tables[med.rule] = gap
-            what = ", ".join(f"{t} ({', '.join(o) or 'computed'})" for t, o in gap.items())
-            msg = (f"its sink writes {what} with raw SQL, which mediation.tables does not cover: raw SQL that "
-                   f"writes those tables outside the door is not checked, so it cannot be reported as held on "
-                   f"the scan alone (add them to mediation.tables; {{table: [insert, update]}} limits it to "
-                   f"statement kinds)")
-            prior = report.warnings.get(med.rule)
-            report.warnings[med.rule] = msg if not prior else f"{prior}; {msg}"
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     return report
@@ -1135,25 +1067,25 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                                f"delete it from allow)"))
     trusted = sinks | doors | allowed
     dominated = door_only(idx, edges, sites, entries, trusted)
-    safe_consts = _consts_used_only_by(sites, trusted | dominated)
     sink_names = {s.rsplit(".", 1)[1] for s in sinks}
     guarded_names = sink_names | {d.rsplit(".", 1)[1] for d in doors}
-    tables = med.table_ops
     door_txt = ", ".join(sorted(doors)) or "(no door found)"
 
-    # 1. paths from entrypoints to the sink with the doors removed
-    live = sinks - doors - allowed
+    # 1. paths from entrypoints to the sink with the doors removed. An allowed back door is not a door:
+    # only a path made of allowed functions alone (the call chains frozen when allow was written) is let
+    # through; a path that passes any other function (a new caller, or new code an allowed one calls) is
+    # a bypass, even when it reaches the sink through an allowed function.
+    live = sinks - doors
     if live:
         succ: dict[str, list[_Edge]] = collections.defaultdict(list)
-        through = doors | allowed
         for e in edges:
-            if e.caller not in through and e.callee not in through and not (e.via_getattr and e.callee in sinks):
+            if e.caller not in doors and e.callee not in doors and not (e.via_getattr and e.callee in sinks):
                 succ[e.caller].append(e)
         for start in entries:
-            if start in trusted:
+            if start in sinks or start in doors:
                 continue
             for inferred_ok in (False, True):
-                hit = _shortest(start, live, succ, inferred_ok)
+                hit = _shortest(start, live, succ, inferred_ok, allowed)
                 if hit:
                     names, last = hit
                     kind = "unresolved" if inferred_ok else "bypass"
@@ -1163,16 +1095,15 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                                         last.caller, last.line, last.col, names))
                     break
 
-    # 2. idioms, per site
+    # 2. idioms, per site. Inside an allowed back door, the ways it reaches the sink are frozen with it;
+    # unwrapping a guard, monkeypatching and reflection are still reported there.
     for s in sites:
-        if s.owner in allowed:
-            continue                                   # a known back door, frozen by allow: all of it
-        if s.owner in trusted and s.what in ("ref", "sql", "attrcall"):
+        if s.owner in allowed and s.what in ("ref", "attrcall", "getattr"):
             continue
-        if s.owner in dominated and s.what in ("sql", "attrcall"):
+        if s.owner in trusted and s.what in ("ref", "attrcall"):
+            continue
+        if s.owner in dominated and s.what == "attrcall":
             continue                                   # reached only through a door or sink
-        if s.what == "sql" and s.const and s.const in safe_consts:
-            continue                                   # a constant only door or sink code executes
         obj, _, lit = s.detail.partition("|")
         if s.what == "getattr" and lit in guarded_names:
             what = "sink" if lit in sink_names else "door"
@@ -1209,31 +1140,15 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
         elif s.what in ("reflection", "dynimport"):
             out.append(_finding(idx, rid, "unresolved", "unresolved/reflection",
                                 f"{s.detail} runs or looks up code the scan cannot follow", s.owner, s.line, s.col))
-        elif s.what == "sql" and tables:
-            for w in sql_writes(s.detail):
-                if w.table is None:
-                    if any(w.ops & ops for ops in tables.values()):
-                        out.append(_finding(idx, rid, "unresolved", "unresolved/computed-sql",
-                                            f"raw SQL {w.verb} on a computed table name: the scan cannot tell "
-                                            f"whether it writes a protected table", s.owner, s.line, s.col))
-                elif w.table in tables and w.ops & tables[w.table]:
-                    out.append(_finding(idx, rid, "forbidden", "forbidden/raw-sql",
-                                        f"raw SQL {w.verb} on the protected table {w.table!r} "
-                                        f"outside the sink and door", s.owner, s.line, s.col))
-            if _drops_trigger(s.detail):
-                out.append(_finding(idx, rid, "forbidden", "forbidden/raw-sql",
-                                    "raw SQL drops a trigger, which can remove a storage enforcer",
-                                    s.owner, s.line, s.col))
 
     # 3. an allowed back door that is no longer one: its entry would let a regression through unseen.
     # An entry is in use when the scan without allow reports something in it or on a path through it.
     if allowed:
-        bare = _check_rule(idx, Mediation(rid, med.sinks, med.doors, med.tables), edges, sites, entries)
+        bare = _check_rule(idx, Mediation(rid, med.sinks, med.doors), edges, sites, entries)
         used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path}
         for a in sorted(allowed - sinks - doors - used):
             out.append(_finding(idx, rid, "missing", "missing/allow-unused",
-                                f"allowed back door {a} no longer reaches the sink"
-                                f"{' or writes the tables' if tables else ''} without the door; delete it from "
+                                f"allowed back door {a} no longer reaches the sink without the door; delete it from "
                                 f"allow (a tightening), so a regression there is caught",
                                 a))
     return out
@@ -1267,56 +1182,34 @@ def door_only(idx: _Index, edges: list[_Edge], sites: list[_Site], entries: list
     return {f for f in from_trusted - free - escaped if f in idx.funcs and idx.funcs[f].node is not None}
 
 
-def _consts_used_only_by(sites: list[_Site], owners: set[str]) -> set[str]:
-    """Module-level string constants used at least once, and only inside the given functions."""
-    uses: dict[str, set[str]] = collections.defaultdict(set)
-    for s in sites:
-        if s.what == "const":
-            uses[s.detail].add(s.owner)
-    return {c for c, who in uses.items() if who and who <= owners}
-
-
-def sink_writes(idx: _Index, med: Mediation, edges: list[_Edge],
-                sites: list[_Site]) -> dict[str | None, set[str]]:
-    """Tables (None: a computed name) and statement kinds the rule's sink code writes with raw SQL:
-    SQL in the sinks, in what they call (not through a door), and in the constants they use."""
-    sinks = {c for c in (_canon_py(idx, p) for p in med.sinks) if c in idx.funcs}
-    doors = {c for c in (_canon_py(idx, p) for p in med.doors) if c in idx.funcs}
-    owners = _reach(sinks, [e for e in edges if not e.inferred], doors - sinks)
-    consts = {s.detail for s in sites if s.what == "const" and s.owner in owners}
-    out: dict[str | None, set[str]] = collections.defaultdict(set)
-    for s in sites:
-        if s.what == "sql" and (s.owner in owners or (s.const and s.const in consts)):
-            for w in sql_writes(s.detail):
-                out[w.table] |= w.ops
-    return dict(out)
-
-
-def _uncovered(writes: dict[str | None, set[str]], tables: dict[str, frozenset[str]]) -> dict[str, list[str]]:
-    return {("(computed)" if t is None else t): sorted(ops - (tables.get(t, frozenset()) if t else frozenset()))
-            for t, ops in sorted(writes.items(), key=lambda kv: str(kv[0]))
-            if t is None and not tables or t is not None and ops - tables.get(t, frozenset())}
-
-
-def _shortest(start: str, goals: set[str], succ: dict[str, list[_Edge]],
-              inferred_ok: bool) -> tuple[list[str], _Edge] | None:
-    """BFS: the shortest call path from start to a goal, and its last edge."""
-    prev: dict[str, _Edge | None] = {start: None}
-    queue = collections.deque([start])
+def _shortest(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferred_ok: bool,
+              allowed: frozenset[str] | set[str] = frozenset()) -> tuple[list[str], _Edge] | None:
+    """BFS: the shortest call path from start to a goal that passes at least one function outside
+    `allowed` (a path of allowed functions alone is a frozen back door), and its last edge."""
+    State = tuple[str, bool]                     # (function, the path so far left `allowed`)
+    first: State = (start, start not in allowed)
+    prev: dict[State, tuple[State, _Edge] | None] = {first: None}
+    queue = collections.deque([first])
     while queue:
-        n = queue.popleft()
+        n, out = queue.popleft()
         for e in succ.get(n, ()):
-            if e.inferred and not inferred_ok or e.callee in prev:
+            if e.inferred and not inferred_ok:
                 continue
-            prev[e.callee] = e
             if e.callee in goals:
+                if not out:
+                    continue                     # allowed functions all the way: frozen
                 names, last = [e.callee], e
-                cur: _Edge | None = e
+                cur: tuple[State, _Edge] | None = ((n, out), e)
                 while cur is not None:
-                    names.append(cur.caller)
-                    cur = prev[cur.caller]
+                    st, edge = cur
+                    names.append(edge.caller)
+                    cur = prev[st]
                 return list(reversed(names)), last
-            queue.append(e.callee)
+            nxt: State = (e.callee, out or e.callee not in allowed)
+            if nxt in prev:
+                continue
+            prev[nxt] = ((n, out), e)
+            queue.append(nxt)
     return None
 
 
@@ -1336,8 +1229,6 @@ def to_text(report: Report) -> str:
         lines.append(f"{rid}: {report.rule_result(rid)} ({summary})")
     for rid, why in report.not_scanned.items():
         lines.append(f"{rid}: not scanned ({why})")
-    for rid, why in report.warnings.items():
-        lines.append(f"warning    {rid:<8} {why}")
     lines.append(f"scanned {report.files} file(s), {report.functions} function(s)")
     return "\n".join(lines)
 

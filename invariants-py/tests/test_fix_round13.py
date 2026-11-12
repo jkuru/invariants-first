@@ -160,11 +160,11 @@ PAY = {"pay.py": textwrap.dedent("""
     @inv.guard("P-1")
     def pay(account: str, payee: str, amount: int, fee: int) -> None:
         pass
-    """), "trigger.sql": "CREATE TRIGGER t BEFORE INSERT ON pay BEGIN SELECT 1; END;\n"}
+    """), "gateway.yaml": "routes: [{path: /pay, check: P-1}]\n"}
 PAY_RULES = """spec: invariant/v0.1
 providers:
-  limit: {type: int, from: "py:pay.limit", args: {account: args.account}, consistency: snapshot}
-  cap: {type: int, from: "py:pay.cap", args: {account: args.account}, consistency: snapshot}
+  limit: {type: int, from: "py:pay.limit", args: {account: args.account}}
+  cap: {type: int, from: "py:pay.cap", args: {account: args.account}}
 targets:
   "py:pay.pay": {effects: none}
 rules:
@@ -176,15 +176,15 @@ rules:
     bad: 'amt > lim'
     enforcers:
       - {point: decorator, timing: pre_effect, mode: detect}
-      - {point: storage, timing: pre_effect, mode: detect, view: rows,
-         artifact: "trigger.sql#sha256:DIGEST", conformance_test: "t::t"}
+      - {point: gateway, timing: pre_effect, mode: detect,
+         artifact: "gateway.yaml#sha256:DIGEST", conformance_test: "t::t"}
 """
 
 
 @pytest.fixture
 def pay(tmp_path):
     root = write_project(tmp_path / "pay", PAY)
-    digest = hashlib.sha256((root / "trigger.sql").read_bytes()).hexdigest()
+    digest = hashlib.sha256((root / "gateway.yaml").read_bytes()).hexdigest()
     (root / "invariants.yaml").write_text(PAY_RULES.replace("DIGEST", digest))
     proc = run_inv("lock", root / "invariants.yaml")
     assert proc.returncode == 0, proc.stderr
@@ -208,7 +208,7 @@ def _edit(path, old, new):
     ('limit: {type: int, from: "py:pay.limit", args: {account: args.account}',
      'limit: {type: int, from: "py:pay.limit", args: {account: args.payee}',
      "provider limit: args.account: 'args.account' -> 'args.payee'  WEAKENED (the provider now reads"),
-    ('conformance_test: "t::t"', 'conformance_test: "t::other"', "enforcer storage conformance_test"),
+    ('conformance_test: "t::t"', 'conformance_test: "t::other"', "enforcer gateway conformance_test"),
 ])
 def test_plain_lock_refuses_a_rebinding(pay, old, new, expect):
     rf = pay / "invariants.yaml"
@@ -223,11 +223,11 @@ def test_plain_lock_refuses_a_rebinding(pay, old, new, expect):
 
 def test_update_artifacts_needs_accept_weakening(pay):
     rf = pay / "invariants.yaml"
-    (pay / "trigger.sql").write_text("-- trigger now checks nothing\n")
+    (pay / "gateway.yaml").write_text("# the gateway now checks nothing\n")
     proc = run_inv("lock", rf, "--update-artifacts")
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "updated P-1: trigger.sql sha256" in proc.stdout
-    assert "enforcer storage artifact" in proc.stdout and "WEAKENED" in proc.stdout
+    assert "updated P-1: gateway.yaml sha256" in proc.stdout
+    assert "enforcer gateway artifact" in proc.stdout and "WEAKENED" in proc.stdout
     assert run_inv("lock", "--check", rf).returncode == 1              # the rule file moved, the lock did not
     assert run_inv("lock", rf, "--accept-weakening").returncode == 0
     assert run_inv("lock", "--check", rf).returncode == 0
@@ -400,99 +400,6 @@ def test_sql_non_matches(sql):
 def test_merge_counts_as_insert_update_and_delete():
     [w] = scan.sql_writes("MERGE INTO leases USING s ON (1) WHEN MATCHED THEN DELETE")
     assert w.ops == {"insert", "update", "delete"}
-
-
-SQLP = {
-    "app/__init__.py": "",
-    "app/store.py": textwrap.dedent("""
-        INSERT_LEASE = "INSERT INTO leases (a) VALUES (?)"     # executed only by the sink
-        STRAY = "DELETE FROM leases"                           # executed by a function outside the door
-
-        def sink(c):
-            c.execute(INSERT_LEASE)
-
-        def _door_helper(c):
-            c.execute("UPDATE leases SET a = 1")
-
-        def door(c):
-            _door_helper(c)
-            sink(c)
-
-        def other(c):
-            c.execute(STRAY)
-        """),
-    "app/api.py": textwrap.dedent("""
-        from app import store
-        from app.store import INSERT_LEASE
-
-        def handler(c):
-            store.door(c)
-
-        def bypass(c):
-            c.execute(INSERT_LEASE)                   # the constant, used outside the door
-
-        def leaky(c):
-            store._door_helper(c)
-        """),
-}
-
-
-def _sqlp_doc(tables=("leases",)):
-    return {"targets": {"py:app.store.door": {"effects": "external"}},
-            "rules": [{"id": "T-1", "status": "enforce", "subject": {"target": "py:app.store.door"},
-                       "bad": "false", "enforcers": [{"point": "decorator", "timing": "pre_effect", "mode": "enforce"}],
-                       "mediation": {"sink": "py:app.store.sink", "door": "py:app.store.door",
-                                     **({"tables": list(tables)} if tables else {})}}]}
-
-
-def test_constants_and_helpers_are_judged_by_reachability(tmp_path):
-    files = dict(SQLP)
-    root = write_project(tmp_path / "a", files)
-    r = scan.scan(_sqlp_doc(), [root])
-    got = sorted((f.file, f.line) for f in r.findings if f.code == "forbidden/raw-sql")
-    # INSERT_LEASE is used outside the door (api.bypass), STRAY only by `other`, and _door_helper is
-    # also called by api.leaky: all three are flagged
-    assert got == [("app/store.py", 2), ("app/store.py", 3), ("app/store.py", 9)]
-    files["app/api.py"] = "from app import store\n\ndef handler(c):\n    store.door(c)\n"
-    files["app/store.py"] = files["app/store.py"].replace("def other(c):\n    c.execute(STRAY)\n", "")
-    r = scan.scan(_sqlp_doc(), [write_project(tmp_path / "b", files)])
-    got = sorted((f.file, f.line) for f in r.findings if f.code == "forbidden/raw-sql")
-    assert got == [("app/store.py", 3)]          # an unused constant is still flagged; the rest is door-only
-
-
-def test_a_helper_used_as_a_value_is_not_door_only(tmp_path):
-    files = {"app/__init__.py": "", "app/store.py": textwrap.dedent("""
-        def sink(c):
-            pass
-        def _h(c):
-            c.execute("DELETE FROM leases")
-        def door(c):
-            _h(c)
-            sink(c)
-        HOOKS = [_h]
-        """)}
-    r = scan.scan(_sqlp_doc(), [write_project(tmp_path, files)])
-    assert [f.line for f in r.findings if f.code == "forbidden/raw-sql"] == [5]
-
-
-# --- R10-5: the sink's own SQL ---------------------------------------------------------------------------
-def test_an_external_sink_that_writes_a_table_needs_it_in_tables(tmp_path):
-    files = {"app/__init__.py": "", "app/store.py": textwrap.dedent("""
-        SQL = "INSERT INTO remediations (job) VALUES (?)"
-        def sink(c, j):
-            c.execute(SQL, (j,))
-        def door(c, j):
-            sink(c, j)
-        """), "app/api.py": "def force(c, j):\n    c.execute('INSERT INTO remediations (job) VALUES (?)', (j,))\n"}
-    root = write_project(tmp_path, files)
-    r = scan.scan(_sqlp_doc(tables=()), [root])
-    assert r.rule_result("T-1") == "pass" and "its sink writes remediations (insert)" in r.warnings["T-1"]
-    assert r.as_dict()["rules"]["T-1"]["uncovered_tables"] == {"remediations": ["insert"]}
-    r = scan.scan(_sqlp_doc(tables=("unrelated",)), [root])
-    assert "remediations" in r.warnings["T-1"]                       # tables that miss the sink's table
-    r = scan.scan(_sqlp_doc(tables=("remediations",)), [root])
-    assert "T-1" not in r.warnings and r.rule_result("T-1") == "fail"   # the raw INSERT in api.force
-    assert r.as_dict()["rules"]["T-1"]["sink_writes"] == {"remediations": ["insert"]}
 
 
 # --- R10-6: lock version 3 ---------------------------------------------------------------------------

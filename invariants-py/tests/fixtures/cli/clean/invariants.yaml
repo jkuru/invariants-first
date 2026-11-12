@@ -22,7 +22,6 @@ rules:
       residual_paths: []
       sink: "py:ledger.store.write_balance"
       door: "py:ledger.service.withdraw"
-      tables: [accounts]
     falsified_by: ["tests/test_ledger.py::test_negative_withdraw"]
   - id: L-2
     rev: 1

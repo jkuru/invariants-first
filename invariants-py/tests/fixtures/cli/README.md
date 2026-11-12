@@ -4,5 +4,5 @@ rule file; the library never imports them, and the tests only import them in a s
 - `clean/` (package `ledger`): every write to `store.write_balance` goes through the guarded door
   `service.withdraw`. `inv scan` must pass it and `inv status` reports L-1 held.
 - `bypass/` (package `fleet`): `retry.py` calls the sink `store.set_size` directly, and `ops.py`
-  uses forbidden idioms (getattr on the sink name, raw SQL on `pools`, `__wrapped__`) plus calls
-  the scan cannot resolve. `inv scan` must catch every one.
+  uses forbidden idioms (getattr on the sink name, `__wrapped__`) plus calls the scan cannot resolve.
+  `inv scan` must catch every one. Its raw SQL to `pools` is below the API, so it is not a finding.

@@ -1,8 +1,8 @@
 """The HTTP API. Route guards check request-level rules (H-1, H-2); the service doors check the rest.
 
 Guard exceptions become application/problem+json through invariants.integrations.fastapi.install.
-An R-20 trigger rejection (the storage enforcer) becomes inv.storage_rejection through
-inv.storage_errors, which install() answers with 409.
+The schema's own triggers also refuse an over-lease (two concurrent leases can both pass the R-20
+check); that refusal is the store's, below the API, and the routes answer it with a plain 409.
 """
 from __future__ import annotations
 
@@ -119,9 +119,19 @@ def problem(status: int, title: str, rule: str | None = None, **extra: object) -
     return JSONResponse(body, status_code=status, media_type=inv_fastapi.PROBLEM_JSON)
 
 
-def storage_rejections() -> contextlib.AbstractContextManager[None]:
-    """An R-20 trigger refusal becomes the library's storage rejection (counted, answered 409)."""
-    return inv.storage_errors({db.STORAGE_PREFIX: "R-20"}, (sqlite3.IntegrityError,))
+class StoreConflict(Exception):
+    """The store refused a write (its own triggers): answered 409."""
+
+
+@contextlib.contextmanager
+def store_conflicts() -> Iterator[None]:
+    """A trigger refusal from the schema becomes StoreConflict; any other database error passes through."""
+    try:
+        yield
+    except sqlite3.IntegrityError as e:
+        if db.STORE_REFUSAL in str(e):
+            raise StoreConflict(str(e)) from e
+        raise
 
 
 router = APIRouter()
@@ -150,8 +160,11 @@ def get_pool(pool_id: str, conn: Conn) -> PoolOut | JSONResponse:
 def lease(pool_id: str, body: LeaseIn, conn: Conn) -> LeaseOut | JSONResponse:
     if store.size(conn, pool_id) is None:
         return problem(404, f"pool {pool_id} not found")
-    with storage_rejections():
-        lease_id = service.lease_slots(conn, pool_id, body.slots, body.holder)
+    try:
+        with store_conflicts():
+            lease_id = service.lease_slots(conn, pool_id, body.slots, body.holder)
+    except StoreConflict:
+        return problem(409, "the store refused the lease: it would exceed the pool size")
     return LeaseOut(lease_id=lease_id, pool_id=pool_id, holder=body.holder, slots=body.slots)
 
 
@@ -185,8 +198,10 @@ def approve_resize(proposal_id: int, body: ApproveIn, conn: Conn) -> ProposalOut
 @router.post("/resizes/{proposal_id}/apply", operation_id="applyResize", response_model=PoolOut)
 def apply_resize(proposal_id: int, conn: Conn) -> PoolOut | JSONResponse:
     try:
-        with storage_rejections():
+        with store_conflicts():
             service.ResizeService(conn).apply(proposal_id)
+    except StoreConflict:
+        return problem(409, "the store refused the resize: the pool's leases exceed the new size")
     except service.NotFound:
         return problem(404, f"proposal {proposal_id} not found")
     p = store.get_proposal(conn, proposal_id) or {}

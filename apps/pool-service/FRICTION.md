@@ -1,5 +1,9 @@
 # Friction with the invariants library (0.1.0)
 
+> **Since this was written:** the library removed every feature that reached below the API
+> (storage enforcers, transactional targets and rollback, provider consistency, `tables:`, `.sql`
+> contracts). Entries about those features no longer apply; see the library's CHANGELOG.
+
 Found while building pool-service as an outside team: public API only, library unmodified.
 
 1. **`inv scan` has no exclude setting.**

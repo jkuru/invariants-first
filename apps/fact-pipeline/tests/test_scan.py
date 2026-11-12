@@ -31,7 +31,8 @@ def test_scan_flags_the_bypass_module() -> None:
     code, rep = scan(CFG["clean"] + CFG["bypass"])
     assert code == 1 and rep["rules"]["K-12"]["result"] == "fail"
     kinds = {(f["kind"], f["code"]) for f in rep["findings"] if f["file"] == "fact_pipeline_backfill/backfill.py"}
-    assert ("bypass", "bypass") in kinds and ("forbidden", "forbidden/raw-sql") in kinds
+    assert ("bypass", "bypass") in kinds
+    assert not any("sql" in code for _, code in kinds)        # raw_believe's SQL is below the API
 
 
 def test_bypass_is_not_under_the_clean_roots() -> None:
