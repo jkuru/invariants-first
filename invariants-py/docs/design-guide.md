@@ -861,7 +861,7 @@ A separate reviewer certified the library over 12 review rounds. Each round re-r
 - **Silent weakening.** Both majors of rounds 10 and 11 were in the new lockfile. A rebound `bind` or `view` was re-pinned with exit 0, and the untyped literal comparison treated `true` and `1` as equal (4.3).
 - **Engines that disagree**, and request values leaking into error text and logs.
 
-**How the majors narrowed.** Before round 5, reviews had found 13 majors. Round 5 found 1 blocker and 1 major. Rounds 6 to 8 found one major each, each narrower than the last. Round 9 found none, and gave the first "production-ready" verdict. Rounds 10 and 11 found one major each, both in code the evaluation had prompted. Round 11's verdict was "production-ready once R11-1 is fixed", and fix round 14 fixed it. Round 12, the final confirmation, found no blocker or major; fix round 15 closed its four minors. The lesson: the runtime core stopped producing majors after round 9, but each new mechanism brought its own, and the weakening gate needed two rounds to stop leaking. Today about 3,762 tests pass on each of the three backends, with 5 skipped. The suite also passes under `python -O`, mypy is clean, and both apps' CI is green.
+**How the majors narrowed.** Before round 5, reviews had found 13 majors. Round 5 found 1 blocker and 1 major. Rounds 6 to 8 found one major each, each narrower than the last. Round 9 found none, and gave the first "production-ready" verdict. Rounds 10 and 11 found one major each, both in code the evaluation had prompted. Round 11's verdict was "production-ready once R11-1 is fixed", and fix round 14 fixed it. Round 12, the final confirmation, found no blocker or major; fix round 15 closed its four minors. The lesson: the runtime core stopped producing majors after round 9, but each new mechanism brought its own, and the weakening gate needed two rounds to stop leaking. Today about 3,930 tests pass on each of the three backends, with 3 to 5 skipped. The suite also passes under `python -O`, mypy is clean, and both apps' CI is green.
 
 ### 8.5 Verdict: does it save human work or add it?
 
@@ -903,7 +903,7 @@ Paths are relative to the directory that holds this guide.
 | Path | Holds |
 |---|---|
 | `invariants-py/src/invariants/` | `loader.py` and `typecheck.py`, `guard.py` (guard, model call, edge), `registry.py`, `lockfile.py`, `scan.py`, `bootstrap.py`, `doors.py` and `graphify.py` (`inv init`), `cli.py`, `pytest_plugin.py`, `cel/` (three backends and the value mapping), `integrations/` and the JSON Schema |
-| `invariants-py/tests/` | About 3,920 tests: unit and integration tests, `conformance/cel/` (17 YAML suites), and one `test_fix_round*.py` per fix round, each encoding what that round's probes showed broken |
+| `invariants-py/tests/` | About 3,930 tests: unit and integration tests, `conformance/cel/` (17 YAML suites), and one `test_fix_round*.py` per fix round, each encoding what that round's probes showed broken |
 | `invariants-py/docs/` | `rule-file.md` (every field), `evaluation.md` (8.3) and a copy of this guide |
 | `invariants-py/` | README, CHANGELOG (one section per fix round), RELEASING (the publishing checklist), SECURITY, CONTRIBUTING, and `.github/workflows/ci.yml` |
 | `apps/pool-service/` | A FastAPI and SQLite service that leases worker-pool slots, resizes pools through approvals, splits job batches and triages failed jobs with a model. 9 rules (R-1, R-7, R-20 to R-24, H-1, H-2), all `enforce`, and 72 tests |
@@ -913,7 +913,7 @@ Paths are relative to the directory that holds this guide.
 
 Each app has an `invariants.yaml`, an `invariants.lock` and a `ci.sh`; pool-service and fact-pipeline also have a `FRICTION.md`. FRICTION.md records what was hard to express or run, with what each library fix round changed for that app. The FRICTION files were the input to fix round 1. Each app also has a `bypass/` tree that the clean scan leaves out on purpose, so its tests can show `inv scan` catching a bypass. The apps import only the library's public API.
 
-**Test counts.** About 3,915 tests pass, with 3 to 5 skipped (engine-matrix cases that run only when CI sets their flags), on each of the three backends (`subset`, `cel-expr`, `celpy`), on Python 3.11 and 3.14, and also under `python -O`. mypy is clean. GitHub CI runs the same matrix on 3.11 to 3.14, plus the wheel build and both apps.
+**Test counts.** About 3,930 tests pass, with 3 to 5 skipped (engine-matrix cases that run only when CI sets their flags), on each of the three backends (`subset`, `cel-expr`, `celpy`), on Python 3.11 and 3.14, and also under `python -O`. mypy is clean. GitHub CI runs the same matrix on 3.11 to 3.14, plus the wheel build and the three apps.
 
 **How to run them.** From the directory that holds this guide:
 
