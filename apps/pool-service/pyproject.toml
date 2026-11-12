@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pool-service"
+version = "0.1.0"
+description = "A worker-pool lease service whose invariants are checked by the invariants library."
+requires-python = ">=3.11"
+dependencies = [
+    "invariants-first[fastapi,pydantic,schema]>=0.1.0",
+    "fastapi>=0.110",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pool_service = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+inv_rules = "invariants.yaml"
+addopts = "-q -p no:cacheprovider"
+filterwarnings = ["ignore:Using .httpx. with .starlette.testclient.:Warning"]

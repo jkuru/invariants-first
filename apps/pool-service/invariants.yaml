@@ -1,0 +1,253 @@
+# pool-service rule file. Status is set by human review; the loader refuses any status the evidence
+# does not support. Run ./ci.sh after any change (validate, lock --check, verify, scan, pytest).
+spec: invariant/v0.1
+
+contracts:
+  pool_py: {type: python, ref: pool_service.service}
+  work_py: {type: python, ref: pool_service.work}
+  triage_reply: {type: pydantic, ref: 'pool_service.triage:CauseReply'}
+  store_py: {type: python, ref: pool_service.store}
+  pool_api: {type: openapi, ref: openapi.json}
+
+targets:
+  "py:pool_service.work.split_work": {effects: none}
+  "py:pool_service.service.create_pool": {effects: external}
+  "py:pool_service.service.lease_slots": {effects: external}
+  "py:pool_service.service.ResizeService.resize_door":
+    effects: transactional
+    transaction: "py:pool_service.service.ResizeService.txn"
+  "py:pool_service.triage.propose_cause": {effects: none}
+  "py:pool_service.triage.remediate": {effects: external}
+  "py:pool_service.api.create_pool": {effects: external}
+  "py:pool_service.api.lease": {effects: external}
+  "py:pool_service.store.set_size": {effects: external}
+
+providers:
+  pool_leased:
+    type: int
+    from: "py:pool_service.service.pool_leased"
+    args: {conn: args.conn, pool_id: args.pool_id}
+    consistency: snapshot
+  pool_size:
+    type: int
+    from: "py:pool_service.service.pool_size"
+    args: {conn: args.conn, pool_id: args.pool_id}
+    consistency: snapshot
+  approval:
+    type: "py:pool_service.service.Approval | null"
+    from: "py:pool_service.service.load_approval"
+    args: {conn: self.conn, proposal_id: req.proposal_id}
+    consistency: same_txn
+  job:
+    type: "py:pool_service.triage.JobFacts"
+    from: "py:pool_service.triage.load_job"
+    args: {conn: args.conn, job_id: args.job_id}
+    consistency: immutable
+
+rules:
+  - id: R-1
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-scheduling
+    statement: split_work returns one non-negative share per worker, no share above that worker's capacity, and
+      the shares sum to total_jobs.
+    subject: {contract: work_py, target: "py:pool_service.work.split_work"}
+    scope: call
+    bad:
+      - {when: 'size(result) != size(args.capacities)', message: not one share per worker}
+      - {when: 'inv.sum(result) != args.total_jobs', message: shares do not sum to total_jobs}
+      - {when: 'result.exists(s, s < 0)', message: negative share}
+      - {when: 'inv.zip(result, args.capacities).exists(p, p[0] > p[1])', message: share above capacity}
+    enforcers:
+      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: "@inv.guard on split_work, the only public splitter; it is pure, so a post-effect reject stops
+        every use"
+      residual_paths: []
+    falsified_by: ["tests/test_work.py::test_r1_rejects_a_buggy_allocator"]
+    why: A rounding bug silently drops or duplicates jobs.
+
+  - id: R-7
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-sre
+    statement: A proposed cause never contradicts what the scheduler and the kernel recorded for the job. (The
+      closed set of causes is held by the schema.)
+    subject: {contract: triage_reply, target: "py:pool_service.triage.propose_cause"}
+    scope: call
+    compares_to: held_data
+    bad:
+      - {when: 'reply.cause == "OUT_OF_MEMORY" && !job.oom_killed', message: 'OUT_OF_MEMORY, but the kernel did
+          not OOM-kill the job'}
+      - {when: 'reply.cause != "OUT_OF_MEMORY" && job.oom_killed', message: 'the kernel OOM-killed the job, but the
+          cause is not OUT_OF_MEMORY'}
+      - {when: 'reply.cause == "TIMEOUT" && job.elapsed_s < job.timeout_s', message: 'TIMEOUT, but the job finished
+          inside its time limit'}
+      - {when: 'reply.cause == "BAD_INPUT" && job.exit_code != 65', message: 'BAD_INPUT, but the job did not exit
+          with EX_DATAERR (65)'}
+    model_policy:
+      schema: CauseReply
+      format_retries: 2
+      semantic_resamples: 0
+      feedback: {format: parser_error, semantic: none}
+      abstain: {field: cause, value: CANNOT_COMPLY}
+    enforcers:
+      - {point: model_call, timing: post_effect, mode: enforce, on_violation: escalate, on_error: fail_closed}
+      - {point: edge, target: "py:pool_service.triage.remediate", timing: pre_effect, mode: enforce,
+         on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: remediate, the only consumer of a cause, is an @inv.edge that checks the verdict and re-evaluates
+        bad on what it receives
+      residual_paths: []
+      sink: "py:pool_service.store.insert_remediation"
+      door: "py:pool_service.triage.remediate"
+      tables: [{remediations: [insert, update]}]   # the sink's INSERT; a raw write elsewhere skips the edge check
+    falsified_by:
+      - "tests/test_triage.py::test_r7_contradicting_reply_escalates"
+      - "tests/test_triage.py::test_r7_forged_checked_refused_at_edge"
+
+  - id: R-20
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-pool
+    statement: Leases never exceed pool size.
+    subject: {contract: pool_py, target: "py:pool_service.service.lease_slots"}
+    scope: "aggregate(key: pool_id)"
+    bad: leased + n > size
+    compensable: false
+    enforcers:
+      - point: decorator
+        timing: pre_effect
+        mode: enforce
+        on_violation: reject
+        on_error: fail_closed
+        view: {leased: provider.pool_leased, n: args.slots, size: provider.pool_size}
+      - point: storage
+        timing: pre_effect
+        mode: enforce
+        on_violation: reject
+        on_error: fail_closed
+        view: rows
+        artifact: "src/pool_service/schema.sql#sha256:f9aea6df1349d35d73aebeb774c76bc179ca480ebab91d59296bbffe4f4e7000"
+        generated: false
+        conformance_test: "tests/test_lease.py::test_r20_door_and_trigger_agree"
+    mediation:
+      chokepoint: triggers r20_lease and r20_resize run on every insert into leases and every update of pools.size
+      residual_paths: ['SQLite has no role grants: any connection can DROP TRIGGER (inv scan flags it only in
+          scanned code)']
+      sink: "py:pool_service.store.insert_lease"
+      door: "py:pool_service.service.lease_slots"
+      tables: [{leases: [insert, update]}]     # release's DELETE shrinks leases, so it is allowed
+    falsified_by: ["tests/test_lease.py::test_r20_door_rejects_over_lease"]
+
+  - id: R-21
+    rev: 1
+    status: enforce
+    class: policy
+    owner: ops-policy
+    statement: A pool resize is never written without an APPROVED proposal for that pool and size, approved by
+      someone other than the proposer.
+    subject: {contract: pool_py, target: "py:pool_service.service.ResizeService.resize_door"}
+    scope: call
+    bind: {req: args.req, approval: provider.approval}
+    bad:
+      - {when: 'approval == null', message: no such proposal}
+      - {when: 'approval != null && approval.state != "APPROVED"', message: proposal is not APPROVED}
+      - {when: 'approval != null && (approval.pool_id != req.pool_id || approval.new_size != req.new_size)',
+         message: the write does not match the approved proposal}
+      - {when: 'approval != null && approval.approved_by == approval.proposed_by', message: self-approved}
+    compensable: false
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: resize_door is the only writer of pools.size (R-23, checked by inv scan)
+      residual_paths: []
+      sink: "py:pool_service.store.set_size"
+      tables: [{pools: [update]}]              # create_pool's INSERT is R-24's, not a resize
+    falsified_by:
+      - "tests/test_resize.py::test_r21_apply_without_approval_is_rejected"
+      - "tests/test_resize.py::test_r21_self_approval_is_rejected"
+
+  - id: R-22
+    rev: 1
+    status: enforce
+    class: policy
+    owner: ops-policy
+    statement: One resize never grows a pool to more than four times its size; such a write is rolled back.
+    subject: {contract: pool_py, target: "py:pool_service.service.ResizeService.resize_door"}
+    scope: transition
+    bind: {req: args.req}
+    bad: 'old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 4 * old_self.sizes[req.pool_id]'
+    enforcers:
+      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: resize_door, inside ResizeService.txn; the write is rolled back before commit
+      residual_paths: []
+      sink: "py:pool_service.store.set_size"
+      tables: [{pools: [update]}]
+    falsified_by: ["tests/test_resize.py::test_r22_growth_above_4x_is_rolled_back"]
+
+  - id: R-23
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-pool
+    statement: pools.size is written only through the doors (ResizeService.resize_door for updates, create_pool
+      for inserts). Checked statically by inv scan, not at run time.
+    subject: {contract: store_py, target: "py:pool_service.store.set_size"}
+    scope: call
+    bad: 'false'
+    enforcers:
+      - {point: structure, timing: pre_effect, mode: enforce}
+    mediation:
+      chokepoint: every call path from an entrypoint to store.set_size or store.insert_pool passes a door
+      residual_paths: []
+      sink: ["py:pool_service.store.set_size", "py:pool_service.store.insert_pool"]
+      door: ["py:pool_service.service.ResizeService.resize_door", "py:pool_service.service.create_pool"]
+      tables: [pools]
+    falsified_by: ["tests/test_scan.py::test_r23_scan_finds_the_bypass_module"]
+
+  - id: R-24
+    rev: 1
+    status: enforce
+    class: policy
+    owner: team-pool
+    statement: A new pool has between 1 and 10000 slots.
+    subject: {contract: pool_py, target: "py:pool_service.service.create_pool"}
+    scope: call
+    bad: 'args.size < 1 || args.size > 10000'
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    falsified_by: ["tests/test_api.py::test_r24_pool_size_out_of_range"]
+
+  - id: H-1
+    rev: 1
+    status: enforce
+    class: policy
+    owner: team-pool
+    statement: One lease request takes between 1 and 64 slots.
+    subject: {contract: pool_api, operation: leaseSlots, target: "py:pool_service.api.lease"}
+    scope: call
+    bad: 'args.body.slots < 1 || args.body.slots > 64'
+    enforcers:
+      - {point: middleware, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    falsified_by: ["tests/test_api.py::test_h1_lease_request_size"]
+
+  - id: H-2
+    rev: 1
+    status: enforce
+    class: policy
+    owner: team-pool
+    statement: A pool id is 3 to 32 characters with no spaces or slashes, and a name is not empty.
+    subject: {contract: pool_api, operation: createPool, target: "py:pool_service.api.create_pool"}
+    scope: call
+    bad:
+      - {when: 'size(args.body.pool_id) < 3 || size(args.body.pool_id) > 32', message: pool id length}
+      - {when: 'args.body.pool_id.contains(" ") || args.body.pool_id.contains("/")', message: pool id characters}
+      - {when: 'size(args.body.name) == 0', message: empty name}
+    enforcers:
+      - {point: middleware, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    falsified_by: ["tests/test_api.py::test_h2_bad_pool_id"]

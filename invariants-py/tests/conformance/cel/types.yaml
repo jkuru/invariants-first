@@ -1,0 +1,34 @@
+suite: types
+cases:
+- {name: int plus double is error, expr: '1 + 1.0 == 2.0', expected: rule_error}
+- {name: int plus string is error, expr: '1 + "a" == "1a"', expected: rule_error}
+- {name: string less than int is error, expr: '"a" < 1', expected: rule_error}
+- {name: bool plus int is error, expr: 'true + 1 == 2', expected: rule_error}
+- {name: heterogeneous equality is false, expr: '1 == "1"', expected: ok}
+- {name: heterogeneous inequality is true, expr: '1 != "1"', expected: violation}
+- {name: int equals null is false, expr: 'x == null', env: {x: 1}, expected: ok}
+- {name: bool is not int, expr: 'true == 1', expected: ok}
+- {name: size of int is error, expr: 'size(1) == 1', expected: rule_error}
+- {name: size of null is error (P-2 shape), expr: 'size(x) == 0', env: {x: null}, expected: rule_error}
+- {name: negate string is error, expr: '-"a" == "a"', expected: rule_error}
+- {name: index list with string is error, expr: '[1]["a"] == 1', expected: rule_error}
+- {name: contains on int is error, expr: '"abc".contains(1)', expected: rule_error}
+- {name: in on int is error, expr: '1 in 2', expected: rule_error}
+- {name: int overflow is error, expr: '9223372036854775807 + 1 > 0', expected: rule_error}
+- {name: unknown function is error, expr: 'nosuch(1) == 1', expected: rule_error}
+# conversions: CEL's rules on every backend (the adapter overrides looser engine conversions)
+- {name: double of hex text is error, expr: 'double("0x10") == 16.0', expected: rule_error}
+- {name: int of hex text is error, expr: 'int("0x10") == 16', expected: rule_error}
+- {name: int of underscored text is error, expr: 'int("1_0") == 10', expected: rule_error}
+- {name: double of underscored text is error, expr: 'double("1_0") == 10.0', expected: rule_error}
+- {name: int of non-ASCII digits is error, expr: 'int("٣") == 3', expected: rule_error}
+- {name: double of non-ASCII digits is error, expr: 'double("٣") == 3.0', expected: rule_error}
+- {name: int of minus two to the 63 double is error, expr: 'int(-9223372036854775808.0) < 0', expected: rule_error}
+- {name: int of two to the 63 double is error, expr: 'int(9223372036854775807.0) > 0', expected: rule_error}
+- {name: bool of int is error, expr: 'bool(1)', expected: rule_error}
+- {name: string of bool, expr: 'string(true)', value: 'true'}
+- {name: int of padded text, expr: 'int(" 12")', value: 12}
+- {name: double of decimal text, expr: 'double("1.5e3")', value: 1500.0}
+- {name: int truncates toward zero, expr: 'int(-1.9)', value: -1}
+- {name: string of null is error, expr: 'string(null) == "None"', expected: rule_error}
+- {name: int of null is error, expr: 'int(null) == 0', expected: rule_error}

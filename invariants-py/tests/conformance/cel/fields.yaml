@@ -1,0 +1,20 @@
+suite: fields
+cases:
+- {name: select, expr: 'a.b == 1', env: {a: {b: 1}}, expected: violation}
+- {name: nested select, expr: 'a.b.c', env: {a: {b: {c: true}}}, expected: violation}
+- {name: index by variable, expr: 'sizes[k] < 3', env: {sizes: {p1: 2}, k: p1}, expected: violation}
+- {name: missing field is error, expr: 'a.nope == 1', env: {a: {b: 1}}, expected: rule_error}
+- {name: missing key is error, expr: 'a["nope"] == 1', env: {a: {b: 1}}, expected: rule_error}
+- {name: undeclared variable is error, expr: 'nope == 1', expected: rule_error}
+- {name: select on null is error, expr: 'a.b == 1', env: {a: null}, expected: rule_error}
+- {name: list index out of range, expr: 'xs[3] == 1', env: {xs: [1]}, expected: rule_error}
+- {name: has present, expr: 'has(a.b)', env: {a: {b: 1}}, expected: violation}
+- {name: has absent, expr: 'has(a.c)', env: {a: {b: 1}}, expected: ok}
+- {name: has nested, expr: 'has(a.b.c)', env: {a: {b: {c: 0}}}, expected: violation}
+- {name: has on null-valued key, expr: 'has(a.b)', env: {a: {b: null}}, expected: violation}
+- {name: has needs a selection, expr: 'has(a)', env: {a: 1}, expected: parse_error}
+- {name: null equality, expr: 'a == null', env: {a: null}, expected: violation}
+- {name: map vs null, expr: 'a == null', env: {a: {b: 1}}, expected: ok}
+- {name: null or field (R-21 shape), expr: 'a == null || a.state != "OK"', env: {a: null}, expected: violation}
+- {name: null or field, present, expr: 'a == null || a.state != "OK"', env: {a: {state: OK}}, expected: ok}
+- {name: field equals null, expr: 'a.b == null', env: {a: {b: null}}, expected: violation}

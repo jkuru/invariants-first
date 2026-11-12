@@ -1,0 +1,948 @@
+# Changelog
+
+All notable changes to this project are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+Planned as 0.1.0, the first release. Publishing metadata (the final package name, `project.urls`,
+authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
+[RELEASING.md](RELEASING.md). Contributors add their entries here.
+
+### Adoption: a 10-minute start
+
+- **`inv init`** drafts `invariants.yaml` from what the code already has. It reads the source and
+  imports nothing. Pydantic models with constraints become `pydantic` contracts. `.sql` files with
+  constraints become `sql` contracts. Leading `if ...: raise` and `assert` preconditions over the
+  parameters become suggested short-form rules, translated to CEL and left commented out. Anything
+  it cannot translate faithfully is listed, not guessed. It runs `inv lock` and never overwrites a
+  rule file. Models are found through `BaseModel`, `RootModel` and `SQLModel` bases, subscripted
+  bases such as `RootModel[list[str]]` and `Generic[T]`, and their subclasses.
+- **Short rule form.** `guard:` and `tests:` expand to `subject.target`, one decorator enforcer and
+  `falsified_by`. A rule without a status is `enforce` when it has tests and `detect` otherwise.
+  `rules:` may be empty.
+- **Constraint weakening.** A pinned pydantic schema that now accepts more input is WEAKENED: a
+  raised or removed bound, a new enum value, a field no longer required, and so on. It is no longer
+  just a pin change. The new `sql` contract type pins CHECK, NOT NULL, UNIQUE and PRIMARY KEY
+  constraints; removing or editing one is WEAKENED.
+- **`inv check`** runs `validate`, `lock --check`, `verify` and `scan` with one exit code, skipping
+  the steps with nothing to check.
+  - `--relock` re-pins a stale lock when nothing weakens, for pre-commit.
+  - `--base REF` fails on a weakening since the lock committed at REF, even one the change
+    re-pinned itself. A reviewer overrides it with `--allow-weakening` or `INV_ALLOW_WEAKENING=1`.
+- **Agent and CI hooks.**
+  - `inv hook pretool` is a Claude Code PreToolUse hook. It blocks commands that accept a weakening.
+  - `inv hook stop` is a Stop hook. It sends the agent back once while `inv check` fails.
+  - `.pre-commit-hooks.yaml` defines the `inv-check` hook.
+  - `action.yml` is a GitHub Action that runs `inv check --base` with a label-based override.
+  - [docs/start.md](docs/start.md) is the 10-minute guide.
+- The CLI prints the lock path as given, not resolved to an absolute path.
+
+### 0.1.0 (unreleased): summary
+
+The first release of `invariants`: rule-file-driven invariant guards for Python, with the evidence
+to show that each one holds.
+
+- **Rule files.** JSON or YAML (`spec: invariant/v0.1`) with targets and their effects, typed
+  read-only providers with a declared consistency, and rules whose `bad` is CEL. `inv.load` checks
+  everything at load time: targets, providers, the timing of every enforcer, the status the evidence
+  allows, every CEL function against the chosen backend, and a type check of every clause.
+- **Enforcers.** `@inv.guard` (sync, async, methods), `@inv.transaction` boundaries with rollback
+  and savepoints, `@inv.model_call` (closed schemas, format retries with parser feedback, semantic
+  resamples, abstain) and `@inv.edge`, plus storage, monitor and FastAPI middleware points. Four
+  outcomes (`ok`, `violation`, `rule_error`, `parse_error`) and four actions (reject, halt,
+  escalate, route) with review stores and a durable fallback.
+- **CEL.** Three backends (`subset`, `cel-expr`, `celpy`) behind one front end, one Python-to-CEL
+  value mapping, cost budgets on every backend, a non-finite policy that makes NaN a `rule_error`,
+  and an 18-suite conformance corpus that every backend passes with no expected failures.
+- **CLI.** `inv validate`, `inv lock` (lock version 3: contract-level pins, a semantic diff, and a
+  weakening gate behind `--accept-weakening`), `inv verify`, `inv scan` (a static mediation check
+  with raw-SQL table rules, text, JSON and SARIF output) and `inv status` (computed standing).
+- **pytest plugin.** `--inv-verify`, `--inv-ablate` (each rule switched off; its falsifiers must
+  fail because of it), `--inv-report`, and the `inv_registry`, `inv_ablated` and `inv_events`
+  fixtures.
+- **Integrations.** Pydantic (strict closed schemas, contracts), FastAPI and ASGI
+  (`application/problem+json` with no values echoed), and OpenTelemetry spans.
+- **Documentation and examples.** A front-page README with a runnable quickstart, reference pages
+  under `docs/`, a measured evaluation (`docs/evaluation.md`), and two standalone example apps under
+  `examples/`.
+
+Known limitations are listed in the README and in each reference page.
+
+### Development history
+
+The entries below record each review and certification round before the first release, newest
+first. They are kept for reviewers and for anyone tracing why a behaviour is the way it is.
+
+### Fix round 15 (certification round 12 findings)
+
+From certification round 12 (no blockers or majors; four minors and a group of nits). Regression
+tests: `tests/test_fix_round15.py`. The suite passes on every backend and under `python -O`, and
+mypy is clean. The lock format did not change, so the example apps were not re-locked.
+
+Behaviour changes:
+
+- **An edit that can newly raise is not a strengthening (R12-1).** The polarity analysis judged a
+  `bad` edit by the values its nodes take and ignored that the new condition could error where the
+  old one could not. Under `on_error: fail_open_and_page` such an error lets the call through, so
+  `args.region in ["xx", "yy"]` to `[..., args.cfg.extra]`, `size(s) / 2 > 1` to `size(s) / 0 > 1`
+  and `args.n + 1 > 5` to `args.n + 2 > 5` were re-pinned as "matches more cases" while the new rule
+  let through calls the old one rejected. An edit is now "stronger" only if it adds no
+  sub-expression that can raise: no new field or variable read, index or function call, no new or
+  changed divisor or modulus (a non-zero literal other than -1 is fine), and no new or changed
+  arithmetic that may overflow int64 (arithmetic over int literals and `size()` with a bound below
+  2^63 is fine). Otherwise it is WEAKENED with "the new condition can raise an error the old one
+  could not (a read of args.cfg.extra)". The rule applies whatever the rule's `on_error`. An
+  operand added to an existing `||` or `&&`, and a new `bad` clause, are exempt, because wherever the
+  old condition held its own operands decide the result. So a lower threshold, a literal `in`-list
+  member, and a disjunct or clause over any fields are still accepted. Two round-14 tests changed
+  accordingly: `uint(a) * 2` to `* 3` and `a + 1` to `a + 2` are now "unknown". Documented in
+  docs/lockfile.md.
+- **Namespace reflection in the scan (R12-2).** `store.__dict__["sink"](c)`,
+  `store.__dict__.get("sink")(c)`, `store.__getattribute__("sink")(c)` and
+  `object.__getattribute__(store, "sink")(c)` passed with no findings. A lookup in a scanned
+  module's or class's namespace is now a `getattr` with that name: a constant key is
+  `forbidden/getattr-sink` for the sink (or door) name and a call edge for any other function, and
+  anything else (a computed key, `.items()`, the dict as a value, an assignment into it,
+  `inspect.getmembers(store)`) is `unresolved/reflection`, like `vars(store)`. A function's
+  `__dict__` is its metadata and stays harmless.
+- **`inv scan` finds a src layout (R12-5d).** With no `--root` and no `[tool.invariants.scan]`
+  roots, `inv scan` and `inv status` scanned only the rule file's directory, so a src-layout project
+  got "missing sink/door" while `inv lock` found `src/` by itself. When a `pyproject.toml` sits
+  beside the rule file, its `src/` and setuptools `packages.find.where` directories are now roots
+  of their own, next to the rule file's directory. A file under two roots is named from the
+  deepest one, once.
+
+Packaging and documentation:
+
+- **The `[fastapi]` extra brings httpx (R12-3)**, which `fastapi.testclient` needs, so cookbook
+  recipe 6 runs in a fresh venv. The cookbook intro says so, and recipe 10 runs `bash ci.sh`.
+- **docs/evaluation.md leads with the current results (R12-4):** the short answer, tables and
+  verdict after the lock redesign (2 of 24 lock failures, 1 of 8 benign changes red, 8/8 covered and
+  3/8 uncovered defects caught, 6/16 by an invariants mechanism). The original run follows in full
+  as the "before". The page no longer cites unpublished paths or development process; the harness
+  is described as not shipped. The limitations and bias caveats are unchanged.
+- **Nits (R12-5).** The fix-round-14 entry no longer says a field declared `int` qualifies for the
+  integer rewrites, and neither does the `_Canon.integral` docstring. The README CLI section
+  documents `--path DIR`. RELEASING.md says the static CI badge must be swapped for a live one.
+
+### Fix round 14 (certification round 11 findings)
+
+From certification round 11 (one major, four minors, two nits). Regression tests:
+`tests/test_fix_round14.py`. The suite passes on every backend and under `python -O`, and mypy is
+clean. The lock format did not change, so the two example apps were not re-locked; their CI passes.
+
+Behaviour changes:
+
+- **Literals in `bad` keep their CEL type (R11-1, major).** The canonical tree tagged nothing, and
+  Python says `true == 1 == 1.0` and `false == 0`, so `args.m.approved == true` to `== 1` on a dyn
+  field was re-pinned with exit 0 as an "equivalent rewrite", though the new rule never fires. Each
+  literal is now `("lit", type, value)` (bool, int, double, string, null, bytes), and `-0.0` is
+  kept apart from `0.0`. Every equality and membership test in the comparison (clause matching,
+  regrouping, operands common to both sides, `in`-list members, ternaries, the `false` shortcut)
+  uses that form. A threshold edit across types (`> 5` to `> 6.0`, `/ 2` to `/ 2.0`) has no
+  direction and is a possible weakening. The other comparisons in `lockfile.py` were already
+  type-strict (`same()` compares canonical JSON).
+- **Scaling by a factor of unknown sign has no direction (R11-2).** `args.n * 2 > -10` to
+  `args.n * 3 > -10` on an `int` n was "matches more cases"; for n = -4 it matches fewer. `*` and
+  `/` now keep a direction only when the other operand is provably non-negative: a non-negative
+  literal (so a literal times a literal), `size()`, `uint()`, a uint-typed field, or sums, products
+  and quotients of those. Otherwise the edit is a possible weakening. The README caveat that the
+  analysis assumed non-negative operands is gone.
+- **Integer-only rewrites need provable integers, not annotations.** `> n` to `>= n+1` and
+  `!(a >= b)` to `a < b` count as the same condition only for int literals, `size()`, `int()`,
+  `uint()` and arithmetic on those. A field declared `int` no longer qualifies, because Python does
+  not enforce annotations and a caller can pass 10000.5. Such an edit is a possible weakening;
+  write `int(args.n) > 10000` or use `--accept-weakening`.
+- **More equivalent rewrites (R11-3).** These are now the same condition:
+  - a mirrored comparison (`10000 < args.size` for `args.size > 10000`);
+  - `!` pushed inward: De Morgan, `!(a == b)` as `a != b`, and `!!e` as `e` when `e` is provably a
+    bool (a comparison, `&&`, `||`, `!`, `has()`, a comprehension, or a bool-typed field);
+  - a renamed comprehension variable (variables are named by nesting depth);
+  - a repeated disjunct or conjunct, a repeated `in`-list member, or a repeated clause, dropped
+    (the clause case is "bad repeated clause removed", not "matches fewer cases").
+
+  With the rule's declared types (the loader's static type environments, one per enforcer, now
+  passed to the comparison by `inv lock`), two rewrites that hold only for integers also apply
+  when both operands are provably int or uint: `> 10000` as `>= 10001` (and `< 1` as `<= 0`), and
+  `!(a >= 1)` as `a < 1` (NaN breaks it for doubles). Provably int means an int literal,
+  `size()`, `int()`, `uint()` or arithmetic on those; a field declared `int` does not qualify (see
+  above: Python does not enforce the annotation).
+  A double, a dyn value or a comprehension variable is not assumed to be an integer.
+- **Numeric `+` and `*` are commuted but no longer regrouped.** `x + 1.0 + 1.0` and
+  `x + (1.0 + 1.0)` differ by rounding near 2^53, and int chains differ by overflow, so a
+  regrouping was re-pinned as "equivalent" while changing what the rule flags. `||` and `&&`
+  chains are still flattened.
+- **The scan resolves `.__call__` (R11-4).** `store.sink.__call__(c)` (and
+  `getattr(store.sink, "__call__")(c)`) is a call of the sink, so a bypass is reported, and
+  `helper.__call__(c)` makes a door-only helper's SQL count as reachable from outside the door.
+  Another dunder read on a known function (`sink.__get__(o)`, `helper.__func__`,
+  `getattr(f, "__get__")`) is a use of it as a value (`unresolved/sink-escapes` for a sink; a
+  helper used as a value is not door-only). `__name__`, `__doc__` and other metadata reads are
+  not. `.__wrapped__` and `getattr`/`operator.methodcaller` with `"__wrapped__"` stay forbidden.
+- **`inv` imports this checkout's source (R11-5).** `validate`, `lock`, `verify` and `status` put
+  every `--path`, then the project's `src/`, its setuptools `packages.find` `where` and
+  `[tool.invariants.scan]` roots, the rule file's directory and the project root (the nearest
+  `pyproject.toml`) ahead of site-packages. With a src layout and no `--path`, `inv lock --check`
+  used to import whatever copy the venv had installed (an editable install of another checkout or
+  worktree) and report "fresh" for an edit to this one. When a pinned module is still imported
+  from outside the project, `inv lock` and `inv verify` print a warning naming its file. The
+  README CLI table documents `--path`.
+- **`--check` validates the schemas table (R11-6).** Each key must be the sha256 of its body,
+  every `$ref` must name an entry, and no entry may be unreferenced. A damaged table is reported
+  as stale with each problem. A plain `inv lock` says the table is damaged, drops entries whose
+  key does not match their body (so a hand-edited body is never shown as the old side of a diff)
+  and rewrites it.
+- **Diff and docs (R11-7).** A list whose members were replaced prints as one line,
+  `types.return.args: ["int"] -> ["float"]`. Removing a `mediation.residual_paths` entry is a
+  possible weakening (`inv status` withholds `held` while one is listed, so removing it can raise
+  standing); adding one is not. The README no longer mentions fix rounds.
+
+### Fix round 13 (certification round 10 findings)
+
+From certification round 10 (one major, five minors, two nits). Regression tests:
+`tests/test_fix_round13.py`. The suite passes on every backend and under `python -O`, and mypy is
+clean. The two example apps changed only their rule files and locks (below), and their CI passes.
+
+Behaviour changes:
+
+- **Every field that changes what `bad` reads is a possible weakening (R10-1, major).** A plain
+  `inv lock` used to re-pin these with exit 0: a rebound `bind`, an enforcer `view`, provider
+  `args`, `from` or `type`, `model_policy` (more resamples or retries, a new schema, abstain or
+  feedback), a removed `compares_to`, and an enforcer `artifact`. That includes an artifact digest
+  rewritten by `--update-artifacts`. All of these are now WEAKENED and refused without
+  `--accept-weakening`. So are `subject` (contract, operation, target), `scope`,
+  `conformance_test`, `generated`, a target's `transaction`, `timing` moved to `post_effect`, and
+  `compensable` set to true. Every field of `schema/invariants.schema.json` is classified in
+  `lockfile.FIELD_POLICY` (weakening, ranked, more-is-weaker, presence, analysed, neutral, prose,
+  pin, computed), and a field that is not listed is a possible weakening. A test walks the schema
+  (and the loader's field sets), so CI fails on a new field without a classification. The
+  loader's `model_policy` defaults are filled in before comparing, so writing a default out is no
+  change.
+- **`bad` is compared as a canonical tree (R10-2).** These count as the same condition, recorded
+  but not WEAKENED:
+  - whitespace;
+  - commuted operands of `||`, `&&`, `==`, `!=`, and of `+` and `*` when an operand is plainly
+    numeric (`+` may be string or list concatenation, so it is not reordered otherwise);
+  - regrouped chains;
+  - a disjunction split into clauses or merged from them.
+
+  The polarity analysis now also decides an added or dropped disjunct or conjunct
+  (`a > 1` to `a > 1 && b` is weaker). An edit it cannot decide is still a possible weakening.
+- **Resolved types are pinned (R10-3).** Target, provider and function-contract signatures keep
+  their text and gain `types`: each parameter and the return type, resolved with
+  `typing.get_type_hints`. Aliases (`Caps = list[int]`, PEP 695 `type`), `Literal`, unions and
+  `NewType` are expanded. A dataclass, TypedDict or pydantic model a signature names is pinned by
+  its fields, recursively. Cycles are cut by name, and nesting is bounded at 64 nested classes or
+  24 levels. These now make the lock stale: `Caps` from `list[int]` to `list[float]`,
+  `JobFacts.elapsed_s` from int to float, `JobFacts.oom_killed` from bool to `bool | None`,
+  `ResizeRequest.new_size` from int to float, `Approval.state` from str to `str | None`, and the
+  python-side `LeaseIn.slots`.
+- **Raw-SQL detection (R10-4).**
+  - New forms are caught: `MERGE INTO` (insert, update and delete), comments between keywords
+    (`INSERT /* hint */ INTO`, `DELETE -- c` then `FROM`), `UPDATE t AS x SET`, `UPDATE t x SET`,
+    `UPDATE ONLY`, `DELETE FROM ONLY`, `INSERT` without `INTO` (and MySQL's `IGNORE` and the
+    priority modifiers), and `ALTER TABLE IF EXISTS`.
+  - Named, indexed and partial placeholders in the table position (`{table}`, `{0}`, `%(t)s`,
+    `lea{t}`, `:name`) are reported `unresolved/computed-sql`.
+  - What counts as door code is now decided by call-graph reachability, not lexical location. A
+    helper reached only through a door or sink (and never used as a value) is door code. So is a
+    module-level string constant used only by door or sink code. The two false positives are
+    gone, and the same constant used anywhere else is still flagged. `scan.sql_writes(text)` is
+    the new parser.
+- **The sink's own SQL counts for held (R10-5).** `inv scan` collects the tables and statement
+  kinds a rule's sink code writes: the sinks, what they call short of a door, and the constants
+  they use. When `mediation.tables` does not cover them, it warns, whatever the sink's `effects`
+  are, `external` included. `inv status` then does not report the rule held. The JSON report gains
+  `sink_writes` and `uncovered_tables` per rule. Pool-service R-7 (an external sink running
+  `INSERT INTO remediations`) is no longer reported held while a raw insert can bypass its door.
+  With the new `tables` entry, that insert is a `forbidden/raw-sql` finding.
+- **Lock version 3 (R10-6, breaking for lockfiles).**
+  - A content-addressed top-level `schemas: {sha256: schema}` table holds every pinned schema.
+    Targets, providers and contracts reference it as `{"$ref": "sha256:..."}`, and a schema change
+    is reported once, with its users.
+  - Prose (`title`, `description`, `summary`, `tags`, `examples`, `$comment`) is stripped at
+    every level, so a docstring edit no longer re-pins. Property names are kept.
+  - An OpenAPI operation is pinned as its method, path, `parameters`, `requestBody` and
+    `responses` schemas. Shared `#/components/schemas` refs go into the table once, so the 422
+    error body is no longer inlined per operation.
+  - Rule status is stored once, and the duplicate `applies_to` expansion is dropped (`targets`
+    holds it).
+  - The text is written with sorted keys, two-space indent, and any value that fits in 128
+    columns on one line. It is byte-identical across hash seeds and Python 3.12 and 3.14.
+  - `inv lock --check` refuses a version-2 or version-1 lock with a hint. `inv lock` migrates
+    version 2 by comparing rule semantics, effects, transactions, signature text, provider fields
+    and contract references, so the weakening gate holds across the migration.
+  - App locks shrink from 931 to 645 lines (30,622 to 27,253 bytes, pool-service) and from 1,092
+    to 681 lines (34,426 to 30,886 bytes, fact-pipeline), while pinning more: resolved types and
+    the fields of every model a signature names.
+- **Diffs and robustness (R10-7).**
+  - A dict-valued change prints one line per changed key (`model_policy.semantic_resamples: 0 ->
+    3`) instead of two truncated dicts.
+  - Comparisons are type-strict (canonical JSON), so `1` to `true` is a change, in the diff and in
+    the freshness check.
+  - A malformed lock (a non-integer or boolean `lock_version`, or a section or entry of the wrong
+    shape) is a `lockfile.LockError` that names the file and the place. A deeper mismatch found
+    while comparing is reported the same way, never as a raw TypeError.
+- **Docs (R10-8).** The README's lockfile section, its scan section and the Limitations scan
+  bullet are rewritten: tables are matched per table and statement kind. docs/rule-file.md gains
+  the per-field classification table. The README perf table is re-measured with the r5 probe.
+
+Example apps (rule files and locks only):
+
+- **pool-service.** R-7 declares `tables: [{remediations: [insert, update]}]`.
+- **fact-pipeline.** K-4, K-7, K-11 and K-18 add `{evidence: [insert]}`, because their sink
+  `insert_fact_row` also writes evidence.
+- **Locks.** Both locks were migrated to version 3. The rule edits showed up in the migration as
+  reviewed, non-weakening `mediation.tables` changes.
+
+### Fix round 12 (evaluation findings)
+
+From the agent-defect experiment in [docs/evaluation.md](docs/evaluation.md). Regression tests:
+`tests/test_fix_round12.py`. The suite passes on every backend and under `python -O`; mypy is
+clean. The two example apps changed only their rule files and locks (below), and their CI passes.
+
+Behaviour changes:
+
+- **Lock pins at contract granularity (lock version 2, breaking for lockfiles).** `inv lock --check`
+  failed on 18 of the experiment's 24 changes, 16 times only because a whole-module contract hash
+  moved, which trains people to re-pin by reflex. The lock now pins each target's signature,
+  effects, transaction and model-call reply schema; each provider's declaration and signature
+  (return type included); each rule's semantic content, with prose fields as digests; and each
+  contract as its resolved schema (pydantic, dataclass, TypedDict, `{field: type}`), its named
+  OpenAPI operations (local `$ref`s resolved), a function's signature, or a file digest. A
+  `python` module contract no longer hashes the module. A body-only refactor, a new function, or a
+  new unreferenced endpoint leaves the lock fresh. In the re-run, lock failures fell from 18 of 24
+  to 2 (P04, F12), and benign changes needing a re-pin from 6 of 8 to 1 of 8.
+- **Semantic lock diff, WEAKENED, and `--accept-weakening`.** Every change is listed as
+  `<where>: <what>: old -> new`. A change that relaxes a rule is marked WEAKENED: lower status or
+  mode, removed enforcer, clause or rule, `on_violation` below reject, `on_error:
+  fail_open_and_page`, staler provider consistency, removed sink or table or statement kind, an
+  added door on a scanned sink, a target declared pure, a target no longer covered, and a `bad`
+  that matches fewer cases. The direction of a `bad` edit is decided by a polarity analysis over
+  the CEL parse tree when the edit changes only numeric literals, list-literal elements or
+  comparison strictness; any other `bad` edit is a possible weakening. `inv lock` prints the diff
+  and refuses to write a weakened change without `--accept-weakening` (P04's 4x to 10x cap is now
+  refused on a reflex re-pin).
+- **Lock versions.** `inv lock --check` refuses a version-1 lock with a migration hint; `inv lock`
+  migrates it, requiring `--accept-weakening` when a rule changed since its version-1 hash. A lock
+  newer than the library is refused.
+- **Pydantic schema pin (F12).** A pydantic contract was hashed as `inspect.getsource(Model)`, so a
+  `Literal` in a module-level alias changed the schema without moving the pin. It is now
+  `model_json_schema()`, canonicalised; dataclass and dict schemas pin their resolved annotations.
+- **`mediation.tables` per statement kind.** An item may be `{table: [insert, update, delete, ddl]}`
+  (schema and loader updated). The raw-SQL check reads concatenated literals and schema-qualified
+  names, reports which statement it found, and reports a write to a computed table name as
+  `unresolved/computed-sql`.
+- **Warning for rules that protect stored data without `mediation.tables`.** A rule whose door
+  guards a `transactional` effect or that has a storage enforcer, and that declares no tables, gets
+  a scan warning (text output, JSON `warnings`, stderr for json/sarif) and `inv status` no longer
+  reports it `held`: raw SQL around the door is invisible to the scan. The evaluation's raw
+  `INSERT INTO leases` probe now fails `inv scan` for pool-service.
+- `inv status` rows carry `scan_warning`. `inv lock` output now also counts providers.
+
+Example apps (rule files and locks only): pool-service declares `tables: [{leases: [insert,
+update]}]` on R-20 and `tables: [{pools: [update]}]` on R-21 and R-22; fact-pipeline gives K-4, K-7,
+K-11 and K-18 the ingest door's sink and `tables: [{facts: [insert, update]}]`, and K-16 the
+`fact_status` sink, doors and tables of K-12. Both locks were migrated to version 2. K-15 still
+warns: its effect (`UPDATE sources`) is also written by `add_source`, so no table spec fits
+without a code change.
+
+### Fix round 11 (certification round 9 findings)
+
+Regression tests: `tests/test_fix_round11.py` (fixture `tests/fixtures/round11.py`), the new
+conformance suite `tests/conformance/cel/keys.yaml`, and new cases in `nonfinite.yaml` (a NaN in a
+value compared whole) and `time.yaml` (ASCII digits, zone names with a NUL or control character).
+Each test encodes a behaviour the round-9 probes showed wrong before this round, on every backend.
+The suite passes on every backend and under `python -O`; both example apps' CI passes unchanged.
+
+Behaviour changes:
+
+- **Whole-value equality with a nested NaN (minor, R9-1).** On the subset, a list, map or record
+  compared whole (`==`, `!=`, `in`) used Python's `==`, so a NaN inside it was not noticed (and one
+  shared NaN object compared equal to itself): `args.items != args.items` was `ok`, where cel-expr
+  and celpy gave a `rule_error`. The subset now reads such a value whole through the engines'
+  conversion (`_engine.to_plain`): a NaN or ±Infinity anywhere in it is a `rule_error`, a record is
+  the map of its fields (so it equals a map with the same fields, as on the engines), and nested
+  values compare by CEL's rules, never by identity. With `allow_non_finite=True` a list holding a
+  NaN is not equal to itself on every backend.
+- **`model_of()` and edges (minor, R9-2).** `model_of(c)` returned the instance stored on the reply,
+  a mutable pydantic model the edge never re-checked, so a consumer could read a value mutated or
+  swapped after the model call. Now `model_of(c)` validates the reply's JSON attributes again on
+  every call and returns a new instance (a tampered reply raises `ParseError`), and an `@inv.edge`
+  calls its consumer with a new `Checked` over the re-validated copy the rule judged, not the
+  object it received. `Checked` now has `==` (same class, rule, verdict, attempts and an equal
+  value) and a matching hash, so the copy equals the original.
+- **pydantic's API is not a field (nit, R9-3).** `BaseModel` attributes (`model_fields`,
+  `model_config`, `copy`, `json`, ...) counted as fields: `reply.model_fields == 1` loaded (and was
+  `ok` on the subset, a `rule_error` on the engines), and a "no field" error listed about 30 of them.
+  Now only model fields, computed fields and your own properties are fields, at load and at run
+  time, for replies and arguments; the error lists just those.
+- **ASCII digits and zone names (nit, R9-4).** Duration, timestamp, offset and ISO 8601 parsing, and
+  the subset tokenizer, use ASCII digits only (`re.ASCII`): `"PT٥M"` was 5 minutes and `"+٠٥:٣٠"` a
+  valid zone on two backends. A zone name with a NUL, space, control or non-ASCII character is
+  refused on every backend (a `LoadError` as a constant, a `rule_error` from data). cel-expr cut
+  every string or bytes value at its first NUL (`"ab\x00cd" == "ab"` was true there); a clause that
+  reads a value holding a NUL is now a `rule_error` on cel-expr.
+- **Map keys and indexes (nit, R9-5).** `{1: 'a'}[1.0]` was `'a'` on the subset and cel-expr but a
+  `rule_error` on celpy. Map lookup and `in` now follow CEL on every backend: numeric keys match
+  across int and double, a bool never matches a number (the subset and celpy took `{true: 'a'}[1]`
+  and `1 in {true: 'a'}`), a list index may be an integral double (`[7, 8][1.0] == 8`; celpy took
+  `[7, 8][true]`), and a map literal key must be an int, bool or string (`{1.0: 'a'}` and
+  `{null: 1}` evaluated on the subset and celpy; `{[1]: 1}` raised a raw `TypeError` on the subset).
+  A repeated map literal key is a `rule_error` on every backend.
+- **sdist tests (nit, R9-6).** The sdist ships `.gitignore` (`MANIFEST.in`), the `.gitignore` test
+  skips when the file is absent, and the mypy return-type test puts only a source checkout on
+  `MYPYPATH` (mypy refuses a site-packages directory there), so the sdist's own tests pass against
+  an installed package.
+
+### Fix round 10 (certification round 8 findings)
+
+Regression tests: `tests/test_fix_round10.py` (fixture `tests/fixtures/round10.py`), the new
+conformance suite `tests/conformance/cel/numeric.yaml`, and new cases in `time.yaml` (timezones
+from data) and `pyvalues.yaml` (only read element fields are converted). Each test encodes a
+behaviour the round-8 probes showed broken before this round, on every backend. The suite passes on
+every backend and under `python -O`; both example apps' CI passes unchanged (neither app mixes int
+and double arithmetic in a rule).
+
+Behaviour changes:
+
+- **Typed model replies (major).** A pydantic reply's `datetime` and `timedelta` fields reached
+  rules as their JSON text, so `reply.at < timestamp(...)` or `reply.wait > duration('1h')` loaded
+  and then made every model call a `rule_error`; reply fields were not type-checked (a
+  `NaiveDatetime` reply field loaded). Now rules read the validated model instance through the same
+  Python-to-CEL mapping as arguments (`cel/values.py`), at the top level and in nested models,
+  lists and dicts: a `datetime` is a timestamp, a `timedelta` a duration, a `UUID` a string, an
+  `Enum` its value. This holds for `model_call`, the edge re-check, and a `Checked` that was
+  deep-copied or unpickled (each validates again from the reply's attributes, so a tampered
+  attribute is still caught). `reply` is type-checked against the model's annotations exactly like
+  `args`: `reply.at == 'x'` is a `LoadError`, and so is a clause that reads a `NaiveDatetime`,
+  `Decimal` or `date` reply field. The reply's own attributes keep their JSON form, as documented
+  (`c.cause` is the enum's value); `model_of(c)` is the typed instance. Dataclass and
+  `{field: type}` schemas could not hold a datetime at all; now a `datetime` field parses RFC 3339
+  text with a timezone (no timezone: `parse_error`), a `timedelta` field CEL duration text or ISO
+  8601 (`"PT5M"`, as pydantic writes it), and a `UUID` field its text, with value-free error text.
+- **Timezone arguments (minor).** A constant offset of 24 hours or more (`getHours('+25:00')`) made
+  `inv.load` raise a raw `ValueError`; it is now a `LoadError` ("unknown timezone"), and minutes
+  must be under 60. A timezone read from data is checked by the shared rules on cel-expr too
+  (routed through `inv.__zone`), so `""` and `"+99:00"` are a `rule_error` on every backend
+  (cel-expr read `""` as UTC and wrapped large offsets).
+- **No int-double arithmetic (minor).** The type checker treated int and double as one family, so
+  `args.price * args.qty` (float times int) loaded and was a `rule_error` on every call on the
+  subset and cel-expr while celpy computed it. CEL has no implicit numeric conversion: int, uint and
+  double are now separate kinds for arithmetic, and the mixed form is a `LoadError` that suggests
+  `double(args.qty)`; `%` on doubles is a `LoadError` too. Comparisons across int and double stay
+  allowed (CEL's heterogeneous numeric comparison). At run time celpy now refuses mixed arithmetic
+  and the subset refuses `double % double`, as cel-expr and CEL do.
+- **Only read element fields are converted (improvement).** A list read only through a
+  comprehension's variable (`args.items.exists(i, i.qty < 0)`) or through `size()` now converts just
+  the fields the body reads (or nothing but the length), on the engines as in the type checker
+  (`cel.subset.reads`, `_engine.project`), so an `Item` with a `Decimal` price loads when the rule
+  never reads the price. `filter()`, indexing, `in` and any use of the whole element still read it
+  whole and are refused as before. A cyclic or non-finite value in an unread field is no longer
+  noticed by the engines, as on the subset.
+
+### Fix round 9 (certification round 7 findings)
+
+Regression tests: `tests/test_fix_round9.py` (fixture `tests/fixtures/round9.py`) and the new
+conformance suites `tests/conformance/cel/time.yaml`, `pyvalues.yaml` and `nesting.yaml`, which run
+on every backend (the harness now decodes Python values in a case's env, `{$timestamp: ...}`,
+`{$duration: ...}`, `{$uuid: ...}`, `{$naive: ...}`, `{$date: ...}`, `{$decimal: ...}`, and a case may
+name the `backends` it runs on, for `type()`). Each regression test encodes a behaviour the round-7
+probes showed broken before this round. The suite passes on every backend and under `python -O`.
+
+Behaviour changes:
+
+- **datetime, timedelta and UUID values work in rules; Decimal, date, time and naive datetimes are
+  refused clearly (major).** These values loaded fine and then made every call a `rule_error`
+  ("unsupported value type datetime"; a UUID read as "integer value out of int64 range"), even
+  `x == null` and `has(x)` on cel-expr and celpy, so an expiry, deadline, lease or money rule was
+  an outage under `fail_closed`. Now one documented mapping (`invariants/cel/values.py`, README
+  "Python to CEL types", docs/rule-file.md) is used by every backend and by the load-time type
+  checker: an aware `datetime` is a timestamp (in UTC), a `timedelta` a duration, a `UUID` its
+  string, an `Enum` its value, `None` is null (`== null` and `has()` work for every `Optional`
+  field). A naive `datetime` is refused (the library never assumes a timezone): a `rule_error` at
+  run time, a `LoadError` for pydantic's `NaiveDatetime`. `datetime.date`, `datetime.time`,
+  `Decimal` (CEL has no decimal, and a double loses money precision: pass int minor units or a str),
+  `Fraction`, `complex` and sets are refused with the conversion to make: a `LoadError` when the
+  clause reads a path annotated with one, or a record, list or map whose annotation holds one (the
+  engines convert what a clause reads whole), else a `rule_error` naming the type. The type checker
+  knows timestamp and duration as families of their own (CEL's ts ± dur, dur ± dur, ts − ts; no
+  `-dur` or `dur * n`), UUID as string, refuses a field read on a timestamp, and checks a constant
+  `timestamp('...')`/`duration('...')` and a getter's constant timezone at load. On cel-expr,
+  timestamps and durations reach the engine as protobuf `Timestamp`/`Duration` messages (cel-expr-
+  python converts a Python datetime only into a variable declared as one), so the `cel` extra now
+  includes `protobuf`; without it a clause that reads an annotated datetime is a `LoadError` saying
+  so. The subset now has `timestamp()`, `duration()`, timestamp and duration values (comparison,
+  arithmetic, `string()`, `int(timestamp)`) and the ten getters, with an optional IANA or offset
+  timezone. `timestamp()`/`duration()` of text, `string()` of a timestamp or duration and the
+  getters follow one set of rules on every backend (RFC 3339; `1h30m`-style durations;
+  sub-microsecond values refused; `"5400s"`, `"-1.500s"`, `"...T09:30:00.500Z"`). A value of a
+  scalar type (datetime, UUID, ...) has no fields on any backend (`args.deadline.year` used to read
+  the Python attribute). On the subset, list elements compared with `==` or `in` go through the
+  mapping too (`uuid in list_of_uuids`, `[Enum.A] == ["a"]`), and a set is refused as on the engines.
+  **Upgrade note:** a rule that reads a `Decimal`, `date` or set, or a record holding one, used to
+  load and now does not; and `timestamp()`, `duration()` and the getters now load on the subset.
+- **cel-expr loads long arithmetic and deep nesting again (minor).** Fix round 8's non-finite
+  rewrite wrapped every `+`, `-`, `*`, `/` in a `cel.bind` check, so a 16-term sum or 15 nested
+  multiplications passed cel-cpp's fixed 32-level recursion limit and failed to load with an engine
+  message naming `__inv_v`. Now the root of each arithmetic tree is checked once, and each divisor
+  that is itself arithmetic (a NaN or ±Infinity operand of `+`, `-`, `*` or a numerator always makes
+  a non-finite result; only a divisor can hide one, `x / Infinity == 0`), plus each `double()`. A
+  `+`/`-` chain longer than 8 terms is printed in nested `cel.bind` chunks, which keep its left-to-right
+  order (and so its rounding and int overflow), and `&&`/`||` chains are printed flat so the parser
+  balances them: a 200-term sum, 29 nested operations and a 100-clause `||` chain with arithmetic
+  load. A rule nested past the limit anyway is a `LoadError` that names the rule and cel-cpp's 32-level
+  limit, without the adapter's identifiers. The engine text for a 50-term sum is 842 characters
+  (was 5,798) and the check costs about 0.1 to 0.2 µs per arithmetic expression.
+- **celpy computed values are celtypes (minor).** celpy 0.5 returns plain `float`, `int`,
+  `timedelta` and `datetime` from arithmetic, so `type(args.a * 2.0) == double` was false,
+  `string(duration('2s') - duration('1s'))` was `'0:00:01'` and `.getSeconds()` of a computed
+  duration had no overload. The adapter wraps results back into `DoubleType`, `IntType`,
+  `DurationType` and `TimestampType`. celpy's `-duration`, `duration * n` and `duration / n` (no
+  overload in CEL) are errors, `duration.getMilliseconds()` is the millisecond part (was the total),
+  `string(timestamp)` is in UTC (kept the offset), `int(timestamp)` rounds down before 1970 and
+  `timestamp()`/`duration()` text follow the shared rules (celpy took `'2024-03-10'` and `'1d'`, and
+  ignored an offset written `+0530`).
+
+### Fix round 8 (certification round 6 findings)
+
+Regression tests: `tests/test_fix_round8.py` (fixture `tests/fixtures/round8.py`) and the
+conformance suite `tests/conformance/cel/nonfinite.yaml` plus new cases in `types.yaml`. Each
+regression test encodes a behaviour the round-6 probes (or this round's own probing) showed broken
+on the code before this round; the exceptions are the tests that check unchanged behaviour still
+holds (plain JSON still parses, finite arithmetic, CEL's global forms of `contains`/`matches`,
+`type(x) == int` on celpy). Most run on every installed CEL backend
+whatever `INV_CEL_BACKEND` says, and the suite also passes under `python -O`.
+
+Behaviour changes:
+
+- **Pydantic replies are validated strictly (major).** A pydantic schema validated in pydantic's
+  lax mode, after the core's non-finite check. So the strings `"NaN"`, `"inf"` and `"-Infinity"`
+  became float NaN and Infinity, and `@inv.model_call` returned verdict ok holding a NaN (a rule
+  that did not read the field passed; the edge then refused the same value). `"0.5"` and `true`
+  became floats too, where a dataclass schema refuses them. Now a pydantic reply is validated with
+  `model_validate_json(strict=True)` over its JSON form: a string or a boolean is not a float, on
+  every field, nested models, `list[float]` and `dict[str, float]` included. Then the validated
+  instance is walked, and a NaN or ±Infinity anywhere in it is a `parse_error`. A model whose
+  `model_config` sets `strict=False` explicitly keeps pydantic's lax coercion, and the walk still
+  refuses non-finite values. `inv.parse`, `@inv.model_call` and `@inv.edge` agree. **Upgrade
+  note:** a model that relied on lax coercion (`"0.5"` for a float, `1` for a bool, `"1"` for an
+  int) now gets a `parse_error`; set `strict=False` in its `model_config` to keep the old behaviour.
+- **A NaN or ±Infinity made inside a clause is a rule_error on every backend.** `0.0 / 0.0`,
+  `x / 0.0`, an overflow (`1e200 * 1e200`, and `inf - inf` after it), `double("NaN")` and an
+  `inv.sum` that overflows gave three different answers (subset: rule_error; cel-expr: IEEE, so a
+  reply `{"a": 0.0, "b": 0.0}` passed `reply.a / reply.b < 0.0 || reply.a / reply.b > 1.0`; celpy:
+  true for every comparison with NaN). Now every `+`, `-`, `*`, `/`, `double()` and `inv.sum`
+  result is checked on every backend: a non-finite double is a `rule_error` (`fail_closed`
+  rejects). The subset checks in its evaluator; cel-expr gets the rule text rewritten so each such
+  operation's result passes through a check (`cel.bind` evaluates it once, and the Python check
+  runs only on a non-finite double; it costs about 0.25 µs per arithmetic operation); celpy has
+  its operators and `double()` overridden. `inv.configure(allow_non_finite=True)` restores IEEE
+  semantics, now on the subset too (`1.0 / 0.0` is Infinity there, not "division by zero"). Integer
+  division by zero is still a `rule_error` everywhere. With this, NaN and Infinity never get past a
+  range check, whether they come from a reply, an argument or the clause's own arithmetic.
+- **Call arity and the global macro form are checked at load.** `size(x, 1)`, `x.size(1)`,
+  `size()`, `'a'.startsWith()`, `matches('a')`, `'a'.matches('a', 'b')`, `x.has(y)` and the like
+  loaded and then were a `rule_error` on every call. The shared front end now has an arity table
+  per standard function, global and receiver form (`cel.subset.ARITY`), and the loader refuses any
+  other shape with a `LoadError` that says what to write. `exists(xs, c, p)` (a macro written in
+  global form) is a `CelSyntaxError` in the parser, so a `LoadError` on every backend; on the
+  subset it was an internal `AssertionError` (a `TypeError` under `python -O`). The library no
+  longer has any `assert` statement; a test checks this, and one runs the checks under `-O`.
+- **Overlapping `inv.ablated(scope="registry")` blocks are counted.** When two threads ablated the
+  same rule and the first left its block, the rule was enforced again for the second. The registry
+  scope is now a counter under the registry's lock (like `ablated_everywhere`): the rule stays
+  ablated until the last block exits.
+- **parse_error text in exceptions, events and logs carries no reply values.** A reply value
+  (`'SECRET-PII-1' is not one of [...]`), an extra key the reply made up or a `dict[str, T]` key
+  went into the exception message, `Outcome.error`, the attempt record, the event and the WARNING
+  log line. Now `str(ParseError)` names the field and the kind of error only ("field cause: string
+  is not one of the allowed values", "extra fields forbidden (1 not in the schema)", reply-made
+  keys as `*`; pydantic errors as `loc: error_type`). The full text is in `ParseError.feedback`,
+  which is still what the model gets as `inv_feedback`; outcomes, events and logs use it only with
+  `debug` on.
+- **Conversions agree across engines.** celpy accepted Unicode digits (`int('٣')`), underscores
+  (`int('1_0')`), hex text (`int('0x10')`), `int(-9223372036854775808.0)` and `bool(1)`, and
+  printed `string(true)` as `True` and `string(null)` as `None`; cel-expr accepted hex text in
+  `double('0x10')`. With `allow_non_finite=True`, celpy gave +Infinity for every `x / 0.0`
+  (`0.0 / 0.0` and `-1.0 / 0.0` included); it is IEEE now, as on the other backends. The adapter now
+  routes these through the subset's CEL-spec conversions on both engines, so all three give the
+  same answer (conformance cases in `types.yaml`; `expected_failures.yaml` stays empty). The
+  README's "Known engine differences" lists what still differs (`string()` of a double, the
+  subset's missing types, the cost budgets).
+- **celpy compares computed durations and timestamps correctly** (found during this round).
+  celpy's arithmetic returns a plain `timedelta`/`datetime` where a literal is its own type, and
+  the adapter's equality saw two types: `duration('2s') - duration('1s') == duration('1s')` was
+  false, so a clause using it never fired. Values are now normalised to one type each.
+- **Changelog.** This section is now `## [Unreleased]` (Keep a Changelog), the heading
+  `CONTRIBUTING.md` points to; `RELEASING.md` says how to turn it into the 0.1.0 entry.
+
+### Fix round 7 (certification round 5 findings)
+
+Regression tests: `tests/test_fix_round7.py` (fixture `tests/fixtures/round7.py`); every
+regression test in it failed on the code before this round (the parity tests that check the
+backends agree on conversions passed on the engines before, and fail on the subset). Most run on
+every installed CEL backend whatever `INV_CEL_BACKEND` says.
+
+Behaviour changes:
+
+- **NaN and Infinity in replies and rule inputs never get past a range check (blocker).** (Values
+  made by a clause's own arithmetic were caught on the subset only until fix round 8.) `inv.parse` used Python's
+  `json.loads`, which accepts the non-JSON tokens `NaN`, `Infinity` and `-Infinity`, so a reply
+  `{"confidence": NaN}` passed `reply.confidence < 0.0 || reply.confidence > 1.0` (every IEEE
+  comparison with NaN is false) with verdict ok, on every backend, and the edge accepted it. Now
+  those tokens are a `parse_error`, and so is any non-finite float in a decoded value (a number
+  like `1e999`, an already-decoded reply, an `Any` field, a nested list), for dict, dataclass and
+  pydantic schemas, in `inv.parse` and in the edge's re-check. For values that do not come from a
+  reply (guard arguments, results, providers, a FastAPI body, since pydantic accepts NaN by
+  default), a clause that reads a NaN or ±Infinity is now a `rule_error` on every backend
+  (`fail_closed` rejects; the FastAPI integration answers 503). `inv.configure(allow_non_finite=True)`
+  restores IEEE semantics; the README documents the NaN-safe clause form `!(x >= lo && x <= hi)`.
+- **Function names are checked at load (major).** A clause calling a function the chosen backend
+  does not have (`nosuchfn(x)`, `x.foo()`, `xs.exist(...)`, or `timestamp()`, `duration()`,
+  `uint()`, `bytes()`, `type()` on the subset) loaded and then was a `rule_error` on every call.
+  Now it is a `LoadError` naming the function and the backend. Each built-in backend declares its
+  names (`functions`); cel-expr and celpy share the CEL standard list, which a test checks against
+  both engines. The subset now implements the conversions `int()`, `double()`, `string()`,
+  `bool()` and `dyn()` per the CEL spec (`string()` of a double is a `rule_error`, since the
+  engines print doubles differently); the load-time type check knows their result types and
+  refuses `x.int()` and wrong arities. The README lists the standard functions per backend.
+- **`--inv-ablate` no longer counts a rule-error pass as evidence.** A falsifier whose control
+  run gave the rule only `rule_error` outcomes (never `violation` or `parse_error`) is reported
+  `inconclusive (rule_error, not violation)` rather than `caught`: it passed because the rule
+  could not be evaluated. An `enforce` rule with no caught falsifier still fails the session.
+- **An edge enforcer needs the model call's rule.** An `edge` enforcer on a rule without
+  `model_policy` loaded, and its edge did no schema re-check. It is now a `LoadError`.
+- **rule_error text carries no request values.** Missing map keys, bad dynamic regex patterns and
+  values quoted in engine errors went into `Outcome.error`, events, exception messages and logs.
+  Now only the error kind is reported ("no such key", "invalid regular expression", "index out of
+  range", "conversion failed", ...; a field or key named in the rule text is still named), on
+  every backend; the engine's own text is added only with `debug`. cel-expr's RE2 still writes a
+  bad pattern to stderr itself, which the library cannot stop: documented in README and SECURITY.
+- **`inv.ablated()` is context-local.** It turned the rule off for every thread and task using the
+  registry; now only for the current thread or task (and tasks started in the block).
+  `inv.ablated(rule_id, scope="registry")` keeps the registry-wide behaviour for falsifiers with
+  worker threads; `--inv-ablate` still ablates in every registry, thread and subprocess.
+- **`inv.load()` copies a dict source.** It wrote defaults into the caller's dict and kept it as
+  `Rule.raw`, so editing the dict after load changed live guards. The source is now deep-copied
+  (an uncopyable document is a `LoadError`).
+- **Performance table re-measured** with p50 and p99 per backend, the machine, the Python
+  version and the rule shape (an 8-element list for the `exists` clause).
+- **Publishing checklist.** `RELEASING.md` lists what to settle before the first upload; the
+  CHANGELOG's TODO comment is gone; the note at the top of this release points there.
+
+### Fix round 6 (certification round 4 findings)
+
+Regression tests: `tests/test_fix_round6.py` (fixture `tests/fixtures/round6.py`); every test in it
+failed on the code before this round.
+
+Behaviour changes:
+
+- **No exception escapes a model call from a hostile reply.** `inv.parse` raises only `ParseError`,
+  whatever the reply holds: invalid UTF-8, non-object JSON, non-string keys, nesting deep enough to
+  exhaust the stack, a too-long reply (`max_reply_size`, default 1,000,000 characters, also
+  `INV_MAX_REPLY_SIZE` and `inv.configure(max_reply_size=...)`), objects whose `__eq__`, `__hash__`
+  or `__repr__` raise, a dict subclass that raises, a schema `__post_init__` that raises. Each is a
+  `parse_error`, retried per `format_retries`, then `on_violation`, with its event. Before, these
+  escaped as `UnicodeDecodeError`, `TypeError`, `RecursionError` or the hostile object's own error,
+  skipping retry, escalation, review and the event. Enum membership compares by exact plain type
+  (no user `__eq__` runs; `True` is not `1`), and error text shows values through a short, safe
+  repr. A hypothesis fuzz test feeds arbitrary JSON, text and bytes to dict, dataclass and pydantic
+  schemas.
+- **Typed fields are checked, not crashed on.** `list[T]`, `dict[str, T]`, `Optional`/unions and
+  nested dataclasses are validated field by field (before: `TypeError` from `isinstance` on a
+  subscripted generic). A field type parse cannot check is a `TypeError` when `@inv.model_call`
+  decorates. An `int` is accepted for a `float` field.
+- **Abstain works for every schema kind.** A `{field: type}` reply whose abstain field holds the
+  abstain value now escalates, as dataclass and pydantic replies did; before it came back with
+  verdict ok.
+- **The edge re-validates the closed schema.** An `@inv.edge` re-parses the received value against
+  the model call's closed schema before it re-evaluates `bad`, for all schema kinds: forged extra or
+  missing fields, out-of-enum values, wrong types, a subclass of the schema dataclass, a cyclic value
+  and a verdict that is not a plain string are refused (`parse_error`, or `rule_error` for the
+  verdict). `bad` runs on the validated copy. Before, a dict-schema value was not re-checked at all,
+  and a forged cyclic dataclass raised `RecursionError` out of the edge.
+- **A failing review store is explicit.** When the review store raises or returns no id, the new
+  `review_fallback` store is tried (`inv.configure(review_fallback=inv.JsonlReviews(path))`;
+  `JsonlReviews` appends each hand-off as an fsynced JSON line). When no review can be opened,
+  route, escalate and abstain raise the new `inv.ReviewNotOpened` (an `InvariantError`) carrying
+  `.handoff`, `.action` and the store error as `__cause__`; the ASGI/FastAPI mapping answers 503.
+  Before, `Routed` was raised with `review_id=None` and the work survived only in a log line.
+- **Redaction.** A property, mapping lookup or provider that raises while a rule reads it appears in
+  `rule_error` text, events and logs as its exception type only, on every backend. The message is
+  kept on `CelError.detail` and added only with `inv.configure(debug=True)` or `INV_DEBUG=1`. Before,
+  the subset and engine field readers put the message (which may hold secrets) into the error.
+- **`Checked` supports copy, deepcopy and pickle.** `copy.copy` returns the same immutable object;
+  `copy.deepcopy` and pickle rebuild an equal `Checked` over a copy of the value (closed pydantic
+  replies pickle by their model and are re-validated on load). Copies carry no extra trust: the edge
+  re-validates them. `Checked` no longer lends the wrapped value's dunder protocols.
+- **`@inv.model_call` keeps the declared return type** (also `invariants.integrations.pydantic.model_call`):
+  the decorated function is typed `Callable[P, CheckedX]`, not `Callable[P, Any]`.
+- **Abstain declarations are checked.** An abstain `field` that is not a string or not in a
+  `{field: type}` schema, and a `value` that is not a scalar, are `LoadError` (before: `AttributeError`
+  or `TypeError` at load for a dict schema).
+- **cel-expr cost limit, enforced and named.** The engine's fixed comprehension iteration budget
+  (9,999 iterations per clause evaluation, nested comprehensions multiplying) now surfaces as
+  `rule_error` "cost limit exceeded (cel-expr: ...)"; `ExprPythonBackend.iteration_limit` states it.
+  README and SECURITY say exactly what is and is not budgeted.
+- **Reports carry no local absolute paths.** The pytest plugin writes `rules_file` relative to the
+  pytest rootdir. The apps gained a `.gitignore` (build outputs, caches, environments), and their
+  stale `build/` reports, which held absolute local paths, are removed; the library's stale
+  `build/` copy is removed too.
+
+Not changed:
+
+- `project.urls` stays out of `pyproject.toml` until a real URL exists (see "Before publishing" in RELEASING.md).
+
+### Fix round 5 (certification round 3 findings)
+
+Behaviour changes:
+
+- **A guarded call binds to one rule generation.** A call reads its rules and the provider table
+  together when it starts (`Registry.generation`) and binds providers from that table through its
+  post-effect check, so an `inv.load` (hot reload) during the effect no longer raises `KeyError`
+  from the async path or gives a spurious `rule_error` on the sync path.
+- **Non-CEL exceptions no longer escape provider binding.** A mapping argument whose lookup raises
+  (a dict subclass with a hostile `__getitem__`) is a `rule_error` on the sync, async and
+  snapshot-provider paths; before, it escaped the async pre-effect and the snapshot-provider paths.
+  `prefetch_async` never raises (it returns why it failed) and the guard turns that into a
+  `rule_error` for that rule.
+- **More load-time type checks.** `has()` of a field a closed type does not have, `in` with an
+  element of another family than the list's elements or a map's keys, and a constant `matches()`
+  pattern that is not valid RE2 are `LoadError`. Subset-only refusals (unsupported `\p{..}`
+  classes, oversized programs, escapes full RE2 may take) still load.
+- **Env ablation is quiet only inside a real pytest session.** `under_pytest()` is true only while
+  the plugin's `pytest_configure` has run in this process, not whenever `pytest` is importable or
+  imported. A production process that imports pytest through a dependency now logs (and writes to
+  stderr) that ablated guards are off.
+
+Documented, not changed:
+
+- The subset backend's `matches()` step bound is now spelled out in the README next to the
+  per-backend limits: a long input (tens of thousands of characters for a small pattern) is a
+  `rule_error` on the subset and a result on cel-expr and celpy. Scaling the bound with input
+  length was tried and rejected: it lets a caller buy CPU time with input size, once per
+  `matches()` in a loop.
+
+### Fix round 4 (review findings)
+
+Behaviour changes:
+
+- **Unknown fields on closed types are `LoadError`.** `rec.sizee` on a dataclass, pydantic model
+  (not `extra='allow'`) or TypedDict without that field, and any field on an int, string, bool,
+  bytes or list (`args.n.foo`), are refused at load. Before, only the first step of a path was
+  checked and these gave `rule_error` on every call. Properties and class attributes count as
+  fields; `Any`, plain `dict` and other classes stay open. `T | None` now keeps `T`'s fields.
+- **Sync enforcer reading an async provider is `LoadError`.** A decorator, middleware, edge or
+  model_call enforcer whose target is a sync function cannot await an `async def` provider. Before,
+  the rule loaded and gave `rule_error` on every call (so `fail_open_and_page` never enforced).
+- **Equality across type families is `LoadError`.** `==`/`!=` between disjoint families
+  (`args.n == "x"` with `n: int`) is refused, as standard CEL checkers do. `null` and dyn compare
+  with anything; int and double are one family.
+- **Env ablation outside pytest is loud without logging config.** When the `invariants` logger has
+  no real handler (the library's NullHandler suppresses Python's last-resort handler), the ERROR
+  line is also written to stderr. `PYTEST_CURRENT_TEST` alone no longer counts as a pytest run.
+- **An enforcing edge refuses any received verdict but ok.** A `Checked` whose verdict is
+  `rule_error` (a model call that failed open) or that has no verdict is refused by the edge's
+  `on_violation`, whatever its `on_error`; `on_error` covers only the edge's own re-evaluation
+  errors (guide 2.5, 2.6). Before, an edge with `fail_open_and_page` paged and let it through even
+  when `bad` held on the value.
+- **`--inv-ablate` counts `caught` only when the ablation caused the failure.** Each falsifier is
+  re-run once without ablation (it must pass) and once ablated, and the ablated run must reach the
+  rule: a guard, `inv.is_ablated` or `inv scan` acting on the ablation, in this process or a
+  subprocess (they note it in the file the new `INV_ABLATE_TRACE` names). Otherwise the row is
+  `inconclusive (failed on a re-run without ablation)` or `inconclusive (rule not reached)`.
+  Before, any failed re-run was `caught`, so a stateful or flaky test that never touched the guard
+  made the rule "load-bearing". A subprocess falsifier must act on the ablation through the
+  library, not by reading `INV_ABLATE` itself.
+
+### Fix round 3 (review findings)
+
+Behaviour changes:
+
+- **No ReDoS in `matches()` on the subset backend.** It now runs on a linear-time RE2-syntax matcher
+  (`invariants.cel._regex`, a Pike VM) instead of Python `re`, and its steps count against the cost
+  budget. `^([a-z0-9]+-?)+$` on `"a"*27 + "!"` took 4.7 s and now takes well under a millisecond; a
+  huge input ends in `rule_error`. RE2 semantics now match cel-expr and celpy: `\d \w \s` are ASCII,
+  `$` matches only at the end of text. `\p{Script}` classes are refused (general categories work).
+  New conformance cases in suite `regex`.
+- **Nested transactions.** A failed guard dooms every open block of the same `@inv.transaction`
+  boundary and owner, so a re-entrant `txn()` raises `RolledBack` at the outermost exit even when
+  an inner failure was swallowed (before, the outer block committed the rejected write).
+  `@inv.transaction(savepoint=True)` stops the doom at that block, for real savepoints.
+- **Type check at load.** Clauses are type-checked against target annotations, provider types and
+  the model-call schema. Ordering or arithmetic across type families, logic on a non-bool, `in` on
+  a non-container, string functions on a non-string and a non-bool clause are `LoadError` (and
+  fail `inv validate`). Before, such a rule loaded and gave `rule_error` on every call.
+- **`py:` guard keys fail closed.** A guard keyed by `py:...` raises `LoadError` when no rule file
+  is loaded in the current registry, or when the key matches no loaded rule and no `targets:` entry.
+  Before, it returned unchecked.
+- **classmethod/staticmethod.** `@inv.guard`, `@inv.model_call` and `@inv.edge` work above
+  `@classmethod`/`@staticmethod` too (before: a raw `inspect` TypeError at import).
+- **Edge parse_error text** names the closed schema and the received type, not "Reply, not Reply".
+- **Env ablation outside pytest** (`INV_ABLATE` with `INV_ABLATE_TESTING=1`) logs at ERROR.
+- **Typing and packaging.** mypy is clean and pinned in the `dev` extra (`mypy==2.4.1`); CI installs
+  it from there. `invariants.integrations.fastapi` re-exports `PROBLEM_JSON`, `StatusMap` and
+  `problem`, and the integrations declare `__all__`. A `.gitignore` is added; `build/` and `dist/`
+  are removed from the tree.
+- **Docs.** README: exit code 4, nesting, Performance section, type-check scope, the schema-held
+  ablation gap, environment ablation, and why spike demotion stays off by default.
+
+### Fix round 1 (from the two outside apps and the review)
+
+Behaviour changes:
+
+- **Bounded sink.** `Registry.sink` is a ring buffer (default 1000 events, `INV_SINK_SIZE`,
+  `inv.configure(sink_size=...)`; 0 keeps none). Reach counters stay exact. Use `inv.capture()` or
+  the `inv_events` fixture to collect events in tests. Memory stays flat over 1e5 calls.
+- **Transactional boundary checked before the effect.** A transactional target called outside its
+  own `@inv.transaction` (or under another instance's) gives `rule_error` before the function runs,
+  for every live enforcer of a rule that needs the boundary (a post-effect enforcer or a `same_txn`
+  provider). Before, the effect ran and committed first.
+- **Provider timing.** A `post_effect` enforcer reads its providers after the effect (inside the
+  transaction); `snapshot` providers are still read before it. Before, every provider was read
+  before the call, so post-effect provider checks were vacuous.
+- **No exception escapes a guard.** A property that raises on a provider argument or snapshot path,
+  a backend or conversion error, celpy's `ValueError`/`OverflowError` on big ints, and a `Checked`
+  with no verdict are all `rule_error`. Observers, exporters, review stores and pagers that raise
+  are logged. Detect mode always proceeds.
+- **int64 everywhere.** An input int outside int64 is a `rule_error` on every backend (new
+  conformance suite `int_range`). The subset gains `matches()` (suite `regex`).
+- **Escalation opens a review.** `escalate` and abstain hand off to the review store, so
+  `Escalation.review_id` is set (202 bodies now include it).
+- **Provider error text.** Outcome errors say only `provider X raised TypeName`; the message (which
+  may hold secrets) needs `inv.configure(debug=True)` or `INV_DEBUG=1`. `ok` events log at DEBUG,
+  violations at `violation_log_level` (default WARNING).
+- **Strict ablation.** `--inv-ablate` fails the session when an `enforce` rule has no caught
+  falsifier (missing, failing with the guard on, or inconclusive). `--inv-ablate-lenient` restores
+  the old check. Ablation re-runs also set `INV_ABLATE`, so subprocess falsifiers (an `inv scan` run,
+  for example) see the rule off; `inv scan` skips ablated rules.
+- **verify** reports a guard that names a rule whose target is a different function.
+- **Generators** are refused by `@inv.guard`, `@inv.model_call` and `@inv.edge` (TypeError).
+  `@inv.transaction` refuses anything but a generator or async generator.
+- **Standing.** A rule on an `effects: none` target needs no `mediation.sink` to be held.
+
+Added:
+
+- Async: `@inv.model_call` and `@inv.edge` on `async def`; `@inv.transaction` on async
+  generators (an async context manager); `async def` providers, awaited by async guards, model
+  calls and edges (a sync call that needs one gets `rule_error`).
+- Operations: `inv.configure(review_store=, pager=, exporter=, error_spike=, violation_log_level=,
+  sink_size=, debug=)`, `inv.Handoff` (with the bound values), `inv.ReviewStore`,
+  `inv.MemoryReviews`, `inv.ErrorSpike` (rule-error spike demotes to detect and pages;
+  `Registry.restore`), `inv.observe` and `inv.capture` (now public). Exceptions carry `.bound`
+  and `.point`.
+- `invariants.integrations.otel.exporter()`: one span per evaluation, `invariant.<point>`, with
+  `invariant.rule_id`, `rule_rev`, `outcome`, `mode`, `attempts` and more (extra `otel`).
+- `inv.monitor(rule_id, rows)`; `monitor` enforcers may take a `view`.
+- `inv.storage_rejection` and `inv.storage_errors`, answered with `StatusMap.storage` (409) and
+  `point: storage` in the problem body; `inv.is_ablated` for storage DDL.
+- `inv.load_resource(package, name)` for rule files shipped inside a package.
+- `invariants.testing.make_checked` / `make_unbuilt`.
+- `inv scan --exclude GLOB` and `[tool.invariants.scan] roots/exclude` in pyproject.toml;
+  `inv lock --update-artifacts`.
+- Docs: Concepts, a transactional example, "from enforce(known-callers) to held", Operations and a
+  longer Limitations list in the README; `docs/rule-file.md` (every field) and
+  `docs/design-guide.md`.
+
+Internal:
+
+- The env is projected once per evaluation for all clauses on the engine backends; dataclass
+  schema field types are cached. R-1 (4 clauses): about 23 us guarded on subset, 20 us on
+  cel-expr (was 29 and 26.5).
+- `mypy` passes (`[tool.mypy]`, a CI job); decorators are ParamSpec-typed; `__version__` comes from
+  the installed metadata; engine tests skip without the `cel` extra (a CI job checks that).
+
+The first release: the rule-file loader, the decorators, three CEL backends, the `inv` CLI,
+the pytest plugin, and the pydantic, ASGI and FastAPI integrations.
+
+### Core
+
+- `inv.load` reads JSON or YAML rule files, checks them, and resolves every target, provider
+  and transaction boundary. Any defect raises `inv.LoadError`.
+- Decorators: `@inv.provider`, `@inv.guard`, `@inv.transaction`, `@inv.model_call` and `@inv.edge`.
+  `inv.Checked` carries `.verdict` and `.attempts`.
+- Every evaluation ends in one of four outcomes: `ok`, `violation`, `rule_error` or `parse_error`.
+  Clause lists follow CEL's commutative error rules.
+- Each `on_violation` raises its own exception: `Rejected`, `Halted`, `Escalation` or `Routed`.
+  `RolledBack` reports a swallowed failure inside `@inv.transaction`.
+- `inv.verify` and `inv.standing`. Registries are context-local, through `inv.isolated` and
+  `inv.using`. `inv.ablated` and `INV_ABLATE` turn a rule off.
+
+### Changes made while integrating the feature work
+
+- **Errors.** Every `InvariantError` has a `rule` attribute. The abstain `Escalation` and
+  `RolledBack` now name their rule too.
+- **Guard points.**
+  - `@inv.guard(..., points=("decorator", "middleware"))` sets which enforcer points a guard
+    evaluates. `middleware` is now an in-process point.
+  - `inv.verify` reports a guard that does not evaluate a point its rule uses.
+  - The FastAPI guard evaluates both points.
+- **Pydantic schemas.** `inv.model_call`, `inv.parse` and the loader accept a pydantic v2 model
+  (with `extra='forbid'`) directly as a closed schema.
+- **Verify scope.** `Registry.verify(modules=None)` and `inv.verify(reg, modules)` check only the
+  guards in the packages of the loaded targets by default. That default comes from
+  `Registry.scope()`: targets, edge targets, transaction boundaries and `python` contracts. A guard
+  in an unrelated module, such as another app's guard in the same process, no longer breaks verify.
+  Pass `modules=` to widen or narrow the check.
+- **Contracts.** The registry keeps the rule file's `contracts` (`Registry.contracts`), and
+  `install` copies them.
+- **Registry hooks.**
+  - `invariants.registry.observe(fn)` sees every evaluation in every registry.
+  - `invariants.registry.ablated_everywhere(rule_id)` turns a rule off in every registry, including
+    ones that already exist.
+  - The guards check `Registry.is_ablated`.
+- **Rule file schema.**
+  - `mediation` now declares the fields `sink`, `door` and `tables`, which the scan uses, and it
+    is closed.
+  - `applies_to` is declared as a pattern or a list of patterns.
+  - The loader checks the same shapes.
+- **Standing.** The standing reason now reads "inv scan not run".
+
+### CEL
+
+- Backends:
+  - `subset`, the stdlib evaluator and the default.
+  - `cel-expr`, which uses cel-expr-python.
+  - `celpy`, which uses cel-python.
+- `INV_CEL_BACKEND=subset|cel-expr|celpy|auto` picks the backend.
+- The `cel` extra installs both engines.
+- The helpers that both engine backends use now live in `invariants/cel/_engine.py`.
+- Subset fixes. The subset now has zero expected conformance failures:
+  - String literals keep non-ASCII text.
+  - `all`, `exists` and `exists_one` absorb element errors the way `&&` and `||` do.
+  - `has()` tests presence only.
+  - 64-bit integer overflow is an error.
+  - A property that raises becomes a `rule_error`.
+  - `inv.*` arity and the `inv.unique_by` variable are checked when a rule loads.
+  - Enum members compare as their values, as they do on the engine backends.
+- The conformance suite has 167 YAML cases in 9 suites. It runs against every installed backend,
+  and no backend has an expected-failure entry.
+
+### CLI
+
+- `inv validate`, `inv lock [--check]`, `inv verify [--import MOD]`, `inv scan` and `inv status`.
+- `inv scan` reads source with `ast` only and never imports it. It writes text, JSON or SARIF 2.1.0.
+- Exit codes:
+  - 0: ok
+  - 1: a check failed
+  - 2: usage error
+  - 3: the scan found unresolved calls (not a pass)
+
+### pytest plugin
+
+- Options: `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-report` and `--inv-report-json`.
+- Fixtures: `inv_registry` and `inv_ablated`.
+- The report counts evaluations in every registry, through `observe`.
+- Ablation reaches every registry, through `ablated_everywhere`. It no longer changes
+  `os.environ`.
+
+### Integrations
+
+- `invariants.integrations.pydantic`: `closed()`, `model_of()`, `check_contracts()`.
+- `invariants.integrations.asgi`: `problem()`, `StatusMap` and `InvariantMiddleware`, which turn
+  guard exceptions into problem+json responses.
+- `invariants.integrations.fastapi`: `guard()`, `install()`, `operations()`, `find_route()`
+  and `verify_routes()`.

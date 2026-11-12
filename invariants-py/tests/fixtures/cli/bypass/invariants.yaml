@@ -1,0 +1,24 @@
+spec: invariant/v0.1
+contracts:
+  fleet_py: {type: python, ref: fleet.service}
+targets:
+  "py:fleet.service.resize": {effects: external}
+rules:
+  - id: F-1
+    rev: 1
+    status: enforce
+    class: policy
+    owner: team-fleet
+    statement: A pool is never resized without approval.
+    subject: {contract: fleet_py, target: "py:fleet.service.resize"}
+    scope: call
+    bad: "!args.approved"
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: resize is the only caller of store.set_size
+      residual_paths: []
+      sink: "py:fleet.store.set_size"
+      door: "py:fleet.service.resize"
+      tables: [pools]
+    falsified_by: ["tests/test_fleet.py::test_unapproved_resize"]

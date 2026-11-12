@@ -1,0 +1,50 @@
+spec: invariant/v0.1
+contracts:
+  ledger_py: {type: python, ref: ledger.service}
+targets:
+  "py:ledger.service.withdraw": {effects: external}
+  "py:ledger.service.deposit": {effects: external}
+  "py:ledger.service.Ledger.close": {effects: external}
+rules:
+  - id: L-1
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-ledger
+    statement: A withdrawal is never for a non-positive amount.
+    subject: {contract: ledger_py, target: "py:ledger.service.withdraw"}
+    scope: call
+    bad: args.amount <= 0
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: withdraw is the only caller of store.write_balance
+      residual_paths: []
+      sink: "py:ledger.store.write_balance"
+      door: "py:ledger.service.withdraw"
+      tables: [accounts]
+    falsified_by: ["tests/test_ledger.py::test_negative_withdraw"]
+  - id: L-2
+    rev: 1
+    status: detect
+    class: policy
+    owner: team-ledger
+    statement: A single deposit is never above one million.
+    subject: {contract: ledger_py, target: "py:ledger.service.deposit"}
+    scope: call
+    bad: args.amount > 1000000
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: detect}
+    falsified_by: ["tests/test_ledger.py::test_huge_deposit"]
+  - id: L-3
+    rev: 1
+    status: candidate
+    class: policy
+    owner: team-ledger
+    statement: A ledger is never closed without a reason.
+    subject: {contract: ledger_py, target: "py:ledger.service.Ledger.close"}
+    scope: call
+    bad: size(args.reason) == 0
+    applies_to: ["py:ledger.service.*"]
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce}

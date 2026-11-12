@@ -1,0 +1,7 @@
+suite: parse
+cases:
+- {name: trailing operator, expr: '1 +', expected: parse_error}
+- {name: unbalanced paren, expr: '(1 == 1', expected: parse_error}
+- {name: bad character, expr: '1 # 2', expected: parse_error}
+- {name: empty, expr: '', expected: parse_error}
+- {name: dangling dot, expr: 'a.', expected: parse_error}

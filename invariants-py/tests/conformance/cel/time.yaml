@@ -1,0 +1,86 @@
+suite: time
+# Timestamps and durations: literals, Python datetime/timedelta values from the env ($timestamp,
+# $duration), comparison, arithmetic, string(), int() and the getters. The same answer on every
+# backend: timestamp() and duration() text, string() and the getters run on shared rules.
+cases:
+- {name: timestamp literals compare, expr: 'timestamp("2024-01-02T00:00:00Z") > timestamp("2024-01-01T00:00:00Z")', expected: violation}
+- {name: offsets are the same instant, expr: 'timestamp("2024-01-01T05:00:00+05:00") == timestamp("2024-01-01T00:00:00Z")', expected: violation}
+- {name: python timestamp before literal, expr: 't < timestamp("2025-01-01T00:00:00Z")', env: {t: {$timestamp: "2024-06-01T12:00:00Z"}}, expected: violation}
+- {name: python timestamp with offset equals utc, expr: 't == timestamp("2024-06-01T12:00:00Z")', env: {t: {$timestamp: "2024-06-01T17:00:00+05:00"}}, expected: violation}
+- {name: python timestamps order, expr: 'a < b', env: {a: {$timestamp: "2024-01-01T00:00:00Z"}, b: {$timestamp: "2024-01-01T00:00:01Z"}}, expected: violation}
+- {name: python duration over literal, expr: 'd > duration("1h")', env: {d: {$duration: 7200}}, expected: violation}
+- {name: python duration equals literal, expr: 'd == duration("1m30s")', env: {d: {$duration: 90}}, expected: violation}
+- {name: timestamp plus duration, expr: 't + d == timestamp("2024-06-01T13:30:00Z")', env: {t: {$timestamp: "2024-06-01T12:00:00Z"}, d: {$duration: 5400}}, expected: violation}
+- {name: duration plus timestamp, expr: 'd + t == timestamp("2024-06-01T13:30:00Z")', env: {t: {$timestamp: "2024-06-01T12:00:00Z"}, d: {$duration: 5400}}, expected: violation}
+- {name: timestamp minus duration, expr: 't - d == timestamp("2024-06-01T10:30:00Z")', env: {t: {$timestamp: "2024-06-01T12:00:00Z"}, d: {$duration: 5400}}, expected: violation}
+- {name: timestamp minus timestamp, expr: 'b - a == duration("36h")', env: {a: {$timestamp: "2024-06-01T00:00:00Z"}, b: {$timestamp: "2024-06-02T12:00:00Z"}}, expected: violation}
+- {name: lease expired, expr: 'now - start > lease', env: {now: {$timestamp: "2024-06-01T12:00:00Z"}, start: {$timestamp: "2024-06-01T11:00:00Z"}, lease: {$duration: 1800}}, expected: violation}
+- {name: duration plus duration, expr: 'd + d == duration("3m")', env: {d: {$duration: 90}}, expected: violation}
+- {name: duration minus duration, expr: 'duration("2s") - duration("500ms") == duration("1.5s")', expected: violation}
+- {name: timestamps in a list, expr: 't in ts', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}, ts: [{$timestamp: "2023-01-01T00:00:00Z"}, {$timestamp: "2024-01-01T00:00:00Z"}]}, expected: violation}
+- {name: timestamps in a macro, expr: 'xs.all(x, x.at < now)', env: {now: {$timestamp: "2024-06-01T00:00:00Z"}, xs: [{at: {$timestamp: "2024-01-01T00:00:00Z"}}, {at: {$timestamp: "2024-05-31T23:59:59Z"}}]}, expected: violation}
+- {name: string of a python duration, expr: 'string(d)', env: {d: {$duration: 90}}, value: '90s'}
+- {name: string of a fractional duration, expr: 'string(d)', env: {d: {$duration: -1.5}}, value: '-1.500s'}
+- {name: string of a microsecond duration, expr: 'string(duration("1us"))', value: '0.000001s'}
+- {name: string of a computed duration, expr: 'string(duration("2s") - duration("1s"))', value: '1s'}
+- {name: string of a python timestamp is utc, expr: 'string(t)', env: {t: {$timestamp: "2024-06-01T17:00:00.5+05:00"}}, value: '2024-06-01T12:00:00.500Z'}
+- {name: string of a computed timestamp, expr: 'string(t + duration("1s"))', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, value: '2024-01-01T00:00:01Z'}
+- {name: int of a timestamp, expr: 'int(t)', env: {t: {$timestamp: "2024-06-01T12:00:00Z"}}, value: 1717243200}
+- {name: int of a timestamp rounds down, expr: 'int(timestamp("1969-12-31T23:59:59.5Z"))', value: -1}
+- {name: timestamp of int seconds, expr: 'timestamp(0) == timestamp("1970-01-01T00:00:00Z")', expected: violation}
+- {name: get hours utc, expr: 't.getHours()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 23}
+- {name: get hours in an iana zone, expr: 't.getHours("America/New_York")', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 19}
+- {name: get hours at an offset, expr: 't.getHours("+05:30")', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 5}
+- {name: get day of week sunday is zero, expr: 't.getDayOfWeek()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 0}
+- {name: get day of year from zero, expr: 't.getDayOfYear()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 69}
+- {name: get month from zero, expr: 't.getMonth()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 2}
+- {name: get date from one, expr: 't.getDate()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 10}
+- {name: get day of month from zero, expr: 't.getDayOfMonth()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 9}
+- {name: get full year, expr: 't.getFullYear()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 2024}
+- {name: get milliseconds of a timestamp, expr: 't.getMilliseconds()', env: {t: {$timestamp: "2024-03-10T23:30:15.250Z"}}, value: 250}
+- {name: duration get hours, expr: 'd.getHours()', env: {d: {$duration: 3661.25}}, value: 1}
+- {name: duration get minutes, expr: 'd.getMinutes()', env: {d: {$duration: 3661.25}}, value: 61}
+- {name: duration get seconds, expr: 'd.getSeconds()', env: {d: {$duration: 3661.25}}, value: 3661}
+- {name: duration get milliseconds is the fraction, expr: 'duration("1.5s").getMilliseconds()', value: 500}
+- {name: negative duration get seconds, expr: 'duration("-1.5s").getSeconds()', value: -1}
+- {name: computed duration get seconds, expr: '(duration("2s") - duration("1s")).getSeconds()', value: 1}
+- {name: computed duration get milliseconds, expr: '(duration("1s") + duration("500ms")).getMilliseconds()', value: 500}
+- {name: timestamp text from data, expr: 'timestamp(s) == timestamp("2024-06-01T12:00:00Z")', env: {s: "2024-06-01T17:00:00+05:00"}, expected: violation}
+- {name: date only text is error, expr: 'timestamp(s) > timestamp("2024-01-01T00:00:00Z")', env: {s: "2024-06-01"}, expected: rule_error}
+- {name: leap second text is error, expr: 'timestamp(s) > timestamp("2024-01-01T00:00:00Z")', env: {s: "2024-06-01T12:00:60Z"}, expected: rule_error}
+- {name: nanosecond text is error, expr: 'timestamp(s) > timestamp("2024-01-01T00:00:00Z")', env: {s: "2024-06-01T12:00:00.000000001Z"}, expected: rule_error}
+- {name: duration text from data, expr: 'duration(s) == duration("90m")', env: {s: "1h30m"}, expected: violation}
+- {name: day unit is error, expr: 'duration(s) > duration("0s")', env: {s: "1d"}, expected: rule_error}
+- {name: duration without unit is error, expr: 'duration(s) > duration("0s")', env: {s: "1"}, expected: rule_error}
+- {name: negate duration is error, expr: '-duration("1s") < duration("0s")', expected: rule_error}
+- {name: duration times int is error, expr: 'duration("1s") * 2 > duration("1s")', expected: rule_error}
+- {name: duration over int is error, expr: 'duration("2s") / 2 > duration("0s")', expected: rule_error}
+- {name: timestamp plus timestamp is error, expr: 't + t > t', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: rule_error}
+- {name: duration less than int is error, expr: 'duration("1s") < 2', expected: rule_error}
+- {name: duration equals int is false, expr: 'duration("1s") == 1', expected: ok}
+- {name: timestamp past year 9999 is error, expr: 't + duration("1s") > t', env: {t: {$timestamp: "9999-12-31T23:59:59Z"}}, expected: rule_error}
+- {name: duration past ten thousand years is error, expr: 'duration("87660000h") + duration("1s") > duration("0s")', expected: rule_error}
+- {name: timestamp has no fields, expr: 't.year == 2024', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: rule_error}
+- {name: unknown timezone is error, expr: 't.getHours("Mars/Base") == 1', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: rule_error}
+# type() of computed values: the engines have type(), the subset does not
+- {name: type of a computed double, expr: 'type(x * 2.0) == double && type(x + x) == double && type(x - 1.0) == double', env: {x: 1.5}, expected: violation, backends: [cel-expr, celpy]}
+- {name: type of a computed int, expr: 'type(2 * 3) == int && type(i + 1) == int', env: {i: 2}, expected: violation, backends: [cel-expr, celpy]}
+- {name: type of a computed duration, expr: 'type(duration("2s") - duration("1s")) == type(duration("1s"))', expected: violation, backends: [cel-expr, celpy]}
+- {name: type of a computed timestamp, expr: 'type(t + duration("1s")) == type(t)', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: violation, backends: [cel-expr, celpy]}
+# A timezone from data is checked by the shared rules on every backend (cel-expr read '' as UTC
+# and wrapped offsets of 24 hours or more); a constant one is checked at load.
+- {name: timezone from data at an offset, expr: 't.getHours(z)', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+05:30"}, value: 5}
+- {name: timezone from data iana, expr: 't.getHours(z)', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "America/New_York"}, value: 19}
+- {name: empty timezone from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: ""}, expected: rule_error}
+- {name: offset of 24 hours from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+24:00"}, expected: rule_error}
+- {name: offset of 99 hours from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+99:00"}, expected: rule_error}
+- {name: offset minutes of 60 from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+05:60"}, expected: rule_error}
+- {name: unknown zone from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "Mars/Base"}, expected: rule_error}
+# Fix round 11: digits are ASCII only, and a zone name holds no NUL or control character, on every
+# backend (\d took Arabic-Indic digits; cel-expr read 'Asia/Kolkata\0' as 'Asia/Kolkata').
+- {name: offset with arabic-indic digits from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+٠٥:٣٠"}, expected: rule_error}
+- {name: zone with a NUL from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "Asia/Kolkata\0"}, expected: rule_error}
+- {name: zone with a control character from data is an error, expr: 't.getHours(z) == 23', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "UTC\n"}, expected: rule_error}
+- {name: duration text with arabic-indic digits is an error, expr: 'duration(s) > duration("1s")', env: {s: "٥m"}, expected: rule_error}
+- {name: timestamp text with arabic-indic digits is an error, expr: 'timestamp(s) > timestamp("2000-01-01T00:00:00Z")', env: {s: "٢٠٢٤-01-01T00:00:00Z"}, expected: rule_error}
+- {name: ascii digits still parse, expr: 't.getHours(z)', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+05:30"}, value: 5}

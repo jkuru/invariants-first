@@ -1,0 +1,42 @@
+suite: regex
+cases:
+- name: matches is an unanchored search
+  expr: 'args.s.matches("b+c")'
+  env: {args: {s: "abbbcd"}}
+  expected: violation
+- name: matches anchored with ^ and $
+  expr: 'args.s.matches("^[a-z]+-[0-9]+$")'
+  env: {args: {s: "pool-12"}}
+  expected: violation
+- name: matches fails on a non-matching id
+  expr: 'args.s.matches("^[a-z]+-[0-9]+$")'
+  env: {args: {s: "Pool 12"}}
+  expected: ok
+- name: matches as a global function
+  expr: 'matches(args.s, "[0-9]")'
+  env: {args: {s: "x1"}}
+  expected: violation
+- name: matches on a non-string is a rule_error
+  expr: 'args.s.matches("a")'
+  env: {args: {s: 3}}
+  expected: rule_error
+- name: nested quantifier on a near-match ends quickly (no backtracking blow-up)
+  expr: 'args.s.matches("^([a-z0-9]+-?)+$")'
+  env: {args: {s: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"}}
+  expected: ok
+- name: classic ReDoS pattern ends quickly
+  expr: 'args.s.matches("^(a+)+$")'
+  env: {args: {s: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"}}
+  expected: ok
+- name: dollar matches only at the end of text (RE2)
+  expr: 'args.s.matches("a$")'
+  env: {args: {s: "a\n"}}
+  expected: ok
+- name: digit class is ASCII (RE2)
+  expr: 'args.s.matches("\\d")'
+  env: {args: {s: "٣"}}
+  expected: ok
+- name: lookahead is not RE2 syntax
+  expr: 'args.s.matches(args.p)'
+  env: {args: {s: "ab", p: "a(?=b)"}}
+  expected: rule_error

@@ -1,0 +1,284 @@
+spec: invariant/v0.1
+contracts:
+  store_py: {type: python, ref: fact_pipeline.store}
+  pipeline_py: {type: python, ref: fact_pipeline.pipeline}
+  fact_reply: {type: pydantic, ref: "fact_pipeline.models:FactReply"}
+  answer_reply: {type: pydantic, ref: "fact_pipeline.models:AnswerReply"}
+targets:
+  "py:fact_pipeline.extract.propose_fact": {effects: none}
+  "py:fact_pipeline.answer.compose_answer": {effects: none}
+  "py:fact_pipeline.store.Store.ingest_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
+  "py:fact_pipeline.store.Store.promote_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
+  "py:fact_pipeline.store.Store.delete_source_door": {effects: transactional, transaction: "py:fact_pipeline.store.Store.txn"}
+providers:
+  subject_known: {type: bool, from: "py:fact_pipeline.providers.subject_known",
+                  args: {store: self, entity_id: args.proposal.subject_id}, consistency: same_txn}
+  object_known: {type: bool, from: "py:fact_pipeline.providers.object_known",
+                 args: {store: self, entity_id: args.proposal.object}, consistency: same_txn}
+  contradiction: {type: "py:fact_pipeline.models.Contradiction | null", from: "py:fact_pipeline.providers.contradiction",
+                  args: {store: self, subject_id: args.proposal.subject_id, predicate: args.proposal.predicate,
+                         obj: args.proposal.object, fact_id: args.proposal.id}, consistency: same_txn}
+  support: {type: "py:fact_pipeline.models.Support", from: "py:fact_pipeline.providers.support",
+            args: {store: self, fact_id: args.fact_id}, consistency: same_txn}
+  stale_citations: {type: int, from: "py:fact_pipeline.providers.stale_citations",
+                    args: {store: self, fact_id: args.fact_id}, consistency: snapshot}
+  orphans: {type: int, from: "py:fact_pipeline.providers.orphans",
+            args: {store: self, source_id: args.source_id}, consistency: same_txn}
+  chunk: {type: "py:fact_pipeline.models.ChunkInfo | null", from: "py:fact_pipeline.providers.chunk",
+          args: {chunk_id: args.chunk_id}, consistency: snapshot}
+  span: {type: "str | null", from: "py:fact_pipeline.providers.span",
+         args: {chunk_id: args.chunk_id, start: reply.start, end: reply.end}, consistency: snapshot}
+rules:
+  - id: K-1
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No fact exists without an evidence span.
+    why: An unattributable fact cannot be checked, retracted or cited (guide 7.3).
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+    scope: call
+    bad:
+      - {when: 'size(args.proposal.evidence) == 0', message: a fact needs at least one evidence span}
+      - {when: 'args.proposal.evidence.exists(e, size(e.quote) == 0 || e.end <= e.start)', message: an evidence span is empty}
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
+    mediation:
+      chokepoint: "facts and evidence are written only by Store.ingest_door; trigger k1_fact_needs_evidence backs it"
+      residual_paths: []
+      sink: ["py:fact_pipeline.store.insert_fact_row", "py:fact_pipeline.store.insert_evidence_row"]
+      door: "py:fact_pipeline.store.Store.ingest_door"
+      tables: [facts, evidence]
+    falsified_by: ["tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence",
+                   "tests/test_store_rules.py::test_k1_trigger_refuses_raw_fact_without_evidence"]
+
+  - id: K-2
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: A quote is always at its source offsets, and its source hash is current.
+    why: An invented or shifted quote is evidence for nothing (guide 7.6, step 3).
+    subject: {contract: fact_reply, target: "py:fact_pipeline.extract.propose_fact"}
+    scope: call
+    bad:
+      - {when: 'reply.predicate != "NONE" && (span == null || span != reply.quote)', message: the quote is not at its source offsets}
+      - {when: 'chunk == null || chunk.source_hash_current != args.source_hash', message: the source hash is stale}
+    model_policy:
+      schema: FactReply
+      format_retries: 2
+      semantic_resamples: 1
+      feedback: {format: parser_error, semantic: none}
+      abstain: {field: predicate, value: CANNOT_COMPLY}
+    enforcers:
+      - {point: model_call, timing: post_effect, mode: enforce, on_violation: escalate, on_error: fail_closed}
+      - {point: edge, target: "py:fact_pipeline.extract.accept_fact", timing: pre_effect, mode: enforce,
+         on_violation: reject, on_error: fail_closed}
+    mediation: {chokepoint: "accept_fact, the only consumer of a CheckedFact, is an @inv.edge", residual_paths: []}
+    falsified_by: ["tests/test_extract.py::test_k2_persistent_misquote_escalates",
+                   "tests/test_extract.py::test_k2_edge_refuses_forged_checked"]
+
+  - id: K-4
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No fact has a predicate outside the closed vocabulary.
+    why: An unknown predicate has no domain, range or functional flag, so no other rule can check it.
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+    scope: call
+    bad: '!(args.proposal.predicate in ["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in"])'
+    enforcers:
+      - {point: type, timing: pre_effect, mode: enforce}
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: "FactReply.predicate is a Literal (rung 1); ingest_door re-checks every proposal"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.insert_fact_row"
+      door: "py:fact_pipeline.store.Store.ingest_door"
+      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
+    falsified_by: ["tests/test_store_rules.py::test_k4_ingest_refuses_unknown_predicate"]
+
+  - id: K-7
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: A fact's valid_to is never before its valid_from.
+    why: An interval that ends before it starts makes every as-of query wrong.
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+    scope: call
+    bad: 'args.proposal.valid_from != null && args.proposal.valid_to != null && args.proposal.valid_to < args.proposal.valid_from'
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
+    mediation:
+      chokepoint: "CHECK constraint on facts"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.insert_fact_row"
+      door: "py:fact_pipeline.store.Store.ingest_door"
+      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
+    falsified_by: ["tests/test_store_rules.py::test_k7_guard_refuses_inverted_interval",
+                   "tests/test_store_rules.py::test_k7_check_refuses_raw_inverted_interval"]
+
+  - id: K-8
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No fact, evidence or status row is ever updated or deleted.
+    why: History is an append-only log; status changes are new rows (guide 7.2).
+    subject: {table: facts}
+    scope: row
+    bad: 'old_self.id != ""'
+    enforcers:
+      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
+    mediation: {chokepoint: "BEFORE UPDATE/DELETE triggers on facts, evidence and fact_status", residual_paths: []}
+    falsified_by: ["tests/test_store_rules.py::test_k8_facts_are_append_only"]
+
+  - id: K-9
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: One external record never maps to two canonical ids.
+    why: Two canonical ids for one record splits every fact about it.
+    subject: {table: xrefs}
+    scope: "aggregate(key: source_system, source_key)"
+    bad: 'size(rows) > 1'
+    bind: {rows: args.rows}
+    enforcers:
+      - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject}
+    mediation: {chokepoint: "UNIQUE (source_system, source_key) on xrefs", residual_paths: []}
+    falsified_by: ["tests/test_store_rules.py::test_k9_one_external_record_one_entity"]
+
+  - id: K-11
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No contradiction on a functional property exists without an owned Conflict record.
+    why: Two prices for one acquisition must be a decision someone owns, not a silent overwrite (guide 7.6, step 4).
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+    scope: "aggregate(key: subject_id, predicate)"
+    bad: 'args.proposal.predicate in ["acquisition_price", "ceo_of", "headquartered_in"] && contradiction != null && !contradiction.conflict_recorded'
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: route, on_error: fail_closed}
+    mediation:
+      chokepoint: "ingest_door reads rivals inside its write transaction (SQLite: one writer)"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.insert_fact_row"
+      door: "py:fact_pipeline.store.Store.ingest_door"
+      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
+    falsified_by: ["tests/test_store_rules.py::test_k11_contradiction_routes"]
+
+  - id: K-12
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No fact is BELIEVED without two independent trusted sources.
+    why: One publisher repeating itself is not corroboration (guide 7.6, step 5).
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.promote_door"}
+    scope: call
+    # One bad serves the door (pre-effect) and the monitor (over BELIEVED rows), so it states only
+    # the support condition. "Only CHECKED is promoted" is a precondition; Store.promote checks it in code.
+    bad:
+      - {when: 'size(support.trusted_publishers) < 2', message: BELIEVED needs two independent trusted sources}
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: monitor, timing: post_effect, mode: detect}
+    mediation:
+      chokepoint: "fact_status is written only by promote_door and delete_source_door"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.write_status"
+      door: ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"]
+      tables: [fact_status]
+    falsified_by: ["tests/test_store_rules.py::test_k12_single_source_is_not_believed"]
+
+  - id: K-15
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No live fact rests only on a deleted source.
+    why: A withdrawn source must take its facts with it (guide 7.6, step 6).
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.delete_source_door"}
+    scope: call
+    bind: {orphans: provider.orphans}
+    bad: 'orphans > 0'
+    enforcers:
+      - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: monitor, timing: post_effect, mode: detect}
+    mediation: {chokepoint: "delete_source_door retracts inside its transaction; the monitor reconciles", residual_paths: []}
+    falsified_by: ["tests/test_store_rules.py::test_k15_failed_retraction_rolls_back"]
+
+  - id: K-16
+    rev: 1
+    status: detect
+    class: policy
+    owner: team-knowledge
+    statement: No BELIEVED fact cites a stale source version.
+    why: A source edited after promotion may no longer say what the fact claims.
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.promote_door"}
+    scope: call
+    bad: 'stale_citations > 0'
+    enforcers:
+      - {point: decorator, timing: pre_effect, mode: detect}
+      - {point: monitor, timing: post_effect, mode: detect}
+    mediation:
+      chokepoint: "fact_status is written only by promote_door and delete_source_door (as K-12)"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.write_status"
+      door: ["py:fact_pipeline.store.Store.promote_door", "py:fact_pipeline.store.Store.delete_source_door"]
+      tables: [{fact_status: [insert, update, delete]}]
+    falsified_by: ["tests/test_monitor.py::test_k16_detect_reports_but_promotes"]
+
+  - id: K-18
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: No id is ever supplied by the model.
+    why: A model-supplied id can silently attach a fact to the wrong entity.
+    subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+    scope: call
+    bad:
+      - {when: '!subject_known', message: the subject id was not minted by the resolver}
+      - {when: 'args.proposal.object_kind == "entity" && !object_known', message: the object id was not minted by the resolver}
+    enforcers:
+      - {point: type, timing: pre_effect, mode: enforce}
+      - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+    mediation:
+      chokepoint: "FactReply has no id field (extra forbidden); ingest_door accepts only resolver-minted ids"
+      residual_paths: []
+      sink: "py:fact_pipeline.store.insert_fact_row"
+      door: "py:fact_pipeline.store.Store.ingest_door"
+      tables: [{facts: [insert, update]}, {evidence: [insert]}]   # the sink writes both
+    falsified_by: ["tests/test_store_rules.py::test_k18_ingest_refuses_unminted_id"]
+
+  - id: K-19
+    rev: 1
+    status: enforce
+    class: law
+    owner: team-knowledge
+    statement: An answer never cites a chunk that was not retrieved.
+    why: A citation to an unretrieved chunk is a citation the answer never read.
+    subject: {contract: answer_reply, target: "py:fact_pipeline.answer.compose_answer"}
+    scope: call
+    bad:
+      - {when: 'reply.citations.exists(c, !(c in args.retrieved_ids))', message: cites a chunk that was not retrieved}
+      - {when: 'size(reply.citations) == 0', message: an answer needs a citation}
+    model_policy:
+      schema: AnswerReply
+      format_retries: 2
+      semantic_resamples: 1
+      feedback: {format: parser_error, semantic: none}
+      abstain: {field: status, value: CANNOT_ANSWER}
+    enforcers:
+      - {point: model_call, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+      - {point: edge, target: "py:fact_pipeline.answer.render_answer", timing: pre_effect, mode: enforce,
+         on_violation: reject, on_error: fail_closed}
+    mediation: {chokepoint: "render_answer, the only consumer of a CheckedAnswer, is an @inv.edge", residual_paths: []}
+    falsified_by: ["tests/test_answer.py::test_k19_uncited_chunk_is_refused"]

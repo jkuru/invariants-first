@@ -1,0 +1,9 @@
+# pre-commit hooks for invariants (https://pre-commit.com). `language: system` runs the `inv` installed
+# in your project's environment, because `inv check` imports your app to pin its models and functions.
+- id: inv-check
+  name: invariants check
+  description: Fail a commit that weakens a rule; re-pin invariants.lock when no change weakens one.
+  entry: inv check --relock
+  language: system
+  pass_filenames: false
+  always_run: true

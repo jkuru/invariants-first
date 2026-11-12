@@ -1,0 +1,37 @@
+suite: nonfinite
+# A double NaN or +-Infinity made during evaluation (division by zero, overflow, double() of
+# NaN/Infinity text, an inv.sum that overflows) is an evaluation error on every backend, so a
+# NaN-unsafe bound check (x < lo || x > hi) can never pass one. Integer division by zero is an
+# error as in CEL.
+cases:
+- {name: zero over zero in a range check, expr: '0.0 / 0.0 < 0.0 || 0.0 / 0.0 > 1.0', expected: rule_error}
+- {name: zero over zero equals itself, expr: '0.0 / 0.0 == 0.0 / 0.0', expected: rule_error}
+- {name: positive over zero, expr: 'x / 0.0 > 1.0', env: {x: 1.0}, expected: rule_error}
+- {name: negative over zero, expr: 'x / 0.0 < 0.0', env: {x: -1.0}, expected: rule_error}
+- {name: zero over variable zero, expr: 'a / b < 0.0 || a / b > 1.0', env: {a: 0.0, b: 0.0}, expected: rule_error}
+- {name: multiplication overflow, expr: 'x * y > 1.0', env: {x: 1.0e+200, y: 1.0e+200}, expected: rule_error}
+- {name: inf minus inf after overflow, expr: 'x * y - x * y > 1.0', env: {x: 1.0e+200, y: 1.0e+200}, expected: rule_error}
+- {name: addition overflow, expr: 'x + x > 0.0', env: {x: 1.7e+308}, expected: rule_error}
+- {name: overflow inside a list, expr: 'size([x * y]) == 1', env: {x: 1.0e+200, y: 1.0e+200}, expected: rule_error}
+- {name: overflow inside a macro, expr: '[x].exists(v, v * v > 0.0)', env: {x: 1.0e+200}, expected: rule_error}
+- {name: double of NaN text, expr: 'double("NaN") > 1.0', expected: rule_error}
+- {name: double of Infinity text, expr: 'double("-Infinity") < 1.0', expected: rule_error}
+- {name: double of out of range text, expr: 'double("1e999") > 1.0', expected: rule_error}
+- {name: inv.sum overflow, expr: 'inv.sum([x, x]) > 0.0', env: {x: 1.7e+308}, expected: rule_error}
+- {name: integer division by zero, expr: '1 / 0 == 0', expected: rule_error}
+- {name: error absorbed by a true disjunct, expr: '0.0 / 0.0 > 1.0 || true', expected: violation}
+- {name: error absorbed by a false conjunct, expr: 'false && 0.0 / 0.0 > 1.0', expected: ok}
+- {name: finite arithmetic is unchanged, expr: '1.5 * 2.0 - 0.5 / 0.25', value: 1.0}
+- {name: large finite product, expr: 'x * x > 1.0', env: {x: 1.0e+150}, expected: violation}
+# Fix round 11: a NaN inside a list or map compared whole (==, !=, in) is an error on every backend,
+# as when it is read on its own. The subset used Python's ==, where one shared NaN object equals itself.
+- {name: list holding NaN equals itself, expr: 'xs == xs', env: {xs: [1.0, .nan]}, expected: rule_error}
+- {name: list holding NaN differs from itself, expr: 'xs != xs', env: {xs: [1.0, .nan]}, expected: rule_error}
+- {name: map holding NaN equals itself, expr: 'm == m', env: {m: {a: .nan}}, expected: rule_error}
+- {name: nested NaN in a list of maps, expr: 'xs == xs', env: {xs: [{a: [1.0, .nan]}]}, expected: rule_error}
+- {name: list literal wrapping a NaN map, expr: '[m] == [m]', env: {m: {a: .nan}}, expected: rule_error}
+- {name: value in a list holding NaN, expr: '1.0 in xs', env: {xs: [1.0, .nan]}, expected: rule_error}
+- {name: map holding NaN in a list, expr: 'm in xs', env: {m: {a: 1.0}, xs: [{a: .nan}]}, expected: rule_error}
+- {name: key in a map holding NaN, expr: '"a" in m', env: {m: {a: 1.0, b: .nan}}, expected: rule_error}
+- {name: comprehension over elements holding NaN, expr: 'xs.exists(x, x != x)', env: {xs: [{a: .nan}]}, expected: rule_error}
+- {name: finite lists still compare, expr: 'xs == [1.0, 2.0] && m == {"a": [1]} && !(xs != xs)', env: {xs: [1.0, 2.0], m: {a: [1]}}, expected: violation}

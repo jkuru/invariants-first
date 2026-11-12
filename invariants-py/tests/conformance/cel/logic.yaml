@@ -1,0 +1,21 @@
+suite: logic
+cases:
+- {name: or true, expr: 'false || true', expected: violation}
+- {name: and false, expr: 'true && false', expected: ok}
+- {name: error or true, expr: '1 / 0 == 1 || true', expected: violation}
+- {name: true or error, expr: 'true || 1 / 0 == 1', expected: violation}
+- {name: error or false, expr: '1 / 0 == 1 || false', expected: rule_error}
+- {name: false or error, expr: 'false || 1 / 0 == 1', expected: rule_error}
+- {name: error and false, expr: '1 / 0 == 1 && false', expected: ok}
+- {name: false and error, expr: 'false && 1 / 0 == 1', expected: ok}
+- {name: error and true, expr: '1 / 0 == 1 && true', expected: rule_error}
+- {name: missing field or true, expr: 'a.nope || true', env: {a: {}}, expected: violation}
+- {name: missing field and false, expr: 'a.nope && false', env: {a: {}}, expected: ok}
+- {name: non-bool or true, expr: '1 || true', expected: violation}
+- {name: non-bool and true, expr: '1 && true', expected: rule_error}
+- {name: two errors, expr: '1 / 0 == 1 || a.nope', env: {a: {}}, expected: rule_error}
+- {name: not of error, expr: '!(1 / 0 == 1)', expected: rule_error}
+- {name: not of non-bool, expr: '!1', expected: rule_error}
+- {name: ternary on error condition, expr: '(1 / 0 == 1) ? true : false', expected: rule_error}
+- {name: ternary on non-bool condition, expr: '1 ? true : false', expected: rule_error}
+- {name: ternary does not evaluate untaken branch, expr: 'true ? true : 1 / 0 == 1', expected: violation}

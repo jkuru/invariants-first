@@ -1,0 +1,11 @@
+suite: cost
+cases:
+- name: deeply nested comprehension exceeds the cost limit
+  expr: '[1,2,3,4,5,6,7,8,9,10].map(a, [1,2,3,4,5,6,7,8,9,10].map(b, [1,2,3,4,5,6,7,8,9,10].map(c, [1,2,3,4,5,6,7,8,9,10].map(d, [1,2,3,4,5,6,7,8,9,10].map(e, e))))).size() > 0'
+  expected: rule_error
+- name: small comprehension is within the limit
+  expr: '[1,2,3].map(a, [1,2,3].map(b, a * b)).size() == 3'
+  expected: violation
+- name: a spent budget is not absorbed by ||
+  expr: '[1,2,3,4,5,6,7,8,9,10].map(a, [1,2,3,4,5,6,7,8,9,10].map(b, [1,2,3,4,5,6,7,8,9,10].map(c, [1,2,3,4,5,6,7,8,9,10].map(d, [1,2,3,4,5,6,7,8,9,10].map(e, e))))).size() > 0 || true'
+  expected: rule_error

@@ -1,0 +1,37 @@
+# Byte-compiled and caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Patch leftovers and local data
+*.orig
+*.rej
+*.db
+*.sqlite3
+
+# Tool environments
+.tox/
+.nox/

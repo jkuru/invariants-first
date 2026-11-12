@@ -1,0 +1,34 @@
+suite: pyvalues
+# The Python-to-CEL value mapping (cel/values.py) on every backend: UUID -> string, None -> null
+# (== null and has() work for an Optional field), and refused types (naive datetime, date,
+# Decimal) are a rule_error wherever a clause reads them, == null and has() included.
+cases:
+- {name: uuid equals its string, expr: 'u == "12345678-1234-5678-1234-567812345678"', env: {u: {$uuid: "12345678-1234-5678-1234-567812345678"}}, expected: violation}
+- {name: uuid equals uuid, expr: 'a == b', env: {a: {$uuid: "12345678-1234-5678-1234-567812345678"}, b: {$uuid: "12345678-1234-5678-1234-567812345678"}}, expected: violation}
+- {name: uuid in a list of uuids, expr: 'u in us', env: {u: {$uuid: "12345678-1234-5678-1234-567812345678"}, us: [{$uuid: "00000000-0000-0000-0000-000000000000"}, {$uuid: "12345678-1234-5678-1234-567812345678"}]}, expected: violation}
+- {name: uuid string functions, expr: 'size(u) == 36 && u.startsWith("1234")', env: {u: {$uuid: "12345678-1234-5678-1234-567812345678"}}, expected: violation}
+- {name: uuid is not a number, expr: 'u > 0', env: {u: {$uuid: "12345678-1234-5678-1234-567812345678"}}, expected: rule_error}
+- {name: null optional timestamp equals null, expr: 'r.t == null', env: {r: {t: null}}, expected: violation}
+- {name: null optional timestamp is present, expr: 'has(r.t)', env: {r: {t: null}}, expected: violation}
+- {name: guarded null optional timestamp, expr: 'r.t != null && r.t < timestamp("2025-01-01T00:00:00Z")', env: {r: {t: null}}, expected: ok}
+- {name: set optional timestamp is not null, expr: 'r.t == null', env: {r: {t: {$timestamp: "2024-01-01T00:00:00Z"}}}, expected: ok}
+- {name: set optional timestamp has, expr: 'has(r.t) && r.t < timestamp("2025-01-01T00:00:00Z")', env: {r: {t: {$timestamp: "2024-01-01T00:00:00Z"}}}, expected: violation}
+- {name: null optional duration, expr: 'r.d == null || r.d > duration("1h")', env: {r: {d: null}}, expected: violation}
+- {name: naive datetime is error, expr: 't < timestamp("2025-01-01T00:00:00Z")', env: {t: {$naive: "2024-01-01T00:00:00"}}, expected: rule_error}
+- {name: naive datetime equals null is error, expr: 'r.t == null', env: {r: {t: {$naive: "2024-01-01T00:00:00"}}}, expected: rule_error}
+- {name: date is error, expr: 'd == d', env: {d: {$date: "2024-01-01"}}, expected: rule_error}
+- {name: decimal is error, expr: 'v > 0.0', env: {v: {$decimal: "1.50"}}, expected: rule_error}
+- {name: decimal equals null is error, expr: 'r.v == null', env: {r: {v: {$decimal: "1.50"}}}, expected: rule_error}
+- {name: decimal in a list is error, expr: 'size(vs) == 1 && vs[0] == vs[0]', env: {vs: [{$decimal: "1.50"}]}, expected: rule_error}
+# Only what a clause reads is converted: a comprehension reads just the element fields its body
+# names, and size() reads only the length, so an unread Decimal field is never touched.
+- {name: comprehension reads only qty, expr: 'items.exists(i, i.qty < 0)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}, {qty: -1, price: {$decimal: "2.00"}}]}, expected: violation}
+- {name: all over read fields only, expr: 'items.all(i, i.qty > 0)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: violation}
+- {name: map over read fields only, expr: 'inv.sum(items.map(i, i.qty))', env: {items: [{qty: 2, price: {$decimal: "1.10"}}, {qty: 3, price: {$decimal: "1.10"}}]}, value: 5}
+- {name: size of a list of records with a decimal, expr: 'size(items) == 2', env: {items: [{qty: 1, price: {$decimal: "1.10"}}, {qty: 2, price: {$decimal: "1.10"}}]}, expected: violation}
+- {name: size of a map with a decimal value, expr: 'size(m) == 1', env: {m: {a: {$decimal: "1.10"}}}, expected: violation}
+- {name: nested comprehensions read only qty, expr: 'os.exists(o, o.items.exists(i, i.qty < 0))', env: {os: [{items: [{qty: -1, price: {$decimal: "1.10"}}]}]}, expected: violation}
+- {name: reading the decimal field is error, expr: 'items.exists(i, i.price == null)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error}
+# The engines convert an element read whole (the subset reads lazily; the type checker refuses both at load).
+- {name: reading an element whole is error, expr: 'items.exists(i, i == null)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr, celpy]}
+- {name: filter reads elements whole, expr: 'size(items.filter(i, i.qty > 0)) == 1', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr, celpy]}

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://invariants.invalid/schema/invariant-v0.1.json",
+  "title": "Invariant rule file (spec invariant/v0.1)",
+  "description": "Structural schema for the rule file. The loader also runs checks a schema cannot express: targets and providers resolve, provider signatures and return types, args paths against target signatures, status supported by evidence, artifact hashes, model policy against the schema type.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "spec": {"type": "string"},
+    "contracts": {"type": "object", "additionalProperties": {"type": "object"}},
+    "targets": {"type": ["object", "null"], "additionalProperties": {"$ref": "#/$defs/target"}},
+    "providers": {"type": ["object", "null"], "additionalProperties": {"$ref": "#/$defs/provider"}},
+    "rules": {"type": ["array", "null"], "items": {"$ref": "#/$defs/rule"}}
+  },
+  "$defs": {
+    "pyRefs": {"oneOf": [{"type": "string", "pattern": "^py:"}, {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^py:"}}]},
+    "path": {"type": "string", "pattern": "^(args|result|reply|self|old_self|provider)(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
+    "nameMap": {"type": "object", "additionalProperties": {"$ref": "#/$defs/path"}},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effects"],
+      "properties": {
+        "effects": {"enum": ["none", "transactional", "external"]},
+        "transaction": {"type": "string", "pattern": "^py:"}
+      },
+      "if": {"properties": {"effects": {"const": "transactional"}}},
+      "then": {"required": ["transaction"], "properties": {"transaction": {"minLength": 4}}},
+      "else": {"not": {"required": ["transaction"]}}
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "from", "args", "consistency"],
+      "properties": {
+        "type": {"type": "string"},
+        "from": {"type": "string", "pattern": "^py:"},
+        "args": {"type": "object", "additionalProperties": {"type": "string"}},
+        "consistency": {"enum": ["same_txn", "snapshot", "stale_ok", "immutable"]}
+      }
+    },
+    "clause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when"],
+      "properties": {
+        "when": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    },
+    "enforcer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point", "timing", "mode"],
+      "properties": {
+        "point": {"enum": ["type", "storage", "gateway", "decorator", "middleware", "model_call", "edge", "build",
+                           "structure", "monitor"]},
+        "target": {"type": "string", "pattern": "^py:"},
+        "timing": {"enum": ["pre_effect", "post_effect"]},
+        "mode": {"enum": ["off", "detect", "enforce"]},
+        "on_violation": {"enum": ["reject", "halt", "escalate", "route"]},
+        "on_error": {"enum": ["fail_closed", "fail_open_and_page"]},
+        "view": {"oneOf": [{"const": "rows"}, {"$ref": "#/$defs/nameMap"}]},
+        "artifact": {"type": "string"},
+        "generated": {"type": "boolean"},
+        "conformance_test": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"point": {"const": "edge"}}},
+         "then": {"required": ["target"]},
+         "else": {"not": {"required": ["target"]}}},
+        {"if": {"properties": {"view": {"const": "rows"}}, "required": ["view"]},
+         "then": {"properties": {"point": {"const": "storage"}}}},
+        {"if": {"properties": {"view": {"type": "object"}}, "required": ["view"]},
+         "then": {"properties": {"point": {"enum": ["decorator", "model_call", "edge"]}}}}
+      ]
+    },
+    "modelPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"type": "string"},
+        "format_retries": {"type": "integer", "minimum": 0},
+        "semantic_resamples": {"type": "integer", "minimum": 0},
+        "feedback": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": {"enum": ["parser_error", "none"]},
+            "semantic": {"const": "none"}
+          }
+        },
+        "abstain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["field", "value"],
+          "properties": {"field": {"type": "string"}, "value": {}}
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "bad"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "guard": {"type": "string", "pattern": "^py:",
+                  "description": "Short form: the function this rule guards. Expands to subject.target and one decorator enforcer (pre_effect, mode enforce); status defaults to enforce with tests, else detect."},
+        "tests": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                  "description": "Short form of falsified_by: the tests that must fail when the rule is switched off."},
+        "rev": {"type": "integer"},
+        "status": {"enum": ["candidate", "contested", "detect", "enforce", "retired"]},
+        "class": {"enum": ["law", "policy"]},
+        "owner": {"type": "string"},
+        "statement": {"type": "string"},
+        "why": {"type": "string"},
+        "subject": {
+          "type": "object",
+          "properties": {"contract": {"type": "string"}, "target": {"type": "string", "pattern": "^py:"}}
+        },
+        "scope": {"type": "string"},
+        "bind": {"$ref": "#/$defs/nameMap"},
+        "bad": {"oneOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/clause"}}]},
+        "compensable": {"type": "boolean"},
+        "enforcers": {"type": "array", "items": {"$ref": "#/$defs/enforcer"}},
+        "mediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "chokepoint": {"type": "string"},
+            "residual_paths": {"type": "array", "items": {"type": "string"}},
+            "sink": {"$ref": "#/$defs/pyRefs"},
+            "door": {"$ref": "#/$defs/pyRefs"},
+            "tables": {"type": "array", "minItems": 1, "items": {"oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": {
+                "type": "array", "minItems": 1,
+                "items": {"enum": ["insert", "update", "delete", "ddl"]}}}]}}
+          }
+        },
+        "model_policy": {"$ref": "#/$defs/modelPolicy"},
+        "compares_to": {"const": "held_data"},
+        "falsified_by": {"type": "array", "items": {"type": "string"}},
+        "evidence": {},
+        "applies_to": {"oneOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": {"type": "string"}}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"compares_to": {"const": "held_data"}, "model_policy": {"type": "object"}},
+                "required": ["compares_to", "model_policy"]},
+         "then": {"properties": {"model_policy": {"properties": {"semantic_resamples": {"const": 0}}}}}},
+        {"if": {"not": {"required": ["guard"]}}, "then": {"required": ["status"]}}
+      ]
+    }
+  }
+}

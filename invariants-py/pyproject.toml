@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invariants-first"
+version = "0.1.0"
+description = "Rule-file-driven invariant guards for Python: providers, guards, model calls, edges, a CLI and a pytest plugin."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{name = "The invariants-first authors"}]   # placeholder: see RELEASING.md
+dependencies = ["pyyaml>=6"]
+keywords = ["invariants", "contracts", "cel", "guards", "llm", "pytest"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: Pytest",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+fastapi = ["fastapi", "pydantic>=2", "httpx"]   # httpx: fastapi.testclient needs it
+cel = ["cel-expr-python>=0.1.4", "cel-python>=0.5", "protobuf>=4.21"]
+otel = ["opentelemetry-api>=1.20"]
+schema = ["jsonschema>=4"]
+dev = ["pytest>=8", "hypothesis", "httpx", "fastapi", "pydantic>=2", "jsonschema>=4", "mypy==2.4.1"]
+
+[project.scripts]
+inv = "invariants.cli:main"
+
+[project.entry-points.pytest11]
+invariants = "invariants.pytest_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+invariants = ["schema/*.json", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/invariants"]
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["celpy.*", "cel_expr_python.*", "yaml.*", "jsonschema.*", "pytest.*", "_pytest.*", "fastapi.*",
+          "pydantic.*", "opentelemetry.*", "starlette.*", "google.*"]
+ignore_missing_imports = true

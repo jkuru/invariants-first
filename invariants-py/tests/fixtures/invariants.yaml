@@ -1,0 +1,154 @@
+# YAML copy of invariants.json (same document; tests check they load identically).
+spec: invariant/v0.1
+contracts:
+  jobs_py: {type: python, ref: jobs}
+  triage: {type: python, ref: 'triage:CauseReply'}
+  pool_py: {type: python, ref: pool}
+targets:
+  py:jobs.split_work: {effects: none}
+  py:jobs.restart_job: {effects: external}
+  py:triage.propose_cause: {effects: none}
+  py:triage.remediate: {effects: external}
+  py:pool.acquire: {effects: external}
+  py:pool.PoolService.resize_door: {effects: transactional, transaction: 'py:pool.PoolService.txn'}
+providers:
+  approval:
+    type: py:pool.Approval | null
+    from: py:pool.load_approval
+    args: {conn: self.conn, pool_id: req.pool_id}
+    consistency: same_txn
+  pool_leased:
+    type: int
+    from: py:pool.pool_leased
+    args: {conn: args.conn, pool_id: args.pool_id}
+    consistency: snapshot
+  pool_size:
+    type: int
+    from: py:pool.pool_size
+    args: {conn: args.conn, pool_id: args.pool_id}
+    consistency: snapshot
+  job:
+    type: py:triage.JobFacts
+    from: py:triage.load_job
+    args: {job_id: args.job_id}
+    consistency: immutable
+rules:
+- id: R-1
+  rev: 3
+  status: enforce
+  class: law
+  owner: team-scheduling
+  statement: split_work never returns a negative share, a share above its worker's capacity, or shares that do not
+    sum to total_jobs.
+  subject: {contract: jobs_py, target: 'py:jobs.split_work'}
+  scope: call
+  bad:
+  - {when: size(result) != size(args.capacities), message: not one share per worker (prototype addition)}
+  - {when: inv.sum(result) != args.total_jobs, message: shares do not sum to total_jobs}
+  - {when: 'result.exists(s, s < 0)', message: negative share}
+  - {when: 'inv.zip(result, args.capacities).exists(p, p[0] > p[1])', message: share above capacity}
+  enforcers:
+  - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+  mediation:
+    chokepoint: '@inv.guard on split_work, the only public implementation; pure, so a post-effect reject stops every
+      use'
+    residual_paths: []
+  falsified_by: ['demo.py::r1_mutant']
+  why: A rounding bug corrupts every job record above it.
+- id: R-7
+  rev: 2
+  status: enforce
+  class: law
+  owner: team-sre
+  statement: A proposed cause never contradicts what the scheduler and the kernel recorded for the job. (The closed
+    set is held by the schema enum, rung 1.)
+  subject: {contract: triage, target: 'py:triage.propose_cause'}
+  scope: call
+  compares_to: held_data
+  bad:
+  - {when: reply.cause == "OUT_OF_MEMORY" && !job.oom_killed, message: 'OUT_OF_MEMORY, but the kernel did not OOM-kill
+      the job'}
+  - {when: reply.cause == "TIMEOUT" && job.elapsed_s < job.timeout_s, message: 'TIMEOUT, but the job finished inside
+      its time limit'}
+  - {when: reply.cause != "OUT_OF_MEMORY" && job.oom_killed, message: 'the kernel OOM-killed the job, but the cause
+      is not OUT_OF_MEMORY'}
+  model_policy:
+    schema: CauseReply
+    format_retries: 2
+    semantic_resamples: 0
+    feedback: {format: parser_error, semantic: none}
+    abstain: {field: cause, value: CANNOT_COMPLY}
+  enforcers:
+  - {point: model_call, timing: post_effect, mode: enforce, on_violation: escalate, on_error: fail_closed}
+  - {point: edge, target: 'py:triage.remediate', timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+  mediation:
+    chokepoint: remediate, the only consumer, is an @inv.edge that checks the verdict and re-evaluates bad on what
+      it receives (D9)
+    residual_paths: []
+  falsified_by: ['demo.py::r7_held_data_mismatch', 'demo.py::r7_forged_checked']
+- id: R-20
+  rev: 2
+  status: enforce
+  class: law
+  owner: team-pool
+  statement: Leases never exceed pool size.
+  subject: {contract: pool_py, target: 'py:pool.acquire'}
+  scope: 'aggregate(key: pool_id)'
+  bad: leased + n > size
+  compensable: false
+  enforcers:
+  - point: decorator
+    timing: pre_effect
+    mode: enforce
+    on_violation: reject
+    on_error: fail_closed
+    view: {leased: provider.pool_leased, n: args.slots, size: provider.pool_size}
+  - {point: storage, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed, view: rows,
+    artifact: 'pool_schema.sql#sha256:f7df9995f4c14f1628c8e321b0e4e988ac6f364b5c884906bbc5ca65a2db63b7', generated: false,
+    conformance_test: 'demo.py::differential_r20'}
+  mediation:
+    chokepoint: triggers r20_lease and r20_resize on every write to leases and pools.size
+    residual_paths: ['SQLite has no role grants: any connection can DROP TRIGGER']
+  falsified_by: ['demo.py::interleaving_r20']
+- id: R-21
+  rev: 2
+  status: enforce
+  class: policy
+  owner: ops-policy
+  statement: A pool resize is never written without an APPROVED approval for that pool and size.
+  subject: {contract: pool_py, target: 'py:pool.PoolService.resize_door'}
+  scope: call
+  bind: {req: args.req, approval: provider.approval}
+  bad: approval == null || approval.state != "APPROVED" || approval.pool_id != req.pool_id || approval.new_size
+    != req.new_size
+  compensable: false
+  enforcers:
+  - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+  mediation:
+    residual_paths: [pool.set_size called directly (the prototype has no R-21 storage trigger)]
+  falsified_by: ['demo.py::r21_without_approval']
+- id: P-1
+  rev: 2
+  status: enforce
+  class: policy
+  owner: team-pool
+  statement: (prototype-only example) A resize through the door never shrinks a pool without review. Transition
+    rule over old_self; a shrink is routed to a person and rolled back.
+  subject: {contract: pool_py, target: 'py:pool.PoolService.resize_door'}
+  scope: transition
+  bad: self.sizes[args.req.pool_id] < old_self.sizes[args.req.pool_id]
+  enforcers:
+  - {point: decorator, timing: post_effect, mode: enforce, on_violation: route, on_error: fail_closed}
+  falsified_by: ['demo.py::p1_shrink']
+- id: P-2
+  rev: 1
+  status: enforce
+  class: policy
+  owner: team-sre
+  statement: (prototype-only example) restart_job is never called with an empty job id.
+  subject: {contract: jobs_py, target: 'py:jobs.restart_job'}
+  scope: call
+  bad: size(args.job_id) == 0
+  enforcers:
+  - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_open_and_page}
+  falsified_by: ['demo.py::p2_empty_id']

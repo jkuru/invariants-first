@@ -1,0 +1,6 @@
+include README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md RELEASING.md LICENSE .gitignore
+recursive-include tests *.py *.json *.yaml *.yml *.sql *.md
+include src/invariants/py.typed
+recursive-include src/invariants/schema *.json
+global-exclude __pycache__ *.py[cod]
+recursive-include docs *.md

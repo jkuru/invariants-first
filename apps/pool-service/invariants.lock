@@ -1,0 +1,645 @@
+{
+  "contracts": {
+    "pool_api": {
+      "operations": {
+        "createPool": {
+          "method": "POST",
+          "path": "/pools",
+          "requestBody": {
+            "content": {"application/json": {"$ref": "sha256:2259d2f352b14f63ef439bbdcf6c0c54b04849a0c1b50f831ad06a89d392ec2f"}},
+            "required": true
+          },
+          "responses": {
+            "201": {"application/json": {"$ref": "sha256:3de2fbae3e05e45bff1db5fc3502822aa74d3527e14559385d33d66e48c2d262"}},
+            "422": {"application/json": {"$ref": "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c"}}
+          }
+        },
+        "leaseSlots": {
+          "method": "POST",
+          "parameters": [{"in": "path", "name": "pool_id", "required": true, "schema": {"type": "string"}}],
+          "path": "/pools/{pool_id}/leases",
+          "requestBody": {
+            "content": {"application/json": {"$ref": "sha256:ce9e7936e4fbbaff82abfa8e0ad4ea0273eef9a2e3103dba2ed6c48401d7346c"}},
+            "required": true
+          },
+          "responses": {
+            "201": {"application/json": {"$ref": "sha256:c620176fc605fa0f3097a091f837c210f8630e8465a986074287224d76fe42a9"}},
+            "422": {"application/json": {"$ref": "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c"}}
+          }
+        }
+      },
+      "ref": "openapi.json",
+      "type": "openapi"
+    },
+    "pool_py": {"ref": "pool_service.service", "type": "python"},
+    "store_py": {"ref": "pool_service.store", "type": "python"},
+    "triage_reply": {
+      "ref": "pool_service.triage:CauseReply",
+      "schema": {"$ref": "sha256:fc7ddeb69d4758c56a8d52385fd7ba3c3fa5a884676548d0a530caebd806d88b"},
+      "type": "pydantic"
+    },
+    "work_py": {"ref": "pool_service.work", "type": "python"}
+  },
+  "lock_version": 3,
+  "providers": {
+    "approval": {
+      "args": {"conn": "self.conn", "proposal_id": "req.proposal_id"},
+      "consistency": "same_txn",
+      "from": "py:pool_service.service.load_approval",
+      "signature": "load_approval(conn: 'sqlite3.Connection', proposal_id: 'int') -> 'Approval | None'",
+      "type": "py:pool_service.service.Approval | null",
+      "types": {
+        "conn": "Connection",
+        "proposal_id": "int",
+        "return": {"anyOf": ["null", {"$ref": "sha256:adfa941bdf7dcbb111141c2423fe7c7896c9cb7bf8b1e5bad03f1984238f776c"}]}
+      }
+    },
+    "job": {
+      "args": {"conn": "args.conn", "job_id": "args.job_id"},
+      "consistency": "immutable",
+      "from": "py:pool_service.triage.load_job",
+      "signature": "load_job(conn: 'sqlite3.Connection', job_id: 'str') -> 'JobFacts'",
+      "type": "py:pool_service.triage.JobFacts",
+      "types": {
+        "conn": "Connection",
+        "job_id": "str",
+        "return": {"$ref": "sha256:8106056e998bd06119aa2d4a6d380fcda53e069a6c4764b6fc6b9a13006c515b"}
+      }
+    },
+    "pool_leased": {
+      "args": {"conn": "args.conn", "pool_id": "args.pool_id"},
+      "consistency": "snapshot",
+      "from": "py:pool_service.service.pool_leased",
+      "signature": "pool_leased(conn: 'sqlite3.Connection', pool_id: 'str') -> 'int'",
+      "type": "int",
+      "types": {"conn": "Connection", "pool_id": "str", "return": "int"}
+    },
+    "pool_size": {
+      "args": {"conn": "args.conn", "pool_id": "args.pool_id"},
+      "consistency": "snapshot",
+      "from": "py:pool_service.service.pool_size",
+      "signature": "pool_size(conn: 'sqlite3.Connection', pool_id: 'str') -> 'int'",
+      "type": "int",
+      "types": {"conn": "Connection", "pool_id": "str", "return": "int"}
+    }
+  },
+  "rules": {
+    "H-1": {
+      "doc": {
+        "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+        "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
+        "statement": "sha256:f6e01d13409676572de3a20b10c271774ccf483dbd26bc461760d4ab506e59bf"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": "args.body.slots < 1 || args.body.slots > 64",
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "middleware",
+            "timing": "pre_effect"
+          }
+        ],
+        "falsified_by": ["tests/test_api.py::test_h1_lease_request_size"],
+        "scope": "call",
+        "subject": {"contract": "pool_api", "operation": "leaseSlots", "target": "py:pool_service.api.lease"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.api.lease"]
+    },
+    "H-2": {
+      "doc": {
+        "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+        "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
+        "statement": "sha256:fca2f81b595d4f4d5f287c012a8e98db55457bcd61596ca6e1bde9e997d6cf90"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": [
+          {"message": "pool id length", "when": "size(args.body.pool_id) < 3 || size(args.body.pool_id) > 32"},
+          {"message": "pool id characters", "when": "args.body.pool_id.contains(\" \") || args.body.pool_id.contains(\"/\")"},
+          {"message": "empty name", "when": "size(args.body.name) == 0"}
+        ],
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "middleware",
+            "timing": "pre_effect"
+          }
+        ],
+        "falsified_by": ["tests/test_api.py::test_h2_bad_pool_id"],
+        "scope": "call",
+        "subject": {"contract": "pool_api", "operation": "createPool", "target": "py:pool_service.api.create_pool"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.api.create_pool"]
+    },
+    "R-1": {
+      "doc": {
+        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
+        "mediation.chokepoint": "sha256:a6412a644ba60794451bced5e9f9d2206139f879b05e5cebba7738519180d889",
+        "owner": "sha256:dc69f1be6739323f2f1377e1c4fe2c11c8bbe761c88b2b34795bbb319fdd6b33",
+        "statement": "sha256:b4f740c191abe152892e7bc8bcbb734299d5539f3c25e438fec38804eba66b60",
+        "why": "sha256:c9bbb50f93b86241ef727d1059b2c41fe17cbb5c699e16383c299bea49742d8e"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": [
+          {"message": "not one share per worker", "when": "size(result) != size(args.capacities)"},
+          {"message": "shares do not sum to total_jobs", "when": "inv.sum(result) != args.total_jobs"},
+          {"message": "negative share", "when": "result.exists(s, s < 0)"},
+          {"message": "share above capacity", "when": "inv.zip(result, args.capacities).exists(p, p[0] > p[1])"}
+        ],
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "decorator",
+            "timing": "post_effect"
+          }
+        ],
+        "falsified_by": ["tests/test_work.py::test_r1_rejects_a_buggy_allocator"],
+        "mediation": {"residual_paths": []},
+        "scope": "call",
+        "subject": {"contract": "work_py", "target": "py:pool_service.work.split_work"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.work.split_work"]
+    },
+    "R-20": {
+      "doc": {
+        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
+        "mediation.chokepoint": "sha256:7d6ab34bf4c7aa55d1ed581136950603d097ae0068e260a987da8381aa2ef72e",
+        "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
+        "statement": "sha256:99d9fb37180ded317e6cbce36b1ab770fb2f48cd3f12aaf19fb2f48da4e74400"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": "leased + n > size",
+        "compensable": false,
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "decorator",
+            "timing": "pre_effect",
+            "view": {"leased": "provider.pool_leased", "n": "args.slots", "size": "provider.pool_size"}
+          },
+          {
+            "artifact": "src/pool_service/schema.sql#sha256:f9aea6df1349d35d73aebeb774c76bc179ca480ebab91d59296bbffe4f4e7000",
+            "conformance_test": "tests/test_lease.py::test_r20_door_and_trigger_agree",
+            "generated": false,
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "storage",
+            "timing": "pre_effect",
+            "view": "rows"
+          }
+        ],
+        "falsified_by": ["tests/test_lease.py::test_r20_door_rejects_over_lease"],
+        "mediation": {
+          "door": "py:pool_service.service.lease_slots",
+          "residual_paths": [
+            "SQLite has no role grants: any connection can DROP TRIGGER (inv scan flags it only in scanned code)"
+          ],
+          "sink": "py:pool_service.store.insert_lease",
+          "tables": [{"leases": ["insert", "update"]}]
+        },
+        "scope": "aggregate(key: pool_id)",
+        "subject": {"contract": "pool_py", "target": "py:pool_service.service.lease_slots"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.service.lease_slots"]
+    },
+    "R-21": {
+      "doc": {
+        "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+        "mediation.chokepoint": "sha256:f14a5d78f6a2438a5fceb273e2ceb2277e5eb509817a561928ea3a6c4813b517",
+        "owner": "sha256:e48e19a0a0cbab6db585a48e6e0243516fa3676a35274b5194b7080afbe8b265",
+        "statement": "sha256:4201d85430ab407966e7c582a854010041075b383a1778c20047ae388db60348"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": [
+          {"message": "no such proposal", "when": "approval == null"},
+          {"message": "proposal is not APPROVED", "when": "approval != null && approval.state != \"APPROVED\""},
+          {
+            "message": "the write does not match the approved proposal",
+            "when": "approval != null && (approval.pool_id != req.pool_id || approval.new_size != req.new_size)"
+          },
+          {"message": "self-approved", "when": "approval != null && approval.approved_by == approval.proposed_by"}
+        ],
+        "bind": {"approval": "provider.approval", "req": "args.req"},
+        "compensable": false,
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
+        ],
+        "falsified_by": [
+          "tests/test_resize.py::test_r21_apply_without_approval_is_rejected",
+          "tests/test_resize.py::test_r21_self_approval_is_rejected"
+        ],
+        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size", "tables": [{"pools": ["update"]}]},
+        "scope": "call",
+        "subject": {"contract": "pool_py", "target": "py:pool_service.service.ResizeService.resize_door"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.service.ResizeService.resize_door"]
+    },
+    "R-22": {
+      "doc": {
+        "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+        "mediation.chokepoint": "sha256:bf5fbd3e725b32b7fcf54935ee0af0cbf289d4c8bfcd2346c375ebffb13c9214",
+        "owner": "sha256:e48e19a0a0cbab6db585a48e6e0243516fa3676a35274b5194b7080afbe8b265",
+        "statement": "sha256:0a3db96c259ecb1878b18fcc3c788408fcd31c1ffcc79d52fe545dfefc4588d6"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": "old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 4 * old_self.sizes[req.pool_id]",
+        "bind": {"req": "args.req"},
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "decorator",
+            "timing": "post_effect"
+          }
+        ],
+        "falsified_by": ["tests/test_resize.py::test_r22_growth_above_4x_is_rolled_back"],
+        "mediation": {"residual_paths": [], "sink": "py:pool_service.store.set_size", "tables": [{"pools": ["update"]}]},
+        "scope": "transition",
+        "subject": {"contract": "pool_py", "target": "py:pool_service.service.ResizeService.resize_door"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.service.ResizeService.resize_door"]
+    },
+    "R-23": {
+      "doc": {
+        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
+        "mediation.chokepoint": "sha256:767884c3888bb2dbf9d6c78f45397ea1a9f8f65e42c527337691772344196076",
+        "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
+        "statement": "sha256:0bd18eb14d300efeec584516fa1f684ad8c49ec462078b76d6fc80f25ca22f90"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": "false",
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "structure", "timing": "pre_effect"}
+        ],
+        "falsified_by": ["tests/test_scan.py::test_r23_scan_finds_the_bypass_module"],
+        "mediation": {
+          "door": ["py:pool_service.service.ResizeService.resize_door", "py:pool_service.service.create_pool"],
+          "residual_paths": [],
+          "sink": ["py:pool_service.store.set_size", "py:pool_service.store.insert_pool"],
+          "tables": ["pools"]
+        },
+        "scope": "call",
+        "subject": {"contract": "store_py", "target": "py:pool_service.store.set_size"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.store.set_size"]
+    },
+    "R-24": {
+      "doc": {
+        "class": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+        "owner": "sha256:f97cd20eed3a874ac4edd594efe2372e07ed5a94ba5d748b1a39f836b13c308c",
+        "statement": "sha256:8214f37918fde0ea804643de011096b11c1f2b6bf9d91638414bf9494549aded"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": "args.size < 1 || args.size > 10000",
+        "enforcers": [
+          {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
+        ],
+        "falsified_by": ["tests/test_api.py::test_r24_pool_size_out_of_range"],
+        "scope": "call",
+        "subject": {"contract": "pool_py", "target": "py:pool_service.service.create_pool"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.service.create_pool"]
+    },
+    "R-7": {
+      "doc": {
+        "class": "sha256:1230824546f325c07a8a4b520c378b8e0fb77e478855fcaf91272b25fa15741b",
+        "mediation.chokepoint": "sha256:624c4e8d4575d49f565b99b3e71e1a37b797d670a573db82cc742b70e1867f42",
+        "owner": "sha256:768e75a2d40d94a252fd70caf141b44d943ceaa8b8e5c819dee92be3084f62ce",
+        "statement": "sha256:056c59d4449d17f1fcfdcba44d130dfb827eed260d9eaf10beb137f616c76dc0"
+      },
+      "rev": 1,
+      "semantic": {
+        "bad": [
+          {
+            "message": "OUT_OF_MEMORY, but the kernel did not OOM-kill the job",
+            "when": "reply.cause == \"OUT_OF_MEMORY\" && !job.oom_killed"
+          },
+          {
+            "message": "the kernel OOM-killed the job, but the cause is not OUT_OF_MEMORY",
+            "when": "reply.cause != \"OUT_OF_MEMORY\" && job.oom_killed"
+          },
+          {
+            "message": "TIMEOUT, but the job finished inside its time limit",
+            "when": "reply.cause == \"TIMEOUT\" && job.elapsed_s < job.timeout_s"
+          },
+          {
+            "message": "BAD_INPUT, but the job did not exit with EX_DATAERR (65)",
+            "when": "reply.cause == \"BAD_INPUT\" && job.exit_code != 65"
+          }
+        ],
+        "compares_to": "held_data",
+        "enforcers": [
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "escalate",
+            "point": "model_call",
+            "timing": "post_effect"
+          },
+          {
+            "mode": "enforce",
+            "on_error": "fail_closed",
+            "on_violation": "reject",
+            "point": "edge",
+            "target": "py:pool_service.triage.remediate",
+            "timing": "pre_effect"
+          }
+        ],
+        "falsified_by": [
+          "tests/test_triage.py::test_r7_contradicting_reply_escalates",
+          "tests/test_triage.py::test_r7_forged_checked_refused_at_edge"
+        ],
+        "mediation": {
+          "door": "py:pool_service.triage.remediate",
+          "residual_paths": [],
+          "sink": "py:pool_service.store.insert_remediation",
+          "tables": [{"remediations": ["insert", "update"]}]
+        },
+        "model_policy": {
+          "abstain": {"field": "cause", "value": "CANNOT_COMPLY"},
+          "feedback": {"format": "parser_error", "semantic": "none"},
+          "format_retries": 2,
+          "schema": "CauseReply",
+          "semantic_resamples": 0
+        },
+        "scope": "call",
+        "subject": {"contract": "triage_reply", "target": "py:pool_service.triage.propose_cause"}
+      },
+      "status": "enforce",
+      "targets": ["py:pool_service.triage.propose_cause", "py:pool_service.triage.remediate"]
+    }
+  },
+  "schemas": {
+    "sha256:2259d2f352b14f63ef439bbdcf6c0c54b04849a0c1b50f831ad06a89d392ec2f": {
+      "name": "openapi.json/components/schemas/PoolIn",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {"name": {"type": "string"}, "pool_id": {"type": "string"}, "size": {"type": "integer"}},
+        "required": ["pool_id", "name", "size"],
+        "type": "object"
+      }
+    },
+    "sha256:28ae06b3a0ce2102b446ce2709f4f5e81c1d6acbaa54da63b34e5b13690510c5": {
+      "name": "pool_service.api.LeaseOut",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "holder": {"type": "string"},
+          "lease_id": {"type": "integer"},
+          "pool_id": {"type": "string"},
+          "slots": {"type": "integer"}
+        },
+        "required": ["lease_id", "pool_id", "holder", "slots"],
+        "type": "object"
+      }
+    },
+    "sha256:3b2e940795b9bb3f9bd276028b4d7d0d707f5aa0d0afbe186442ebfc6783e119": {
+      "dataclass": "Remediation",
+      "fields": {"action": "str", "cause": "str", "job_id": "str"},
+      "name": "pool_service.triage.Remediation",
+      "required": ["action", "cause", "job_id"]
+    },
+    "sha256:3de2fbae3e05e45bff1db5fc3502822aa74d3527e14559385d33d66e48c2d262": {
+      "name": "openapi.json/components/schemas/PoolOut",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "leased": {"type": "integer"},
+          "name": {"type": "string"},
+          "pool_id": {"type": "string"},
+          "size": {"type": "integer"}
+        },
+        "required": ["pool_id", "name", "size", "leased"],
+        "type": "object"
+      }
+    },
+    "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c": {
+      "name": "openapi.json/components/schemas/HTTPValidationError",
+      "schema": {
+        "properties": {
+          "detail": {
+            "items": {"$ref": "sha256:e0eeed634617bceabff74b282b3ecef23f6e4d3dbdce1b7648bb470dc646aa31"},
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "sha256:77d93842d2f65afda0d69a7071e7c764e7b921d6bbdf3f940c55315225a1140d": {
+      "name": "pool_service.api.LeaseIn",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {"holder": {"minLength": 1, "type": "string"}, "slots": {"type": "integer"}},
+        "required": ["holder", "slots"],
+        "type": "object"
+      }
+    },
+    "sha256:8106056e998bd06119aa2d4a6d380fcda53e069a6c4764b6fc6b9a13006c515b": {
+      "dataclass": "JobFacts",
+      "fields": {
+        "elapsed_s": "int",
+        "exit_code": "int",
+        "job_id": "str",
+        "oom_killed": "bool",
+        "pool_id": "str",
+        "timeout_s": "int"
+      },
+      "name": "pool_service.triage.JobFacts",
+      "required": ["elapsed_s", "exit_code", "job_id", "oom_killed", "pool_id", "timeout_s"]
+    },
+    "sha256:9b70350376e5d510023b3c9354995bdb0a4d9db2ca2d34e7adb7312b67800f7a": {
+      "name": "pool_service.api.PoolIn",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {"name": {"type": "string"}, "pool_id": {"type": "string"}, "size": {"type": "integer"}},
+        "required": ["pool_id", "name", "size"],
+        "type": "object"
+      }
+    },
+    "sha256:adfa941bdf7dcbb111141c2423fe7c7896c9cb7bf8b1e5bad03f1984238f776c": {
+      "dataclass": "Approval",
+      "fields": {
+        "approved_by": "str",
+        "new_size": "int",
+        "pool_id": "str",
+        "proposal_id": "int",
+        "proposed_by": "str",
+        "state": "str"
+      },
+      "name": "pool_service.service.Approval",
+      "required": ["approved_by", "new_size", "pool_id", "proposal_id", "proposed_by", "state"]
+    },
+    "sha256:c620176fc605fa0f3097a091f837c210f8630e8465a986074287224d76fe42a9": {
+      "name": "openapi.json/components/schemas/LeaseOut",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "holder": {"type": "string"},
+          "lease_id": {"type": "integer"},
+          "pool_id": {"type": "string"},
+          "slots": {"type": "integer"}
+        },
+        "required": ["lease_id", "pool_id", "holder", "slots"],
+        "type": "object"
+      }
+    },
+    "sha256:ce9e7936e4fbbaff82abfa8e0ad4ea0273eef9a2e3103dba2ed6c48401d7346c": {
+      "name": "openapi.json/components/schemas/LeaseIn",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {"holder": {"minLength": 1, "type": "string"}, "slots": {"type": "integer"}},
+        "required": ["holder", "slots"],
+        "type": "object"
+      }
+    },
+    "sha256:d92da4e414178e36e45fa5add38941f92f72d6c960ee25310611cd24c83b8004": {
+      "name": "pool_service.api.PoolOut",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "leased": {"type": "integer"},
+          "name": {"type": "string"},
+          "pool_id": {"type": "string"},
+          "size": {"type": "integer"}
+        },
+        "required": ["pool_id", "name", "size", "leased"],
+        "type": "object"
+      }
+    },
+    "sha256:e0eeed634617bceabff74b282b3ecef23f6e4d3dbdce1b7648bb470dc646aa31": {
+      "name": "openapi.json/components/schemas/ValidationError",
+      "schema": {
+        "properties": {
+          "ctx": {"type": "object"},
+          "input": {},
+          "loc": {"items": {"anyOf": [{"type": "string"}, {"type": "integer"}]}, "type": "array"},
+          "msg": {"type": "string"},
+          "type": {"type": "string"}
+        },
+        "required": ["loc", "msg", "type"],
+        "type": "object"
+      }
+    },
+    "sha256:fc7ddeb69d4758c56a8d52385fd7ba3c3fa5a884676548d0a530caebd806d88b": {
+      "name": "pool_service.triage.CauseReply",
+      "pydantic": {
+        "additionalProperties": false,
+        "properties": {
+          "cause": {"enum": ["OUT_OF_MEMORY", "TIMEOUT", "BAD_INPUT", "CANNOT_COMPLY"], "type": "string"},
+          "summary": {"maxLength": 200, "minLength": 1, "type": "string"}
+        },
+        "required": ["cause", "summary"],
+        "type": "object"
+      }
+    },
+    "sha256:fe54791ea9ef146f49a21fe1d2b4bd73855fb0ee927600939055cb4cec87bc1c": {
+      "dataclass": "ResizeRequest",
+      "fields": {"new_size": "int", "pool_id": "str", "proposal_id": "int"},
+      "name": "pool_service.service.ResizeRequest",
+      "required": ["new_size", "pool_id", "proposal_id"]
+    }
+  },
+  "spec": "invariant/v0.1",
+  "targets": {
+    "py:pool_service.api.create_pool": {
+      "effects": "external",
+      "signature": "create_pool(body: 'PoolIn', conn: 'Conn') -> 'PoolOut | JSONResponse'",
+      "types": {
+        "body": {"$ref": "sha256:9b70350376e5d510023b3c9354995bdb0a4d9db2ca2d34e7adb7312b67800f7a"},
+        "conn": "Connection",
+        "return": {
+          "anyOf": ["JSONResponse", {"$ref": "sha256:d92da4e414178e36e45fa5add38941f92f72d6c960ee25310611cd24c83b8004"}]
+        }
+      }
+    },
+    "py:pool_service.api.lease": {
+      "effects": "external",
+      "signature": "lease(pool_id: 'str', body: 'LeaseIn', conn: 'Conn') -> 'LeaseOut | JSONResponse'",
+      "types": {
+        "body": {"$ref": "sha256:77d93842d2f65afda0d69a7071e7c764e7b921d6bbdf3f940c55315225a1140d"},
+        "conn": "Connection",
+        "pool_id": "str",
+        "return": {
+          "anyOf": ["JSONResponse", {"$ref": "sha256:28ae06b3a0ce2102b446ce2709f4f5e81c1d6acbaa54da63b34e5b13690510c5"}]
+        }
+      }
+    },
+    "py:pool_service.service.ResizeService.resize_door": {
+      "effects": "transactional",
+      "signature": "ResizeService.resize_door(self, req: 'ResizeRequest') -> 'None'",
+      "transaction": "py:pool_service.service.ResizeService.txn",
+      "types": {"req": {"$ref": "sha256:fe54791ea9ef146f49a21fe1d2b4bd73855fb0ee927600939055cb4cec87bc1c"}, "return": "null"}
+    },
+    "py:pool_service.service.create_pool": {
+      "effects": "external",
+      "signature": "create_pool(conn: 'sqlite3.Connection', pool_id: 'str', name: 'str', size: 'int') -> 'None'",
+      "types": {"conn": "Connection", "name": "str", "pool_id": "str", "return": "null", "size": "int"}
+    },
+    "py:pool_service.service.lease_slots": {
+      "effects": "external",
+      "signature": "lease_slots(conn: 'sqlite3.Connection', pool_id: 'str', slots: 'int', holder: 'str') -> 'int'",
+      "types": {"conn": "Connection", "holder": "str", "pool_id": "str", "return": "int", "slots": "int"}
+    },
+    "py:pool_service.store.set_size": {
+      "effects": "external",
+      "signature": "set_size(conn: 'sqlite3.Connection', pool_id: 'str', new_size: 'int') -> 'None'",
+      "types": {"conn": "Connection", "new_size": "int", "pool_id": "str", "return": "null"}
+    },
+    "py:pool_service.triage.propose_cause": {
+      "effects": "none",
+      "reply_schema": {"$ref": "sha256:fc7ddeb69d4758c56a8d52385fd7ba3c3fa5a884676548d0a530caebd806d88b"},
+      "signature": "propose_cause(conn: 'sqlite3.Connection', job_id: 'str', log_excerpt: 'str', inv_feedback: 'str | None' = None) -> 'CheckedCause'",
+      "types": {
+        "conn": "Connection",
+        "inv_feedback": {"anyOf": ["null", "str"]},
+        "job_id": "str",
+        "log_excerpt": "str",
+        "return": "CheckedCause"
+      }
+    },
+    "py:pool_service.triage.remediate": {
+      "effects": "external",
+      "signature": "remediate(conn: 'sqlite3.Connection', cause: 'CheckedCause', job_id: 'str') -> 'Remediation'",
+      "types": {
+        "cause": "CheckedCause",
+        "conn": "Connection",
+        "job_id": "str",
+        "return": {"$ref": "sha256:3b2e940795b9bb3f9bd276028b4d7d0d707f5aa0d0afbe186442ebfc6783e119"}
+      }
+    },
+    "py:pool_service.work.split_work": {
+      "effects": "none",
+      "signature": "split_work(total_jobs: 'int', capacities: 'list[int]') -> 'list[int]'",
+      "types": {
+        "capacities": {"args": ["int"], "generic": "list"},
+        "return": {"args": ["int"], "generic": "list"},
+        "total_jobs": "int"
+      }
+    }
+  }
+}

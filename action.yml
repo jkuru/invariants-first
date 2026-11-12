@@ -1,0 +1,40 @@
+# GitHub Action: fail a pull request that weakens a rule since its base branch, unless a reviewer
+# accepts it with a label. Install your project (with invariants) in an earlier step; this action
+# runs the `inv` on PATH, since `inv check` imports your app.
+name: invariants check
+description: Fail a pull request that weakens a rule, a pinned pydantic constraint or a database constraint.
+branding:
+  icon: shield
+  color: green
+inputs:
+  rule-file:
+    description: Path to the rule file (default invariants.yaml in working-directory).
+    default: ""
+  working-directory:
+    description: Directory holding the rule file.
+    default: "."
+  base:
+    description: Git ref to compare with. Default the pull request's base branch.
+    default: ""
+  accept-label:
+    description: A pull-request label that a reviewer adds to accept the weakenings listed in the log.
+    default: accept-weakening
+runs:
+  using: composite
+  steps:
+    - name: inv check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INV_BASE: ${{ inputs.base || (github.base_ref && format('origin/{0}', github.base_ref)) || '' }}
+        INV_ALLOW_WEAKENING: ${{ contains(github.event.pull_request.labels.*.name, inputs.accept-label) && '1' || '' }}
+        INV_RULE_FILE: ${{ inputs.rule-file }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [ -n "$INV_RULE_FILE" ]; then args+=("$INV_RULE_FILE"); fi
+        if [ -n "$INV_BASE" ]; then
+          git fetch --no-tags --depth=1 origin "${INV_BASE#origin/}" >/dev/null 2>&1 || true
+          args+=(--base "$INV_BASE")
+        fi
+        inv check "${args[@]}"

@@ -1,0 +1,23 @@
+suite: literals
+cases:
+- {name: int, expr: '42', value: 42}
+- {name: negative int, expr: '-7', value: -7}
+- {name: double, expr: '2.5', value: 2.5}
+- {name: string double quotes, expr: '"abc"', value: abc}
+- {name: string single quotes, expr: "'abc'", value: abc}
+- {name: string escape, expr: '"a\"b"', value: 'a"b'}
+- {name: unicode escape, expr: '"\u00e9" == "é"', expected: violation}
+- {name: non-ascii string, expr: '"héllo"', value: héllo}
+- {name: non-ascii string through an extension rewrite, expr: 'inv.sum([size("é")])', value: 1}
+- {name: hex and octal escapes, expr: '"\x41\102" == "AB"', expected: violation}
+- {name: escapes through an extension rewrite, expr: 'inv.sum([size("\x41é\n")])', value: 3}
+- {name: bool true, expr: 'true', expected: violation}
+- {name: bool false, expr: 'false', expected: ok}
+- {name: null, expr: 'null', value: null}
+- {name: list, expr: '[1, 2.5, "a", null, true]', value: [1, 2.5, a, null, true]}
+- {name: empty list, expr: '[]', value: []}
+- {name: map, expr: '{"a": 1, "b": [2]}', value: {a: 1, b: [2]}}
+- {name: nested list index, expr: '[[1, 2], [3]][0][1]', value: 2}
+- {name: map index, expr: '{"k": "v"}["k"]', value: v}
+- {name: ternary, expr: 'true ? 1 : 2', value: 1}
+- {name: non-bool result is rule_error, expr: '1', expected: rule_error}

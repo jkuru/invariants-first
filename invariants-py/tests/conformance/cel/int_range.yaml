@@ -1,0 +1,26 @@
+suite: int_range
+cases:
+- name: an input int just above int64 is a rule_error
+  expr: 'args.x > 0'
+  env: {args: {x: 9223372036854775808}}
+  expected: rule_error
+- name: an input int just below int64 is a rule_error
+  expr: 'args.x < 0'
+  env: {args: {x: -9223372036854775809}}
+  expected: rule_error
+- name: a huge input int is a rule_error, never a violation
+  expr: 'args.x > 0'
+  env: {args: {x: 100000000000000000000000000000000000000000000000000000000000000000000000000000000000}}
+  expected: rule_error
+- name: int64 max is in range
+  expr: 'args.x == 9223372036854775807'
+  env: {args: {x: 9223372036854775807}}
+  expected: violation
+- name: int64 min is in range
+  expr: 'args.x < 0'
+  env: {args: {x: -9223372036854775808}}
+  expected: violation
+- name: a huge nested int is a rule_error
+  expr: 'args.p.size > 0'
+  env: {args: {p: {size: 9223372036854775808}}}
+  expected: rule_error

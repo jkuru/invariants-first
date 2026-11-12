@@ -1,0 +1,39 @@
+suite: operators
+cases:
+- {name: int arithmetic, expr: '1 + 2 * 3 - 4', value: 3}
+- {name: int division truncates, expr: '7 / 2', value: 3}
+- {name: negative division truncates toward zero, expr: '-7 / 2', value: -3}
+- {name: int modulo, expr: '-7 % 2', value: -1}
+- {name: double division, expr: '7.0 / 2.0', value: 3.5}
+- {name: string concat, expr: '"a" + "b"', value: ab}
+- {name: list concat, expr: '[1] + [2]', value: [1, 2]}
+- {name: division by zero, expr: '1 / 0 == 0', expected: rule_error}
+- {name: modulo by zero, expr: '1 % 0 == 0', expected: rule_error}
+- {name: lt, expr: '1 < 2', expected: violation}
+- {name: le, expr: '2 <= 2', expected: violation}
+- {name: gt, expr: '1 > 2', expected: ok}
+- {name: ge, expr: '1 >= 2', expected: ok}
+- {name: string ordering, expr: '"a" < "b"', expected: violation}
+- {name: bool ordering, expr: 'false < true', expected: violation}
+- {name: ne, expr: '1 != 2', expected: violation}
+- {name: int equals double, expr: '1 == 1.0', expected: violation}
+- {name: int less than double, expr: '1 < 1.5', expected: violation}
+- {name: list equality, expr: '[1, "a"] == [1, "a"]', expected: violation}
+- {name: nested list numeric equality, expr: '[1, [2]] == [1, [2.0]]', expected: violation}
+- {name: map equality, expr: '{"a": 1} == {"a": 1}', expected: violation}
+- {name: in list, expr: '2 in [1, 2]', expected: violation}
+- {name: not in list, expr: '3 in [1, 2]', expected: ok}
+- {name: in list across numeric types, expr: '1 in [1.0]', expected: violation}
+- {name: in list mixed types, expr: '"a" in [1, "a"]', expected: violation}
+- {name: in map keys, expr: '"a" in {"a": 1}', expected: violation}
+- {name: negated in (schema enum shape), expr: '!(c in ["A", "B"])', env: {c: C}, expected: violation}
+- {name: size string, expr: 'size("héllo")', value: 5}
+- {name: size list, expr: 'size([1, 2, 3])', value: 3}
+- {name: size map, expr: 'size({"a": 1})', value: 1}
+- {name: size method form, expr: '[1, 2].size()', value: 2}
+- {name: size of empty string (P-2 shape), expr: 'size(x) == 0', env: {x: ''}, expected: violation}
+- {name: contains, expr: '"abc".contains("b")', expected: violation}
+- {name: startsWith, expr: '"abc".startsWith("ab")', expected: violation}
+- {name: endsWith, expr: '"abc".endsWith("bc")', expected: violation}
+- {name: unary not, expr: '!false', expected: violation}
+- {name: unary minus, expr: '-(3)', value: -3}

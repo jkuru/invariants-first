@@ -1,0 +1,20 @@
+# Build and test outputs (ci.sh writes build/inv-report.json; it is regenerated on every run)
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Environments and editors
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.DS_Store

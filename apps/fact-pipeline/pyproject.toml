@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fact-pipeline"
+version = "0.1.0"
+description = "A batch CLI that turns text documents into cited facts, guarded by an invariants rule file."
+requires-python = ">=3.11"
+dependencies = ["invariants-first", "pydantic>=2", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest", "hypothesis"]
+
+[project.scripts]
+fact-pipeline = "fact_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+inv_rules = "invariants.yaml"
+addopts = "-p no:cacheprovider"
+
+# Source roots for `inv scan`. ci.sh scans only `clean`; tests/test_scan.py also scans
+# `bypass` to prove the scan flags the deliberate bypass module.
+[tool.invariants.scan]           # read by `inv scan` and `inv status`
+roots = ["src"]
+
+[tool.fact-pipeline.scan]        # the extra root only the bypass test scans
+bypass = ["bypass"]

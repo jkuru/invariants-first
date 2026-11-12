@@ -1,0 +1,20 @@
+suite: numeric
+# CEL has no implicit numeric conversion: arithmetic across int and double (and uint) has no
+# overload, and % is defined on int and uint only. Equality and ordering across int, uint and double
+# are CEL (heterogeneous numeric comparison). The load-time type checker refuses the mixed forms
+# when it knows the operand types; these cases check that every engine agrees at run time too.
+cases:
+- {name: double times int is an error, expr: 'x * i > 0.0', env: {x: 1.5, i: 2}, expected: rule_error}
+- {name: int times double is an error, expr: 'i * x > 0.0', env: {x: 1.5, i: 2}, expected: rule_error}
+- {name: double plus int is an error, expr: 'x + i > 0.0', env: {x: 1.5, i: 2}, expected: rule_error}
+- {name: int minus double is an error, expr: 'i - x > 0.0', env: {x: 1.5, i: 2}, expected: rule_error}
+- {name: double over int is an error, expr: 'x / i > 0.0', env: {x: 1.5, i: 2}, expected: rule_error}
+- {name: literal int plus double is an error, expr: '1 + 1.5 > 0.0', expected: rule_error}
+- {name: double modulo is an error, expr: 'x % 2.0 > 0.0', env: {x: 5.5}, expected: rule_error}
+- {name: int modulo works, expr: 'i % 2', env: {i: 7}, value: 1}
+- {name: explicit double conversion, expr: 'x * double(i)', env: {x: 1.5, i: 2}, value: 3.0}
+- {name: explicit int conversion, expr: 'int(x) * i', env: {x: 2.5, i: 2}, value: 4}
+- {name: int equals double, expr: 'i == 2.0', env: {i: 2}, expected: violation}
+- {name: int below double, expr: 'i < x', env: {x: 2.5, i: 2}, expected: violation}
+- {name: double above int, expr: 'x > i', env: {x: 2.5, i: 2}, expected: violation}
+- {name: mixed error absorbed by or, expr: 'true || x * i > 0.0', env: {x: 1.5, i: 2}, expected: violation}

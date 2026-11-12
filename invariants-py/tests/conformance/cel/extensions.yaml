@@ -1,0 +1,26 @@
+suite: extensions
+cases:
+- {name: sum ints, expr: 'inv.sum([1, 2, 3])', value: 6}
+- {name: sum empty, expr: 'inv.sum([])', value: 0}
+- {name: sum doubles, expr: 'inv.sum([1.5, 2.0])', value: 3.5}
+- {name: sum of variable (R-1 shape), expr: 'inv.sum(result) != args.total_jobs', env: {result: [5, 5], args: {total_jobs: 10}}, expected: ok}
+- {name: sum mismatch, expr: 'inv.sum(result) != args.total_jobs', env: {result: [5, 4], args: {total_jobs: 10}}, expected: violation}
+- {name: sum of strings is error, expr: 'inv.sum(["a"]) == 0', expected: rule_error}
+- {name: sum of non-list is error, expr: 'inv.sum(1) == 1', expected: rule_error}
+- {name: sum of bools is error, expr: 'inv.sum([true]) == 1', expected: rule_error}
+- {name: zip pairs, expr: 'inv.zip([1, 2], ["a", "b"])', value: [[1, a], [2, b]]}
+- {name: zip empty, expr: 'inv.zip([], [])', value: []}
+- {name: zip with exists (R-1 shape), expr: 'inv.zip(result, args.capacities).exists(p, p[0] > p[1])', env: {result: [3, 4], args: {capacities: [3, 3]}}, expected: violation}
+- {name: zip unequal lengths is error, expr: 'inv.zip([1], [1, 2]).exists(p, true)', expected: rule_error}
+- {name: zip unequal absorbed by or, expr: 'inv.zip([1], [1, 2]).exists(p, true) || true', expected: violation}
+- {name: zip non-list is error, expr: 'inv.zip(1, [1]) == []', expected: rule_error}
+- {name: unique_by distinct, expr: 'inv.unique_by(xs, x, x.k)', env: {xs: [{k: 1}, {k: 2}]}, expected: violation}
+- {name: unique_by duplicate, expr: 'inv.unique_by(xs, x, x.k)', env: {xs: [{k: 1}, {k: 1}]}, expected: ok}
+- {name: unique_by numeric duplicate across types, expr: 'inv.unique_by(xs, x, x.k)', env: {xs: [{k: 1}, {k: 1.0}]}, expected: ok}
+- {name: unique_by empty, expr: 'inv.unique_by([], x, x)', expected: violation}
+- {name: unique_by error in key, expr: 'inv.unique_by(xs, x, x.nope)', env: {xs: [{k: 1}]}, expected: rule_error}
+- {name: unique_by over map keys, expr: '!inv.unique_by({"a": 1, "b": 2}, k, k)', expected: ok}
+- {name: unique_by needs a variable, expr: 'inv.unique_by(xs, 1, 1)', env: {xs: []}, expected: parse_error}
+- {name: extensions compose, expr: 'inv.sum(inv.zip([1, 2], [3, 4]).map(p, p[0] * p[1]))', value: 11}
+- {name: sum arity is checked at load, expr: 'inv.sum([1], [2]) == 1', expected: parse_error}
+- {name: zip arity is checked at load, expr: 'inv.zip([1]) == []', expected: parse_error}

@@ -1,0 +1,26 @@
+suite: keys
+# Map keys and indexes by CEL's rules (fix round 11), the same on every backend: a numeric index
+# matches an int key across int and double ({1: 'a'}[1.0] == 'a', 1.5 matches nothing), a bool is
+# never a number (Python's dict calls True and 1 one key), a list index may be an integral double,
+# and a map literal key is an int, uint, bool or string (never a double, null or a list).
+cases:
+- {name: int key looked up by an integral double, expr: '{1: "a"}[1.0]', value: a}
+- {name: int key looked up by a double from data, expr: 'm[d]', env: {m: {1: a}, d: 1.0}, value: a}
+- {name: int key not matched by a fractional double, expr: '{1: "a"}[1.5] == "a"', expected: rule_error}
+- {name: int key not matched by a bool, expr: '{1: "a"}[true] == "a"', expected: rule_error}
+- {name: bool key not matched by an int, expr: '{true: "a"}[1] == "a"', expected: rule_error}
+- {name: bool key matched by a bool, expr: '{true: "a"}[true]', value: a}
+- {name: string key not matched by an int, expr: '{"1": "a"}[1] == "a"', expected: rule_error}
+- {name: int key from data not matched by a bool, expr: 'm[true] == "q"', env: {m: {1: q}}, expected: rule_error}
+- {name: in with an integral double, expr: '1.0 in {1: "a"}', expected: violation}
+- {name: in with a bool on int keys, expr: 'true in {1: "a"}', expected: ok}
+- {name: in with an int on bool keys, expr: '1 in {true: "a"}', expected: ok}
+- {name: maps with bool and int keys differ, expr: '{1: "a"} == {true: "a"}', expected: ok}
+- {name: list index by an integral double, expr: '[7, 8][1.0]', value: 8}
+- {name: list index by a fractional double is an error, expr: '[7, 8][1.5] == 8', expected: rule_error}
+- {name: list index by a bool is an error, expr: '[7, 8][true] == 8', expected: rule_error}
+- {name: double map literal key is an error, expr: 'size({1.0: "a"}) == 1', expected: rule_error}
+- {name: double map literal key from data is an error, expr: 'size({d: "a"}) == 1', env: {d: 2.5}, expected: rule_error}
+- {name: null map literal key is an error, expr: 'size({null: 1}) == 1', expected: rule_error}
+- {name: list map literal key is an error, expr: 'size({[1]: 1}) == 1', expected: rule_error}
+- {name: repeated map literal key is an error, expr: 'size({1: "a", 1: "b"}) == 1', expected: rule_error}
