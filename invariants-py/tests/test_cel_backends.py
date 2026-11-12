@@ -256,3 +256,32 @@ def test_cel_concurrent_evaluation(name):
     for t in threads:
         t.join()
     assert errors == []
+
+
+# --- celpy: a long clause evaluated deep in the caller's stack (Python 3.11's recursion limit) -----
+def _at_depth(n: int, fn):
+    return fn() if n <= 0 else _at_depth(n - 1, fn)
+
+
+def test_celpy_long_clause_deep_in_the_stack_is_retried_and_the_limit_restored():
+    import sys
+    celpy_backend = pytest.importorskip("invariants.cel.celpy_backend")
+    pytest.importorskip("celpy")
+    from invariants import cel
+    prog = cel.get_backend("celpy").compile(" + ".join(["args.a"] * 200) + " > 199.0")
+    limit = sys.getrecursionlimit()
+    depth = limit - 150                     # leave too little room for the clause at the old limit
+    assert _at_depth(depth, lambda: prog.evaluate({"args": {"a": 1.0}})) is True
+    assert sys.getrecursionlimit() == limit
+
+
+def test_celpy_clause_too_deep_even_after_retry_names_the_cause(monkeypatch):
+    import sys
+    celpy_backend = pytest.importorskip("invariants.cel.celpy_backend")
+    pytest.importorskip("celpy")
+    from invariants import cel
+    from invariants.cel.errors import CelError
+    monkeypatch.setattr(celpy_backend, "DEEP_RECURSION_LIMIT", sys.getrecursionlimit())   # no headroom
+    prog = cel.get_backend("celpy").compile(" + ".join(["args.a"] * 200) + " > 199.0")
+    with pytest.raises(CelError, match="nested too deeply"):
+        _at_depth(sys.getrecursionlimit() - 150, lambda: prog.evaluate({"args": {"a": 1.0}}))

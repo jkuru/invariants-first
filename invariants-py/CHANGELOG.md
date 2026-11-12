@@ -10,6 +10,13 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fixed
+
+- **celpy on Python 3.11.** A long clause (a 200-term sum) evaluated deep in the caller's stack hit
+  Python 3.11's recursion limit and came back as an opaque `celpy: evaluation error` (fail-closed,
+  so the call was rejected). The evaluation is now retried once with a higher limit, which is
+  restored afterwards, and a clause too deep even then is reported as nested too deeply.
+
 ### Adoption: a 10-minute start
 
 - **`inv init`** drafts `invariants.yaml` from what the code already has. It reads the source and

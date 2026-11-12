@@ -19,6 +19,8 @@ int(timestamp) and the getters run on the shared rules in cel/values.py, as on t
 from __future__ import annotations
 
 import datetime
+import sys
+import threading
 from typing import Any, Callable
 
 from . import values
@@ -27,6 +29,26 @@ from ._engine import ENGINE_FUNCTIONS, FrontEnd, engine_error, ext_sum, ext_uniq
 from .subset import _GETTERS, _convert, _eq, ieee_div_zero, lookup, map_key
 
 DEFAULT_BUDGET = 100_000
+
+# celpy's evaluator recurses in Python, a few frames per operator. On Python 3.11 a long clause (a
+# 200-term sum) evaluated deep in an application's stack can reach the default recursion limit
+# (1000), although the same clause passes at the top of the stack. Such an evaluation is retried
+# once with the limit raised to DEEP_RECURSION_LIMIT, under a lock, and the old limit is restored.
+# The limit is only ever raised. A clause that fails even then is reported as too deeply nested.
+DEEP_RECURSION_LIMIT = 6_000
+_deep_lock = threading.Lock()
+
+
+def _evaluate_deep(runner: Any, data: dict[str, Any]) -> Any:
+    with _deep_lock:
+        old = sys.getrecursionlimit()
+        if old >= DEEP_RECURSION_LIMIT:
+            raise RecursionError("maximum recursion depth exceeded")
+        sys.setrecursionlimit(DEEP_RECURSION_LIMIT)
+        try:
+            return runner.evaluate(data)
+        finally:
+            sys.setrecursionlimit(old)
 
 
 class _CostExceeded(Exception):
@@ -101,13 +123,21 @@ class CelpyProgram:
         self._b.budget_box.value = [self._b.budget]
         try:
             data = {k: to_cel(v, ct) for k, v in plain.items()}
-            r = self._runner.evaluate(data)
+            try:
+                r = self._runner.evaluate(data)
+            except RecursionError:
+                r = _evaluate_deep(self._runner, data)
         except _CostExceeded:
             raise CelError("cost limit exceeded") from None
         except ev.CELEvalError as e:
             raise engine_error(_text(e), "celpy", self._front.names) from None
         except CelError:
             raise
+        except RecursionError:
+            err = CelError("celpy: the clause is nested too deeply for Python's recursion limit (a very long "
+                           "sum or &&/|| chain); split it into several clauses or smaller expressions")
+            err.detail = "RecursionError: maximum recursion depth exceeded"
+            raise err from None
         except (ValueError, OverflowError) as e:      # celtypes range checks (e.g. IntType(2**63))
             raise engine_error(f"{type(e).__name__}: {_text(e)}", "celpy", self._front.names) from None
         except Exception as e:
