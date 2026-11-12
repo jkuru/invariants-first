@@ -87,11 +87,12 @@ def test_a_call_only_the_graph_resolved_counts_as_a_caller(tmp_path):
     graph_path = root / "g.json"
     graph_path.write_text(json.dumps(_graph(calls=[calls[0]]) | {"links": []}))
     assert doors.discover([root], graph=graph_path, project=root).doors == []   # settle has no known caller
-    graph_path.write_text(json.dumps(_graph(calls=calls, confidence="INFERRED")))
+    graph_path.write_text(json.dumps(_graph(calls=calls, confidence="EXTRACTED")))
     (d,) = doors.discover([root], graph=graph_path, project=root).doors
     assert d.doors == ["books.flows.settle"]
-    graph_path.write_text(json.dumps(_graph(calls=calls, confidence="AMBIGUOUS")))
-    assert doors.discover([root], graph=graph_path, project=root).doors == []   # ambiguous links are not used
+    for guess in ("INFERRED", "AMBIGUOUS"):                       # only deterministic edges count
+        graph_path.write_text(json.dumps(_graph(calls=calls, confidence=guess)))
+        assert doors.discover([root], graph=graph_path, project=root).doors == []
 
 
 def test_nodes_match_by_file_and_line_not_by_id(tmp_path):
@@ -161,5 +162,5 @@ def test_init_graph_options(tmp_path):
     other = root / "elsewhere.json"
     other.write_text(json.dumps(_graph()))
     (root / "graphify-out" / "graph.json").unlink()
-    r = run_inv("init", "--no-lock", "--graphify", str(other), cwd=root)
+    r = run_inv("init", "--no-lock", "--graph", str(other), cwd=root)
     assert r.returncode == 0 and 'door: "py:books.flows.settle"' in (root / "invariants.yaml").read_text()

@@ -304,6 +304,7 @@ class _Index:
         self.parse_errors: list[tuple[pathlib.Path, pathlib.Path, int, str]] = []
         self.attr_types: dict[str, dict[str, str]] = {}  # class -> {attribute: class}, shared by every walker
         self.foreign: set[str] | None = None             # attribute names set from outside their object
+        self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
 
     def add(self, root: pathlib.Path, file: pathlib.Path, name: str) -> None:
         try:
@@ -551,6 +552,35 @@ class _Walker:
             return fq if fq in self.idx.classes else None
         return None
 
+    def _returned(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """f(...) on a scanned function annotated `-> Cls` (or `Cls | None`, `Optional[Cls]`): an instance of
+        Cls or a subclass. A factory or a FastAPI dependency (`def get_repo() -> RefundRepo`)."""
+        if not (isinstance(node, ast.Call) and _dotted(node.func)):
+            return None
+        fq = self._resolve(node.func, local, me)
+        return self.return_type(fq) if fq else None
+
+    def return_type(self, fid: str) -> str | None:
+        """The scanned class fid's return annotation names, read in the module that defines fid."""
+        if fid in self.idx.returns:
+            return self.idx.returns[fid]
+        self.idx.returns[fid] = None                          # guards a cycle
+        f = self.idx.funcs.get(fid)
+        fn = f.node if f is not None else None
+        got = None
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None:
+            home = self if f is not None and f.module == self.mod.name else (
+                _Walker(self.idx, self.idx.modules[f.module]) if f is not None and f.module in self.idx.modules
+                else None)
+            if home is not None:
+                got = home._class_named(fn.returns, set(), None)
+        self.idx.returns[fid] = got
+        return got
+
+    def _made(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """The class a value is built as: Cls(...) or a call to a function annotated to return Cls."""
+        return self._constructed(node, local, me) or self._returned(node, local, me)
+
     def _types_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None) -> dict[str, str]:
         """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments."""
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
@@ -568,10 +598,10 @@ class _Walker:
             if isinstance(node, ast.Assign):
                 for t, v in _pairs(node):
                     if isinstance(t, ast.Name):
-                        seen[t.id].add(self._constructed(v, local, me))
+                        seen[t.id].add(self._made(v, local, me))
                         handled.add(id(t))
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                seen[node.target.id].add(self._constructed(node.value, local, me) if node.value is not None
+                seen[node.target.id].add(self._made(node.value, local, me) if node.value is not None
                                          else self._class_named(node.annotation, local, me))
                 handled.add(id(node.target))
         for node in ast.walk(fn):                              # any other binding: for, with, walrus, unpacking
@@ -599,7 +629,7 @@ class _Walker:
         for st in getattr(cnode, "body", []):                  # class-level `billing: BillingService` (dataclasses)
             if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
                 ann = self._class_named(st.annotation, set(), None)
-                seen[st.target.id].add(ann if st.value is None else self._constructed(st.value, set(), None))
+                seen[st.target.id].add(ann if st.value is None else self._made(st.value, set(), None))
         for fid in self.idx.classes[cls]["methods"].values():
             fn = self.idx.funcs[fid].node
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
@@ -611,7 +641,7 @@ class _Walker:
                     [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
                 for t, v in pairs:
                     if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == me_name:
-                        got = self._constructed(v, set(), None) or (
+                        got = self._made(v, set(), None) or (
                             params.get(v.id) if isinstance(v, ast.Name) else None)
                         seen[t.attr].add(got if not isinstance(node, ast.AugAssign) else None)
                     elif isinstance(t, (ast.Tuple, ast.List, ast.Starred)):
@@ -628,6 +658,9 @@ class _Walker:
         cls = self._constructed(node, local, me)
         if cls:
             return cls, True
+        made = self._returned(node, local, me)                 # get_repo().add(): Cls or a subclass
+        if made:
+            return made, False
         fn = self.idx.funcs[owner].node if owner in self.idx.funcs else None
         if isinstance(node, ast.Name) and fn is not None and node.id in local:
             if owner not in self._local_types:

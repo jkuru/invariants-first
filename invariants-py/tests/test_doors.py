@@ -246,6 +246,12 @@ def _edges(tmp_path: pathlib.Path, code: str) -> dict[tuple[str, str], bool]:
      "    def go(self):\n        self.ctx.repo.add('t', 1)\n", "q.use.Outer.go"),
     ("import dataclasses\nfrom q.repo import Repo\n@dataclasses.dataclass\nclass Ctx:\n    repo: Repo\n"
      "def f(ctx: Ctx): ctx.repo.add('t', 1)\n", "q.use.f"),
+    # a factory or FastAPI dependency annotated to return the repository
+    ("from q.repo import Repo\ndef get_repo() -> Repo: ...\ndef f():\n    r = get_repo()\n    r.add('t', 1)\n", "q.use.f"),
+    ("from typing import Optional\nfrom q.repo import Repo\ndef get_repo() -> Optional[Repo]: ...\n"
+     "def f():\n    get_repo().add('t', 1)\n", "q.use.f"),
+    ("from q.repo import Repo\ndef get_repo() -> 'Repo | None': ...\nclass S:\n    def __init__(self):\n"
+     "        self.r = get_repo()\n    def go(self):\n        self.r.add('t', 1)\n", "q.use.S.go"),
 ])
 def test_a_receiver_of_known_class_is_an_extracted_edge(tmp_path, code, caller):
     assert _edges(tmp_path, code) == {(caller, "q.repo.Repo.add"): False}
@@ -267,6 +273,8 @@ def test_a_receiver_of_known_class_is_an_extracted_edge(tmp_path, code, caller):
     "from q.repo import Repo\nclass Ctx:\n    def __init__(self, c):\n        self.repo = Repo(c)\n"
     "def f(ctx: Ctx): ctx.repo.add('t', 1)\ndef patch(ctx, other):\n    setattr(ctx, 'repo', other)\n",
     "from q.repo import Repo\ndef f(ctx): ctx.repo.add('t', 1)\n",                     # ctx untyped
+    "from q.repo import Repo\ndef get_repo(): ...\ndef f():\n    get_repo().add('t', 1)\n",   # no annotation
+    "from q.repo import Repo\ndef get_repo() -> Repo | int: ...\ndef f():\n    get_repo().add('t', 1)\n",
 ])
 def test_an_unsure_receiver_stays_name_matched(tmp_path, code):
     got = _edges(tmp_path, code)
@@ -552,3 +560,97 @@ def test_an_attribute_chain_resolves_in_the_module_that_defines_the_class(tmp_pa
         "q/use.py": "from q.ctx import Ctx\n\ndef f(ctx: Ctx):\n    ctx.repo.add('t', 1)\n"})
     g = scan.graph([root])
     assert {(e.caller, e.inferred) for e in g.edges if e.callee == "q.repo.Repo.add"} == {("q.use.f", False)}
+
+
+def test_a_factory_in_another_module_resolves_where_it_is_written(tmp_path):
+    root = write_project(tmp_path / "f", {
+        "q/__init__.py": "", "q/repo.py": REPO,
+        "q/deps.py": "from q.repo import Repo\n\ndef get_repo(c) -> Repo:\n    return Repo(c)\n",
+        "q/use.py": "from q.deps import get_repo\n\ndef f(c):\n    get_repo(c).add('t', 1)\n"})
+    g = scan.graph([root])
+    assert {(e.caller, e.inferred) for e in g.edges if e.callee == "q.repo.Repo.add"} == {("q.use.f", False)}
+
+
+# --- FastAPI layouts: routes -> a thin layer -> crud, typed sessions ------------------------------
+FASTAPI_APP = {
+    "app/__init__.py": "",
+    "app/deps.py": textwrap.dedent('''\
+        from typing import Annotated
+        from fastapi import Depends
+        from sqlmodel import Session
+
+        def get_db():
+            yield None
+
+        SessionDep = Annotated[Session, Depends(get_db)]
+        '''),
+    "app/crud.py": textwrap.dedent('''\
+        from sqlmodel import Session
+
+        def create_item(*, s: Session, title: str):
+            s.add(title)
+            s.commit()
+
+        def read_item(*, s: Session, item_id: int):
+            return s.get(item_id)
+        '''),
+    "app/logic/__init__.py": "",
+    "app/logic/items.py": textwrap.dedent('''\
+        from app import crud
+
+        def place_item(s, title):
+            if not title:
+                raise ValueError("empty title")
+            crud.create_item(s=s, title=title)
+        '''),
+    "app/routes/__init__.py": "",
+    "app/routes/items.py": textwrap.dedent('''\
+        from fastapi import APIRouter
+        from app import crud
+        from app.deps import SessionDep
+        from app.logic import items
+
+        router = APIRouter()
+
+        @router.post("/items")
+        def create(session: SessionDep, title: str):
+            items.place_item(session, title)
+
+        @router.post("/items/quick")
+        def quick_create(session: SessionDep, title: str):
+            crud.create_item(s=session, title=title)
+
+        @router.get("/items/{item_id}")
+        def read(session: SessionDep, item_id: int):
+            return crud.read_item(s=session, item_id=item_id)
+        '''),
+}
+
+
+def test_a_typed_session_is_a_store_whatever_its_name():
+    tree = ast.parse("from sqlmodel import Session\nX = 1\ndef f(s: Session, sess: 'AsyncSession', n: int):\n"
+                     "    s.add(1)\n    sess.delete(2)\n    n.add(3)\n")
+    assert sorted(doors._writes_in(tree.body[2])) == ["s.add", "sess.delete"]
+    alias = ast.parse("from typing import Annotated\nfrom sqlmodel import Session\nSessionDep = Annotated[Session, 1]\n")
+    assert doors.store_aliases(alias) == {"SessionDep"}
+    fn = ast.parse("def g(db: SessionDep):\n    db.merge(1)\n").body[0]
+    assert doors._writes_in(fn, frozenset({"SessionDep"})) == ["db.merge"]
+
+
+def test_routes_through_a_one_to_one_layer_to_crud_get_a_door(tmp_path):
+    root = write_project(tmp_path / "fa", FASTAPI_APP)
+    (d,) = doors.discover([root]).doors
+    assert d.sinks == ["app.crud.create_item"]                    # read_item does not write
+    assert d.doors == ["app.logic.items.place_item"]              # called once, but only by a route
+    assert d.allow == ["app.routes.items.quick_create"] and d.active    # the route that skips it, frozen
+    rep = scan.scan(expand_short_forms({"rules": [d.rule()]}), [root])
+    assert rep.rule_result(d.rid) == "pass"
+
+
+def test_a_one_caller_layer_that_no_route_calls_is_not_a_door(tmp_path):
+    routes = FASTAPI_APP["app/routes/items.py"].replace("    items.place_item(session, title)",
+                                                        "    crud.create_item(s=session, title=title)")
+    files = dict(FASTAPI_APP, **{"app/routes/items.py": routes,
+                                 "app/jobs.py": "from app.logic import items\n\ndef nightly(s):\n"
+                                                "    items.place_item(s, 'x')\n"})
+    assert doors.discover([write_project(tmp_path / "fb", files)]).doors == []

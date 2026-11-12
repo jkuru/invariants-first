@@ -262,7 +262,7 @@ The plugin does not support pytest-xdist.
 
 | Command | Synopsis |
 |---|---|
-| `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--no-doors] [--graphify GRAPH] [--no-graphify] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; reads `graphify-out/graph.json` for door hints when it exists; never overwrites. See [start.md](start.md). |
+| `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--no-doors] [--graph|--graphify GRAPH] [--no-graphify] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; reads `graphify-out/graph.json` for door hints when it exists; never overwrites. See [start.md](start.md). |
 | `inv check` | `inv check [file] [--relock] [--base REF] [--allow-weakening] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--path DIR]...`: `validate`, `lock --check`, `verify` and `scan` with one exit code; `--base` also fails on a weakening since the lock at REF unless `--allow-weakening` or `INV_ALLOW_WEAKENING=1`. |
 | `inv hook` | `inv hook pretool\|stop`: Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening, and any direct edit of `invariants.lock`; `stop` runs `inv check --relock` once per stop. |
 | `inv validate` | `inv validate [file] [--path DIR]`: runs the JSON Schema check and every load-time check, and lists every error. |

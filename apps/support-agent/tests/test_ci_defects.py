@@ -100,6 +100,22 @@ def test_d3_a_raised_cap_is_a_weakening(app: pathlib.Path) -> None:
     assert r.returncode == 1 and "maximum raised" in out and "WEAKENED" in out
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_d3_a_cap_the_agent_re_pinned_itself_fails_against_the_base(app: pathlib.Path) -> None:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "base"]):
+        subprocess.run(["git", *cmd], cwd=app, check=True, env=env, capture_output=True)
+    edit(app / "src/support_agent/models.py", "amount_cents: int = Field(gt=0, le=50_000)",
+         "amount_cents: int = Field(gt=0, le=500_000)")
+    lock = subprocess.run([sys.executable, "-m", "invariants.cli", "lock", "--accept-weakening"], cwd=app,
+                          env={**os.environ, "PYTHONPATH": str(app / "src")}, capture_output=True, text=True)
+    assert lock.returncode == 0, lock.stdout + lock.stderr            # the agent re-pins it itself
+    assert check(app).returncode == 0                                 # the PR's own lock now agrees
+    r = check(app, "--base", "main")                                  # CI compares with the base branch
+    assert r.returncode == 1 and "since main" in r.stdout and "maximum raised" in r.stdout, r.stdout
+
+
 # --- 4. more resamples so a flaky prompt passes ---------------------------------------------------
 def test_d4_more_resamples_is_a_weakening(app: pathlib.Path) -> None:
     edit(app / "invariants.yaml", "semantic_resamples: 1", "semantic_resamples: 5")

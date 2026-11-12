@@ -258,6 +258,9 @@ def test_init_pins_api_boundaries_only(tmp_path):
     ("CAP: int = -5\n", "x < CAP", "args.x < -5"),
     ("NAME = 'a'\n", "s == NAME", 'args.s == "a"'),
     ("ON = True\n", "f == ON", "args.f == true"),
+    ("NONE = None\n", "s == NONE", "args.s == null"),
+    ("CURRENCIES = ('usd', 'eur')\n", "s not in CURRENCIES", '!(args.s in ["usd", "eur"])'),
+    ("SIZES = [1, 2, 4]\n", "x in SIZES", "args.x in [1, 2, 4]"),
 ])
 def test_module_constants_are_inlined(consts, src, cel):
     tree = ast.parse(consts + f"def f(x, s, f):\n    if {src}:\n        raise ValueError('no')\n")
@@ -268,7 +271,8 @@ def test_module_constants_are_inlined(consts, src, cel):
 @pytest.mark.parametrize("consts", [
     "CAP = 10\nCAP = 11\n",                                         # bound twice
     "CAP = 10\ndef bump():\n    global CAP\n    CAP += 1\n",            # rebound from a function
-    "CAP = [10]\n",                                                  # not a literal
+    "CAP = {'a': 10}\n",                                             # a dict: not a literal here
+    "CAP = [[10]]\n",                                                # nested: not a literal here
     "for CAP in range(3):\n    pass\n",                                # a loop variable
     "import CAP\n",
 ])

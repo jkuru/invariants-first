@@ -61,6 +61,13 @@ so the call also reaches every scanned subclass's override. Anything else (an un
 a rebinding, unpacking it cannot pair) is a name-matched edge, which the scan reports as unresolved
 rather than trusting.
 
+A call to a scanned function annotated to return a scanned class types its result too:
+`get_repo().add(...)`, or `r = get_repo()` then `r.add(...)`, where `def get_repo() -> Repo`
+(also `Optional[Repo]`, `Repo | None` or a string annotation). That covers factories and FastAPI
+dependency helpers. The annotation is read in the module that defines the function, and the result
+may be a subclass, so overrides are reached as for an annotated parameter. A function with no return
+annotation, or one naming more than one class, gives no type.
+
 Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
 and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
 `billing: BillingService` at class level, as a dataclass does), the call is an extracted edge to

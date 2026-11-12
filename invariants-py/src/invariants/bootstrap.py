@@ -102,6 +102,8 @@ class _Cel:
                 raise Unsupported("`is` with something other than None")
             return f"{self._arith(left, 0, False)} {'==' if isinstance(op, ast.Is) else '!='} null"
         if isinstance(op, (ast.In, ast.NotIn)):
+            if isinstance(right, ast.Name) and right.id not in self.params and isinstance(self.consts.get(right.id), tuple):
+                right = _const_node(self.consts[right.id])          # CURRENCIES = ("usd", "eur")
             if not isinstance(right, (ast.List, ast.Tuple, ast.Set)):
                 raise Unsupported("`in` on something other than a literal list (Python also searches strings)")
             s = f"{self._arith(left, 0, False)} in {self._list(right)}"
@@ -131,7 +133,7 @@ class _Cel:
             if n.id in self.params:
                 return f"args.{n.id}"
             if n.id in self.consts:
-                return self._value(ast.Constant(self.consts[n.id]))
+                return self.expr(_const_node(self.consts[n.id]))
             raise Unsupported(f"name {n.id} is not a parameter or a module constant")
         if isinstance(n, ast.Attribute):
             if n.attr.startswith("_"):
@@ -168,15 +170,27 @@ def to_cel(cond: ast.expr, params: set[str], consts: dict[str, Any] | None = Non
     return _Cel(params, consts).expr(cond)
 
 
-def _literal(n: ast.expr | None) -> tuple[bool, Any]:
-    """(True, value) for an int, float, str or bool literal (a negative number too); else (False, None)."""
+def _literal(n: ast.expr | None, depth: int = 0) -> tuple[bool, Any]:
+    """(True, value) for an int, float, str, bool or None literal (a negative number too), or a tuple,
+    list or set of them (as a tuple); else (False, None)."""
     if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub) and isinstance(n.operand, ast.Constant):
         v = n.operand.value
         if type(v) is int or type(v) is float:
             return True, -v
-    if isinstance(n, ast.Constant) and type(n.value) in (int, float, str, bool):
+    if isinstance(n, ast.Constant) and (n.value is None or type(n.value) in (int, float, str, bool)):
         return True, n.value
+    if isinstance(n, (ast.Tuple, ast.List, ast.Set)) and depth == 0:
+        items = [_literal(e, 1) for e in n.elts]
+        if all(ok for ok, _ in items):
+            return True, tuple(v for _, v in items)
     return False, None
+
+
+def _const_node(v: Any) -> ast.expr:
+    """An AST literal for a module constant's value (a tuple becomes a list literal)."""
+    if isinstance(v, tuple):
+        return ast.List([_const_node(x) for x in v], ast.Load())
+    return ast.Constant(v)
 
 
 def module_constants(tree: ast.Module) -> dict[str, Any]:

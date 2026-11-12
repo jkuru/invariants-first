@@ -4,7 +4,8 @@ Graphify (https://github.com/Graphify-Labs/graphify) parses a codebase with tree
 code, and clusters the graph into communities (Leiden, else Louvain). `inv init` can read its graph to
 find doors its naming heuristics miss: a function that sits between two communities (an API layer
 and a repository layer, say) is a door candidate even when nothing is named Service or Repo, and the
-calls Graphify resolved (a tool registry, a dispatch table) count as callers.
+calls Graphify's parser extracted (EXTRACTED links only: never an INFERRED or AMBIGUOUS one) count as
+callers.
 
 The graph only proposes. Every door rule it suggests is checked by the real scan (doors._freeze)
 before it is written, and `inv check` never reads the graph: the scan's own extracted call edges are
@@ -28,7 +29,7 @@ from . import scan as scanner
 
 DEFAULT_PATH = pathlib.Path("graphify-out") / "graph.json"
 CALL_RELATIONS = frozenset({"calls", "call", "invokes", "uses"})   # links that mean "this calls that"
-TRUSTED = frozenset({"EXTRACTED", "INFERRED"})                    # AMBIGUOUS links are not used
+TRUSTED = frozenset({"EXTRACTED"})       # deterministic tree-sitter edges only; INFERRED and AMBIGUOUS are not used
 _LINE = re.compile(r"L?(\d+)")
 MAX_BYTES = 200_000_000
 

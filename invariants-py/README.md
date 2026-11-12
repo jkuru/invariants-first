@@ -348,7 +348,7 @@ Details: [docs/api.md](docs/api.md#integrations).
 
 | Command | What it does |
 |---|---|
-| `inv init [--graphify GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
+| `inv init [--graph GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
 | `inv check [--relock] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens; `--base` also fails on a weakening since REF. |
 | `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening and any direct edit of `invariants.lock`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
@@ -383,7 +383,7 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 
 - **Coverage is only as good as the rules.** In the evaluation, no defect outside a rule was caught.
 - **The scan is approximate.** It types a method call's receiver only when it is sure (a constructor,
-  an annotated parameter, `self.x` set in `__init__`, an attribute chain such as `ctx.billing` on a
+  an annotated parameter, a factory annotated `-> Repo`, `self.x` set in `__init__`, an attribute chain such as `ctx.billing` on a
   typed `ctx`, never an attribute some code sets from outside); it does not follow dependency injection
   containers, event buses or callbacks, and it cannot see callers outside the scanned roots. An
   unresolved call is reported as unresolved, never as a pass. [docs/scan.md](docs/scan.md#limitations)

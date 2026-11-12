@@ -64,16 +64,28 @@ removed.
   methods, or `setattr(obj, "x", ...)`) is never typed, so a swapped dependency stays unresolved.
 - **Graphify hints for `inv init`.** With `graphify-out/graph.json` in the project (or
   `--graphify PATH`; `--no-graphify` turns it off), `inv init` reads a
-  [Graphify](https://github.com/Graphify-Labs/graphify) graph as plain JSON: nodes are matched to
+  [Graphify](https://github.com/Graphify-Labs/graphify) graph (`--graph` is the same option) as plain
+  JSON: nodes are matched to
   functions by file and line, communities propose doors (a caller of a write in another community,
-  itself called, is a door even when nothing is named Service), and the calls Graphify resolved
-  (EXTRACTED or INFERRED, not AMBIGUOUS) count as callers. Every proposed rule is still checked by
+  itself called, is a door even when nothing is named Service), and the call links Graphify's parser
+  extracted (`EXTRACTED` only, never `INFERRED` or `AMBIGUOUS`) count as callers. Every proposed rule is still checked by
   the scan before it is written; `inv check` never reads the graph, and Graphify is never imported
   or run (`invariants.graphify`).
 - **Module constants in `inv init`.** A precondition that compares with a module-level literal
   bound once (`MAX_REFUND = 10_000`; `if amount > MAX_REFUND: raise`) is translated with the value
-  inlined (`args.amount > 10000`). A name bound twice, rebound with `global`, a loop variable or an
-  import is left untranslated and says so.
+  inlined (`args.amount > 10000`). An int, float, str, bool or None counts, and so does a tuple, list
+  or set of them (`if currency not in CURRENCIES: raise`). A name bound twice, rebound with `global`,
+  a loop variable or an import is left untranslated and says so.
+- **Factory return types in the scan.** `get_repo().add(...)` and `r = get_repo(); r.add(...)` are
+  extracted calls when `def get_repo() -> Repo` (or `Optional[Repo]`, `Repo | None`): factories and
+  FastAPI dependency helpers. The annotation resolves where the function is written, and subclass
+  overrides are reached.
+- **Typed sessions and route layers in `inv init`.** A receiver annotated with a store type
+  (`s: Session`, `db: AsyncSession`, an alias such as `SessionDep = Annotated[Session, ...]`, also
+  imported) is a store client whatever its name, so its writes mark a sink. A function called only
+  by HTTP route handlers (`@router.post`, `@app.get` ...) that calls a write is that write's door,
+  even when one route calls it. On the full-stack FastAPI template this still writes no door rule:
+  its routes call `crud` and the session directly, so there is no such layer.
 - **apps/support-agent.** A tool-calling support agent: a graph of nodes registered as values, an
   `@inv.model_call` planner (2 format retries, 1 resample, `ESCALATE_TO_HUMAN` hands off), an
   `@inv.edge` executor, tools that call `BillingService` doors, and `StripeGateway` / `LedgerRepo`

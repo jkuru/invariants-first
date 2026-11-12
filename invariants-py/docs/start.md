@@ -171,14 +171,28 @@ again.
 `allow` is not a door. A path to the sink passes only when every function on it is in `allow`, so a
 new caller of an allowed function, or new code inside one that reaches the sink, is a bypass.
 
+How `inv init` finds them. A function is a repository write (a sink) when its class or module is
+named like a repository (`Repo`, `Store`, `Gateway`, `DAO`, `repo`, `store`, `crud`, `db` ...) and
+its name is a write verb, or when its body writes through a store client: an ORM session, a Django
+manager, a Mongo collection, a DynamoDB table, a client's `create` call, or raw SQL. A receiver is a
+store client by its name (`session`, `db`, `conn` ...) or by its annotation, whatever it is called:
+`s: Session`, `db: AsyncSession`, or an alias such as `SessionDep = Annotated[Session, Depends(get_db)]`
+imported from another module. The doors are the callers in a service layer (a module or class named
+like one), else a function called only by HTTP route handlers (`@router.post`, `@app.get` ...) that
+sits between them and the write, even when one route calls it, else the caller most functions go
+through. On the full-stack FastAPI template this still writes no door rule, correctly: its routes
+call `crud` and write through the session themselves, so there is no layer to lock yet.
+
 At most five door rules are written, money, quota and approval names first (`--max-doors N` changes
 it); the rest are listed in the file. `--no-doors` skips this step.
 
 **Graphify (optional).** If the project has a Graphify
-graph at `graphify-out/graph.json`, `inv init` reads it as JSON (`--graphify PATH` names another
-file, `--no-graphify` turns it off). Its communities and call links help find doors where nothing
-is named Service. Every rule it suggests is still checked by the real scan before it is written,
-and `inv check` never reads the graph.
+graph at `graphify-out/graph.json`, `inv init` reads it as JSON (`--graph PATH` or `--graphify PATH`
+names another file, `--no-graphify` turns it off). Its communities help find doors where nothing is
+named Service: a caller of a write that sits in another community and is itself called is a door
+candidate. Its call links count as callers only when Graphify tagged them `EXTRACTED` (parsed from
+the source), never `INFERRED` or `AMBIGUOUS`. Every rule it suggests is still checked by the real
+scan before it is written, and `inv check` never reads the graph.
 
 ## 4. Make the check unskippable (5 minutes)
 
@@ -307,9 +321,11 @@ Only conditions over the function's parameters are translated: comparisons, `and
 arithmetic, `len`, `is None`, and `in` over a literal list. Anything else, such as division (Python
 and CEL divide differently) or a helper call, is listed as not translated rather than guessed. A
 module-level constant is inlined: with `MAX_REFUND = 10_000`, `if amount > MAX_REFUND: raise`
-becomes `args.amount > 10000`, so raising the constant later is a change to the rule file. A name
-that is bound more than once, rebound with `global`, imported, a loop variable or not a literal is
-not translated.
+becomes `args.amount > 10000`, and with `CURRENCIES = ("usd", "eur")`,
+`if currency not in CURRENCIES: raise` becomes `!(args.currency in ["usd", "eur"])`. So raising the
+constant later is a change to the rule file. A constant is an int, float, str, bool or None, or a
+tuple, list or set of them. A name that is bound more than once, rebound with `global`, imported, a
+loop variable or anything else is not translated.
 
 A door rule and a guard rule combine: give a rule both `guard:` and `sink:`, and the
 guarded function is the door. The rule then checks the arguments at run time and the scan proves no

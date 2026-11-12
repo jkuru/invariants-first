@@ -229,6 +229,16 @@ raw SQL to the table in a new module and through a module constant (below the AP
 calls the sink, an unrelated edit, a fixed back door with its `allow` entry removed, and `--base` on
 a clean tree.
 
+**Follow-up from a review checklist.** Four more items were built after the rounds above and
+covered by tests and mutants: receivers typed from a factory's return annotation (`get_repo() ->
+Repo`), store clients recognised by annotation (`s: Session`, a `SessionDep` alias), a one-to-one
+layer between HTTP routes and a write accepted as its door, and module constants that are `None` or
+tuples, lists or sets. Graphify call links now count only when `EXTRACTED`. After them the suite ran
+3,944 tests, all 16 mutants of the changed code were caught, the three apps' CI passed, and the 39
+scenarios were unchanged. `inv init` on the full-stack FastAPI template (read and parsed only, never
+installed or run) still writes no door rule, as it should: its routes call `crud` and write through
+the session themselves, so no layer sits between them to lock.
+
 **Cost.** Typing attribute chains made `inv scan` slower: 1.17 s against 0.94 s for the library's
 own source and tests (104 modules, 1,852 functions).
 

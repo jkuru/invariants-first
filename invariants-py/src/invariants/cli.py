@@ -727,7 +727,7 @@ def parser() -> argparse.ArgumentParser:
     it.add_argument("--no-doors", action="store_true",
                     help="do not look for doors (the service functions every call to a repository's writes "
                          "goes through)")
-    it.add_argument("--graphify", metavar="GRAPH",
+    it.add_argument("--graphify", "--graph", metavar="GRAPH",
                     help="read a Graphify graph.json for door hints (default: graphify-out/graph.json when it "
                          "exists); every suggested door is still checked by the scan")
     it.add_argument("--no-graphify", action="store_true", help="do not read a Graphify graph")

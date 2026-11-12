@@ -59,6 +59,57 @@ STORE_RECEIVERS = frozenset({"session", "db", "conn", "connection", "cursor", "c
                              "redis", "stripe"})      # not repo/store: calling a repository is not the write
 
 
+# Types whose instances are a store client: a parameter or local annotated with one (`s: Session`,
+# `db: AsyncSession`, `SessionDep = Annotated[Session, Depends(get_db)]`) is a store receiver, whatever its name
+STORE_TYPES = frozenset({"Session", "AsyncSession", "scoped_session", "Connection", "AsyncConnection", "Engine",
+                         "AsyncEngine", "Cursor", "Collection", "AsyncIOMotorCollection", "Database", "Table",
+                         "Redis", "StrictRedis", "Pool", "Transaction"})
+
+
+def _names_type(ann: ast.AST | None, aliases: frozenset[str] = frozenset()) -> bool:
+    """True when an annotation names a store type (Session, Optional[Session], Annotated[Session, ...],
+    a string annotation, or a module alias such as SessionDep)."""
+    if ann is None:
+        return False
+    if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+        try:
+            ann = ast.parse(ann.value, mode="eval").body
+        except SyntaxError:
+            return False
+    for n in ast.walk(ann):
+        name = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+        if name and (name in STORE_TYPES or name in aliases):
+            return True
+    return False
+
+
+def store_aliases(tree: ast.Module) -> frozenset[str]:
+    """Module-level names that alias a store type: `SessionDep = Annotated[Session, Depends(get_db)]`."""
+    out = set()
+    for st in tree.body:
+        if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name) \
+                and _names_type(st.value):
+            out.add(st.targets[0].id)
+        elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) and st.value is not None \
+                and _names_type(st.value):
+            out.add(st.target.id)
+    return frozenset(out)
+
+
+def _typed_stores(fn: ast.AST, aliases: frozenset[str]) -> frozenset[str]:
+    """The function's parameters and locals annotated with a store type."""
+    out = set()
+    args = getattr(fn, "args", None)
+    if isinstance(args, ast.arguments):
+        for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+            if _names_type(a.annotation, aliases):
+                out.add(a.arg)
+    for n in ast.walk(fn):
+        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and _names_type(n.annotation, aliases):
+            out.add(n.target.id)
+    return frozenset(out)
+
+
 def _is_write_name(name: str) -> bool:
     """save, add_usage, setStatus: a write verb, alone or followed by _ or a capital (not 'settle')."""
     if name.startswith("__"):
@@ -69,8 +120,9 @@ def _is_write_name(name: str) -> bool:
                for v in WRITE_VERBS)
 
 
-def _store_call(call: ast.Call) -> str | None:
-    """'session.add' for a call that writes through a store, else None (dict.update and set.add are not)."""
+def _store_call(call: ast.Call, typed: frozenset[str] = frozenset()) -> str | None:
+    """'session.add' for a call that writes through a store, else None (dict.update and set.add are not).
+    typed: names known to hold a store client by their annotation (`s: Session`)."""
     f = call.func
     if not isinstance(f, ast.Attribute) or f.attr not in ORM_WRITES:
         return None
@@ -86,20 +138,26 @@ def _store_call(call: ast.Call) -> str | None:
             return None
     recv = ast.unparse(f.value)
     words = set(re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", recv).lower()))
+    root = f.value
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if isinstance(root, ast.Name) and root.id in typed:
+        return f"{recv}.{f.attr}"
     if words & STORE_RECEIVERS or (f.attr == "create" and recv[:1].isupper()):    # stripe.Refund.create
         return f"{recv}.{f.attr}"
     return None
 
 
-def _writes_in(fn: ast.AST) -> list[str]:
+def _writes_in(fn: ast.AST, aliases: frozenset[str] = frozenset()) -> list[str]:
     """The store writes in a function's own body (not in nested functions)."""
+    typed = _typed_stores(fn, aliases)
     out: list[str] = []
     stack = list(ast.iter_child_nodes(fn))
     while stack:
         n = stack.pop()
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             continue
-        if isinstance(n, ast.Call) and (w := _store_call(n)):
+        if isinstance(n, ast.Call) and (w := _store_call(n, typed)):
             out.append(w)
         stack.extend(ast.iter_child_nodes(n))
     return out
@@ -152,8 +210,22 @@ def _service_like(fid: str) -> bool:
     return bool(segs) and bool(SERVICE_MODULE.match(segs[-1]))
 
 
+ROUTE_DECORATOR = re.compile(r"^(get|post|put|patch|delete|head|options|route|api_route|websocket)$")
+
+
+def route_handlers(g: scanner.Graph) -> set[str]:
+    """Functions registered as HTTP handlers: `@router.post(...)`, `@app.get(...)`, `@bp.route(...)`."""
+    out = set()
+    for fid, f in g.idx.funcs.items():
+        for d in getattr(f.node, "decorator_list", []):
+            target = d.func if isinstance(d, ast.Call) else d
+            if isinstance(target, ast.Attribute) and ROUTE_DECORATOR.match(target.attr):
+                out.add(fid)
+    return out
+
+
 def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set[str],
-               community: dict[str, int] | None = None) -> list[str]:
+               community: dict[str, int] | None = None, routes: frozenset[str] = frozenset()) -> list[str]:
     """The doors of writer w. Every service-layer caller is one (the service layer is allowed to call the
     repository). With a Graphify graph, so is every caller in another community than w that is itself
     called (a function between two layers, whatever it is named). Without either, the caller the most
@@ -167,6 +239,10 @@ def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set
                    and callers[c] - {c} - inside]
         if bridges:
             return bridges
+    # the layer between HTTP routes and the writer, even one-to-one: called only by route handlers
+    between = [c for c in cands if c not in routes and callers[c] - {c} and callers[c] - {c} <= routes]
+    if between:
+        return between
     best: tuple[int, int, str] | None = None
     for cand in cands:
         n = len(callers[cand] - {cand})
@@ -210,11 +286,14 @@ def sinks_of(g: scanner.Graph) -> tuple[dict[str, set[str]], dict[str, set[str]]
         if write.table and write.ops & WRITE_OPS and owner in real:
             tables[owner].add(write.table)
     groups: dict[str, set[str]] = collections.defaultdict(set)
+    # aliases are collected across modules: SessionDep is written in deps.py and imported by the routes
+    aliases = frozenset().union(*(store_aliases(mod.tree) for mod in g.idx.modules.values()))
     for fid in sorted(real):
         node = g.idx.funcs[fid].node
         name = fid.rsplit(".", 1)[-1]
         res = _resource(g, fid)
-        writes = bool(tables.get(fid)) or bool(node is not None and _writes_in(node))
+        writes = bool(tables.get(fid)) or bool(
+            node is not None and _writes_in(node, aliases))
         if res and (_is_write_name(name) or writes) and not name.startswith("_"):
             groups[res].add(fid)
         elif writes and not res:
@@ -243,6 +322,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         for a, b in hint.calls:                  # calls the graph resolved: discovery only, never the scan
             callers[b].add(a)
     community = hint.community if hint else None
+    routes = frozenset(route_handlers(g))
     groups, written = sinks_of(g)
     found: list[Door] = []
     no_door: dict[str, list[str]] = {}
@@ -251,7 +331,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         inside = {f for f in real if _resource(g, f) == res} | members      # the repository's own code
         door_list: list[str] = []
         for w in sorted(members):
-            for door in _doors_for(w, callers, real, inside, community):
+            for door in _doors_for(w, callers, real, inside, community, routes):
                 if door not in door_list:
                     door_list.append(door)
         if not door_list:
@@ -262,7 +342,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         # a repository's write methods are all sinks: nobody but a door may call any of them. Outside a
         # repository, only the writers that have a door are (the rest are listed with no door).
         sinks = sorted(members) if repo else sorted(w for w in members
-                                                    if _doors_for(w, callers, real, inside, community))
+                                                    if _doors_for(w, callers, real, inside, community, routes))
         via = sorted({c for d in door_list for c in callers[d]} - set(door_list))
         ts = sorted({t for s in sinks for t in written.get(s, ())})
         generic = res.rsplit(".", 1)[-1] in REPO_MODULE or res.startswith("table ")
