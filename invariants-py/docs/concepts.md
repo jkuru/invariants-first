@@ -16,8 +16,8 @@ uses one fails to load with a message that says what to do instead.
 
 This page explains the moving parts: what a rule is, where it runs, what it can answer, and how
 the library decides whether a rule really holds. Every rule-file field is listed in
-[rule-file.md](rule-file.md), and the reasoning behind the design is in the
-[design guide](design-guide.md).
+[rule-file.md](rule-file.md), and the whole system, end to end, is in
+[Invariant-first](design-guide.md).
 
 - [Rules, targets and effects](#rules-targets-and-effects)
 - [Enforcers](#enforcers)
@@ -360,10 +360,10 @@ inv.configure(
   `inv.observe(fn)` sees every evaluation in every registry. An observer, exporter, store or pager
   that raises is logged, and never reaches the guarded call.
 - **Error spikes.** A spike sets `Registry.demoted[rule_id]`, and the rule's effective mode stays
-  `detect` until `Registry.restore(rule_id)`. It is off unless configured. This deviates on purpose
-  from section 2.4 of the design guide, which demotes on a spike by default: when request data can
-  cause rule errors (a missing field, an oversized input past the cost budget), a default demotion
-  would let a client switch an enforcing rule to detect by sending bad requests, and then pass. Turn
+  `detect` until `Registry.restore(rule_id)`. It is off unless configured, on purpose: when request
+  data can cause rule errors (a missing field, an oversized input past the cost budget), a default
+  demotion would let a client switch an enforcing rule to detect by sending bad requests, and then
+  pass. Turn
   it on for rules whose errors only your own code can cause.
 - **Monitors.** `inv.monitor(rule_id, rows)` evaluates a rule's `monitor` enforcer over
   `(key, base)` rows and records each outcome. It never blocks.

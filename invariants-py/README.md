@@ -424,7 +424,7 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [API](docs/api.md) | every public name, the pytest plugin and the integrations |
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
 | [Evaluation](docs/evaluation.md) | the measured experiment and its verdict |
-| [Design guide](docs/design-guide.md) | the reasoning behind the design, and its limits |
+| [Invariant-first](docs/design-guide.md) | the whole system for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example, the limits |
 
 **Examples.** [apps/pool-service](../apps/pool-service) is a FastAPI and SQLite lease service
 with an LLM triage step, and [apps/fact-pipeline](../apps/fact-pipeline) is a batch pipeline

@@ -2,7 +2,7 @@
 # accepts it with a label. Install your project (with invariants) in an earlier step; this action
 # runs the `inv` on PATH, since `inv check` imports your app.
 name: invariants check
-description: Fail a pull request that weakens a rule, a pinned pydantic constraint or a database constraint.
+description: Fail a pull request that weakens a rule, a pinned pydantic constraint or a door rule.
 branding:
   icon: shield
   color: green
