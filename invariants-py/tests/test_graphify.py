@@ -218,3 +218,23 @@ def test_a_real_graphify_graph_is_read_and_matched(tmp_path):
     plain = doors.discover([src])
     real = doors.discover([src], graph=REAL, project=SUPPORT_AGENT)
     assert [(d.doors, d.sinks, d.allow) for d in real.doors] == [(d.doors, d.sinks, d.allow) for d in plain.doors]
+
+
+SHOP = pathlib.Path(__file__).parent / "fixtures" / "graphify" / "shop"
+
+
+def test_a_real_graph_of_unconventionally_named_layers_adds_no_door():
+    """api.py -> checkout.py -> ledger.py, nothing named like a service or repository, each middle
+    function called once, so the heuristics find no door. `graphify update` (0.9.107, no model) wrote
+    this graph. Its communities follow call chains, not layers (the buy chain is one community, the
+    refund chain another), so the community rule finds no door either. Measured, not assumed."""
+    graph = SHOP / "graphify-out" / "graph.json"
+    g = scan.graph([SHOP])
+    h = graphify.hints(graph, g, [SHOP])
+    buy = {h.community[f] for f in ("shop.api.handle_buy", "shop.checkout.place_order", "shop.ledger.post_charge")}
+    refund = {h.community[f] for f in ("shop.api.handle_refund", "shop.checkout.give_refund", "shop.ledger.post_credit")}
+    assert len(buy) == 1 and len(refund) == 1 and buy != refund            # one community per chain
+    plain = doors.discover([SHOP])
+    with_graph = doors.discover([SHOP], graph=graph, project=SHOP)
+    assert plain.doors == [] and with_graph.doors == []
+    assert set(plain.no_door) == set(with_graph.no_door) == {"table entries"}

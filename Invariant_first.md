@@ -122,8 +122,9 @@ plain JSON. Nodes are matched to functions by file and line. A caller of a write
 candidate, even when nothing is named Service, when it sits in its own Graphify community, every
 caller of it sits in a third one (a layer between two others), and it is not an entry point (`main`,
 a route handler). Call links count as callers only when Graphify tagged them `EXTRACTED`; in
-practice those are plain function calls the scan already sees, so the communities are what the graph
-adds. Every candidate still goes through the scan, `inv check` never reads the graph, and Graphify
+practice those are plain function calls the scan already sees. Measured on five codebases, the graph
+added one door and no rule the heuristics missed: its communities follow call chains (one per
+feature) rather than layers. Every candidate still goes through the scan, `inv check` never reads the graph, and Graphify
 is never imported or run. Graphify's MCP server (`graphify-mcp`) answers queries over the same graph
 for a coding agent; `inv init` reads the file, which gives the same data with no server running.
 

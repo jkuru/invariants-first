@@ -257,10 +257,15 @@ qualifies), with regression tests for both shapes. After the fix:
 | pool-service | 64 | 97 of 194 | 1 rule | the same |
 | fact-pipeline | 94 | 152 of 245 | 1 rule (commented out: back doors remain) | the same rule with one more door, `Pipeline.resolve_review` (still commented out) |
 | FastAPI template | 51 | 55 of 194 | none | none |
+| three-layer shop, unconventional names (`api.py` → `checkout.py` → `ledger.py`; test fixture) | 10 | 10 of 19 | none | none |
 
-So on these four codebases the graph added one plausible door and no rule that the heuristics
-missed. Where it should help is code whose layers are not named like services; none of these four is
-such a codebase, so that remains to be measured.
+The last row is the case the graph was meant for: no name says service or repository, each middle
+function has one caller, so the heuristics find no door. The graph finds none either. Its
+communities follow call chains, not layers: `handle_buy` → `place_order` → `post_charge` is one
+community and the refund chain another, so no function sits between two communities. The fixture and
+its real graph are pinned in `tests/fixtures/graphify/shop/` with a test that asserts this. So on the
+five codebases measured, the graph added one plausible door (fact-pipeline) and no rule the
+heuristics missed: on code like this, communities are not a layer signal.
 
 **Cost.** Typing attribute chains made `inv scan` slower: 1.17 s against 0.94 s for the library's
 own source and tests (104 modules, 1,852 functions).

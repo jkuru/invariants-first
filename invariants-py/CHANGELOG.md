@@ -71,7 +71,9 @@ removed.
   its callers must sit in a third community), and the call links Graphify's parser
   extracted (`EXTRACTED` only, never `INFERRED` or `AMBIGUOUS`) count as callers. Every proposed rule is still checked by
   the scan before it is written; `inv check` never reads the graph, and Graphify is never imported
-  or run (`invariants.graphify`).
+  or run (`invariants.graphify`). Run for real (graphify 0.9.107) on five codebases, including a
+  three-layer fixture with unconventional names, it added one door and no rule the heuristics missed:
+  its communities follow call chains, not layers. Real graphs are pinned in `tests/fixtures/graphify/`.
 - **Module constants in `inv init`.** A precondition that compares with a module-level literal
   bound once (`MAX_REFUND = 10_000`; `if amount > MAX_REFUND: raise`) is translated with the value
   inlined (`args.amount > 10000`). An int, float, str, bool or None counts, and so does a tuple, list

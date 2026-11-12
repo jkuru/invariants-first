@@ -193,7 +193,17 @@ named Service: a caller of a write is a door candidate when it sits in its own c
 of its callers sits in a third community (so it is a layer between two others), and it is not an
 entry point (`main`, a route handler). Its call links count as callers only when Graphify tagged them `EXTRACTED` (parsed from
 the source), never `INFERRED` or `AMBIGUOUS`. Every rule it suggests is still checked by the real
-scan before it is written, and `inv check` never reads the graph.
+scan before it is written, and `inv check` never reads the graph. Measured on five codebases, the
+graph added one door and no rule the heuristics missed: its communities follow call chains rather
+than layers ([evaluation](evaluation.md)).
+
+Graphify also ships an MCP server, which lets a coding agent query the graph while it works (the
+shortest path from a new tool to the gateway, what a change touches). It is separate from `inv`;
+to use it, `pip install 'graphifyy[mcp]'` and add it to the project's `.mcp.json`:
+
+```json
+{"mcpServers": {"graphify": {"command": "graphify-mcp", "args": ["graphify-out/graph.json"]}}}
+```
 
 ## 4. Make the check unskippable (5 minutes)
 
