@@ -1,7 +1,8 @@
 # The mediation scan
 
 A guard only protects the paths that go through it. `inv scan` is a static, read-only call-graph
-check that every path to a protected effect passes its door. The source is parsed with `ast`; it is
+check of path laws: every call path to a protected API (the *sink*, usually a repository method)
+passes an upper API (the *door*, usually a service method). The source is parsed with `ast`; it is
 never imported or run.
 
 - [Mediation](#mediation)
@@ -21,7 +22,8 @@ mediation:
   chokepoint: pools.size is written only by resize_door    # the positive argument, in words
   sink:   "py:pkg.store.set_size"           # the protected effect: a string or a list
   door:   "py:pkg.service.resize"           # the chokepoint function(s); defaults to subject.target
-  tables: [pools, {leases: [insert, update]}]  # raw SQL writes to these are forbidden outside sink and door
+  allow:  ["py:pkg.batch.refund_all"]       # known back doors, let through with everything in them
+  tables: [pools, {leases: [insert, update]}]  # below the API, optional: raw SQL writes to these are forbidden outside sink and door
   residual_paths: []                        # known gaps, in words; while any is listed, the rule is not held
 ```
 
@@ -46,7 +48,21 @@ Findings have four kinds:
 | `bypass` | a path of extracted call edges from an entrypoint to the sink that avoids every door | `bypass` |
 | `forbidden` | a bypass idiom | `forbidden/getattr-sink` (and `getattr` on a door), `forbidden/unwrap` (`.__wrapped__`), `forbidden/monkeypatch`, `forbidden/raw-sql` |
 | `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/computed-sql`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/parse-error` |
-| `missing` | a declared sink or door that does not exist in the scanned code | |
+| `missing` | a declared sink, door or `allow` entry that does not exist in the scanned code, or an `allow` entry that no longer reaches a sink without a door | `missing/sink`, `missing/door`, `missing/allow`, `missing/allow-unused` |
+
+Each finding carries the function it is in (`owner`, in `--format json`), which is what `allow`
+names to freeze it.
+
+### Method calls
+
+A method call is an extracted edge only when the scan is sure of the receiver's class: a constructor
+call (`Repo(session).add(...)`), a local variable whose every assignment is the same constructor, a
+parameter annotated with a scanned class (`repo: Repo`, `Optional[Repo]`, `Repo | None`, `"Repo"`),
+or `self.x` when every assignment to it in the class's methods is one of those (tuple assignment
+`self.a, self.b = a, b` included). Through an annotation or `self.x`, a subclass instance may arrive,
+so the call also reaches every scanned subclass's override. Anything else (an unannotated parameter,
+a rebinding, unpacking it cannot pair) is a name-matched edge, which the scan reports as unresolved
+rather than trusting.
 
 A call such as `store.sink.__call__(c)` (or `getattr(store.sink, "__call__")(c)`) is a call of the
 sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
@@ -60,6 +76,9 @@ calls are unresolved (not a pass). It is 4 when the scan skipped an `enforce` ru
 ablated (`INV_ABLATE`), which is not a pass either.
 
 ## Tables and raw SQL
+
+This part is below the API, and optional: a door rule without `tables` checks only which API calls
+which. `inv init` adds `tables` only with `--sql`.
 
 `mediation.tables` items are table names, which forbid every raw SQL write (INSERT, UPDATE,
 DELETE and DDL) outside the sink and door, or one-key mappings that forbid only some statement
@@ -99,7 +118,11 @@ With no `--root` and no configured roots, `inv scan` and `inv status` scan the r
 and, when a `pyproject.toml` sits beside the rule file, its source directories (`src/` and the
 setuptools `packages.find.where` directories) as roots of their own, so a src-layout project is
 scanned under the module names `inv lock` imports it by. A file is named from the deepest root that
-holds it. Scan roots and excludes can also live in the `pyproject.toml` beside the rule file:
+holds it. Test code and migrations are skipped by default, at any depth (`tests/`, `test/`,
+`testing/`, `test_*.py`, `*_test.py`, `conftest.py`, `migrations/`, `alembic/`): a unit test that calls
+a sink directly is not a back door. Scan roots and excludes can
+also live in the `pyproject.toml` beside the rule file (an `exclude` there replaces the default list,
+so `exclude = []` scans the tests too):
 
 ```toml
 [tool.invariants.scan]
@@ -116,7 +139,8 @@ not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still
 
 - `inv scan` builds an approximate call graph. When a method call cannot be resolved, the scan
   reports it as unresolved, never as a bypass.
-- It does not follow calls made through variables.
+- It does not follow calls through dependency injection containers, event buses, callbacks or
+  values it cannot type (see "Method calls" above).
 - Callers outside the scanned roots are invisible to it.
 - Tables are matched per table and statement kind, not per column. `archive.leases` counts as
   `leases`, because the schema qualifier is ignored.

@@ -1,4 +1,4 @@
-"""The `inv` command line: init, check, validate, lock, verify, scan, status.
+"""The `inv` command line: init, check, hook, validate, lock, verify, scan, status.
 
 Exit codes: 0 ok; 1 a check failed (invalid rule file, stale lock, verify or scan failure);
 2 usage error; 3 scan found nothing failing but some calls are unresolved (not a pass);
@@ -383,8 +383,16 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
     return cfg
 
 
+# Test code and migrations are not production paths: by default the scan skips them (at any depth), so
+# a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
+# this list (exclude = [] scans them too).
+DEFAULT_SCAN_EXCLUDE = scanner.anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
+                                        "migrations", "alembic")
+
+
 def _exclude(a: argparse.Namespace, path: pathlib.Path) -> list[str]:
-    return [*scan_config(path).get("exclude", []), *a.exclude]
+    cfg = scan_config(path)
+    return [*cfg.get("exclude", DEFAULT_SCAN_EXCLUDE), *a.exclude]
 
 
 def _roots(a: argparse.Namespace, path: pathlib.Path) -> list[pathlib.Path]:
@@ -450,6 +458,14 @@ def cmd_init(a: argparse.Namespace) -> int:
         if not r.exists():
             raise Usage(f"source root {r} does not exist")
     found = bootstrap.discover(project, roots, a.exclude)
+    if not a.sql:                                 # API boundaries only: the schema below them is opt-in
+        found.sql_skipped, found.sql, found.sql_in_code = len(found.sql), {}, []
+    if not a.no_doors:
+        from . import doors
+        # the same roots and excludes `inv check` will scan, so what init freezes is what check sees
+        found.doors = doors.discover(_roots(argparse.Namespace(root=a.root), path),
+                                     _exclude(argparse.Namespace(exclude=a.exclude), path), limit=a.max_doors,
+                                     tables=a.sql)
     path.write_text(bootstrap.render(found))
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
@@ -578,7 +594,7 @@ def cmd_check(a: argparse.Namespace) -> int:
     if mediated:
         code, text = _captured(cmd_scan, argparse.Namespace(rulefile=str(path), root=a.root, exclude=a.exclude,
                                                             format="text", output=None))
-        step("scan", code, text, "no path skips a guard" if code == OK else None)
+        step("scan", code, text, "no path skips a door or guard" if code == OK else None)
     else:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")
@@ -687,13 +703,21 @@ def parser() -> argparse.ArgumentParser:
                          "[tool.invariants.scan] exclude in pyproject.toml)")
     sc.add_argument("--format", choices=("text", "json", "sarif"), default="text")
     sc.add_argument("--output", metavar="FILE", help="write the report to FILE")
-    it = add("init", cmd_init, "draft invariants.yaml from the pydantic constraints, SQL constraints and "
+    it = add("init", cmd_init, "draft invariants.yaml from the pydantic constraints, SQL constraints, doors and "
              "function preconditions the code already has, then lock it")
     it.add_argument("--root", action="append", default=[], metavar="DIR",
                     help="source root to read (repeatable; default: src/ or the current directory)")
     it.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                     help="skip files matching GLOB (tests, docs, examples and scripts are skipped already)")
     it.add_argument("--no-lock", action="store_true", help="write the rule file only; do not run `inv lock`")
+    it.add_argument("--no-doors", action="store_true",
+                    help="do not look for doors (the service functions every call to a repository's writes "
+                         "goes through)")
+    it.add_argument("--sql", action="store_true",
+                    help="also pin .sql schema constraints and add the tables raw SQL writes to door rules (below "
+                         "the API: off by default)")
+    it.add_argument("--max-doors", type=int, default=5, metavar="N",
+                    help="write at most N door rules, the most important first (default 5); the rest are listed")
     ck = add("check", cmd_check, "validate, lock --check, verify and scan with one exit code: for CI, "
              "pre-commit and agent hooks")
     ck.add_argument("--relock", action="store_true",

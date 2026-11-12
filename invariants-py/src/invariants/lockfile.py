@@ -97,6 +97,7 @@ FIELD_POLICY: dict[str, str] = {
     # the short form (guard, tests) is expanded by loader.expand_short_forms before the lock reads the file:
     # the lock judges the subject.target, enforcer and falsified_by it becomes
     "rule.guard": ANALYSED, "rule.tests": NEUTRAL,
+    "rule.door": ANALYSED, "rule.sink": ANALYSED, "rule.tables": ANALYSED, "rule.allow": ANALYSED,   # short door form
     "rule.id": ANALYSED, "rule.rev": NEUTRAL, "rule.status": RANKED,
     "rule.class": PROSE, "rule.owner": PROSE, "rule.statement": PROSE, "rule.why": PROSE,
     "rule.subject": WEAKENING, "rule.subject.contract": WEAKENING, "rule.subject.target": WEAKENING,
@@ -107,6 +108,7 @@ FIELD_POLICY: dict[str, str] = {
     "rule.applies_to": ANALYSED,
     "rule.mediation.chokepoint": PROSE, "rule.mediation.residual_paths": ANALYSED,
     "rule.mediation.sink": ANALYSED, "rule.mediation.door": ANALYSED, "rule.mediation.tables": ANALYSED,
+    "rule.mediation.allow": ANALYSED,
     "clause.when": ANALYSED, "clause.message": NEUTRAL,
     # enforcers (point and target identify the enforcer: a change is a removal plus an addition)
     "enforcer.point": ANALYSED, "enforcer.target": ANALYSED, "enforcer.timing": RANKED, "enforcer.mode": RANKED,
@@ -1616,6 +1618,11 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         weak = any(t not in tb or not (ops <= tb[t]) for t, ops in ta.items())
         out.append(Change(where, "mediation.tables", a.get("tables"), b.get("tables"), weak,
                           "raw SQL to a table, or a statement kind, is no longer forbidden" if weak else ""))
+    allow_a, allow_b = as_list(a.get("allow")), as_list(b.get("allow"))
+    if sorted(allow_a) != sorted(allow_b):
+        came = [x for x in allow_b if x not in allow_a]
+        out.append(Change(where, "mediation.allow", allow_a or None, allow_b or None, bool(came),
+                          f"a back door is now allowed: {', '.join(came)}" if came else ""))
     ra, rb = a.get("residual_paths"), b.get("residual_paths")
     if not same(ra, rb):
         la = ra if isinstance(ra, list) else ([] if ra is None else [ra])
@@ -1624,7 +1631,7 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         out.append(Change(where, "mediation.residual_paths", ra, rb, bool(gone),
                           "a documented residual path was removed; `inv status` withholds `held` while "
                           "one is listed, so this can raise the rule's standing" if gone else ""))
-    for k in sorted((set(a) | set(b)) - {"sink", "door", "tables", "residual_paths"}):
+    for k in sorted((set(a) | set(b)) - {"sink", "door", "tables", "residual_paths", "allow"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
     return out

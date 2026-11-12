@@ -113,7 +113,7 @@ These changes are marked **WEAKENED**:
 - `timing` moved to `post_effect`;
 - a provider moved to a staler consistency;
 - a removed sink or table, or a narrower statement kind;
-- a new door on a scanned sink;
+- a new door on a scanned sink, or a new `allow` entry (a back door is now let through);
 - a target declared `effects: none`, or a target no longer covered;
 - `compares_to` removed, `compensable` set to true, or more `format_retries` or
   `semantic_resamples`;

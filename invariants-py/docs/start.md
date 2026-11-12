@@ -1,33 +1,52 @@
 # Start in 10 minutes
 
-The quickest win is to lock the rules your code **already has**, so no change, by a person or an
-agent, can loosen them without someone saying yes. You write no rules for this, and nothing new
-runs in production.
+Every layer of a system is an API: the HTTP route, the service method, the repository method, the
+model call, the external client (Stripe, say). Pydantic and OpenAPI define the *shape* of those APIs.
+The rule file defines their *laws*, and there are only two kinds:
 
-- **pydantic constraints:** `Field(gt=0, le=10_000)`, `max_length`, `Literal[...]`, required fields,
-  including SQLModel models.
-- **Database constraints:** `CHECK`, `NOT NULL`, `UNIQUE` and `PRIMARY KEY` in your `.sql` schema files.
-- **Rules you add later:** short `guard` rules on the functions that move money or spend quota.
+- **a value law:** on this API, these inputs or outputs are never allowed (a pydantic limit, or a
+  `bad` condition on `args` and `result`);
+- **a path law:** this lower-level API may only be called through that upper-level one ("only
+  `BillingService.refund` may call `BillingRepo.save_refund`").
+
+People own the laws at the boundaries, and coding agents are free inside the implementations. The
+rules never look below an API: not at SQL, private fields or transaction settings.
+
+Adoption comes in two steps, and the first one changes no production code.
+
+- **Step 1: a CI and agent check.** Install the package as a dev tool, like ruff or pytest, and never
+  import it in your app. `inv init` locks the laws your code **already has**:
+  - **value laws in your models:** pydantic `Field(gt=0, le=10_000)`, `max_length`, `Literal[...]`,
+    required fields, including SQLModel models;
+  - **path laws between your layers:** for each repository (a Repo or Store class, a store module, a
+    Stripe-style gateway), the service methods that call it, with the back doors that skip them today
+    listed and frozen, so a new one fails CI. It works the same over SQLAlchemy, Django, MongoDB,
+    DynamoDB, an HTTP client or raw SQL.
+- **Step 2: value laws at run time, only where you want them.** Once the check has earned trust, put
+  `@inv.guard` on the few service methods that move money or spend quota (section 5).
 
 ## 1. Draft and lock (2 minutes)
 
 ```bash
-pip install invariants-first        # not on PyPI yet: pip install -e path/to/invariants-py
+pip install invariants-first        # a dev dependency; not on PyPI yet: pip install -e path/to/invariants-py
 cd your-project
 inv init
 ```
 
 `inv init` reads your source code without importing it. It writes `invariants.yaml` and runs
-`inv lock`. It never overwrites an existing rule file.
+`inv lock`. It never overwrites an existing rule file. `inv lock` does import the modules that hold
+your pydantic models, to read their JSON Schema, so run it where your project's dependencies are
+installed.
 
 ```text
 wrote invariants.yaml
   read 3 source file(s)
   pinned 1 pydantic model(s) with 5 constraint(s)
-  pinned 1 SQL file(s) with 5 constraint(s)
+  left 1 SQL file(s) unpinned: the schema is below the API (`inv init --sql` pins it)
   suggested 2 rule(s) from function preconditions (commented out; see the file)
+  found no door (no function that two or more callers go through to a write)
 running `inv lock` to pin them ...
-wrote invariants.lock: 0 rule(s), 0 target(s), 0 provider(s), 2 contract(s), 1 schema(s)
+wrote invariants.lock: 0 rule(s), 0 target(s), 0 provider(s), 1 contract(s), 1 schema(s)
 ```
 
 The rule file it writes looks like this:
@@ -36,8 +55,6 @@ The rule file it writes looks like this:
 contracts:
   # charge_id: min_length=1, charge_id: max_length=64, amount: gt=0, amount: le=10000, +1 more
   refund_request: {type: pydantic, ref: "billing.models:RefundRequest"}
-  # 5 constraint(s): refunds.amount: CHECK (amount > 0); refunds.amount: NOT NULL; ...
-  schema: {type: sql, ref: "schema.sql"}
 
 rules:
 #  - id: REFUND
@@ -48,11 +65,11 @@ rules:
 #    tests: []
 ```
 
-Review the file. Delete any contract you don't care about, then commit both `invariants.yaml` and
-`invariants.lock`. If `inv lock` fails, it is usually a model `ref` that doesn't import from the
-project root. Fix the ref, or pass `--path DIR`, then run `inv lock` again.
+Review the file. Delete any contract or rule you don't care about, then commit both
+`invariants.yaml` and `invariants.lock`. If `inv lock` fails, it is usually a model `ref` that doesn't
+import from the project root. Fix the ref, or pass `--path DIR`, then run `inv lock` again.
 
-## 2. What it catches
+## 2. Value laws: what the lock catches
 
 An agent raises a limit so its failing test passes:
 
@@ -67,20 +84,93 @@ inv check: invariants.yaml
 fail
 ```
 
-These changes count as a weakening, because the model or table now accepts something it refused:
+These changes count as a weakening, because the API now accepts something it refused:
 
 - a raised maximum or a lowered minimum, or either one removed;
 - a new enum value;
 - a field that is no longer required, or a field removed;
-- a changed `pattern`, `format` or type;
-- a dropped or edited SQL constraint.
+- a changed `pattern`, `format` or type.
 
 A change that only tightens the rules passes, and so does every other edit to the code.
-
 Running `inv check --relock` re-pins the lock by itself when no change weakens anything, so the
 lock never needs hand maintenance.
 
-## 3. Make the check unskippable (5 minutes)
+## 3. Path laws: doors and back doors
+
+Most codebases already have a service layer: eight endpoints go through
+`ExpenseService.refund()`, which checks the amount before it calls the payment gateway. The weak spot
+is the one support script that calls the gateway directly. `inv init` finds both:
+
+- a **sink** is a repository write: a write method of a Repo, Store, Gateway or DAO class (or a write
+  function in a `repo`/`store`/`db` module), or a function that writes through an ORM session, a
+  Django manager, a Mongo collection, a DynamoDB table, a client's `create` call or raw SQL. Reads
+  (`get`, `current`, `select(...)`) are not sinks;
+- a **door** is a service-layer caller of a sink (a method of a `…Service` or `…Manager` class, or a
+  function in a `service` module), or, where there is no service layer, the one caller most other
+  functions go through;
+- a **back door** is any other caller of a sink.
+
+It proposes one rule per repository, runs the real scan on it, and freezes what it finds. This is
+real output from an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with
+no SQL anywhere:
+
+```text
+$ inv init
+  ...
+  door REFUND-GATEWAY-DOOR: quota.repo.RefundGateway through quota.service.ExpenseService.refund (1 caller(s))
+    found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
+  door EXPENSE-STORE-DOOR: quota.repo.ExpenseStore through quota.service.ExpenseService.approve (1 caller(s))
+    found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
+  door USAGE-REPO-DOOR: quota.repo.UsageRepo through quota.service.QuotaService.consume or quota.service.QuotaService.new_month (2 caller(s))
+    found 1 back door(s) in quota/worker.py; frozen in allow, so check passes and a new one fails
+```
+
+Each rule is a few lines, plus the back doors it found:
+
+```yaml
+  # quota.repo.RefundGateway: written by quota.repo.RefundGateway.refund
+  #   1 caller(s) go through quota.service.ExpenseService.refund
+  # 1 back door(s) frozen in allow (fix each one, then delete it from allow):
+  #   scripts/admin.py:13 scripts.admin.goodwill_refund -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+  - id: REFUND-GATEWAY-DOOR
+    door: "py:quota.service.ExpenseService.refund"
+    sink: "py:quota.repo.RefundGateway.refund"
+    allow:
+      - "py:scripts.admin.goodwill_refund"
+```
+
+There is no decorator, and nothing runs in production: `inv check` reads the source. Today's code
+passes, because the known back doors are frozen in `allow`. The next one fails:
+
+```text
+$ inv check   # after an agent adds scripts/refund_tool.py, which calls the gateway directly
+  FAIL  scan
+        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:4:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+        REFUND-GATEWAY-DOOR: fail (1 bypass)
+```
+
+The check fails when new code calls a sink without passing a door, whichever way it is written:
+directly, through an alias or a module object, a constructor (`Repo(session).add(...)`), a local
+variable, an annotated parameter, `self.repo` (set in `__init__`, also by tuple assignment), or a
+subclass of the repository. It also fails on a call hidden with `getattr(repo, "save")`, on code that
+assigns over a sink, and on `__wrapped__`. A call on a receiver the scan can't be sure of (an
+unannotated parameter, say) is reported as unresolved, which also fails: the scan never guesses that
+a path is safe. Reads through the repository and unit tests that call it directly are not back doors.
+The scan skips `tests/`, `test_*.py`, `*_test.py`, `conftest.py` and migrations (`migrations/`,
+`alembic/`), at any depth, unless `[tool.invariants.scan] exclude` in `pyproject.toml` says otherwise.
+
+The doors are pinned by name. A new service method that calls the repository without passing the
+door that checks the rule (a `bulk_refund` that skips `refund`) is a back door too. If it is a real
+door, add it to `door:`; the lock reports that as a weakening, so a person accepts it. The lock also
+reports adding an `allow` entry and deleting the rule as weakenings. When you fix a back door, delete
+its `allow` entry: that is a tightening and needs no one's approval. An `allow` entry that no longer
+matches a back door fails the check until you delete it, so a regression in that function is caught
+again.
+
+At most five door rules are written, money, quota and approval names first (`--max-doors N` changes
+it); the rest are listed in the file. `--no-doors` skips this step.
+
+## 4. Make the check unskippable (5 minutes)
 
 The lockfile alone isn't enough, because an agent can run `inv lock --accept-weakening` itself.
 Three layers close that gap. Each one is a single copy and paste.
@@ -171,7 +261,7 @@ rule. Never run `inv lock --accept-weakening` or set INV_ALLOW_WEAKENING; tell t
 your change weakens and why.
 ```
 
-## 4. Your first guarded rule (when you want one)
+## 5. Step 2: a value law on one API (when you want one)
 
 `inv init` turns `if ...: raise` and `assert` preconditions into suggested rules. A suggested rule
 keeps the check even if a later edit deletes the `if`. To turn one on:
@@ -205,26 +295,41 @@ arithmetic, `len`, `is None`, and `in` over a literal list. Anything else, such 
 and CEL divide differently), a global constant or a helper call, is listed as not translated rather
 than guessed.
 
-## 5. When to go further
+A door rule and a guard rule combine: give a rule both `guard:` and `sink:`, and the
+guarded function is the door. The rule then checks the arguments at run time and the scan proves no
+path skips it.
+
+## 6. When to go further
 
 Everything else is optional, and you can add it rule by rule:
 
-- providers that read the database;
-- doors and the mediation scan, which proves no code path goes around the guard;
-- transactional effects;
-- model-call parsing with retries;
+- value laws on model calls (`@inv.model_call`) and the tool calls an agent makes;
+- `result` checks on a service method (`timing: post_effect`);
+- providers that read current state for a rule (`provider.pool_leased`);
 - `old_self` transition rules.
 
 Start with the [README quickstart](../README.md#quickstart) and [concepts](concepts.md). The short
 form and the long form pin to the same lock, so switching a rule from one to the other isn't a
 change.
 
+**Below the API (legacy, opt-in).** Earlier versions also enforced rules inside the storage layer:
+pinned `.sql` constraints, `tables:` that forbid raw SQL to a table, storage triggers, `transactional`
+effects and provider consistency levels. They still work, and `inv init --sql` writes the first two,
+but they police an implementation rather than an API, and the plan is to retire them. New rules
+should not need them.
+
 ## Limits
 
-- **SQL is read, not parsed.** The reader understands common `CREATE TABLE` and
-  `ALTER TABLE ... ADD CONSTRAINT` shapes. DDL kept in Python strings or produced by a migration tool
-  isn't pinned (`inv init` lists the Python files that contain `CREATE TABLE`). Pin a schema dump
-  instead.
+- **Sinks are found by name and by the writes in their bodies.** A repository whose class or module
+  name gives no hint (not Repo, Store, Gateway, DAO, `repo`, `store`, `db` ...) and whose writes go
+  through a client the list doesn't know is not found. Write that rule by hand: name the repository
+  method as the `sink` and the service method as the `door`. Discovery reads function bodies only to
+  find sinks; the check itself is only about which API calls which.
+- **The chosen door is a heuristic.** Service-layer callers are doors; without a service layer, it is
+  the caller most other functions go through. Check each rule, and check that what `allow` calls a
+  back door really is one.
+- **The scan is static.** It does not follow calls through dependency injection containers, event
+  buses or callbacks. Where it can't tell, it reports unresolved instead of passing.
 - **Validators are code, so they aren't pinned.** A pydantic `@field_validator` or `@model_validator`
   isn't part of the JSON Schema. `inv init` notes each model that has validators. To protect one,
   write it as a guard rule.

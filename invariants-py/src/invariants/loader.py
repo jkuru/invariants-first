@@ -65,8 +65,56 @@ def read_document(source: str | pathlib.Path) -> dict[str, Any]:
     return expand_short_forms(doc)
 
 
-SHORT_FIELDS = frozenset({"guard", "tests"})
+SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "tables", "allow"})
 SHORT_ENFORCER = {"point": "decorator", "timing": "pre_effect", "mode": "enforce"}
+DOOR_FIELDS = ("door", "sink", "tables", "allow")
+STRUCTURE_ENFORCER = {"point": "structure", "timing": "pre_effect", "mode": "enforce"}
+
+
+def _py_list(rid: str, key: str, v: Any) -> list[str]:
+    items = [v] if isinstance(v, str) else v
+    if not isinstance(items, list) or not items or not all(isinstance(x, str) and x.startswith("py:") for x in items):
+        raise LoadError(f"{rid}: {key} must be a 'py:module.function' path or a non-empty list of them")
+    return list(items)
+
+
+def _expand_door(raw: dict[str, Any], rid: str) -> None:
+    """door/sink/tables/allow -> mediation; without guard or bad, a structure rule checked by the scan."""
+    if "sink" not in raw:
+        raise LoadError(f"{rid}: a door rule names the sink it protects: add sink: py:module.function "
+                        f"(the function that writes)")
+    med = raw.get("mediation")
+    if med is not None and not isinstance(med, dict):
+        raise LoadError(f"{rid}: mediation must be a mapping")
+    clash = sorted({"sink", "door", "tables", "allow"} & set(med or {}))
+    if clash:
+        raise LoadError(f"{rid}: give {', '.join(clash)} at the top of the rule or under mediation, not both")
+    sinks = _py_list(rid, "sink", raw.pop("sink"))
+    doors = _py_list(rid, "door", raw.pop("door")) if "door" in raw else []
+    allow_raw = raw.pop("allow", None)
+    allow = _py_list(rid, "allow", allow_raw) if allow_raw not in (None, []) else []   # emptied: none left
+    new = {**(med or {}), "sink": sinks if len(sinks) > 1 else sinks[0]}
+    if doors:
+        new["door"] = doors if len(doors) > 1 else doors[0]
+    if allow:
+        new["allow"] = allow
+    if not doors and "guard" not in raw:
+        raise LoadError(f"{rid}: a door rule names its door: add door: py:module.function (the function every "
+                        f"write must go through), or guard: to make the guarded function the door")
+    if "tables" in raw:
+        tables = raw.pop("tables")
+        new["tables"] = [tables] if isinstance(tables, (str, dict)) else tables
+    raw["mediation"] = new
+    if "guard" in raw or "bad" in raw or "subject" in raw:
+        if "guard" not in raw and "bad" in raw:
+            raise LoadError(f"{rid}: a door rule is checked by the scan and has no bad; to also check values at "
+                            f"run time, add guard: (the function whose arguments bad reads)")
+        return
+    if "enforcers" in raw:
+        raise LoadError(f"{rid}: a door rule adds its structure enforcer; drop enforcers or use the long form")
+    raw["bad"] = "false"                          # nothing to evaluate at run time: the scan is the check
+    raw["enforcers"] = [dict(STRUCTURE_ENFORCER)]
+    raw.setdefault("status", "enforce")
 
 
 def expand_short_forms(doc: dict[str, Any]) -> dict[str, Any]:
@@ -83,12 +131,29 @@ def expand_short_forms(doc: dict[str, Any]) -> dict[str, Any]:
     no `status`, it is `enforce` when the rule names tests and `detect` (log, do not block) when it does
     not, so the loader's evidence check never refuses a short rule. The lock pins the full form, so
     switching between the two forms is not a change, and deleting `tests:` lowers the status
-    (a weakening)."""
+    (a weakening).
+
+    A door rule names the function every write must go through and the function that writes:
+
+        - id: LEDGER-DOOR
+          door: py:billing.service.apply_transfer
+          sink: py:billing.store.write_balance
+          tables: [balances]
+          allow: [py:billing.batch_refund.refund_all]     # known back doors, frozen
+
+    becomes mediation {sink, door, tables}, `bad: 'false'` and one structure enforcer: nothing runs in
+    production, and `inv scan` (inside `inv check`) fails any path to the sink that skips the door and any
+    raw SQL write to the tables outside them. `allow` lists known back doors (mediation.allow): the scan
+    lets them through, so today's code passes and a new back door fails; the lock reports an added
+    entry as a weakening. With guard:
+    as well, the guarded function is the door and the rule also checks its arguments."""
     rules = doc.get("rules")
     for raw in rules if isinstance(rules, list) else []:
         if not isinstance(raw, dict) or not SHORT_FIELDS & set(raw):
             continue
         rid = raw.get("id", "?")
+        if any(k in raw for k in DOOR_FIELDS):
+            _expand_door(raw, rid)
         if "tests" in raw:
             if "falsified_by" in raw:
                 raise LoadError(f"{rid}: give tests or falsified_by, not both (tests is the short name)")
@@ -307,7 +372,7 @@ def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     rp = med.get("residual_paths", [])
     if not isinstance(rp, list) or not all(isinstance(x, str) for x in rp):
         raise LoadError(f"{rid}: mediation.residual_paths must be a list of strings")
-    for k in ("sink", "door"):
+    for k in ("sink", "door", "allow"):
         if k in med and not _strings(med[k], "py:"):
             raise LoadError(f"{rid}: mediation.{k} must be a 'py:' path or a non-empty list of them")
     if "tables" in med:
@@ -570,8 +635,10 @@ def _compute_max_status(rule: Rule, reg: Registry, target_key: str | None) -> No
     else:
         if not any(e["mode"] == "enforce" for e in live):
             why_not.append("no enforcer with mode enforce")
-        if not rule.raw.get("falsified_by"):
-            why_not.append("no falsified_by")
+        structural = all(e["point"] == "structure" for e in live) and bool((rule.raw.get("mediation") or {})
+                                                                            .get("sink"))
+        if not rule.raw.get("falsified_by") and not structural:
+            why_not.append("no falsified_by")         # a structure rule's evidence is the scan itself
         for e in live:
             tk = str(e.get("target", target_key))
             eff = reg.targets.get(tk, {"effects": "external"})["effects"]

@@ -1,16 +1,18 @@
-"""`inv init`: draft a first rule file from the checks a codebase already has.
+"""`inv init`: draft a first rule file from the laws a codebase already has, on its API boundaries.
 
-It reads the source (it does not import it) and finds three kinds of existing rule:
+It reads the source (it does not import it) and finds:
 
-- pydantic models with constraints (Field(gt=..., le=..., max_length=...), Literal, constr/conint...).
-  Each becomes a `pydantic` contract. Nothing else is needed: `inv lock` pins the model's JSON Schema,
-  and a later change that lets it accept more input is refused as a weakening.
-- SQL schema files with CHECK, NOT NULL, UNIQUE or PRIMARY KEY constraints. Each becomes a `sql`
-  contract, pinned the same way.
+- pydantic models with constraints (Field(gt=..., le=..., max_length=...), Literal, constr/conint...):
+  value laws on the APIs that take or return them. Each becomes a `pydantic` contract. Nothing else is
+  needed: `inv lock` pins the model's JSON Schema, and a later change that lets it accept more input
+  is refused as a weakening.
+- doors (doors.py): path laws between the service layer and the repositories it calls.
 - preconditions at the top of a function: `if <cond>: raise ...` and `assert <cond>`, where the condition
   only reads the parameters. Each function's preconditions become one short-form rule (guard + bad),
   translated from Python to CEL. These are written commented out: a rule needs `@inv.guard("ID")` on the
   function before `inv check` passes, so `inv init` leaves that decision, and the edit, to a person.
+- with `--sql` only (below the API): SQL schema files with CHECK, NOT NULL, UNIQUE or PRIMARY KEY
+  constraints, each a `sql` contract pinned the same way.
 
 The file it writes passes `inv check` as written. It never overwrites a rule file.
 """
@@ -21,13 +23,13 @@ import dataclasses
 import json
 import pathlib
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
-from .scan import iter_sources
+from .scan import anywhere, iter_sources
 from .sql_constraints import constraints as sql_constraints
 
-EXCLUDE = ("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py", "examples", "docs", "scripts",
-           "migrations", "benchmarks", "bench", "noxfile.py", "setup.py")
+EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py", "examples", "docs",
+                   "scripts", "migrations", "alembic", "benchmarks", "bench", "noxfile.py", "setup.py")
 FIELD_CONSTRAINTS = frozenset({"gt", "ge", "lt", "le", "min_length", "max_length", "pattern", "multiple_of",
                                "max_digits", "decimal_places", "min_items", "max_items", "strict",
                                "allow_inf_nan", "union_mode"})
@@ -286,6 +288,8 @@ class Found:
     sql: dict[str, list[str]]               # schema file (relative to the project) -> its constraints
     sql_in_code: list[str]                  # Python files holding CREATE TABLE text
     files: int
+    doors: Any = None                       # doors.DoorsFound, when door discovery ran
+    sql_skipped: int = 0                    # .sql files with constraints left unpinned (no --sql)
 
 
 def discover(project: pathlib.Path, roots: list[pathlib.Path], exclude: Iterable[str] = ()) -> Found:
@@ -371,6 +375,9 @@ def render(found: Found) -> str:
     lines += ["contracts:", *contracts, ""] if contracts else ["contracts: {}", ""]
     rules = [g for g in found.guards if g.clauses]
     lines.append("rules:")
+    if found.doors is not None:
+        from . import doors
+        lines += doors.render(found.doors)
     if rules:
         lines += ["",
                   "# Suggested rules, from the preconditions at the top of these functions. Each one keeps the",
@@ -417,5 +424,15 @@ def summary(found: Found) -> list[str]:
     rules = [g for g in found.guards if g.clauses]
     return [f"read {found.files} source file(s)",
             f"pinned {len(models)} pydantic model(s) with {n_cons} constraint(s)",
-            f"pinned {len(found.sql)} SQL file(s) with {sum(len(c) for c in found.sql.values())} constraint(s)",
-            f"suggested {len(rules)} rule(s) from function preconditions (commented out; see the file)"]
+            (f"pinned {len(found.sql)} SQL file(s) with {sum(len(c) for c in found.sql.values())} constraint(s)"
+             if not found.sql_skipped else
+             f"left {found.sql_skipped} SQL file(s) unpinned: the schema is below the API (`inv init --sql` pins it)"),
+            f"suggested {len(rules)} rule(s) from function preconditions (commented out; see the file)",
+            *(_doors_summary(found))]
+
+
+def _doors_summary(found: Found) -> list[str]:
+    if found.doors is None:
+        return []
+    from . import doors
+    return doors.summary(found.doors)

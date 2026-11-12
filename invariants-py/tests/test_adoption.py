@@ -237,7 +237,7 @@ def test_discover_finds_sqlmodel_rootmodel_and_generic_bases(tmp_path):
 # --- inv init, check, hook (subprocess: the fixture app never enters this process) ----------------
 def test_init_drafts_a_rule_file_that_passes_check(tmp_path):
     root = _project(tmp_path, "adopt_init")
-    r = run_inv("init", cwd=root)
+    r = run_inv("init", "--sql", cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
     text = (root / "invariants.yaml").read_text()
     assert 'refund_request: {type: pydantic, ref: "adopt_init.models:RefundRequest"}' in text
@@ -251,6 +251,15 @@ def test_init_drafts_a_rule_file_that_passes_check(tmp_path):
     assert r.returncode == 0 and r.stdout.rstrip().endswith("pass"), r.stdout
     r = run_inv("init", cwd=root)
     assert r.returncode == 2 and "never overwrites" in r.stderr
+
+
+def test_init_pins_api_boundaries_only_unless_asked_for_sql(tmp_path):
+    root = _project(tmp_path, "adopt_api")
+    r = run_inv("init", "--no-lock", cwd=root)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "left 1 SQL file(s) unpinned" in r.stdout and "--sql" in r.stdout
+    text = (root / "invariants.yaml").read_text()
+    assert "type: sql" not in text and "type: pydantic" in text
 
 
 def test_a_suggested_rule_works_once_uncommented(tmp_path):
@@ -272,7 +281,7 @@ def test_a_suggested_rule_works_once_uncommented(tmp_path):
 
 def test_check_refuses_a_loosened_model_and_relock_takes_a_tightened_one(tmp_path):
     root = _project(tmp_path, "adopt_relock")
-    assert run_inv("init", cwd=root).returncode == 0
+    assert run_inv("init", "--sql", cwd=root).returncode == 0
     models = root / "src/adopt_relock/models.py"
     _edit(models, "le=10_000", "le=5_000")                             # tighter: re-pinned without a person
     r = run_inv("check", "--relock", cwd=root)

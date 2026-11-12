@@ -130,6 +130,7 @@ class Finding:
     col: int = 0
     root: str | None = None
     path: list[str] = dataclasses.field(default_factory=list)
+    owner: str | None = None       # the function the finding is in (module.qualname), when known
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -143,6 +144,7 @@ class Mediation:
     sinks: list[str]
     doors: list[str]
     tables: list[Any]
+    allow: list[str] = dataclasses.field(default_factory=list)   # known back doors, let through
 
     @property
     def table_ops(self) -> dict[str, frozenset[str]]:
@@ -225,8 +227,8 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
                             if raw.get("status") == "enforce" else "ablated (INV_ABLATE)")
             continue
         if "sink" not in med:
-            if "door" in med or "tables" in med:
-                raise ScanConfigError(f"{rid}: mediation.door and mediation.tables need mediation.sink")
+            if "door" in med or "tables" in med or "allow" in med:
+                raise ScanConfigError(f"{rid}: mediation.door, tables and allow need mediation.sink")
             skipped[rid] = "mediation declares no sink"
             continue
         sinks = _str_list(med["sink"], f"{rid}: mediation.sink")
@@ -237,14 +239,15 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
             doors = [default_door]
         else:
             raise ScanConfigError(f"{rid}: mediation.sink needs mediation.door or a subject.target")
-        for p in sinks + doors:
+        allow = _str_list(med["allow"], f"{rid}: mediation.allow") if "allow" in med else []
+        for p in sinks + doors + allow:
             if not p.startswith("py:"):
                 raise ScanConfigError(f"{rid}: {p!r} must be a 'py:module.name' path")
         tables = med["tables"] if "tables" in med else []
         tables = [tables] if isinstance(tables, (str, dict)) else tables
         if tables:
             table_specs(tables, f"{rid}: mediation.tables")
-        scanned[rid] = Mediation(rid, sinks, doors, list(tables))
+        scanned[rid] = Mediation(rid, sinks, doors, list(tables), allow)
     return scanned, skipped
 
 
@@ -338,6 +341,11 @@ class _Site:
     col: int
     detail: str = ""
     const: str = ""              # a module-level string constant this sql site is the value of
+
+
+def anywhere(*patterns: str) -> tuple[str, ...]:
+    """Exclude globs that match at any depth: `tests` and `*/tests`, `test_*.py` and `*/test_*.py`."""
+    return tuple(x for p in patterns for x in (p, f"*/{p}"))
 
 
 def _excluded(rel: pathlib.PurePath, patterns: Iterable[str]) -> bool:
@@ -564,6 +572,33 @@ def _locals(fn: ast.AST) -> set[str]:
     return names - glob
 
 
+def _pairs(node: ast.Assign) -> list[tuple[ast.expr, ast.expr | None]]:
+    """(target, value) pairs of an assignment; `a, b = x, y` pairs element-wise, other unpacking has no
+    value (None), so what it binds is unknown."""
+    out: list[tuple[ast.expr, ast.expr | None]] = []
+    for t in node.targets:
+        if isinstance(t, (ast.Tuple, ast.List)):
+            v = node.value
+            if isinstance(v, (ast.Tuple, ast.List)) and len(v.elts) == len(t.elts) and \
+                    not any(isinstance(e, ast.Starred) for e in [*t.elts, *v.elts]):
+                out += list(zip(t.elts, v.elts))
+            else:
+                out.append((t, None))
+        else:
+            out.append((t, node.value))
+    return out
+
+
+def _single_types(seen: dict[str, set[str | None]]) -> dict[str, str]:
+    """The names bound to exactly one known class (no unknown binding among them)."""
+    out: dict[str, str] = {}
+    for name, classes in seen.items():
+        only = next(iter(classes)) if len(classes) == 1 else None
+        if only is not None:
+            out[name] = only
+    return out
+
+
 # --- the second pass: calls and sites -----------------------------------------------------------
 class _Walker:
     """Resolves calls and records sites in one module, attributing nested code to its owner."""
@@ -573,6 +608,135 @@ class _Walker:
         self.edges: list[_Edge] = []
         self.sites: list[_Site] = []
         self.doc_ids = _docstrings(mod.tree)
+        self._local_types: dict[str, dict[str, str]] = {}
+
+    # receiver types: conservative, so a method call becomes an extracted edge only when certain ----
+    def _class_named(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """The scanned class an annotation names (Cls, mod.Cls, 'Cls', Cls | None, Optional[Cls])."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            sides = [x for x in (node.left, node.right) if not (isinstance(x, ast.Constant) and x.value is None)]
+            return self._class_named(sides[0], local, me) if len(sides) == 1 else None
+        if isinstance(node, ast.Subscript) and _dotted(node.value) in ("Optional", "typing.Optional"):
+            return self._class_named(node.slice, local, me)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            fq = self._resolve(node, set(), None)
+            return fq if fq in self.idx.classes else None
+        return None
+
+    def _constructed(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """Cls(...) on a scanned class: an instance of exactly that class."""
+        if isinstance(node, ast.Call) and _dotted(node.func):
+            fq = self._resolve(node.func, local, me)
+            return fq if fq in self.idx.classes else None
+        return None
+
+    def _types_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None) -> dict[str, str]:
+        """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments."""
+        seen: dict[str, set[str | None]] = collections.defaultdict(set)
+        args = getattr(fn, "args", None)
+        if isinstance(args, ast.arguments):
+            for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+                if me and a.arg == me[0]:
+                    continue
+                seen[a.arg].add(self._class_named(a.annotation, local, me) if a.annotation else None)
+            for va in (args.vararg, args.kwarg):
+                if va is not None:
+                    seen[va.arg].add(None)
+        handled: set[int] = set()                              # Name nodes bound by a plain assignment
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Assign):
+                for t, v in _pairs(node):
+                    if isinstance(t, ast.Name):
+                        seen[t.id].add(self._constructed(v, local, me))
+                        handled.add(id(t))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                seen[node.target.id].add(self._constructed(node.value, local, me) if node.value is not None
+                                         else self._class_named(node.annotation, local, me))
+                handled.add(id(node.target))
+        for node in ast.walk(fn):                              # any other binding: for, with, walrus, unpacking
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in handled:
+                seen[node.id].add(None)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
+                seen[node.name].add(None)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for al in node.names:
+                    seen[(al.asname or al.name).split(".")[0]].add(None)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                for n in node.names:
+                    seen[n].add(None)
+        return _single_types(seen)
+
+    def _attr_types(self, cls: str) -> dict[str, str]:
+        """self.<attr> types for a class: every `self.attr = ...` in its methods has the same known class."""
+        key = f"attrs:{cls}"
+        if key in self._local_types:
+            return self._local_types[key]
+        seen: dict[str, set[str | None]] = collections.defaultdict(set)
+        for fid in self.idx.classes[cls]["methods"].values():
+            fn = self.idx.funcs[fid].node
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
+                continue
+            me_name = fn.args.args[0].arg
+            params = self._types_in(fn, set(), (me_name, cls))
+            for node in ast.walk(fn):
+                pairs = _pairs(node) if isinstance(node, ast.Assign) else \
+                    [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+                for t, v in pairs:
+                    if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == me_name:
+                        got = self._constructed(v, set(), None) or (
+                            params.get(v.id) if isinstance(v, ast.Name) else None)
+                        seen[t.attr].add(got if not isinstance(node, ast.AugAssign) else None)
+                    elif isinstance(t, (ast.Tuple, ast.List, ast.Starred)):
+                        for x in ast.walk(t):                  # unpacking we cannot pair: unknown
+                            if isinstance(x, ast.Attribute) and isinstance(x.value, ast.Name) and x.value.id == me_name:
+                                seen[x.attr].add(None)
+        out = _single_types(seen)
+        self._local_types[key] = out
+        return out
+
+    def _receiver(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> tuple[str, bool] | None:
+        """(class, exact) of a call's receiver when the scan can be sure of it, else None. exact: built by
+        Cls(...) here, so no subclass override can be called instead."""
+        cls = self._constructed(node, local, me)
+        if cls:
+            return cls, True
+        fn = self.idx.funcs[owner].node if owner in self.idx.funcs else None
+        if isinstance(node, ast.Name) and fn is not None and node.id in local:
+            if owner not in self._local_types:
+                self._local_types[owner] = self._types_in(fn, local, me)
+            got = self._local_types[owner].get(node.id)
+            return (got, False) if got else None
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
+            got = self._attr_types(me[1]).get(node.attr)
+            return (got, False) if got else None
+        return None
+
+    def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
+        out = []
+        for c, info in self.idx.classes.items():
+            if c != cls and name in info["methods"] and self._inherits(c, cls, set()):
+                out.append(info["methods"][name])
+        return sorted(out)
+
+    def _inherits(self, c: str, base: str, seen: set[str]) -> bool:
+        if c in seen or c not in self.idx.classes:
+            return False
+        seen.add(c)
+        info = self.idx.classes[c]
+        mod = self.idx.modules[info["module"]]
+        for b in info["bases"]:
+            d = _dotted(b)
+            if d:
+                head, _, rest = d.partition(".")
+                fq = self.idx.canon(".".join(filter(None, [mod.aliases.get(head, f"{mod.name}.{head}"), rest])))
+                if fq == base or self._inherits(fq, base, seen):
+                    return True
+        return False
 
     def run(self) -> None:
         self._body(self.mod.tree.body, f"{self.mod.name}.<module>", set(), None, self.mod.name)
@@ -814,6 +978,13 @@ class _Walker:
             init = self.idx.method(fq, "__init__")
             if init:
                 self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
+        elif fq is None and isinstance(func, ast.Attribute) and \
+                (rcv := self._receiver(func.value, owner, local, me)) and \
+                (hit := self.idx.method(rcv[0], func.attr)):
+            self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False))
+            if not rcv[1]:                              # a subclass instance may arrive: its override too
+                for m in self._subclasses_overriding(rcv[0], func.attr):
+                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False))
         elif fq is None and isinstance(func, ast.Attribute):
             self._site("attrcall", owner, func, func.attr)
             for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
@@ -825,9 +996,29 @@ def _canon_py(idx: _Index, p: str) -> str:
     return idx.canon(p[3:])
 
 
-def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Report:
-    """Scan the source roots (minus exclude globs) against every rule that declares mediation.sink."""
-    scanned, skipped = mediations(doc)
+@dataclasses.dataclass
+class Graph:
+    """The scan's view of the code: functions, call edges, sites (raw SQL and the like), entrypoints."""
+
+    idx: _Index
+    edges: list[_Edge]
+    sites: list[_Site]
+    entries: list[str]
+
+    def functions(self) -> list[str]:
+        return sorted(f for f, fn in self.idx.funcs.items() if fn.node is not None)
+
+    def sql_writes(self) -> list[tuple[str, SqlWrite, int]]:
+        """(owner function, write, line) for every raw SQL write the scan resolved to a table."""
+        return [(s.owner, w, s.line) for s in self.sites if s.what == "sql" for w in sql_writes(s.detail)]
+
+    def location(self, fid: str) -> str:
+        f = self.idx.funcs[fid]
+        return f"{f.file.relative_to(f.root).as_posix()}:{f.line}"
+
+
+def graph(roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Graph:
+    """Index and walk the source roots once (no imports); scan() and `inv init` read the result."""
     idx = _Index()
     for root, f, name in iter_sources((pathlib.Path(r) for r in roots), exclude):
         idx.add(root, f, name)
@@ -838,10 +1029,19 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
         w.run()
         edges += w.edges
         sites += w.sites
+    return Graph(idx, edges, sites, _entrypoints(idx, edges))
+
+
+def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = (),
+         g: Graph | None = None) -> Report:
+    """Scan the source roots (minus exclude globs) against every rule that declares mediation.sink."""
+    scanned, skipped = mediations(doc)
+    g = g or graph(roots, exclude)
+    idx, edges, sites = g.idx, g.edges, g.sites
     report = Report([], scanned, skipped, files=len(idx.modules) + len(idx.parse_errors),
                     functions=sum(1 for f in idx.funcs.values() if f.node is not None),
                     warnings=table_warnings(doc, scanned, skipped))
-    entries = _entrypoints(idx, edges)
+    entries = g.entries
     for med in scanned.values():
         report.findings += _check_rule(idx, med, edges, sites, entries)
         writes = sink_writes(idx, med, edges, sites)
@@ -901,7 +1101,8 @@ def _finding(idx: _Index, rule: str, kind: str, code: str, msg: str, owner: str 
         file, root = f.relative_to(r).as_posix(), str(r)
         if not line:
             line, col = idx.funcs[owner].line, idx.funcs[owner].col
-    return Finding(kind, rule, code, msg, file, line, col + 1 if file else 0, root, path or [])
+    return Finding(kind, rule, code, msg, file, line, col + 1 if file else 0, root, path or [],
+                   owner if owner and owner in idx.funcs and idx.funcs[owner].node is not None else None)
 
 
 def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Site],
@@ -923,7 +1124,16 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
             doors.add(c)
         else:
             out.append(Finding("missing", rid, "missing/door", f"door {p} is not defined in the scanned code"))
-    trusted = sinks | doors
+    allowed = set()
+    for p in med.allow:
+        c = _canon_py(idx, p)
+        if c in idx.funcs:
+            allowed.add(c)
+        else:
+            out.append(Finding("missing", rid, "missing/allow",
+                               f"allowed back door {p} is not defined in the scanned code (fixed or renamed? "
+                               f"delete it from allow)"))
+    trusted = sinks | doors | allowed
     dominated = door_only(idx, edges, sites, entries, trusted)
     safe_consts = _consts_used_only_by(sites, trusted | dominated)
     sink_names = {s.rsplit(".", 1)[1] for s in sinks}
@@ -932,11 +1142,12 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     door_txt = ", ".join(sorted(doors)) or "(no door found)"
 
     # 1. paths from entrypoints to the sink with the doors removed
-    live = sinks - doors
+    live = sinks - doors - allowed
     if live:
         succ: dict[str, list[_Edge]] = collections.defaultdict(list)
+        through = doors | allowed
         for e in edges:
-            if e.caller not in doors and e.callee not in doors and not (e.via_getattr and e.callee in sinks):
+            if e.caller not in through and e.callee not in through and not (e.via_getattr and e.callee in sinks):
                 succ[e.caller].append(e)
         for start in entries:
             if start in trusted:
@@ -954,6 +1165,8 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
 
     # 2. idioms, per site
     for s in sites:
+        if s.owner in allowed:
+            continue                                   # a known back door, frozen by allow: all of it
         if s.owner in trusted and s.what in ("ref", "sql", "attrcall"):
             continue
         if s.owner in dominated and s.what in ("sql", "attrcall"):
@@ -1011,6 +1224,18 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                 out.append(_finding(idx, rid, "forbidden", "forbidden/raw-sql",
                                     "raw SQL drops a trigger, which can remove a storage enforcer",
                                     s.owner, s.line, s.col))
+
+    # 3. an allowed back door that is no longer one: its entry would let a regression through unseen.
+    # An entry is in use when the scan without allow reports something in it or on a path through it.
+    if allowed:
+        bare = _check_rule(idx, Mediation(rid, med.sinks, med.doors, med.tables), edges, sites, entries)
+        used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path}
+        for a in sorted(allowed - sinks - doors - used):
+            out.append(_finding(idx, rid, "missing", "missing/allow-unused",
+                                f"allowed back door {a} no longer reaches the sink"
+                                f"{' or writes the tables' if tables else ''} without the door; delete it from "
+                                f"allow (a tightening), so a regression there is caught",
+                                a))
     return out
 
 

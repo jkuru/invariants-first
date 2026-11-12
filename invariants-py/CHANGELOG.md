@@ -10,6 +10,39 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### API laws at every layer: doors without decorators
+
+The rules now stay on API boundaries: value laws on an API's inputs and outputs, and path laws on
+which API may call which. Nothing in this section looks below a repository's API.
+
+- **Door rules.** `door:` and `sink:` (each a `py:` path or a list) make a path law in four lines: no
+  call path may reach the sink without passing a door. It expands to `mediation`, `bad: 'false'` and
+  one `structure` enforcer, is `enforce` by default, needs no decorator and no test, and is checked
+  by `inv scan` inside `inv check`. `allow:` freezes known back doors: the scan lets them (and
+  everything inside them) through, a new back door fails, an entry that is no longer a back door
+  fails until deleted (`missing/allow-unused`), and an emptied `allow` means none. The lock reports a
+  new `allow` entry or a new door as a weakening and a removed one as a tightening. `tables:` stays
+  available and optional (below the API). With `guard:`, the guarded function is the door.
+- **`inv init` finds the doors.** For each repository (a Repo, Store, Gateway or DAO class, or a
+  `repo`/`store`/`db` module, or the functions that write through an ORM session, a Django manager,
+  a Mongo collection, a DynamoDB table, a client's `create` call or raw SQL), it proposes one door
+  rule: the repository's write methods are the sinks, its service-layer callers are the doors (or,
+  with no service layer, the caller most functions go through). It runs the real scan on the
+  proposal and freezes what it finds in `allow`, so the drafted file passes `inv check` and a new
+  back door fails it. At most five rules are written, money, quota and approval names first
+  (`--max-doors`); `--no-doors` skips it.
+- **`inv init` is API-only by default.** `.sql` constraint contracts and `tables:` are written only
+  with `--sql`; the init summary says how many `.sql` files it left unpinned.
+- **The scan types method receivers.** A call on a receiver of a known class is an extracted edge: a
+  constructor call, a local variable or `self.x` bound only to one, or a parameter annotated with a
+  scanned class (`Optional[...]`, `X | None` and string annotations too; tuple assignment pairs
+  element-wise). Through an annotation or `self.x`, the call also reaches subclass overrides. Anything
+  less certain stays name-matched and is reported as unresolved.
+- **The scan skips test code and migrations by default**, at any depth (`tests/`, `test_*.py`,
+  `*_test.py`, `conftest.py`, `migrations/`, `alembic/`), so a unit test calling a repository directly
+  is not a back door. `[tool.invariants.scan] exclude` replaces the list.
+- Each scan finding carries the function it is in (`owner` in `--format json`).
+
 ### Fixed
 
 - **celpy on Python 3.11.** A long clause (a 200-term sum) evaluated deep in the caller's stack hit
@@ -20,8 +53,8 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 ### Adoption: a 10-minute start
 
 - **`inv init`** drafts `invariants.yaml` from what the code already has. It reads the source and
-  imports nothing. Pydantic models with constraints become `pydantic` contracts. `.sql` files with
-  constraints become `sql` contracts. Leading `if ...: raise` and `assert` preconditions over the
+  imports nothing. Pydantic models with constraints become `pydantic` contracts. With `--sql`, `.sql` files
+  with constraints become `sql` contracts. Leading `if ...: raise` and `assert` preconditions over the
   parameters become suggested short-form rules, translated to CEL and left commented out. Anything
   it cannot translate faithfully is listed, not guessed. It runs `inv lock` and never overwrites a
   rule file. Models are found through `BaseModel`, `RootModel` and `SQLModel` bases, subscripted

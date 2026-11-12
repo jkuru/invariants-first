@@ -1,7 +1,10 @@
 # invariants-first
 
-Monorepo for invariant-first rule files: lock the rules your code already has, so no change, by a
-person or a coding agent, can loosen them without someone saying yes.
+Monorepo for invariant-first rule files. OpenAPI and pydantic define the shape of your APIs; the rule
+file defines their laws at every layer (HTTP route, service, repository, model call, external client):
+value laws on an API's inputs and outputs, and path laws on which API may call which. `inv init` locks
+the laws your code already has, so no change, by a person or a coding agent, can loosen one or go
+around a service without someone saying yes.
 
 | Path | What it is |
 |---|---|

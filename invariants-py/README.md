@@ -1,27 +1,45 @@
 # invariants
 
-**Write down what must never happen. Prove a guard stops it, and prove nothing goes around it.**
+**OpenAPI and pydantic define the shape of your APIs. Invariants define their laws, at every layer, so
+coding agents can't break a law or go around an API.**
 
-[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
+[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](../.github/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](CHANGELOG.md)
 
-`invariants` turns the properties your system must never break ("a refund never exceeds the charge",
-"a model's cause never contradicts the kernel log") into reviewed rules in one YAML file. Explicit
-decorators enforce them at run time. A CLI proves every path to the protected effect passes the
-guard, and a pytest plugin proves each guard is load-bearing by switching it off and watching a
-test fail. It is built for code that agents and LLMs help write and run.
+Every layer of a system is an API: the HTTP route, the service method, the repository method, the
+model call, the payment client. `invariants` puts two kinds of law on those boundaries, in one
+reviewed YAML file:
 
-## Start in 10 minutes: lock the rules you already have
+- **value laws:** on this API, these inputs or outputs are never allowed ("a refund never exceeds
+  the charge"), from your pydantic limits or a `bad` condition on `args` and `result`;
+- **path laws:** this lower API is called only through that upper one ("only `BillingService.refund`
+  calls `RefundGateway.refund`"), whatever is behind the repository: SQLAlchemy, Django, MongoDB,
+  DynamoDB, Stripe or raw SQL.
 
-You don't need to write a rule to start. Your pydantic `Field(le=10_000)`s, `Literal`s and SQL
-`CHECK` constraints are already rules. `inv init` finds them and pins them, and from then on no
-change can loosen one without a person accepting it.
+People own the laws at the boundaries; agents are free inside the implementations. A CLI check in CI
+proves no change loosened a law and no call path skips a door. Optional decorators enforce value laws
+at run time, and a pytest plugin proves each one is load-bearing by switching it off and watching a
+test fail.
+
+## Start in 10 minutes: lock the laws you already have
+
+You don't need to write a rule to start, and nothing changes in production: install it as a dev tool
+and never import it. Your pydantic `Field(le=10_000)`s and `Literal`s are already value laws. Your
+service layer is already a set of path laws: the endpoints call `ExpenseService.refund()`, and only it
+calls the payment gateway. `inv init` finds both, freezes the back doors that skip a service today,
+and from then on no change can loosen a limit or add a back door without a person accepting it.
 
 ```bash
-pip install invariants-first        # not on PyPI yet: pip install -e path/to/invariants-py
+pip install invariants-first        # a dev dependency; not on PyPI yet: pip install -e path/to/invariants-py
 inv init                            # drafts invariants.yaml from your code and locks it; commit both files
+```
+
+```text
+  pinned 2 pydantic model(s) with 7 constraint(s)
+  door REFUND-GATEWAY-DOOR: quota.repo.RefundGateway through quota.service.ExpenseService.refund (1 caller(s))
+    found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
 ```
 
 An agent raises a limit to make its test pass, then re-pins the lock itself to hide the change.
@@ -39,11 +57,18 @@ inv check: invariants.yaml
 fail
 ```
 
+An agent's new script that calls the gateway directly fails the same check:
+
+```text
+  FAIL  scan
+        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:4:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+```
+
 To make the check hard to skip, copy one snippet per layer: a pre-commit hook (`inv check --relock`),
 a GitHub Action (`inv check --base`, which a reviewer's label can override) and Claude Code hooks.
 The `inv hook pretool` hook stops the agent from accepting a weakening, and `inv hook stop` keeps it
 from finishing while the check fails. [docs/start.md](docs/start.md) has all three snippets, plus the
-next step: a two-line `guard` rule on the function that moves the money.
+next step: a two-line `guard` rule on the service method that moves the money.
 
 ## Before and after
 
@@ -124,10 +149,15 @@ both the changes and the rules, so read the method and the verdict in
   only 2 of the 24 changes failed `inv lock --check` (down from 18), and 1 of 8 benign changes
   needed a re-pin.
 
-**The 10-minute path costs almost nothing.** Run against copies of the two example apps, `inv init`
-pinned 7 pydantic models (13 constraints) and 25 SQL constraints in one app, and 2 models in the
-other. That took no rule lines and no decisions beyond reading the drafted file, and `inv check`
-passed straight away. It catches loosened constraints, not new bugs.
+**The 10-minute path costs almost nothing.** Run against a copy of the pool-service example app,
+`inv init` pinned its 7 pydantic models (13 constraints) and wrote one door rule for its store: every
+write goes through 7 service functions. It found and froze 4 of the 6 bypasses planted in the app's
+`rogue.py` (the other 2 are raw SQL and a dropped trigger, below the API; `--sql` finds them too) and
+3 real back doors: a benchmark and two endpoints that write the store directly. `inv check` passed
+straight away, and a new direct write failed it. On an app built on SQLAlchemy, a Django-style
+manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back
+doors in a worker and an admin script. It costs no rule lines and no decisions beyond reading the
+drafted file. It catches loosened limits and new back doors, not new bugs.
 
 **The full system pays off** when you have a few high-stakes properties (money, quotas, approvals, provenance),
 when agent-written code adds new paths without tests, and when reviewers really read rule and lock
@@ -159,7 +189,7 @@ flowchart LR
 ## Quickstart
 
 This is the full system, end to end on one rule. For the lighter start, see
-[Start in 10 minutes](#start-in-10-minutes-lock-the-rules-you-already-have).
+[Start in 10 minutes](#start-in-10-minutes-lock-the-laws-you-already-have).
 
 ```bash
 pip install 'invariants-first[schema]' pytest   # not on PyPI yet: pip install -e 'path/to/invariants-py[schema]'
@@ -313,13 +343,13 @@ Details: [docs/api.md](docs/api.md#integrations).
 
 | Command | What it does |
 |---|---|
-| `inv init` | Drafts `invariants.yaml` from the pydantic constraints, SQL constraints and function preconditions the code already has, then locks it. [More](docs/start.md) |
+| `inv init [--sql] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions), then locks it. `--sql` also pins `.sql` constraints. [More](docs/start.md) |
 | `inv check [--relock] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens; `--base` also fails on a weakening since REF. |
-| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening; refuse to finish while `inv check` fails. [More](docs/start.md#3-make-the-check-unskippable-5-minutes) |
+| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
 | `inv lock [--check] [--accept-weakening]` | Pins what each rule's meaning depends on; refuses a weakening unless accepted. [More](docs/lockfile.md) |
 | `inv verify --import MOD` | Every target carries its guard, and every guard names a rule. |
-| `inv scan [--format text\|json\|sarif]` | No call path reaches a `mediation.sink` around its door; flags raw SQL, `__wrapped__`, `getattr`. [More](docs/scan.md) |
+| `inv scan [--format text\|json\|sarif]` | No call path reaches a sink around its door; flags `getattr`, `__wrapped__`, monkeypatching (and raw SQL to `tables`). [More](docs/scan.md) |
 | `inv status --import MOD` | The standing of each rule, with the reasons it is not `held`. |
 
 `validate`, `lock`, `verify` and `status` take `--path DIR` (repeatable) to import the app from DIR
@@ -347,9 +377,13 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 ## Limitations
 
 - **Coverage is only as good as the rules.** In the evaluation, no defect outside a rule was caught.
-- **The scan is approximate.** It does not follow calls made through variables, and it cannot see
-  callers outside the scanned roots. An unresolved call is reported as unresolved, never as a pass.
-  Raw SQL is matched per table and statement kind, not per column. [docs/scan.md](docs/scan.md#limitations)
+- **The scan is approximate.** It types a method call's receiver only when it is sure (a constructor,
+  an annotated parameter, `self.x` set in `__init__`); it does not follow dependency injection
+  containers, event buses or callbacks, and it cannot see callers outside the scanned roots. An
+  unresolved call is reported as unresolved, never as a pass. [docs/scan.md](docs/scan.md#limitations)
+- **Door discovery is a heuristic.** It finds repositories by name (Repo, Store, Gateway, DAO, `repo`,
+  `store`, `db` modules) and by the writes in their bodies, and prefers service-layer callers as
+  doors. Review what `inv init` proposes; [docs/start.md](docs/start.md#limits) has the details.
 - **`inv.Checked` is forgeable** (Python cannot prevent it), so every `@inv.edge` re-validates the
   schema and re-checks `bad` on what it receives.
 - **CEL subset.** Rule text must stay within the common grammar (`1e3`, `1u` and `b"..."` are parse

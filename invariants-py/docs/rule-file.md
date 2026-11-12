@@ -24,6 +24,37 @@ the scan see only the full form: switching a rule between the two forms is not a
 `tests:` lowers the status, which is a weakening. A short rule cannot also give `subject.target` or
 `enforcers`, and cannot give both `tests` and `falsified_by`. `rules:` may be empty (null).
 
+### The door form: a path law
+
+A rule that says which API may call which is four lines, and needs no decorator:
+
+```yaml
+rules:
+  - id: REFUND-GATEWAY-DOOR
+    door: py:billing.service.BillingService.refund      # the upper API: a string or a list
+    sink: py:billing.gateway.RefundGateway.refund       # the lower API it protects: a string or a list
+    allow: [py:scripts.admin.goodwill_refund]           # known back doors, frozen (optional)
+```
+
+It expands to `mediation: {sink, door, allow}`, `bad: 'false'`, one enforcer
+`{point: structure, timing: pre_effect, mode: enforce}`, and `status: enforce`. Nothing is evaluated at
+run time: `inv scan`, inside `inv check`, fails any call path from an entrypoint to a sink that passes
+no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A structure rule may be
+`enforce` without `falsified_by`, because its check is the scan itself.
+
+- `allow` lists functions that already call a sink without a door. The scan lets them, and everything
+  inside them, through, so the code as it is passes and a new back door fails. An entry that no
+  longer reaches a sink without a door fails the check (`missing/allow-unused`) until it is deleted,
+  and so does an entry that names no function (`missing/allow`). An empty or null `allow` means none.
+- With `guard:` as well, the guarded function is the door, and the rule also checks its arguments
+  (give `bad`, and optionally `tests`). A door rule without `guard:` cannot have `bad`.
+- `tables` (optional, below the API) also forbids raw SQL writes to those tables outside the sinks
+  and doors; see [scan.md](scan.md#tables-and-raw-sql).
+- The lock reports these as weakenings: a new `allow` entry, a new door, a removed sink or table, and
+  removing the rule. Deleting an `allow` entry or a door is a tightening.
+
+`inv init` drafts door rules from the code: see [start.md](start.md#3-path-laws-doors-and-back-doors).
+
 ## Top level
 
 | Field | Meaning |
@@ -62,7 +93,7 @@ calls and edges; a sync call that needs one gets a `rule_error`.
 | `bind` | Name -> path, for names `bad` reads. A name that matches a provider is bound to it automatically. |
 | `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
 | `enforcers` | See below. |
-| `mediation` | `{chokepoint, residual_paths, sink, door, tables}`. `chokepoint` is the positive mediation argument. `sink`, `door` and `tables` drive `inv scan`. A `tables` item is a table name (every raw SQL write to it outside the sink and door is forbidden) or a one-key mapping `{table: [insert, update, delete, ddl]}` that forbids only those statement kinds. A rule gets a scan warning, and is not reported `held`, in two cases. One is when its sink's own SQL writes a table, or a statement kind, that `tables` does not cover, whatever the sink's `effects` are. The other is when its door guards stored data in process (a `transactional` door or sink, or a storage enforcer) and it declares no `tables`. SQL in a helper or module-level constant that only door or sink code reaches counts as door code (call-graph reachability). |
+| `mediation` | `{chokepoint, residual_paths, sink, door, allow, tables}`. `allow` lists known back doors the scan lets through (see "The door form" above). `chokepoint` is the positive mediation argument. `sink`, `door` and `tables` drive `inv scan`. A `tables` item is a table name (every raw SQL write to it outside the sink and door is forbidden) or a one-key mapping `{table: [insert, update, delete, ddl]}` that forbids only those statement kinds. A rule gets a scan warning, and is not reported `held`, in two cases. One is when its sink's own SQL writes a table, or a statement kind, that `tables` does not cover, whatever the sink's `effects` are. The other is when its door guards stored data in process (a `transactional` door or sink, or a storage enforcer) and it declares no `tables`. SQL in a helper or module-level constant that only door or sink code reaches counts as door code (call-graph reachability). |
 | `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
 | `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |

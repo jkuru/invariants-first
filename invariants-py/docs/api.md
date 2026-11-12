@@ -272,6 +272,9 @@ The plugin does not support pytest-xdist.
 
 | Command | Synopsis |
 |---|---|
+| `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--sql] [--no-doors] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; never overwrites. See [start.md](start.md). |
+| `inv check` | `inv check [file] [--relock] [--base REF] [--allow-weakening] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--path DIR]...`: `validate`, `lock --check`, `verify` and `scan` with one exit code; `--base` also fails on a weakening since the lock at REF unless `--allow-weakening` or `INV_ALLOW_WEAKENING=1`. |
+| `inv hook` | `inv hook pretool\|stop`: Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening; `stop` runs `inv check --relock` once per stop. |
 | `inv validate` | `inv validate [file] [--path DIR]`: runs the JSON Schema check and every load-time check, and lists every error. |
 | `inv lock` | `inv lock [file] [--check] [--accept-weakening] [--lock FILE] [--update-artifacts] [--path DIR]...`: see [lockfile.md](lockfile.md). |
 | `inv verify` | `inv verify [file] [--import MOD]... [--json] [--path DIR]...`: imports the app, then checks that every target is guarded and every guard names a rule. |

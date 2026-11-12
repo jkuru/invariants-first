@@ -101,13 +101,23 @@
     "rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "bad"],
+      "required": ["id"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "guard": {"type": "string", "pattern": "^py:",
                   "description": "Short form: the function this rule guards. Expands to subject.target and one decorator enforcer (pre_effect, mode enforce); status defaults to enforce with tests, else detect."},
         "tests": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
                   "description": "Short form of falsified_by: the tests that must fail when the rule is switched off."},
+        "door": {"$ref": "#/$defs/pyRefs",
+                 "description": "Door rule: the function(s) every write to the sink must go through. Expands to mediation.door; checked by inv scan, nothing runs in production."},
+        "sink": {"$ref": "#/$defs/pyRefs", "description": "Door rule: the function(s) that write. Expands to mediation.sink."},
+        "tables": {"type": "array", "minItems": 1, "items": {"oneOf": [
+                     {"type": "string", "minLength": 1},
+                     {"type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": {
+                       "type": "array", "minItems": 1, "items": {"enum": ["insert", "update", "delete", "ddl"]}}}]},
+                   "description": "Door rule: tables no raw SQL may write outside the door and sink. Expands to mediation.tables."},
+        "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"type": "null"}, {"type": "array", "maxItems": 0}],
+                  "description": "Door rule: known back doors, frozen (empty or null: none left). They are added to the doors, and adding one is a weakening."},
         "rev": {"type": "integer"},
         "status": {"enum": ["candidate", "contested", "detect", "enforce", "retired"]},
         "class": {"enum": ["law", "policy"]},
@@ -131,6 +141,7 @@
             "residual_paths": {"type": "array", "items": {"type": "string"}},
             "sink": {"$ref": "#/$defs/pyRefs"},
             "door": {"$ref": "#/$defs/pyRefs"},
+            "allow": {"$ref": "#/$defs/pyRefs"},
             "tables": {"type": "array", "minItems": 1, "items": {"oneOf": [
               {"type": "string", "minLength": 1},
               {"type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": {
@@ -148,7 +159,8 @@
         {"if": {"properties": {"compares_to": {"const": "held_data"}, "model_policy": {"type": "object"}},
                 "required": ["compares_to", "model_policy"]},
          "then": {"properties": {"model_policy": {"properties": {"semantic_resamples": {"const": 0}}}}}},
-        {"if": {"not": {"required": ["guard"]}}, "then": {"required": ["status"]}}
+        {"if": {"not": {"anyOf": [{"required": ["guard"]}, {"required": ["sink"]}]}}, "then": {"required": ["status"]}},
+        {"if": {"not": {"required": ["sink"]}}, "then": {"required": ["bad"]}}
       ]
     }
   }

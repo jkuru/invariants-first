@@ -1,0 +1,347 @@
+"""`inv init`: find the doors a codebase already has, and the back doors around them.
+
+The boundary is the repository layer, in Python, whatever is behind it (Postgres through SQLAlchemy,
+Django, MongoDB, DynamoDB, an HTTP API such as Stripe, or raw SQL):
+
+- a *sink* is a function that writes: a write method of a Repo/Store class (or a write function in a
+  repo or store module), or any function whose body writes through an ORM session, a Django manager,
+  a Mongo collection, a DynamoDB table, a client's `create` call, or a raw SQL string;
+- a *door* is the one function most callers go through to reach a sink: the service method that
+  checks the rules before the write;
+- a *back door* is any other way to the same write: a caller that reaches a sink without passing a
+  door (and, where the sinks use raw SQL, raw SQL to the same table somewhere else).
+
+Discovery reads the source with the scan's own index (Python's `ast`; nothing is imported) and is
+deterministic. It groups the sinks by repository (a class, a module, or the table raw SQL writes),
+picks each sink's door, and checks the proposed rule with the real scan, so the back doors it reports
+are exactly what `inv check` would fail on. Known back doors are frozen in `allow:` (the way ArchUnit
+freezes existing violations): today's code passes, a new back door fails, and removing an `allow`
+entry once it is fixed is a tightening. Rules are ranked by names that suggest money, quotas or
+approvals; at most `limit` are written and the rest are listed.
+"""
+from __future__ import annotations
+
+import ast
+import collections
+import dataclasses
+import json
+import pathlib
+import re
+from typing import Any, Iterable
+
+from . import scan as scanner
+
+WRITE_OPS = frozenset({"insert", "update", "delete"})
+# Names that suggest an invariant someone cares about: money, quotas, approvals, inventory.
+IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit", "debit", "charge", "transfer",
+             "payout", "account", "wallet", "fund", "quota", "usage", "limit", "budget", "allowance", "approv",
+             "permission", "role", "grant", "order", "stock", "inventory", "subscription", "billing", "price",
+             "lease", "pool", "seat", "token", "expense")
+MIN_CALLERS = 2           # a door is shared: at least two callers go through it
+
+REPO_CLASS = re.compile(r"(Repo|Repository|Store|Storage|Dao|DAO|Gateway|Persistence|Table|Collection)$")
+REPO_MODULE = frozenset({"repo", "repos", "repository", "repositories", "store", "stores", "storage", "dao", "daos",
+                         "db", "persistence", "gateway", "gateways", "crud"})
+WRITE_VERBS = ("save", "add", "insert", "update", "delete", "remove", "set", "create", "put", "upsert", "write",
+               "record", "append", "increment", "decrement", "bump", "mark", "apply", "store", "persist", "commit",
+               "grant", "revoke", "approve", "reject", "cancel", "refund", "charge", "transfer", "debit", "credit",
+               "reserve", "release", "lease", "assign", "enqueue", "publish", "send", "post", "patch", "replace",
+               "merge", "move", "close", "open", "lock", "unlock", "reset", "clear", "purge", "drop", "archive")
+# A write call: the method name, and a receiver that names a store (session, db, objects, collection ...).
+ORM_WRITES = frozenset({"add", "add_all", "delete", "merge", "execute", "executemany", "save",
+                        "create", "bulk_create", "bulk_update", "update", "update_or_create", "get_or_create",
+                        "insert_one", "insert_many", "update_one", "update_many", "replace_one", "delete_one",
+                        "delete_many", "find_one_and_update", "find_one_and_delete", "bulk_write", "put_item",
+                        "update_item", "delete_item", "batch_write_item", "transact_write_items", "modify", "capture"})
+STORE_RECEIVERS = frozenset({"session", "db", "conn", "connection", "cursor", "cur", "objects", "collection", "coll",
+                             "table", "engine", "tx", "txn", "transaction", "uow", "client", "dynamodb", "mongo",
+                             "redis", "stripe"})      # not repo/store: calling a repository is not the write
+
+
+def _is_write_name(name: str) -> bool:
+    """save, add_usage, setStatus: a write verb, alone or followed by _ or a capital (not 'settle')."""
+    if name.startswith("__"):
+        return False
+    bare = name.lstrip("_")
+    low = bare.lower()
+    return any(low == v or low.startswith(v + "_") or (low.startswith(v) and bare[len(v):len(v) + 1].isupper())
+               for v in WRITE_VERBS)
+
+
+def _store_call(call: ast.Call) -> str | None:
+    """'session.add' for a call that writes through a store, else None (dict.update and set.add are not)."""
+    f = call.func
+    if not isinstance(f, ast.Attribute) or f.attr not in ORM_WRITES:
+        return None
+    if f.attr in ("execute", "executemany"):
+        # a SQL string is judged by the scan's SQL reader (a SELECT is not a write); otherwise only a
+        # statement built by insert(...), update(...) or delete(...) (SQLAlchemy Core) is a write
+        arg = call.args[0] if call.args else None
+        built = arg.func if isinstance(arg, ast.Call) else None
+        while isinstance(built, ast.Attribute) and isinstance(built.value, ast.Call):
+            built = built.value.func                        # update(T).where(...).values(...)
+        name = built.attr if isinstance(built, ast.Attribute) else built.id if isinstance(built, ast.Name) else ""
+        if name not in ("insert", "update", "delete"):
+            return None
+    recv = ast.unparse(f.value)
+    words = set(re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", recv).lower()))
+    if words & STORE_RECEIVERS or (f.attr == "create" and recv[:1].isupper()):    # stripe.Refund.create
+        return f"{recv}.{f.attr}"
+    return None
+
+
+def _writes_in(fn: ast.AST) -> list[str]:
+    """The store writes in a function's own body (not in nested functions)."""
+    out: list[str] = []
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(n, ast.Call) and (w := _store_call(n)):
+            out.append(w)
+        stack.extend(ast.iter_child_nodes(n))
+    return out
+
+
+@dataclasses.dataclass
+class Door:
+    rid: str
+    resource: str                            # the repository: a class, a module, or "table <name>"
+    doors: list[str]                         # module.qualname of each door
+    sinks: list[str]
+    callers: list[str]                       # the doors' callers (the paths that do go through them)
+    tables: list[str] = dataclasses.field(default_factory=list)       # tables the sinks write with raw SQL
+    allow: list[str] = dataclasses.field(default_factory=list)
+    back_doors: list[str] = dataclasses.field(default_factory=list)   # "file:line message"
+    active: bool = True                      # written as a rule (False: commented out, with the reason)
+    why_inactive: str = ""
+    score: int = 0
+    label: str = ""                          # what the rule id is made from: the one table written, else the repo
+
+    def rule(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"id": self.rid,
+                               "door": [f"py:{d}" for d in self.doors] if len(self.doors) > 1 else f"py:{self.doors[0]}",
+                               "sink": [f"py:{s}" for s in self.sinks] if len(self.sinks) > 1 else f"py:{self.sinks[0]}"}
+        if self.tables:
+            out["tables"] = list(self.tables)
+        if self.allow:
+            out["allow"] = [f"py:{a}" for a in self.allow]
+        return out
+
+
+@dataclasses.dataclass
+class DoorsFound:
+    doors: list[Door]
+    dropped: list[Door]                      # found, but beyond the limit
+    no_door: dict[str, list[str]]            # repository -> its write functions, when no shared door exists
+    files: int
+
+
+SERVICE_MODULE = re.compile(r"^(services?|managers?|use_?cases?|domain|logic|workflows?|interactors?|commands?|"
+                            r"\w+_services?|\w+_managers?)$")
+SERVICE_CLASS = re.compile(r"(Service|Manager|UseCase|Interactor|Workflow|Handler)$")
+
+
+def _service_like(fid: str) -> bool:
+    """A method of a service class, or a function in a service module (judged by its own name only, so
+    a package called pool_service does not make every module in it a service)."""
+    segs = fid.split(".")[:-1]
+    classes = [x for x in segs if x[:1].isupper()]
+    if classes:
+        return bool(SERVICE_CLASS.search(classes[-1]))
+    return bool(segs) and bool(SERVICE_MODULE.match(segs[-1]))
+
+
+def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set[str]) -> list[str]:
+    """The doors of writer w. Every service-layer caller is one (the service layer is allowed to call the
+    repository). Without one, the caller the most other functions go through (at least MIN_CALLERS)."""
+    cands = sorted(c for c in callers[w] - inside if c in real)
+    svc = [c for c in cands if _service_like(c)]
+    if svc:
+        return svc
+    best: tuple[int, int, str] | None = None
+    for cand in cands:
+        n = len(callers[cand] - {cand})
+        key = (n, _score(cand), cand)          # most callers, then the most telling name, then by name
+        if n >= MIN_CALLERS and (best is None or key > best):
+            best = key
+    return [best[2]] if best else []
+
+
+def _score(*names: str) -> int:
+    text = " ".join(names).lower()
+    return sum(1 for k in IMPORTANT if k in text)
+
+
+def _rule_id(d: Door, taken: set[str]) -> str:
+    label = d.label or d.resource.rsplit(".", 1)[-1].replace("table ", "")
+    label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", label)
+    base = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").upper() + "-DOOR"
+    rid, n = base, 2
+    while rid in taken:
+        rid, n = f"{base}-{n}", n + 1
+    taken.add(rid)
+    return rid
+
+
+def _resource(g: scanner.Graph, fid: str) -> str | None:
+    """The repository a function belongs to, when it is one: its Repo/Store class, or its repo module."""
+    f = g.idx.funcs[fid]
+    if f.cls and REPO_CLASS.search(f.cls.rsplit(".", 1)[-1]):
+        return f.cls
+    if not f.cls and f.module.rsplit(".", 1)[-1] in REPO_MODULE:
+        return f.module
+    return None
+
+
+def sinks_of(g: scanner.Graph) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """(repository -> its write functions, write function -> tables it writes with raw SQL)."""
+    real = set(g.functions())
+    tables: dict[str, set[str]] = collections.defaultdict(set)
+    for owner, write, _line in g.sql_writes():
+        if write.table and write.ops & WRITE_OPS and owner in real:
+            tables[owner].add(write.table)
+    groups: dict[str, set[str]] = collections.defaultdict(set)
+    for fid in sorted(real):
+        node = g.idx.funcs[fid].node
+        name = fid.rsplit(".", 1)[-1]
+        res = _resource(g, fid)
+        writes = bool(tables.get(fid)) or bool(node is not None and _writes_in(node))
+        if res and (_is_write_name(name) or writes) and not name.startswith("_"):
+            groups[res].add(fid)
+        elif writes and not res:
+            groups[f"table {sorted(tables[fid])[0]}" if tables.get(fid) else g.idx.funcs[fid].module].add(fid)
+    return groups, tables
+
+
+def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: int = 5,
+             tables: bool = False) -> DoorsFound:
+    """Door rules for the repositories in the roots. tables: also forbid raw SQL to the tables the sinks
+    write (below the API, so off by default; the rule is then the API-to-API call rule alone)."""
+    roots, exclude = list(roots), list(exclude)
+    g = scanner.graph(roots, exclude)
+    real = set(g.functions())
+    callers: dict[str, set[str]] = collections.defaultdict(set)
+    for e in g.edges:
+        if not e.inferred and e.caller != e.callee:
+            callers[e.callee].add(e.caller)
+    groups, written = sinks_of(g)
+    found: list[Door] = []
+    no_door: dict[str, list[str]] = {}
+    for res in sorted(groups):
+        members = groups[res]
+        inside = {f for f in real if _resource(g, f) == res} | members      # the repository's own code
+        door_list: list[str] = []
+        for w in sorted(members):
+            for door in _doors_for(w, callers, real, inside):
+                if door not in door_list:
+                    door_list.append(door)
+        if not door_list:
+            if len(members) > 1 or not res.startswith("table "):
+                no_door[res] = sorted(members)
+            continue
+        repo = not res.startswith("table ") and _resource(g, sorted(members)[0]) == res
+        # a repository's write methods are all sinks: nobody but a door may call any of them. Outside a
+        # repository, only the writers that have a door are (the rest are listed with no door).
+        sinks = sorted(members) if repo else sorted(w for w in members if _doors_for(w, callers, real, inside))
+        via = sorted({c for d in door_list for c in callers[d]} - set(door_list))
+        ts = sorted({t for s in sinks for t in written.get(s, ())})
+        generic = res.rsplit(".", 1)[-1] in REPO_MODULE or res.startswith("table ")
+        found.append(Door("", res, door_list, sinks, via, ts if tables else [],
+                          score=_score(res, *door_list, *sinks, *ts),
+                          label=ts[0] if len(ts) == 1 and generic else ""))
+    found.sort(key=lambda d: (-d.score, -len(d.callers), d.resource))
+    kept, dropped = found[:limit], found[limit:]
+    taken: set[str] = set()
+    for d in kept + dropped:
+        d.rid = _rule_id(d, taken)
+    for d in kept:
+        _freeze(d, g, roots, exclude)
+    return DoorsFound(kept, dropped, no_door, len(g.idx.modules))
+
+
+def _check(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str]) -> scanner.Report:
+    from .loader import expand_short_forms
+    doc = expand_short_forms({"rules": [d.rule()]})
+    return scanner.scan(doc, roots, exclude, g=g)
+
+
+def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str]) -> None:
+    """Run the real scan on the proposed rule; freeze what it finds in allow, and confirm it then passes."""
+    report = _check(d, g, roots, exclude)
+    found = report.for_rule(d.rid)
+    d.back_doors = [f"{f.file}:{f.line} {f.message}" if f.file else f.message for f in found]
+    owners = {f.owner for f in found if f.owner}
+    unowned = [f for f in found if not f.owner]
+    if unowned:
+        d.active = False
+        d.why_inactive = ("a finding is not inside a function (module-level code or a missing name), so it "
+                          "cannot be frozen in allow")
+        return
+    d.allow = sorted(owners - {*d.doors, *d.sinks})
+    if d.allow and _check(d, g, roots, exclude).rule_result(d.rid) != "pass":
+        d.active = False
+        d.why_inactive = "the scan still fails with the back doors frozen; review the findings by hand"
+
+
+def _yaml_list(xs: list[str]) -> str:
+    return "[" + ", ".join(json.dumps(x) for x in xs) + "]"
+
+
+def render(found: DoorsFound) -> list[str]:
+    """The rule-file lines for the doors: active rules, or commented out with the reason."""
+    if not found.doors and not found.dropped and not found.no_door:
+        return []
+    lines = ["  # Doors: each repository below is written through a service function. `inv check` fails a new",
+             "  # code path that calls a write without passing its door (and raw SQL to a listed table).",
+             "  # Nothing runs in production: `inv check` reads the source. Delete a rule you do not want.",
+             "  #"]
+    for d in found.doors:
+        what = d.resource + (f" (tables {', '.join(d.tables)})" if d.tables else "")
+        lines.append(f"  # {what}: written by {', '.join(d.sinks)}")
+        lines.append(f"  #   {len(d.callers)} caller(s) go through {' or '.join(d.doors)}")
+        if d.back_doors:
+            verb = "frozen in allow (fix each one, then delete it from allow)" if d.active else "found"
+            lines.append(f"  # {len(d.back_doors)} back door(s) {verb}:")
+            lines += [f"  #   {b}" for b in d.back_doors]
+        r = d.rule()
+        body = [f"- id: {r['id']}",
+                f"  door: {json.dumps(r['door']) if isinstance(r['door'], str) else _yaml_list(r['door'])}",
+                f"  sink: {json.dumps(r['sink']) if isinstance(r['sink'], str) else _yaml_list(r['sink'])}"]
+        if d.tables:
+            body.append(f"  tables: {_yaml_list(r['tables'])}")
+        if d.allow:
+            body.append("  allow:")
+            body += [f"    - {json.dumps(a)}" for a in r["allow"]]
+        if d.active:
+            lines += [f"  {x}" for x in body]
+        else:
+            lines.append(f"  # not written as a rule: {d.why_inactive}")
+            lines += [f"  # {x}" for x in body]
+        lines.append("")
+    if found.dropped:
+        lines.append(f"  # More doors found but not written (at most {len(found.doors)}; --max-doors raises it):")
+        lines += [f"  #   {d.resource} through {' or '.join(d.doors)}" for d in found.dropped]
+        lines.append("")
+    shared = found.no_door
+    if shared:
+        lines.append("  # Writes with no shared door (each is called from one place, or straight from entrypoints):")
+        lines += [f"  #   {t}: {', '.join(w)}" for t, w in shared.items()]
+        lines.append("")
+    return lines
+
+
+def summary(found: DoorsFound) -> list[str]:
+    out = []
+    for d in found.doors:
+        state = "" if d.active else " (commented out: see the file)"
+        out.append(f"door {d.rid}: {d.resource} through {' or '.join(d.doors)} ({len(d.callers)} "
+                   f"caller(s)){state}")
+        if d.back_doors:
+            files = sorted({b.split(":", 1)[0] for b in d.back_doors})
+            out.append(f"  found {len(d.back_doors)} back door(s) in {', '.join(files)}"
+                       + ("; frozen in allow, so check passes and a new one fails" if d.active else ""))
+    if not found.doors:
+        out.append("found no door (no function that two or more callers go through to a write)")
+    return out

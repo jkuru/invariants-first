@@ -166,6 +166,30 @@ tests still do the work. The new costs are a lockfile about four times larger an
 for every relaxing rule edit. The limitations below still apply: one author, 24 changes and
 synthetic apps.
 
+## Addendum, 2026-11-12: the adoption path
+
+This addendum measures only `inv init` and door rules (the CI-only first step), not the 24-change
+experiment above.
+
+| Codebase | What `inv init` wrote | Back doors found and frozen | `inv check` as drafted |
+|---|---|---|---|
+| pool-service (copy) | 7 pydantic models, 13 constraints; 1 door rule for `store` with 7 service doors | 7: 4 of the 6 planted in `rogue.py` (the other 2 are raw SQL, found with `--sql`), a benchmark, 2 endpoints writing the store | pass |
+| ORM app (SQLAlchemy repo, Django-style manager, Stripe gateway, no SQL) | 2 models, 7 constraints; 3 door rules | 3: a worker skipping the quota check, 2 admin-script calls | pass |
+| ledger app (raw SQL store) | 1 door rule | 1 (2 with `--sql`) | pass |
+| full-stack FastAPI template (SQLModel; read only, nothing executed) | 9 models, 26 constraints; no door rule: no service layer | none to freeze; its direct writes are listed | not run (its code was not installed) |
+
+Three rounds of scripted agent-style changes ran against the ledger app (in API-only and `--sql`
+modes) and the ORM app: 52 changes, of which the 35 that loosen a law or add a back door were
+blocked for the stated reason and the 17 safe ones passed. Rounds 1 and 2 ran in the development
+venv. Round 3 ran on a freshly built wheel in a fresh venv, after the full test matrix (Python 3.11
+and 3.14, three CEL backends, `-O`, mypy, both apps' CI) passed.
+
+**What this does not show.** The apps and the changes were written by the same author as the
+library, the ORM app's repositories were written to look typical rather than taken from a real
+project, and no real team has run it. The door chosen for each repository is a heuristic; on the
+template it correctly found none, which also means a codebase without a service layer gets no path
+laws from `inv init`.
+
 ## Method
 
 This method applies to both runs.

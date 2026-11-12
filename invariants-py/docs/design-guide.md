@@ -166,6 +166,19 @@ Where it needs qualifying:
 - **Locked rules are a target the agent will optimise for** (2.6).
 - **Ownership follows the two layers.** People lock *abstract* invariants; agents may propose *representation* invariants as candidates [3][12].
 
+### 1.9 Laws on API boundaries, never below them
+
+The section above holds at every layer, not only at HTTP. A system is a stack of APIs: the HTTP or RPC route (`POST /refunds`), the service method (`BillingService.refund`), the repository method (`BillingRepo.save_refund`), the model or agent call (`TriageAgent.propose_cause`) and the external client (`StripeClient.create_refund`). Rules belong on those boundaries, and there are two kinds:
+
+- **Value law:** on this API, these inputs or outputs never occur (`args`, `result`, `reply`).
+- **Path law:** this lower API is called only through that upper one ("only `BillingService.refund` calls `BillingRepo.save_refund`").
+
+People own the boundaries. Agents are free inside the implementations, and what is below the lowest API (SQL, isolation levels, private fields) is that implementation's business. A rule that reaches below the boundary polices an implementation instead of a contract. It also ties the rule to one database, and it pulls in vocabulary (triggers, savepoints, consistency levels) that a team adopting the tool should not need.
+
+Earlier drafts went below the API to answer critiques about concurrent writers and raw SQL (2.7, 4.1). Those mechanisms are still in the library: storage enforcers, `tables:`, `transactional` effects, provider consistency levels and `.sql` contracts. They are now opt-in and marked legacy, and the plan is to retire them. A path law at the repository API answers the raw-SQL critique without them: the scan proves no call path reaches the repository's write methods except through the service, whatever the repository talks to. Representation invariants (1.8) stay with the implementation, as candidates an agent may propose.
+
+What this changes in practice (Appendix A): `inv init` writes only value laws (pinned pydantic schemas) and path laws (door rules from the service-to-repository calls the code already has); the door rule is four lines and needs no decorator; and the default check never parses SQL.
+
 ## 2. The approach
 
 ### 2.1 The rule record
@@ -890,8 +903,8 @@ Paths are relative to the directory that holds this guide.
 
 | Path | Holds |
 |---|---|
-| `invariants-py/src/invariants/` | `loader.py` and `typecheck.py`, `guard.py` (guard, model call, edge, transaction), `registry.py`, `lockfile.py`, `scan.py`, `cli.py`, `pytest_plugin.py`, `cel/` (three backends and the value mapping), `integrations/` and the JSON Schema |
-| `invariants-py/tests/` | About 3,718 tests: unit and integration tests, `conformance/cel/` (17 YAML suites), and one `test_fix_round*.py` per fix round, each encoding what that round's probes showed broken |
+| `invariants-py/src/invariants/` | `loader.py` and `typecheck.py`, `guard.py` (guard, model call, edge, transaction), `registry.py`, `lockfile.py`, `scan.py`, `bootstrap.py` and `doors.py` (`inv init`), `cli.py`, `pytest_plugin.py`, `cel/` (three backends and the value mapping), `integrations/` and the JSON Schema |
+| `invariants-py/tests/` | About 3,920 tests: unit and integration tests, `conformance/cel/` (17 YAML suites), and one `test_fix_round*.py` per fix round, each encoding what that round's probes showed broken |
 | `invariants-py/docs/` | `rule-file.md` (every field), `evaluation.md` (8.3) and a copy of this guide |
 | `invariants-py/` | README, CHANGELOG (one section per fix round), RELEASING (the publishing checklist), SECURITY, CONTRIBUTING, and `.github/workflows/ci.yml` |
 | `apps/pool-service/` | A FastAPI and SQLite service that leases worker-pool slots, resizes pools through approvals, splits job batches and triages failed jobs with a model. 9 rules (R-1, R-7, R-20 to R-24, H-1, H-2), all `enforce`, and 72 tests |
@@ -900,7 +913,7 @@ Paths are relative to the directory that holds this guide.
 
 Each app has an `invariants.yaml`, an `invariants.lock`, a `ci.sh` and a `FRICTION.md`. FRICTION.md records what was hard to express or run, with what each library fix round changed for that app. The FRICTION files were the input to fix round 1. Each app also has a `bypass/` tree that the clean scan leaves out on purpose, so its tests can show `inv scan` catching a bypass. The apps import only the library's public API.
 
-**Test counts.** About 3,762 tests pass, with 5 skipped, on each of the three backends (`subset`, `cel-expr`, `celpy`), and also under `python -O`. mypy is clean. The wheel and the sdist install into fresh 3.12 and 3.14 venvs, and the sdist's own suite passes against the installed package. Each app's `ci.sh` passes, with every `enforce` rule shown to be load-bearing by `--inv-ablate`.
+**Test counts.** About 3,915 tests pass, with 3 to 5 skipped (engine-matrix cases that run only when CI sets their flags), on each of the three backends (`subset`, `cel-expr`, `celpy`), on Python 3.11 and 3.14, and also under `python -O`. mypy is clean. GitHub CI runs the same matrix on 3.11 to 3.14, plus the wheel build and both apps.
 
 **How to run them.** From the directory that holds this guide:
 
@@ -916,6 +929,8 @@ cd ../../prototype    && python3 demo.py          # the teaching prototype; no d
 ```
 
 Run pool-service with `POOL_SERVICE_DB=pool.db uvicorn pool_service.main:app` (uvicorn is not a dependency). Try fact-pipeline with `fact-pipeline --db f.db --inject drop_qualifier ingest examples/s1.txt --publisher newswire-a`, then `promote`, `ask` and `monitor`.
+
+**The adoption path, measured.** `inv init` was run on four codebases. On a copy of pool-service it pinned 7 pydantic models and wrote one door rule for the store (7 service doors). It froze 4 of the 6 bypasses planted in the app's `rogue.py` and 3 real back doors: a benchmark and two endpoints writing the store directly. The other 2 planted bypasses are raw SQL, below the API; `--sql` finds them. On an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back doors in a worker and an admin script. On a raw-SQL ledger app it found the door and the batch script that skips it. On the open-source full-stack FastAPI template (SQLModel) it pinned 9 models with 26 constraints and wrote no door rule, correctly: its routes write through the session or call `crud` directly, so there is no service layer to lock yet, and the file lists those writes instead (it was read only; its code was not installed or run). The three files that were locked passed `inv check` as written. In three rounds of 52 scripted agent-style changes over the ledger and ORM apps, all 35 that loosen a law or add a back door were blocked for the stated reason, and all 17 safe ones passed (new code through a door, reads, unit tests, tightenings, a reviewer's approval). The blocked ones were direct calls, aliases, constructors, `self.repo` (also tuple-assigned), annotated and unannotated parameters, `getattr`, monkeypatching, a new service method that skips the checked door, self-allowing, an added door, a deleted rule, a stale `allow` entry, and an agent re-pinning its own weakening (caught by `--base`). The third round ran on a wheel installed into a fresh venv.
 
 **What the prototype taught, and what the library added.** Building the prototype fixed three rules in this guide. R-21's bare `has()` does not compile in CEL. R-1 needed its length clause, because `inv.zip` on unequal lists is a `rule_error`. And R-7 now reads held data through a provider and is re-checked at an edge. The fourteen questions it raised are answered in sections 2.1 to 2.9, and the library implements each answer. The library adds what the prototype left out: `inv scan`, the lockfile, YAML, the CLI, real CEL engines and a type checker.
 

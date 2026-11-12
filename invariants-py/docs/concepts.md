@@ -1,5 +1,19 @@
 # Concepts
 
+Every layer of a system is an API: an HTTP route, a service method, a repository method, a model
+call, an external client. A rule is a law on one of those boundaries, and there are two kinds:
+
+- **a value law** says which inputs (`args`) or outputs (`result`, `reply`) an API must never accept
+  or produce. Pinned pydantic constraints are value laws, and so is a rule with a `guard` and `bad`;
+- **a path law** says which upper API a lower one may be called through: a door rule (`door`,
+  `sink`), checked by `inv scan`.
+
+Rules stay on the boundary. What happens inside an implementation, and below the lowest API (SQL,
+private fields, transaction settings), is the implementation's business. Some older parts of the
+library do reach below the API (storage enforcers, `tables`, `transactional` effects, provider
+consistency levels, `.sql` contracts); they still work, they are opt-in, and they are marked as such
+below. New rules should not need them.
+
 This page explains the moving parts: what a rule is, where it runs, what it can answer, and how
 the library decides whether a rule really holds. Every rule-file field is listed in
 [rule-file.md](rule-file.md), and the reasoning behind the design is in the
@@ -127,6 +141,9 @@ get no mediation credit, and they show reach 0 in the plugin report.
 
 ## Providers and consistency
 
+> **Below the API (legacy, opt-in).** Consistency levels describe the storage under a provider. A
+> rule that only reads its API's `args` and `result` needs none of this.
+
 A provider is a typed, read-only function that gives a rule data the call does not carry (an
 approval, a job record). Mark it with `@inv.provider("name")` and declare it under `providers:`.
 The loader checks its name, its parameters (exactly the keys of `args`) and its return type.
@@ -158,6 +175,10 @@ guards, model calls and edges. A rule whose sync target reads an `async def` pro
 `LoadError`, since a sync wrapper cannot await it.
 
 ## Transactions
+
+> **Below the API (legacy, opt-in).** Transactional effects and rollback reach into the storage
+> layer. Prefer a pre-effect value law on the service method.
+
 
 `@inv.transaction` marks the boundary of a transactional target: a generator (or async generator)
 method that BEGINs, yields, and COMMITs, or ROLLBACKs on an exception.
