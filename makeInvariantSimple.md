@@ -115,7 +115,7 @@ flowchart TD
 
 Earlier attempts at formal contracts failed in industry because they reached **below the API**—into private class attributes, SQL triggers, database transaction isolation levels, and raw SQL regexes. Going below the API ties your rules to one database engine and forces developers to learn a dozen storage concepts before they can write a rule.
 
-**The Invariant-First rule of thumb ([Invariant_first.md](file:///Users/jerrykuru/dev/invariants/Invariant_first.md#L8-L17)):**
+**The Invariant-First rule of thumb ([Invariant_first.md](Invariant_first.md#L8-L17)):**
 > **Laws belong strictly on API boundaries—never below them.** How a repository stores data (SQL, SQLAlchemy, Django ORM, MongoDB, DynamoDB, or Stripe) is that implementation’s business.
 
 ---
@@ -138,13 +138,13 @@ Because a **Value Law** on `BillingService.refund()` is useless if an AI coding 
 
 ## 1.5 Meet the Three Applications in This Book
 
-Throughout this book, every concept is illustrated with real, runnable code from the three applications in [`apps/`](file:///Users/jerrykuru/dev/invariants/apps):
+Throughout this book, every concept is illustrated with real, runnable code from the three applications in [`apps/`](apps):
 
 | Application | Architecture | What It Does & What Could Go Wrong |
 | :--- | :--- | :--- |
-| **1. [`apps/support-agent`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml)** | Multi-node AI Agent Graph (`triage` $\rightarrow$ `planner` $\rightarrow$ `router` $\rightarrow$ `executor` $\rightarrow$ `TOOLS` $\rightarrow$ `BillingService` $\rightarrow$ `StripeGateway` / `LedgerRepo`) | An AI customer-support agent that issues refunds, account credits, and subscription cancellations. **Risks:** LLM hallucinates an over-refund or refunds another user's order; coding agent adds a tool that calls Stripe directly or raises the $500 refund cap. |
-| **2. [`apps/pool-service`](file:///Users/jerrykuru/dev/invariants/apps/pool-service/invariants.yaml)** | FastAPI HTTP Service + SQLite Store + SRE Triage Model | Manages compute worker pools, slot leases, two-person approved pool resizes, and LLM root-cause triage for crashed jobs. **Risks:** Rounding bug in `split_work`; leases exceeding pool size; self-approved or $>4\times$ pool resize; LLM blaming `OUT_OF_MEMORY` when the kernel recorded `oom_killed=False`. |
-| **3. [`apps/fact-pipeline`](file:///Users/jerrykuru/dev/invariants/apps/fact-pipeline/invariants.yaml)** | Batch & Async AI Knowledge Pipeline (`intake` $\rightarrow$ `extract` $\rightarrow$ `resolve` $\rightarrow$ `ingest` $\rightarrow$ `promote` $\rightarrow$ `answer`) | Extracts structured facts from documents using an LLM and answers questions with citations. **Risks:** LLM invents quotes not at source offsets; single-source rumor promoted to `BELIEVED`; conflicting facts overwritten silently; answers citing unretrieved chunks. |
+| **1. [`apps/support-agent`](apps/support-agent/invariants.yaml)** | Multi-node AI Agent Graph (`triage` $\rightarrow$ `planner` $\rightarrow$ `router` $\rightarrow$ `executor` $\rightarrow$ `TOOLS` $\rightarrow$ `BillingService` $\rightarrow$ `StripeGateway` / `LedgerRepo`) | An AI customer-support agent that issues refunds, account credits, and subscription cancellations. **Risks:** LLM hallucinates an over-refund or refunds another user's order; coding agent adds a tool that calls Stripe directly or raises the $500 refund cap. |
+| **2. [`apps/pool-service`](apps/pool-service/invariants.yaml)** | FastAPI HTTP Service + SQLite Store + SRE Triage Model | Manages compute worker pools, slot leases, two-person approved pool resizes, and LLM root-cause triage for crashed jobs. **Risks:** Rounding bug in `split_work`; leases exceeding pool size; self-approved or $>4\times$ pool resize; LLM blaming `OUT_OF_MEMORY` when the kernel recorded `oom_killed=False`. |
+| **3. [`apps/fact-pipeline`](apps/fact-pipeline/invariants.yaml)** | Batch & Async AI Knowledge Pipeline (`intake` $\rightarrow$ `extract` $\rightarrow$ `resolve` $\rightarrow$ `ingest` $\rightarrow$ `promote` $\rightarrow$ `answer`) | Extracts structured facts from documents using an LLM and answers questions with citations. **Risks:** LLM invents quotes not at source offsets; single-source rumor promoted to `BELIEVED`; conflicting facts overwritten silently; answers citing unretrieved chunks. |
 
 ---
 
@@ -154,7 +154,7 @@ Throughout this book, every concept is illustrated with real, runnable code from
 
 If a library asks you on Day 1 to learn a new expression language, write 200 lines of YAML, decorate 15 production functions, and deploy a new runtime wrapper into production traffic, **nobody will adopt it.**
 
-`invariants` splits adoption into two independent steps ([docs/start.md](file:///Users/jerrykuru/dev/invariants/invariants-py/docs/start.md#L15-L27)):
+`invariants` splits adoption into two independent steps ([docs/start.md](invariants-py/docs/start.md#L15-L27)):
 
 - **Step 1: Zero-Runtime CI Mode (Dev-only install, 0 lines of Python touched).**
   You install `invariants-first` in your dev/CI environment (just like `ruff` or `mypy`) and run `inv init`. You **never import `invariants` in your production code**. It locks the value laws and path laws your codebase *already has* and enforces them in CI via `inv check`.
@@ -165,10 +165,10 @@ If a library asks you on Day 1 to learn a new expression language, write 200 lin
 
 ## 2.2 Inside `inv init`: How Automatic Discovery Works (`bootstrap.py` & `doors.py`)
 
-When you run `inv init` inside a project (for example, [`apps/support-agent`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml)), it parses your `.py` files with Python’s `ast` module (**it never imports or executes your code**) and discovers three things automatically:
+When you run `inv init` inside a project (for example, [`apps/support-agent`](apps/support-agent/invariants.yaml)), it parses your `.py` files with Python’s `ast` module (**it never imports or executes your code**) and discovers three things automatically:
 
-### 1. Value Laws in Your Pydantic Models ([bootstrap.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/bootstrap.py#L283-L309))
-`_models()` walks every class inheriting from `BaseModel`, `RootModel`, or `SQLModel` (including indirect subclasses like `class RefundToolInput(Closed):` in [`support_agent/models.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/models.py#L14-L52)). Whenever it finds constraints (`Field(gt=0, le=50_000)`, `min_length`, `max_length`, `pattern`, `Literal[...]`, `conint`, or `@field_validator` / `@model_validator`), it writes a `pydantic` contract entry:
+### 1. Value Laws in Your Pydantic Models ([bootstrap.py](invariants-py/src/invariants/bootstrap.py#L283-L309))
+`_models()` walks every class inheriting from `BaseModel`, `RootModel`, or `SQLModel` (including indirect subclasses like `class RefundToolInput(Closed):` in [`support_agent/models.py`](apps/support-agent/src/support_agent/models.py#L14-L52)). Whenever it finds constraints (`Field(gt=0, le=50_000)`, `min_length`, `max_length`, `pattern`, `Literal[...]`, `conint`, or `@field_validator` / `@model_validator`), it writes a `pydantic` contract entry:
 
 ```yaml
 contracts:
@@ -181,7 +181,7 @@ contracts:
 
 Then `inv init` runs `inv lock` to pin the resolved JSON Schema of each model in `invariants.lock`. From that moment on, if a coding agent raises `amount_cents: le=50_000` to `le=500_000`, `inv check` fails with `WEAKENED`.
 
-### 2. Path Laws Between Your Services and Repositories ([doors.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/doors.py#L149-L286))
+### 2. Path Laws Between Your Services and Repositories ([doors.py](invariants-py/src/invariants/doors.py#L149-L286))
 `doors.discover()` builds the project's AST call graph and identifies:
 1. **Sinks (The Lowest Write APIs):**
    - Methods with write verbs (`add`, `insert`, `create`, `update`, `delete`, `save`, `refund`, `charge`, `cancel`, ...) inside classes or modules named like a repository (`*Repo`, `*Repository`, `*Store`, `*Gateway`, `*DAO`, `repo.py`, `store.py`, `crud.py`).
@@ -204,11 +204,11 @@ rules:
       - "py:support_agent.repo.LedgerRepo.record_refund"
 ```
 
-### 3. Suggested Guard Rules from Python Preconditions ([bootstrap.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/bootstrap.py#L195-L240))
-`_guards()` inspects the leading `if <cond>: raise ...` and `assert <cond>` statements at the top of every function and translates them from Python AST to CEL via `_Cel` ([bootstrap.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/bootstrap.py#L52-L168)):
+### 3. Suggested Guard Rules from Python Preconditions ([bootstrap.py](invariants-py/src/invariants/bootstrap.py#L195-L240))
+`_guards()` inspects the leading `if <cond>: raise ...` and `assert <cond>` statements at the top of every function and translates them from Python AST to CEL via `_Cel` ([bootstrap.py](invariants-py/src/invariants/bootstrap.py#L52-L168)):
 - Parameters become `args.<name>`.
 - `assert x > 0` is negated via De Morgan / comparison inversion (`negate()`) into `bad: "args.x <= 0"`.
-- Module-level literal constants (`MAX_REFUND = 10_000` or `ALLOWED = ("USD", "EUR")`) are collected by `_module_consts()` ([bootstrap.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/bootstrap.py#L218-L241)) and inlined automatically (`args.amount > 10000`).
+- Module-level literal constants (`MAX_REFUND = 10_000` or `ALLOWED = ("USD", "EUR")`) are collected by `_module_consts()` ([bootstrap.py](invariants-py/src/invariants/bootstrap.py#L218-L241)) and inlined automatically (`args.amount > 10000`).
 - Because a runtime guard requires adding `@inv.guard("ID")` to the Python function, `inv init` writes these at the bottom of `invariants.yaml` **commented out** with 4-step instructions so `inv check` passes immediately out of the box.
 
 ---
@@ -216,7 +216,7 @@ rules:
 ## 2.3 Freezing Legacy Back Doors with `allow:` (The One-Way Ratchet)
 
 What happens when you run `inv init` on an existing codebase that *already* has a legacy script bypassing your service layer?
-Look at [`support_agent/admin.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/admin.py#L11-L17):
+Look at [`support_agent/admin.py`](apps/support-agent/src/support_agent/admin.py#L11-L17):
 
 ```python
 def goodwill_refund(gateway: StripeGateway, order_id: str, amount_cents: int) -> str:
@@ -227,7 +227,7 @@ def admin_goodwill(order_id: str, amount_cents: int) -> str:
 ```
 
 If `inv init` wrote a strict door rule without accounting for `admin.py`, your first `inv check` would fail and you would uninstall the tool.
-Instead, `doors._freeze()` ([doors.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/doors.py#L291-L321)) runs the real `scan.scan()` verifier on the candidate rule, finds the existing unmediated call chain `admin_goodwill -> goodwill_refund -> StripeGateway.refund`, and **freezes that exact chain in `allow:`**:
+Instead, `doors._freeze()` ([doors.py](invariants-py/src/invariants/doors.py#L291-L321)) runs the real `scan.scan()` verifier on the candidate rule, finds the existing unmediated call chain `admin_goodwill -> goodwill_refund -> StripeGateway.refund`, and **freezes that exact chain in `allow:`**:
 
 ```yaml
   - id: STRIPE-GATEWAY-DOOR
@@ -241,15 +241,15 @@ Instead, `doors._freeze()` ([doors.py](file:///Users/jerrykuru/dev/invariants/in
 This creates a **one-way ratchet** (just like ArchUnit’s violation store):
 1. **Today’s code passes `inv check` immediately.**
 2. **Any new back door fails CI.**
-3. **Adding a new function to `allow:` is a weakening** ([lockfile.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L1593-L1597)) that `inv check` and `inv check --relock` refuse.
-4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L1177-L1187)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
+3. **Adding a new function to `allow:` is a weakening** ([lockfile.py](invariants-py/src/invariants/lockfile.py#L1593-L1597)) that `inv check` and `inv check --relock` refuse.
+4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan.py](invariants-py/src/invariants/scan.py#L1177-L1187)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
 
 ---
 
 ## 2.4 Combining Graphify Topology with Deterministic AST Verification (`graphify.py`)
 
 Naming heuristics (`*Service`, `*Repo`) work on standard layouts, but what if a codebase uses unconventional names?
-In [`graphify.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/graphify.py#L1-L167), `inv init` integrates with [Graphify](https://github.com/Graphify-Labs/graphify) (`graphify-out/graph.json` or `inv init --graph PATH`, produced in under a second by `graphify update .` with zero LLM calls):
+In [`graphify.py`](invariants-py/src/invariants/graphify.py#L1-L167), `inv init` integrates with [Graphify](https://github.com/Graphify-Labs/graphify) (`graphify-out/graph.json` or `inv init --graph PATH`, produced in under a second by `graphify update .` with zero LLM calls):
 
 ```mermaid
 flowchart LR
@@ -258,11 +258,11 @@ flowchart LR
     S -->|"Only verified rules"| Y["invariants.yaml"]
 ```
 
-Running real Graphify (`graphifyy` 0.9.107) across `support-agent`, `pool-service`, `fact-pipeline`, and the FastAPI template shaped four critical design rules in [`graphify.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/graphify.py#L36-L38) and [`doors.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/doors.py#L213-L248):
+Running real Graphify (`graphifyy` 0.9.107) across `support-agent`, `pool-service`, `fact-pipeline`, and the FastAPI template shaped four critical design rules in [`graphify.py`](invariants-py/src/invariants/graphify.py#L36-L38) and [`doors.py`](invariants-py/src/invariants/doors.py#L213-L248):
 
-1. **Matches by File + Line Span (`_Locator` at [graphify.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/graphify.py#L90-L125)):** Maps Graphify nodes to Python AST functions by `(source_file, source_location)` line numbers, so changes in Graphify’s node ID scheme never break matching.
-2. **Why Communities Are What Graphify Adds ([graphify.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/graphify.py#L15-L20)):** Graphify tags plain function calls as `EXTRACTED` (`relation: "calls"`), whereas method calls on objects (`self.repo.save()`, `ctx.billing.refund()`) are tagged `INFERRED` by tree-sitter, and `relation: "uses"` represents parameter type annotations rather than calls (`CALL_RELATIONS = frozenset({"calls"})`). Because `scan.py` already resolves both plain function calls and typed method chains, Graphify’s unique contribution to `inv init` is its **Leiden/Louvain community clustering**.
-3. **The Strict 3-Community Bridge Rule (`layer(c)` at [doors.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/doors.py#L238-L248)):**
+1. **Matches by File + Line Span (`_Locator` at [graphify.py](invariants-py/src/invariants/graphify.py#L90-L125)):** Maps Graphify nodes to Python AST functions by `(source_file, source_location)` line numbers, so changes in Graphify’s node ID scheme never break matching.
+2. **Why Communities Are What Graphify Adds ([graphify.py](invariants-py/src/invariants/graphify.py#L15-L20)):** Graphify tags plain function calls as `EXTRACTED` (`relation: "calls"`), whereas method calls on objects (`self.repo.save()`, `ctx.billing.refund()`) are tagged `INFERRED` by tree-sitter, and `relation: "uses"` represents parameter type annotations rather than calls (`CALL_RELATIONS = frozenset({"calls"})`). Because `scan.py` already resolves both plain function calls and typed method chains, Graphify’s unique contribution to `inv init` is its **Leiden/Louvain community clustering**.
+3. **The Strict 3-Community Bridge Rule (`layer(c)` at [doors.py](invariants-py/src/invariants/doors.py#L238-L248)):**
    When Graphify was first run on `fact-pipeline`, `cli.main` (which writes directly to the store as a back door) lived in a different community from `Store`. A naive 2-community check (`comm[caller] != comm[writer]`) promoted `cli.main` from a reported back door into an accepted door—hiding the violation!
    To prevent entrypoints from being mistaken for service layers, `_doors_for()` requires a **three-community sandwich**:
    - The candidate `c` must not be an entrypoint (`ENTRY_NAMES = {"main", "<module>", "cli", "run", "handler", "lambda_handler"}`) or HTTP route handler (`@router.post`, `@app.get`, etc.);
@@ -294,16 +294,16 @@ Because **no existing unit test calls `vip_refund_tool` with an over-refund!** U
 
 ## 3.2 Inside `scan.py`: Building a Call Graph Without Importing Your Code
 
-When `inv scan` (or `inv check`) runs, [`scan.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L387-L518) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
+When `inv scan` (or `inv check`) runs, [`scan.py`](invariants-py/src/invariants/scan.py#L387-L518) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
 
-1. **Pass 1 (`_Index.add_module` at [scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L406-L460)):**
+1. **Pass 1 (`_Index.add_module` at [scan.py](invariants-py/src/invariants/scan.py#L406-L460)):**
    - Parses each file into an `ast.Module`.
    - Records every `import` and `from ... import ...` alias (including relative imports and `from mod import *`).
    - Registers every function, async function, class, method, and return-type annotation in `idx.funcs` and `idx.classes`.
-   - Follows re-exports and class inheritance in `_Index.canon()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L462-L489)) so calling an inherited method on a subclass resolves to the canonical method definition.
-2. **Pass 2 (`_Walker` at [scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L520-L925)):**
+   - Follows re-exports and class inheritance in `_Index.canon()` ([scan.py](invariants-py/src/invariants/scan.py#L462-L489)) so calling an inherited method on a subclass resolves to the canonical method definition.
+2. **Pass 2 (`_Walker` at [scan.py](invariants-py/src/invariants/scan.py#L520-L925)):**
    - Walks every statement and expression inside each function (attributing nested lambdas, comprehensions, and closures to their enclosing top-level function or method `owner`).
-   - Emits two kinds of call edges (`_Edge` at [scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L371-L379)):
+   - Emits two kinds of call edges (`_Edge` at [scan.py](invariants-py/src/invariants/scan.py#L371-L379)):
      - **Proven (`inferred=False`):** The scanner knows the exact target function or receiver class.
      - **Name-matched (`inferred=True`):** A method call `.refund()` on a variable whose type the scanner cannot prove, when `.refund` matches the name of a known method.
 
@@ -313,19 +313,19 @@ When `inv scan` (or `inv check`) runs, [`scan.py`](file:///Users/jerrykuru/dev/i
 
 In object-oriented Python, sinks and doors are almost always methods on objects (`self.stripe.refund(...)`, `ctx.billing.refund(...)`, `Repo(session).add(...)`). How does `scan.py` know which class `.refund()` belongs to without running the program?
 
-Look at `_Walker._receiver()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L655-L679)). It resolves a receiver to a proven class in **six exact cases**:
+Look at `_Walker._receiver()` ([scan.py](invariants-py/src/invariants/scan.py#L655-L679)). It resolves a receiver to a proven class in **six exact cases**:
 
 | # | Python Code Pattern | How `scan.py` Resolves It | Exact or Subclass? |
 | :--- | :--- | :--- | :--- |
-| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L548-L553)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
-| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L584-L618)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
-| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L531-L546)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
-| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L555-L579)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
-| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L620-L653)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
-| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L670-L678)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
+| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan.py](invariants-py/src/invariants/scan.py#L548-L553)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
+| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan.py](invariants-py/src/invariants/scan.py#L584-L618)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
+| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan.py](invariants-py/src/invariants/scan.py#L531-L546)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
+| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan.py](invariants-py/src/invariants/scan.py#L555-L579)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
+| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan.py](invariants-py/src/invariants/scan.py#L620-L653)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
+| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan.py](invariants-py/src/invariants/scan.py#L670-L678)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
 
 > [!TIP]
-> **Why `_foreign_attrs()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L681-L710)) Is Such a Clever Safety Check:**
+> **Why `_foreign_attrs()` ([scan.py](invariants-py/src/invariants/scan.py#L681-L710)) Is Such a Clever Safety Check:**
 > What if some function outside `AgentContext` overwrites `ctx.billing = FakeBilling()` or calls `setattr(ctx, "billing", ...)`?
 > `_foreign_attrs()` scans the entire codebase for any attribute `.x` assigned from *outside* `self.x` (`obj.x = ...` or `setattr(obj, "x", ...)`). Any attribute modified from outside its owning class is added to `idx.foreign` and **never trusted** as a typed receiver!
 
@@ -333,7 +333,7 @@ Look at `_Walker._receiver()` ([scan.py](file:///Users/jerrykuru/dev/invariants/
 
 ## 3.4 How `allow:` Blocks Transit Bypasses and Monkeypatching
 
-Let’s look at how `_check_rule()` and `_shortest()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L1107-L1245)) verify a door rule with `allow:`:
+Let’s look at how `_check_rule()` and `_shortest()` ([scan.py](invariants-py/src/invariants/scan.py#L1107-L1245)) verify a door rule with `allow:`:
 
 ```yaml
   - id: STRIPE-GATEWAY-DOOR
@@ -346,7 +346,7 @@ Let’s look at how `_check_rule()` and `_shortest()` ([scan.py](file:///Users/j
 
 Suppose an AI coding agent tries to be sneaky. It sees that `goodwill_refund` is in `allow:`, so instead of calling `StripeGateway.refund` directly, the agent writes a new tool `sneaky_tool` that calls `goodwill_refund()`!
 
-Here is how `_shortest()` ([scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L1218-L1245)) catches it:
+Here is how `_shortest()` ([scan.py](invariants-py/src/invariants/scan.py#L1218-L1245)) catches it:
 1. First, `scan.py` removes only `doors` (`BillingService.refund`) from the graph—**it does NOT remove `allowed` functions**.
 2. Next, `_shortest()` runs a breadth-first search (BFS) from every entrypoint (`start`) to the `sink`, tracking a 2-tuple state:
    ```python
@@ -359,7 +359,7 @@ Here is how `_shortest()` ([scan.py](file:///Users/jerrykuru/dev/invariants/inva
    ```
 
 And what if the agent edits `goodwill_refund` itself to monkeypatch `BillingService.refund` (`setattr(BillingService, "refund", ...)`) or unwrap its `@inv.guard` decorator (`BillingService.refund.__wrapped__`)?
-Look at [scan.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/scan.py#L1134-L1135):
+Look at [scan.py](invariants-py/src/invariants/scan.py#L1134-L1135):
 ```python
     for s in sites:
         if s.owner in allowed and s.what in ("ref", "attrcall", "getattr"):
@@ -399,7 +399,7 @@ Checking that law requires comparing the call’s runtime arguments (`args.amoun
 
 ## 4.2 Short-Form Rules vs. Full-Form Rules (`loader.py`)
 
-You do not need to write verbose YAML to add a runtime guard. In [`apps/support-agent/invariants.yaml`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml#L58-L70), look at `BILL-1` and `BILL-2`:
+You do not need to write verbose YAML to add a runtime guard. In [`apps/support-agent/invariants.yaml`](apps/support-agent/invariants.yaml#L58-L70), look at `BILL-1` and `BILL-2`:
 
 ```yaml
   - id: BILL-1
@@ -417,7 +417,7 @@ You do not need to write verbose YAML to add a runtime guard. In [`apps/support-
     tests: ["tests/test_runtime_defects.py::test_d6_the_door_refuses_an_over_credit"]
 ```
 
-And in [`support_agent/service.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/service.py#L14-L30):
+And in [`support_agent/service.py`](apps/support-agent/src/support_agent/service.py#L14-L30):
 
 ```python
 class BillingService:
@@ -436,7 +436,7 @@ class BillingService:
         self.ledger.insert_credit(customer_id, amount_cents, reason)
 ```
 
-When `loader.expand_short_forms()` ([loader.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/loader.py#L68-L195)) loads `BILL-2`, it expands those 4 lines into the canonical internal rule record:
+When `loader.expand_short_forms()` ([loader.py](invariants-py/src/invariants/loader.py#L68-L195)) loads `BILL-2`, it expands those 4 lines into the canonical internal rule record:
 - `guard: "py:..."` $\rightarrow$ `subject: {target: "py:..."}` and `enforcers: [{point: "decorator", timing: "pre_effect", mode: "enforce", on_violation: "reject", on_error: "fail_closed"}]`.
 - `tests: [...]` $\rightarrow$ `falsified_by: [...]` and `status: "enforce"`. (If you omit `tests:` while trying out a new rule, it automatically sets `status: "detect"` so it logs violations without blocking traffic!)
 - Notice that `lockfile.py` pins the **expanded** form, so switching a rule between short form and full form causes zero lock churn.
@@ -448,15 +448,15 @@ When `loader.expand_short_forms()` ([loader.py](file:///Users/jerrykuru/dev/inva
 In Invariant-First, rules are always written as **prohibitions (`bad`)**: a [Common Expression Language (CEL)](https://cel.dev) expression that returns **`true` when the forbidden state occurs**.
 
 Why CEL instead of Python `eval()`?
-1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/cel/subset.py)).
-2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
+1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset.py`](invariants-py/src/invariants/cel/subset.py)).
+2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](invariants-py/src/invariants/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
 3. **Three Pluggable Backends (`cel/`):**
    - `subset` (default): Zero-dependency stdlib evaluator (`7.1 µs` per call).
    - `cel-expr`: Google’s C++ CEL runtime (`9.6 µs` per call).
    - `celpy`: Pure-Python full CEL reference engine.
 
 ### Built-In Collection Helpers: Rule `R-1` in `pool-service`
-Look at how [`apps/pool-service/invariants.yaml`](file:///Users/jerrykuru/dev/invariants/apps/pool-service/invariants.yaml#L42-L64) checks `split_work(total_jobs, capacities) -> list[int]` using four `{when, message}` clauses and the built-in `inv.sum` and `inv.zip` helpers:
+Look at how [`apps/pool-service/invariants.yaml`](apps/pool-service/invariants.yaml#L42-L64) checks `split_work(total_jobs, capacities) -> list[int]` using four `{when, message}` clauses and the built-in `inv.sum` and `inv.zip` helpers:
 
 ```yaml
   - id: R-1
@@ -481,7 +481,7 @@ Look at how [`apps/pool-service/invariants.yaml`](file:///Users/jerrykuru/dev/in
 > **The IEEE-754 `NaN` Trap (And How `invariants` Defeats It):**
 > In standard floating-point math, `NaN < 0.0` is `false` and `NaN > 100.0` is **also `false`**!
 > If you write a prohibited state `bad: 'args.score < 0.0 || args.score > 100.0'`, and a buggy caller passes `score = float("nan")`, both comparisons return `false`, so a naive guard thinks `bad == false` and **lets `NaN` straight through!**
-> In [`cel/values.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/cel/values.py), any `NaN` or `±Infinity` in an input, provider value, or arithmetic result (`0.0 / 0.0`) immediately raises a `CelError` $\rightarrow$ `Outcome("rule_error")`, which under `fail_closed` blocks the call! Similarly, `decimal.Decimal` (which loses money precision if converted to float) and timezone-naive `datetime`s are refused at load time with instructions to use integer cents and timezone-aware UTC datetimes.
+> In [`cel/values.py`](invariants-py/src/invariants/cel/values.py), any `NaN` or `±Infinity` in an input, provider value, or arithmetic result (`0.0 / 0.0`) immediately raises a `CelError` $\rightarrow$ `Outcome("rule_error")`, which under `fail_closed` blocks the call! Similarly, `decimal.Decimal` (which loses money precision if converted to float) and timezone-naive `datetime`s are refused at load time with instructions to use integer cents and timezone-aware UTC datetimes.
 
 ---
 
@@ -489,7 +489,7 @@ Look at how [`apps/pool-service/invariants.yaml`](file:///Users/jerrykuru/dev/in
 
 An incoming request or an LLM output is an **untrusted claim**. To verify a claim, a rule often needs **held data**—the state your system already holds in its database or ledger.
 
-In [`apps/support-agent/invariants.yaml`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml#L25-L34), providers are declared once at the top of the file:
+In [`apps/support-agent/invariants.yaml`](apps/support-agent/invariants.yaml#L25-L34), providers are declared once at the top of the file:
 
 ```yaml
 providers:
@@ -503,7 +503,7 @@ providers:
     args: {ledger: self.ledger, customer_id: args.customer_id}
 ```
 
-And registered in Python with `@inv.provider` ([`support_agent/service.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/service.py#L52-L62)):
+And registered in Python with `@inv.provider` ([`support_agent/service.py`](apps/support-agent/src/support_agent/service.py#L52-L62)):
 
 ```python
 @inv.provider("order")
@@ -512,7 +512,7 @@ def order(ledger: LedgerRepo, order_id: str) -> Order | None:
     return load_order(ledger, order_id)
 ```
 
-How providers work at load time and run time ([`providers.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/providers.py)):
+How providers work at load time and run time ([`providers.py`](invariants-py/src/invariants/providers.py)):
 1. **Verified at Load Time:** The loader checks that `@inv.provider("order")` exists, that its parameter names match `args: {ledger: ..., order_id: ...}` exactly, and that its Python return annotation matches `type: "py:support_agent.models.Order | null"`.
 2. **Cached Per Call:** Within a single guarded call, if multiple clauses read `order`, the provider function is called only once per `(provider_name, bound_args)`.
 3. **Async-Aware:** If both the guarded function and the provider are `async def`, `guard.py` awaits `prefetch_async()` before evaluating the CEL clauses.
@@ -523,7 +523,7 @@ How providers work at load time and run time ([`providers.py`](file:///Users/jer
 ## 4.5 Timing Laws: Pre-Effect vs. Post-Effect and `old_self` Snapshots
 
 Remember Requirement #4 of an invariant: **a guard must stop a bad state *before* the side effect happens.**
-The loader enforces this mechanically via `targets:` and `timing:` ([`loader.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/loader.py)):
+The loader enforces this mechanically via `targets:` and `timing:` ([`loader.py`](invariants-py/src/invariants/loader.py)):
 
 | Target `effects:` | `timing: pre_effect` | `timing: post_effect` | Real Example |
 | :--- | :--- | :--- | :--- |
@@ -533,7 +533,7 @@ The loader enforces this mechanically via `targets:` and `timing:` ([`loader.py`
 ### How `old_self` Snapshots Work Without `deepcopy(self)` (`snapshot.py`)
 What if a transition rule needs to compare an object’s state before and after a method call, such as `bad: 'self.balance < old_self.balance - args.amount'`?
 If the guard ran `copy.deepcopy(self)` before every call, it would be slow—and if `self` held a live `sqlite3.Connection` or thread lock, `deepcopy` would crash!
-Instead, [`snapshot.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/snapshot.py) inspects the CEL AST at load time, finds the exact paths read under `old_self` (e.g., `old_self.balance`), and copies **only those specific plain-data attributes** before the method executes.
+Instead, [`snapshot.py`](invariants-py/src/invariants/snapshot.py) inspects the CEL AST at load time, finds the exact paths read under `old_self` (e.g., `old_self.balance`), and copies **only those specific plain-data attributes** before the method executes.
 
 ---
 
@@ -554,7 +554,7 @@ When your code calls an LLM (`plan_action`, `propose_cause`, `propose_fact`, `co
 
 ## 5.2 Inside `@inv.model_call`: The Four-Stage Loop Harness
 
-Let’s trace what happens inside `_ModelRun` ([`guard.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L504-L597)) when `@inv.model_call("PLAN-1", schema=Plan)` runs in [`apps/support-agent/src/support_agent/planner.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/planner.py#L36-L39):
+Let’s trace what happens inside `_ModelRun` ([`guard.py`](invariants-py/src/invariants/guard.py#L504-L597)) when `@inv.model_call("PLAN-1", schema=Plan)` runs in [`apps/support-agent/src/support_agent/planner.py`](apps/support-agent/src/support_agent/planner.py#L36-L39):
 
 ```mermaid
 flowchart TD
@@ -573,19 +573,19 @@ flowchart TD
 
 Look closely at each of the four stages:
 
-1. **Stage 1 — Closed-Schema Parsing (`inv.parse` at [guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L466-L502)):**
+1. **Stage 1 — Closed-Schema Parsing (`inv.parse` at [guard.py](invariants-py/src/invariants/guard.py#L466-L502)):**
    - Rejects payloads over `1,000,000` characters (`max_reply_size`).
    - Rejects non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) that Python’s `json.loads` normally accepts!
    - Enforces a **closed schema** (`extra="forbid"`): if the model invents an extra key (like trying to inject `"id"` into `FactReply` in `fact-pipeline`), `inv.parse` raises `ParseError`.
    - If `format_retries` remain (default `2`), it passes the parser error string into the function’s `inv_feedback` parameter and retries.
-2. **Stage 2 — First-Class Abstention (`abstain` at [guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L559-L575)):**
+2. **Stage 2 — First-Class Abstention (`abstain` at [guard.py](invariants-py/src/invariants/guard.py#L559-L575)):**
    - If you force an LLM to always pick a tool, it will guess when a ticket is ambiguous.
    - By declaring `abstain: {field: action, value: ESCALATE_TO_HUMAN}` (in `PLAN-1`), `abstain: {field: cause, value: CANNOT_COMPLY}` (in `R-7`), or `abstain: {field: status, value: CANNOT_ANSWER}` (in `K-19`), the model has a schema-valid way to say *"I need a human."*
    - When `@inv.model_call` sees the abstain value, it **does not retry**—it immediately records `outcome: "abstain"`, opens a ticket in `ReviewStore`, and raises `inv.Escalation`.
-3. **Stage 3 — Held-Data Evaluation (`bad` at [guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L581-L590)):**
+3. **Stage 3 — Held-Data Evaluation (`bad` at [guard.py](invariants-py/src/invariants/guard.py#L581-L590)):**
    - Now `reply` is bound alongside `args` and any providers (notice how `planned_order` in `support-agent` binds `args: {ledger: args.ctx.ledger, order_id: reply.order_id}`—it uses the `order_id` **from the model’s own reply** to fetch that order from SQLite!).
    - Then `bad` checks whether the model’s proposed plan contradicts held reality.
-4. **Stage 4 — Blind Semantic Resampling ([guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L591-L595)):**
+4. **Stage 4 — Blind Semantic Resampling ([guard.py](invariants-py/src/invariants/guard.py#L591-L595)):**
    - If `bad` fires and `semantic_resamples > 0`, `@inv.model_call` resamples **with `self.feedback = None`**.
 
 ---
@@ -604,14 +604,14 @@ By keeping `feedback.semantic: none` (and locking it in `invariants.lock`), a se
 
 ## 5.4 Node-to-Node Proof in Agent Graphs: `inv.Checked` and `@inv.edge`
 
-In an agent graph (like [`support_agent/graph.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/graph.py#L20-L93)), one node plans the action (`planner_node`) and stores `state.plan`, and a later node executes the tool (`tool_executor_node` $\rightarrow$ `execute_plan`).
+In an agent graph (like [`support_agent/graph.py`](apps/support-agent/src/support_agent/graph.py#L20-L93)), one node plans the action (`planner_node`) and stores `state.plan`, and a later node executes the tool (`tool_executor_node` $\rightarrow$ `execute_plan`).
 
 What could go wrong between those two nodes?
 1. **Forged State:** A buggy node or helper constructs a plan without calling `plan_action()` (e.g., `object.__new__(CheckedPlan)`).
 2. **Cross-Customer Replay:** A cached `CheckedPlan` that was approved for `cust_bob` is passed to `execute_plan` for `cust_alice`.
 3. **Mid-Flight State Mutation / Time-of-Check to Time-of-Use (TOCTOU):** Between `planner_node` and `tool_executor_node`, code mutates `state.plan.value.amount_cents = 500_000`, or another request refunds the order so `remaining_cents` is now `0`!
 
-Look at how `@inv.edge("PLAN-1")` ([`guard.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L721-L818)) on `execute_plan(ctx, plan: CheckedPlan, customer_id: str)` stops **all three**:
+Look at how `@inv.edge("PLAN-1")` ([`guard.py`](invariants-py/src/invariants/guard.py#L721-L818)) on `execute_plan(ctx, plan: CheckedPlan, customer_id: str)` stops **all three**:
 
 ```python
 @inv.edge("PLAN-1")
@@ -621,13 +621,13 @@ def execute_plan(ctx: AgentContext, plan: CheckedPlan, customer_id: str) -> str:
     return tool(ctx, model(**args))
 ```
 
-When `execute_plan` is called, `@inv.edge("PLAN-1")` runs `prepare()` and `judge()` ([guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L743-L790)):
+When `execute_plan` is called, `@inv.edge("PLAN-1")` runs `prepare()` and `judge()` ([guard.py](invariants-py/src/invariants/guard.py#L743-L790)):
 1. **Type & Verdict Check:** Verifies `isinstance(plan, CheckedPlan)` and `plan.verdict == "ok"`. If someone forged `object.__new__(CheckedPlan)` (which has no `verdict`), it fails immediately with `rule_error`.
-2. **Fresh Closed-Schema Re-Validation (`recheck` at [guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L704-L718)):** Re-parses `plan.value` through `inv.parse(reply, Plan)` to build a **brand-new, isolated copy** of the `Plan` model.
+2. **Fresh Closed-Schema Re-Validation (`recheck` at [guard.py](invariants-py/src/invariants/guard.py#L704-L718)):** Re-parses `plan.value` through `inv.parse(reply, Plan)` to build a **brand-new, isolated copy** of the `Plan` model.
 3. **Fresh Held-Data & CEL Re-Evaluation:** Re-fetches `planned_order` and `planned_tier` from SQLite *right now* and re-evaluates all 5 clauses of `PLAN-1` against `execute_plan`'s own `args.customer_id`!
    - If the plan was approved for Bob (`reply.customer_id == "cust_bob"`) but passed to `execute_plan` for Alice (`args.customer_id == "cust_alice"`), clause 1 (`reply.customer_id != args.customer_id`) fires and rejects it!
    - If the ledger balance moved since `planner_node` ran, clause 4 (`reply.amount_cents > planned_order.remaining_cents`) fires and rejects it!
-4. **Hands Only the Fresh Copy to the Consumer ([guard.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L770-L772)):** `execute_plan` receives the freshly re-validated copy, so no external reference can mutate it after the check.
+4. **Hands Only the Fresh Copy to the Consumer ([guard.py](invariants-py/src/invariants/guard.py#L770-L772)):** `execute_plan` receives the freshly re-validated copy, so no external reference can mutate it after the check.
 
 ---
 
@@ -637,10 +637,10 @@ Here is how all three apps use the exact same `@inv.model_call` $\rightarrow$ `C
 
 | App & Rule | `@inv.model_call` (Producer) | `@inv.edge` (Consumer) | Held Data (`@inv.provider`) | What `bad` Prohibits |
 | :--- | :--- | :--- | :--- | :--- |
-| **`support-agent`**<br>Rule `PLAN-1`<br>([invariants.yaml](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml#L73-L105)) | `plan_action()` $\rightarrow$ `CheckedPlan` | `execute_plan()` | `planned_order`, `planned_tier` (from SQLite `LedgerRepo`) | Acting for another customer; refunding an unknown order, another customer’s order, or $> \text{remaining\_cents}$; crediting $> \text{credit\_limit\_cents}$. |
-| **`pool-service`**<br>Rule `R-7`<br>([invariants.yaml](file:///Users/jerrykuru/dev/invariants/apps/pool-service/invariants.yaml#L65-L103)) | `propose_cause()` $\rightarrow$ `CheckedCause` | `remediate()` | `job: JobFacts` (kernel `oom_killed`, `elapsed_s`, `timeout_s`, `exit_code`) | Saying `OUT_OF_MEMORY` when `!job.oom_killed`; missing `OUT_OF_MEMORY` when `job.oom_killed`; saying `TIMEOUT` when `elapsed_s < timeout_s`; saying `BAD_INPUT` when `exit_code != 65`. |
-| **`fact-pipeline`**<br>Rule `K-2`<br>([invariants.yaml](file:///Users/jerrykuru/dev/invariants/apps/fact-pipeline/invariants.yaml#L53-L78)) | `propose_fact()` $\rightarrow$ `CheckedFact` | `accept_fact()` | `chunk`, `span` (exact substring `text[reply.start:reply.end]` from source doc) | `reply.quote` not matching the exact character slice `span` at `reply.start..reply.end`; or `chunk.source_hash_current != args.source_hash`. |
-| **`fact-pipeline`**<br>Rule `K-19`<br>([invariants.yaml](file:///Users/jerrykuru/dev/invariants/apps/fact-pipeline/invariants.yaml#L221-L244)) | `compose_answer()` $\rightarrow$ `CheckedAnswer` | `render_answer()` | `args.retrieved_ids` | Citing any chunk ID `c` where `!(c in args.retrieved_ids)`, or returning an answer with `0` citations. |
+| **`support-agent`**<br>Rule `PLAN-1`<br>([invariants.yaml](apps/support-agent/invariants.yaml#L73-L105)) | `plan_action()` $\rightarrow$ `CheckedPlan` | `execute_plan()` | `planned_order`, `planned_tier` (from SQLite `LedgerRepo`) | Acting for another customer; refunding an unknown order, another customer’s order, or $> \text{remaining\_cents}$; crediting $> \text{credit\_limit\_cents}$. |
+| **`pool-service`**<br>Rule `R-7`<br>([invariants.yaml](apps/pool-service/invariants.yaml#L65-L103)) | `propose_cause()` $\rightarrow$ `CheckedCause` | `remediate()` | `job: JobFacts` (kernel `oom_killed`, `elapsed_s`, `timeout_s`, `exit_code`) | Saying `OUT_OF_MEMORY` when `!job.oom_killed`; missing `OUT_OF_MEMORY` when `job.oom_killed`; saying `TIMEOUT` when `elapsed_s < timeout_s`; saying `BAD_INPUT` when `exit_code != 65`. |
+| **`fact-pipeline`**<br>Rule `K-2`<br>([invariants.yaml](apps/fact-pipeline/invariants.yaml#L53-L78)) | `propose_fact()` $\rightarrow$ `CheckedFact` | `accept_fact()` | `chunk`, `span` (exact substring `text[reply.start:reply.end]` from source doc) | `reply.quote` not matching the exact character slice `span` at `reply.start..reply.end`; or `chunk.source_hash_current != args.source_hash`. |
+| **`fact-pipeline`**<br>Rule `K-19`<br>([invariants.yaml](apps/fact-pipeline/invariants.yaml#L221-L244)) | `compose_answer()` $\rightarrow$ `CheckedAnswer` | `render_answer()` | `args.retrieved_ids` | Citing any chunk ID `c` where `!(c in args.retrieved_ids)`, or returning an answer with `0` citations. |
 
 ---
 
@@ -658,7 +658,7 @@ If you treat a `rule_error` as a normal `violation`, your observability dashboar
 
 ## 6.2 The Four Outcomes (`ok`, `violation`, `rule_error`, `parse_error`)
 
-Every evaluation in [`evaluate.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/evaluate.py) produces an `Outcome` with one of four `kind` values:
+Every evaluation in [`evaluate.py`](invariants-py/src/invariants/evaluate.py) produces an `Outcome` with one of four `kind` values:
 
 1. **`ok`:** Every clause evaluated to `false` (no prohibited state occurred).
 2. **`violation`:** At least one CEL clause in `bad` evaluated to `true`. All clauses are evaluated (no short-circuiting across clauses) so the violation report lists *every* broken clause at once.
@@ -669,14 +669,14 @@ Every evaluation in [`evaluate.py`](file:///Users/jerrykuru/dev/invariants/invar
 
 ## 6.3 The Four Violation Actions (`reject`, `halt`, `escalate`, `route`)
 
-When an enforcer in `mode: enforce` sees a `violation`, it executes the rule’s `on_violation` action ([`evaluate.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/evaluate.py) and [`integrations/fastapi.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/integrations/fastapi.py)):
+When an enforcer in `mode: enforce` sees a `violation`, it executes the rule’s `on_violation` action ([`evaluate.py`](invariants-py/src/invariants/evaluate.py) and [`integrations/fastapi.py`](invariants-py/src/invariants/integrations/fastapi.py)):
 
 | `on_violation` | Python Exception Raised | HTTP Status (RFC 9457 `problem+json`) | When to Use It & Real App Example |
 | :--- | :--- | :--- | :--- |
 | **`reject`** *(default)* | `inv.Rejected` | `422 Unprocessable Content` *(or `409 Conflict`)* | **Bad caller input:** The caller asked for an illegal state. Stop the call and tell the caller.<br>*Example:* `BILL-1` (`support-agent`) and `R-21` (`pool-service`). |
 | **`halt`** | `inv.Halted` | `500 Internal Server Error` | **Internal bug:** Our own pure algorithm produced corrupt output.<br>*Example:* If an internal accounting invariant breaks, trip the circuit breaker. |
 | **`escalate`** | `inv.Escalation` | `202 Accepted` *(with review ID)* | **Send to a human reviewer:** Opens a `Handoff` record in `ReviewStore` (`MemoryReviews` or `JsonlReviews`) with the full attempt log and raises `Escalation`.<br>*Example:* `PLAN-1` (`support-agent`) and `R-7` (`pool-service`) when the LLM contradicts held data. |
-| **`route`** | `inv.Routed` | `202 Accepted` *(with review ID)* | **Route to an alternate workflow queue:** Opens a `Handoff` record in `ReviewStore` and raises `Routed` so the pipeline routes the item to a conflict-resolution queue.<br>*Example:* `K-11` in `fact-pipeline` ([invariants.yaml](file:///Users/jerrykuru/dev/invariants/apps/fact-pipeline/invariants.yaml#L118-L136)): when a new fact contradicts an existing functional fact (`ceo_of`, `acquisition_price`) without a recorded conflict decision, `ingest_door` raises `inv.Routed` and `Pipeline` records a conflict ticket instead of overwriting! |
+| **`route`** | `inv.Routed` | `202 Accepted` *(with review ID)* | **Route to an alternate workflow queue:** Opens a `Handoff` record in `ReviewStore` and raises `Routed` so the pipeline routes the item to a conflict-resolution queue.<br>*Example:* `K-11` in `fact-pipeline` ([invariants.yaml](apps/fact-pipeline/invariants.yaml#L118-L136)): when a new fact contradicts an existing functional fact (`ceo_of`, `acquisition_price`) without a recorded conflict decision, `ingest_door` raises `inv.Routed` and `Pipeline` records a conflict ticket instead of overwriting! |
 
 > [!NOTE]
 > **Fail-Safe Human Handoffs (`ReviewNotOpened`):**
@@ -690,7 +690,7 @@ When an enforcer in `mode: enforce` sees a `violation`, it executes the rule’s
 What happens on a `rule_error` (e.g., a provider query fails)?
 - **`on_error: fail_closed` (Default):** Blocks the call using the enforcer's `on_violation` action. High-stakes rules (`BILL-1`, `R-21`, `PLAN-1`) always fail closed.
 - **`on_error: fail_open_and_page`:** Logs an error event, fires the `on_error_spike` callback, and lets the call proceed so a broken non-critical provider doesn't take down checkout.
-- **Automatic Error-Spike Circuit Breaker (`ErrorSpike` in [`registry.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/registry.py)):** If a rule throws repeated `rule_error`s within a sliding window (`ErrorSpike(max_errors=5, window_s=60, demote=True)`), the registry can automatically demote that broken enforcer from `enforce` to `detect` and page the owning team.
+- **Automatic Error-Spike Circuit Breaker (`ErrorSpike` in [`registry.py`](invariants-py/src/invariants/registry.py)):** If a rule throws repeated `rule_error`s within a sliding window (`ErrorSpike(max_errors=5, window_s=60, demote=True)`), the registry can automatically demote that broken enforcer from `enforce` to `detect` and page the owning team.
 
 ---
 
@@ -699,7 +699,7 @@ What happens on a `rule_error` (e.g., a provider query fails)?
 Suppose an LLM reply or customer request contains sensitive PII (`"ssn": "123-45-6789"`), and `inv.parse` or `@inv.guard` fails.
 If the exception message or OpenTelemetry span included the raw field value (`"field ssn: '123-45-6789' is invalid"`), your logs and HTTP error responses would leak customer data!
 
-Look at how `_err(safe, full)` in [`guard.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/guard.py#L287-L350) prevents this:
+Look at how `_err(safe, full)` in [`guard.py`](invariants-py/src/invariants/guard.py#L287-L350) prevents this:
 - Every `ParseError` carries **two** strings:
   1. `str(e)` (`safe`): Value-free path and type kind only (e.g., `"field action: string is not one of the allowed values"`), with any user-supplied dictionary keys replaced by `.*`.
   2. `e.feedback` (`full`): The detailed error sent *only* back to `inv_feedback` inside `@inv.model_call` (or shown when `reg.debug = True` in local tests).
@@ -713,11 +713,11 @@ Look at how `_err(safe, full)` in [`guard.py`](file:///Users/jerrykuru/dev/invar
 
 When you lock tests and code in the same repository, an AI coding agent has an obvious way around any rule: **edit `invariants.yaml` or the Pydantic model to make the rule looser, then run `inv lock` to update the lockfile.**
 
-In the very first version of `invariants` ([`docs/evaluation.md`](file:///Users/jerrykuru/dev/invariants/invariants-py/docs/evaluation.md#L76-L83)), `invariants.lock` simply stored SHA-256 hashes of whole Python modules and rules. That caused two fatal problems:
+In the very first version of `invariants` ([`docs/evaluation.md`](invariants-py/docs/evaluation.md#L76-L83)), `invariants.lock` simply stored SHA-256 hashes of whole Python modules and rules. That caused two fatal problems:
 1. **75% False-Positive Churn:** Editing a comment or helper function inside `service.py` changed the module’s SHA-256 hash, turning CI red on 18 out of 24 changes.
 2. **Reflex Re-Pinning Erased the Only Catch:** Because developers had to run `inv lock` after almost every edit, running `inv lock` became an automatic reflex—which silently accepted weakened rules (`P04: 4 * old_self -> 10 * old_self`)!
 
-**Lock Version 3 ([`lockfile.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L1-L155)) fixed both problems completely**, dropping false-positive lock failures from **18/24 down to 0 whole-module failures**, while refusing every weakening unless a human passes `--accept-weakening`.
+**Lock Version 3 ([`lockfile.py`](invariants-py/src/invariants/lockfile.py#L1-L155)) fixed both problems completely**, dropping false-positive lock failures from **18/24 down to 0 whole-module failures**, while refusing every weakening unless a human passes `--accept-weakening`.
 
 ---
 
@@ -729,7 +729,7 @@ In the very first version of `invariants` ([`docs/evaluation.md`](file:///Users/
 2. **`targets`:** Each target function’s unwrapped signature (`inspect.signature` unwrapped through decorators), its resolved parameter and return types, its `effects` rank, and any `@inv.model_call` reply schema.
 3. **`providers`:** Each provider’s declared type, `args` map, and function signature.
 4. **`contracts`:** Resolved schemas for `pydantic`, `dataclass`, `schema`, and named `openapi` operations.
-5. **`schemas`:** A **content-addressed table (`sha256:...` $\rightarrow$ JSON Schema)** shared across all targets and contracts, with all prose (`title`, `description`, `examples`, docstrings) stripped by `strip_prose()` ([lockfile.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L204-L228)).
+5. **`schemas`:** A **content-addressed table (`sha256:...` $\rightarrow$ JSON Schema)** shared across all targets and contracts, with all prose (`title`, `description`, `examples`, docstrings) stripped by `strip_prose()` ([lockfile.py](invariants-py/src/invariants/lockfile.py#L204-L228)).
 
 **Why stripping prose and bodies matters:**
 You can refactor function bodies, add logging, write docstrings, or add new helper functions all day long—**`invariants.lock` does not change by a single byte!**
@@ -738,7 +738,7 @@ You can refactor function bodies, add logging, write docstrings, or add new help
 
 ## 7.3 Inside the CEL Monotonicity Prover (`_walk`) and `FIELD_POLICY`
 
-When `invariants.lock` *does* change, `lockfile.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lockfile.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L84-L128)) and the **CEL Monotonicity Prover (`_walk` at [lockfile.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L1445-L1541))**:
+When `invariants.lock` *does* change, `lockfile.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lockfile.py](invariants-py/src/invariants/lockfile.py#L84-L128)) and the **CEL Monotonicity Prover (`_walk` at [lockfile.py](invariants-py/src/invariants/lockfile.py#L1445-L1541))**:
 
 ### How `_walk` Proves Whether a `bad` Edit Tightened or Weakened a Rule
 Remember that `bad` is true when a state is **prohibited**. Therefore:
@@ -757,7 +757,7 @@ Remember that `bad` is true when a state is **prohibited**. Therefore:
 | `!(x in ["A", "B"])` | `!(x in ["A", "B", "C"])` | Inside `!`, the allowed list grew (`"C"` added), so fewer values trigger `bad`. (This caught change `F12` in `fact-pipeline`!) | **`WEAKENED` (Refused!)** |
 
 > [!IMPORTANT]
-> **The `new_error_sites()` Check Under `fail_open_and_page` ([lockfile.py](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L1400-L1418)):**
+> **The `new_error_sites()` Check Under `fail_open_and_page` ([lockfile.py](invariants-py/src/invariants/lockfile.py#L1400-L1418)):**
 > What if a rule has `on_error: fail_open_and_page`, and an edit changes `bad` in a way that looks stricter on paper, but introduces a division `args.total / args.count` or a new attribute read that can raise a `rule_error` at run time?
 > Under `fail_open_and_page`, a `rule_error` lets the call through! So `new_error_sites()` checks whether the new `bad` tree introduces any new error-capable sites not absorbed by an existing `||`/`&&` operand—and if so, marks the change as a possible weakening!
 
@@ -765,7 +765,7 @@ Remember that `bad` is true when a state is **prohibited**. Therefore:
 
 ## 7.4 Why Raising LLM Retries Is Flagged as `WEAKENED` (`MORE_IS_WEAKER`)
 
-Look at lines 118–119 of [`lockfile.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/lockfile.py#L118-L119):
+Look at lines 118–119 of [`lockfile.py`](invariants-py/src/invariants/lockfile.py#L118-L119):
 ```python
 "modelPolicy.format_retries": MORE_IS_WEAKER,
 "modelPolicy.semantic_resamples": MORE_IS_WEAKER,
@@ -779,7 +779,7 @@ Because an LLM is stochastic! If an uncalibrated model has a 20% chance per samp
 
 ## 8.1 Status vs. Effective Mode vs. Standing (`held` vs. `enforce(known-callers)`)
 
-A rule in `invariants.yaml` has three distinct trust concepts ([`model.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/model.py) and [`status_report.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/status_report.py)):
+A rule in `invariants.yaml` has three distinct trust concepts ([`model.py`](invariants-py/src/invariants/model.py) and [`status_report.py`](invariants-py/src/invariants/status_report.py)):
 
 1. **`status` (Set by humans in YAML):**
    `retired` (0) $<$ `candidate` / `contested` (1) $<$ `detect` (2) $<$ `enforce` (3).
@@ -796,7 +796,7 @@ flowchart LR
     EKC --> H["held (True Invariant)<br/>(Enforced + inv verify passes +<br/>inv scan proves 0 bypasses +<br/>residual_paths is empty)"]
 ```
 
-Look at the difference between `R-20` and `R-21` in [`apps/pool-service/invariants.yaml`](file:///Users/jerrykuru/dev/invariants/apps/pool-service/invariants.yaml#L104-L155):
+Look at the difference between `R-20` and `R-21` in [`apps/pool-service/invariants.yaml`](apps/pool-service/invariants.yaml#L104-L155):
 - **`R-21` (Approved Resize):** Enforced `pre_effect` on `ResizeService.resize_door`, `sink: "py:pool_service.store.set_size"` passes `inv scan`, `inv verify` passes, and `residual_paths: []` is empty $\rightarrow$ Standing is **`held`**.
 - **`R-20` (Leases $\le$ Pool Size):** Enforced `pre_effect` on `lease_slots`, `inv scan` passes, **but** `residual_paths` honestly notes: `["two concurrent leases can both pass the check; the store's own triggers refuse the second"]`. Because `residual_paths` is non-empty, `inv status` withholds `held` and reports **`enforce(known-callers)`**! (And in `lockfile.py`, deleting an entry from `residual_paths` is flagged as `WEAKENED` so an agent cannot delete a documented race condition to fake `held` standing!)
 
@@ -806,7 +806,7 @@ Look at the difference between `R-20` and `R-21` in [`apps/pool-service/invarian
 
 What if an AI coding agent makes a failing test pass by deleting `@inv.guard("BILL-1")` from `BillingService.refund` in `service.py` (Defect #11 in `support-agent`)?
 
-`inv verify` (which runs automatically inside `inv check` and `pytest --inv-verify`) imports your target modules and checks **bidirectional coverage** ([`registry.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/registry.py)):
+`inv verify` (which runs automatically inside `inv check` and `pytest --inv-verify`) imports your target modules and checks **bidirectional coverage** ([`registry.py`](invariants-py/src/invariants/registry.py)):
 1. Every function named as a rule’s `target` or `edge` in `invariants.yaml` must carry the matching `@inv.guard`, `@inv.model_call`, or `@inv.edge` decorator for that rule ID.
 2. Every `@inv.guard`, `@inv.model_call`, and `@inv.edge` decorator in Python must name a real, loaded rule ID in `invariants.yaml`.
 
@@ -819,7 +819,7 @@ If `@inv.guard("BILL-1")` is removed or renamed, `inv check` fails immediately a
 What if a developer writes a rule `BILL-1` and lists `tests: [test_happy_path]`—a test that only sends valid inputs and never actually triggers `BILL-1`?
 Then `tests:` is a lie: if `BILL-1` had a bug and never fired, `test_happy_path` would still pass!
 
-`pytest --inv-rules invariants.yaml --inv-ablate` ([`pytest_plugin.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/pytest_plugin.py)) runs **automated mutation/ablation testing on your guards**:
+`pytest --inv-rules invariants.yaml --inv-ablate` ([`pytest_plugin.py`](invariants-py/src/invariants/pytest_plugin.py)) runs **automated mutation/ablation testing on your guards**:
 1. **Control Run:** First, it runs your test suite normally with all guards active. Every test in `falsified_by` / `tests` **must pass** (this prevents a permanently broken test from faking ablation!).
 2. **Ablation Run (Per Rule):** For each enforced rule `R`, the plugin activates `inv.ablated(R)` (which switches `R`’s runtime guard off so it lets bad inputs straight through) and re-runs `R`’s declared falsifier tests.
 3. **The Verdict:** When `R` is switched off, its falsifier test (which expects `pytest.raises(inv.Rejected)` or `inv.Escalation`) **must now fail**!
@@ -846,7 +846,7 @@ What will a smart coding agent try next?
 
 ## 9.2 The Four-Layer Defense: `pretool`, `stop`, `pre-commit`, and `--base origin/main`
 
-`invariants` closes every one of those escape hatches across four layers ([`cli.py`](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/cli.py#L623-L678)):
+`invariants` closes every one of those escape hatches across four layers ([`cli.py`](invariants-py/src/invariants/cli.py#L623-L678)):
 
 ```mermaid
 flowchart TD
@@ -856,37 +856,37 @@ flowchart TD
     D -->|"Compares PR against main's lock.<br/>Catches even a manually re-pinned weakening!"| E["Merge Allowed Only with Human PR Label<br/>(INV_ALLOW_WEAKENING=1) + CODEOWNERS"]
 ```
 
-Look at [`cli.py` lines 623–660](file:///Users/jerrykuru/dev/invariants/invariants-py/src/invariants/cli.py#L623-L660) to see how `inv hook pretool` and `inv hook stop` work:
+Look at [`cli.py` lines 623–660](invariants-py/src/invariants/cli.py#L623-L660) to see how `inv hook pretool` and `inv hook stop` work:
 - **`inv hook pretool`:** Reads Claude Code’s hook JSON from `stdin`.
   - If `tool_input` targets `invariants.lock` via `file_path`, `path`, or `notebook_path` (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`), or via a shell command matching `LOCK_WRITE` (`>`, `>>`, `tee`, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `truncate`, `dd`), it exits with code **`2`** (which blocks the tool call in Claude Code) and tells the agent: *"blocked a direct edit of invariants.lock. The lock is written only by `inv lock` or `inv check --relock`."*
   - If a `Bash` command contains `--accept-weakening`, `--allow-weakening`, or `INV_ALLOW_WEAKENING`, it exits with code **`2`** and tells the agent to explain the weakening to the human user instead.
 - **`inv hook stop`:** Runs `inv check --relock` when the agent tries to finish.
   - If the agent *tightened* a constraint or fixed a back door and removed it from `allow:`, `--relock` updates `invariants.lock` automatically and lets the agent finish!
   - If `inv check` fails, it exits **`2`** with the exact failure output so the agent fixes its code before returning to you.
-- **`inv check --base origin/main` in CI ([`action.yml`](file:///Users/jerrykuru/dev/invariants/action.yml)):**
+- **`inv check --base origin/main` in CI ([`action.yml`](action.yml)):**
   - Even if a developer or agent ran `inv lock --accept-weakening` locally without hooks and committed the new `invariants.lock`, `--base origin/main` reads `origin/main:invariants.lock` from `git` and diffs the PR against `main`’s lock! It fails in CI unless a human reviewer attaches the approval label to the pull request.
 
 ---
 
 # Chapter 10: Complete Tour of the Three Benchmark Apps & Empirical Results
 
-To see how every piece fits together in practice, let’s walk through the three complete applications in [`apps/`](file:///Users/jerrykuru/dev/invariants/apps).
+To see how every piece fits together in practice, let’s walk through the three complete applications in [`apps/`](apps).
 
 ---
 
 ## 10.1 App 1: `apps/support-agent` (Tool-Calling Billing Agent — 12/12 Defects Caught)
 
-**Location:** [`apps/support-agent/`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/invariants.yaml)
+**Location:** [`apps/support-agent/`](apps/support-agent/invariants.yaml)
 
 ### Architecture
-A LangGraph-style state machine ([`graph.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/graph.py)) that handles customer billing tickets:
+A LangGraph-style state machine ([`graph.py`](apps/support-agent/src/support_agent/graph.py)) that handles customer billing tickets:
 1. **`triage_node`:** Classifies the ticket (`"billing"` $\rightarrow$ `"planner"`, `"other"` $\rightarrow$ `"handoff"`).
 2. **`planner_node` $\rightarrow$ `plan_action()` (`@inv.model_call("PLAN-1", schema=Plan)`):** Calls the model to produce a `CheckedPlan` (`REFUND`, `CREDIT`, `CANCEL`, or `ESCALATE_TO_HUMAN`).
-3. **`tool_executor_node` $\rightarrow$ `execute_plan()` (`@inv.edge("PLAN-1")`):** Re-validates the `CheckedPlan` against the current ledger and dispatches through the `TOOLS` registry ([`tools.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/tools.py)) to `issue_refund_tool`, `issue_credit_tool`, or `cancel_subscription_tool`.
-4. **`BillingService` (`@inv.guard("BILL-1")`, `@inv.guard("BILL-2")`):** The service doors ([`service.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/src/support_agent/service.py)) that check `order` and `tier` providers before calling the repository sinks (`StripeGateway.refund` and `LedgerRepo.record_refund` / `insert_credit` / `cancel_subscription`).
+3. **`tool_executor_node` $\rightarrow$ `execute_plan()` (`@inv.edge("PLAN-1")`):** Re-validates the `CheckedPlan` against the current ledger and dispatches through the `TOOLS` registry ([`tools.py`](apps/support-agent/src/support_agent/tools.py)) to `issue_refund_tool`, `issue_credit_tool`, or `cancel_subscription_tool`.
+4. **`BillingService` (`@inv.guard("BILL-1")`, `@inv.guard("BILL-2")`):** The service doors ([`service.py`](apps/support-agent/src/support_agent/service.py)) that check `order` and `tier` providers before calling the repository sinks (`StripeGateway.refund` and `LedgerRepo.record_refund` / `insert_credit` / `cancel_subscription`).
 5. **`admin.py`:** Contains a legacy back door (`admin_goodwill` $\rightarrow$ `goodwill_refund` $\rightarrow$ `StripeGateway.refund`), which `inv init` automatically detected and froze in `allow:`.
 
-### The 12 Seeded Agent Defects (Tested in [`test_ci_defects.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/tests/test_ci_defects.py) & [`test_runtime_defects.py`](file:///Users/jerrykuru/dev/invariants/apps/support-agent/tests/test_runtime_defects.py))
+### The 12 Seeded Agent Defects (Tested in [`test_ci_defects.py`](apps/support-agent/tests/test_ci_defects.py) & [`test_runtime_defects.py`](apps/support-agent/tests/test_runtime_defects.py))
 
 | # | Defect Type | What the Agent Did Wrong | What Caught It |
 | :--- | :--- | :--- | :--- |
@@ -907,7 +907,7 @@ A LangGraph-style state machine ([`graph.py`](file:///Users/jerrykuru/dev/invari
 
 ## 10.2 App 2: `apps/pool-service` (FastAPI GPU Pool Manager)
 
-**Location:** [`apps/pool-service/`](file:///Users/jerrykuru/dev/invariants/apps/pool-service/invariants.yaml)
+**Location:** [`apps/pool-service/`](apps/pool-service/invariants.yaml)
 
 Demonstrates how Invariant-First governs a classic **FastAPI + SQLite infrastructure service** with 9 rules across every layer:
 - **HTTP Middleware Layer (`H-1`, `H-2`):** OpenAPI contract rules checked at `point: middleware` on `POST /leases` (`1 <= slots <= 64`) and `POST /pools` (pool ID length and character rules).
@@ -923,7 +923,7 @@ Demonstrates how Invariant-First governs a classic **FastAPI + SQLite infrastruc
 
 ## 10.3 App 3: `apps/fact-pipeline` (AI Knowledge Extraction Pipeline)
 
-**Location:** [`apps/fact-pipeline/`](file:///Users/jerrykuru/dev/invariants/apps/fact-pipeline/invariants.yaml)
+**Location:** [`apps/fact-pipeline/`](apps/fact-pipeline/invariants.yaml)
 
 Demonstrates how Invariant-First governs an **asynchronous AI knowledge-graph extraction and RAG pipeline** so hallucinated or uncorroborated claims never become trusted facts:
 - **Extraction & Quote Attributability (`K-2`):** `@inv.model_call` on `propose_fact` + `@inv.edge` on `accept_fact`. Checks that `reply.quote` matches the exact character slice `span` (`chunk_text[reply.start:reply.end]`) from the current document hash.
@@ -944,9 +944,9 @@ Demonstrates how Invariant-First governs an **asynchronous AI knowledge-graph ex
 
 ## 10.4 Honest Limits: What Invariant-First Does Not Catch
 
-A good engineering tool states its limits up front ([Invariant_first.md Section 9](file:///Users/jerrykuru/dev/invariants/Invariant_first.md#L403-L421)):
+A good engineering tool states its limits up front ([Invariant_first.md Section 9](Invariant_first.md#L403-L421)):
 
-1. **It only catches what a rule covers:** In the 24-change benchmark ([`docs/evaluation.md`](file:///Users/jerrykuru/dev/invariants/invariants-py/docs/evaluation.md#L102-L110)), `invariants` caught **8 out of 8 (100%)** of the defects covered by a rule, and **0 out of 8** of the ordinary business-logic bugs that no rule stated (e.g., an off-by-one label format or returning $k-1$ search results). **Invariants do not replace unit tests.**
+1. **It only catches what a rule covers:** In the 24-change benchmark ([`docs/evaluation.md`](invariants-py/docs/evaluation.md#L102-L110)), `invariants` caught **8 out of 8 (100%)** of the defects covered by a rule, and **0 out of 8** of the ordinary business-logic bugs that no rule stated (e.g., an off-by-one label format or returning $k-1$ search results). **Invariants do not replace unit tests.**
 2. **A provider is part of your trusted base:** If your `@inv.provider("order")` function itself has a SQL bug and returns the wrong number (like change `F03` in `fact-pipeline`), the guard will reason over the wrong number. Test your providers with ordinary unit tests.
 3. **A pre-effect check is not a database lock:** Two concurrent requests can both pass `@inv.guard("BILL-1")` at the exact same millisecond before either writes to the database. Preventing concurrent race conditions is the job of database transactions/constraints inside your repository implementation, below the API.
 4. **Static AST scanning is conservative:** `inv scan` traces direct calls, constructors, typed parameters, factory return types, `self.<attr>`, and typed attribute chains (`ctx.billing.refund()`). If you route calls to a sink through an untyped callback bus or dynamic `getattr`, `inv scan` will refuse it as `unresolved` rather than guess.
