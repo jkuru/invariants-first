@@ -118,11 +118,14 @@ passes `inv check` as written.
 
 **Graphify (optional).** With a [Graphify](https://github.com/Graphify-Labs/graphify) graph at
 `graphify-out/graph.json` (or `--graph PATH`; `--no-graphify` turns it off), `inv init` reads it as
-plain JSON. Nodes are matched to functions by file and line. A caller of a write that sits in a
-different Graphify community and is itself called becomes a door candidate, even when nothing is
-named Service. Call links count as callers only when Graphify tagged them `EXTRACTED`. Every
-candidate still goes through the scan, `inv check` never reads the graph, and Graphify is never
-imported or run.
+plain JSON. Nodes are matched to functions by file and line. A caller of a write becomes a door
+candidate, even when nothing is named Service, when it sits in its own Graphify community, every
+caller of it sits in a third one (a layer between two others), and it is not an entry point (`main`,
+a route handler). Call links count as callers only when Graphify tagged them `EXTRACTED`; in
+practice those are plain function calls the scan already sees, so the communities are what the graph
+adds. Every candidate still goes through the scan, `inv check` never reads the graph, and Graphify
+is never imported or run. Graphify's MCP server (`graphify-mcp`) answers queries over the same graph
+for a coding agent; `inv init` reads the file, which gives the same data with no server running.
 
 ## 3. Value laws
 

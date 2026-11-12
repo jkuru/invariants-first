@@ -67,7 +67,8 @@ removed.
   [Graphify](https://github.com/Graphify-Labs/graphify) graph (`--graph` is the same option) as plain
   JSON: nodes are matched to
   functions by file and line, communities propose doors (a caller of a write in another community,
-  itself called, is a door even when nothing is named Service), and the call links Graphify's parser
+  itself called, is a door even when nothing is named Service; it must not be an entry point, and all
+  its callers must sit in a third community), and the call links Graphify's parser
   extracted (`EXTRACTED` only, never `INFERRED` or `AMBIGUOUS`) count as callers. Every proposed rule is still checked by
   the scan before it is written; `inv check` never reads the graph, and Graphify is never imported
   or run (`invariants.graphify`).

@@ -239,6 +239,29 @@ scenarios were unchanged. `inv init` on the full-stack FastAPI template (read an
 installed or run) still writes no door rule, as it should: its routes call `crud` and write through
 the session themselves, so no layer sits between them to lock.
 
+**Graphify, run for real.** Graphify 0.9.107 (PyPI `graphifyy`, the Graphify-Labs package) was
+installed in its own venv and run as `graphify update .` (tree-sitter only, no model, no API key) on
+the three apps and the FastAPI template. Each graph took under a second. The format matched what
+`inv init` reads: paths relative to the project, `L<line>` locations, integer communities, and
+`EXTRACTED` / `INFERRED` tags. Two findings changed the code. First, its `uses` relation is a
+parameter type, not a call, so it no longer counts as one; and its EXTRACTED `calls` are plain
+function calls, a subset of what the scan already extracts (every method call on an object is
+INFERRED). Second, on fact-pipeline the community rule promoted `cli.main`, which writes the store
+directly, from a back door to a door, so the rule came out clean while blessing a back door. The rule
+is now strict (a candidate's callers must all sit in a third community, and an entry point never
+qualifies), with regression tests for both shapes. After the fix:
+
+| Codebase | Functions | Graph nodes matched | Doors without the graph | With the graph |
+|---|---|---|---|---|
+| support-agent | 47 | 62 of 132 | 2 rules | the same |
+| pool-service | 64 | 97 of 194 | 1 rule | the same |
+| fact-pipeline | 94 | 152 of 245 | 1 rule (commented out: back doors remain) | the same rule with one more door, `Pipeline.resolve_review` (still commented out) |
+| FastAPI template | 51 | 55 of 194 | none | none |
+
+So on these four codebases the graph added one plausible door and no rule that the heuristics
+missed. Where it should help is code whose layers are not named like services; none of these four is
+such a codebase, so that remains to be measured.
+
 **Cost.** Typing attribute chains made `inv scan` slower: 1.17 s against 0.94 s for the library's
 own source and tests (104 modules, 1,852 functions).
 

@@ -210,6 +210,7 @@ def _service_like(fid: str) -> bool:
     return bool(segs) and bool(SERVICE_MODULE.match(segs[-1]))
 
 
+ENTRY_NAMES = frozenset({"main", "<module>", "cli", "run", "handler", "lambda_handler"})
 ROUTE_DECORATOR = re.compile(r"^(get|post|put|patch|delete|head|options|route|api_route|websocket)$")
 
 
@@ -235,8 +236,14 @@ def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set
     if svc:
         return svc
     if community and w in community:
-        bridges = [c for c in cands if c in community and community[c] != community[w]
-                   and callers[c] - {c} - inside]
+        # a layer between two others: in its own community, every caller known to the graph and in a
+        # third one (so neither the write's layer nor its own), and not an entry point (main, a route)
+        def layer(c: str) -> bool:
+            up = callers[c] - {c} - inside
+            return (c in community and community[c] != community[w] and bool(up) and c not in routes
+                    and c.rsplit(".", 1)[-1] not in ENTRY_NAMES
+                    and all(u in community and community[u] not in (community[c], community[w]) for u in up))
+        bridges = [c for c in cands if layer(c)]
         if bridges:
             return bridges
     # the layer between HTTP routes and the writer, even one-to-one: called only by route handlers

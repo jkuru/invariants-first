@@ -164,3 +164,57 @@ def test_init_graph_options(tmp_path):
     (root / "graphify-out" / "graph.json").unlink()
     r = run_inv("init", "--no-lock", "--graph", str(other), cwd=root)
     assert r.returncode == 0 and 'door: "py:books.flows.settle"' in (root / "invariants.yaml").read_text()
+
+
+def test_an_entry_point_in_another_community_is_not_a_door(tmp_path):
+    # found on a real graph: a CLI main() that writes the store directly sat in its own community, and
+    # the community rule made it a door, which blessed a back door. An entry point is never a layer.
+    files = {"books/cli.py": "from books.ledger import post_entry\n\ndef main():\n    post_entry(None, 1)\n\n"
+                             "if __name__ == '__main__':\n    main()\n"}
+    root = _app(tmp_path, files=files)
+    spots = dict(SPOTS, **{"n-main": ("books/cli.py", "L3", 4)})
+    p = root / "g.json"
+    p.write_text(json.dumps(_graph(spots=spots, calls=CALLS + [("n-main", "n-ledger")])))
+    (d,) = doors.discover([root], graph=p, project=root).doors
+    assert "books.cli.main" not in d.doors and "books.cli.main" in d.allow
+
+
+def test_a_layer_whose_callers_share_its_community_is_not_a_door(tmp_path):
+    root = _app(tmp_path)
+    flat = dict(SPOTS, **{"n-route": ("books/routes.py", "L3", 2)})      # routes clustered with flows
+    p = root / "g.json"
+    p.write_text(json.dumps(_graph(spots=flat)))
+    assert doors.discover([root], graph=p, project=root).doors == []
+
+
+def test_main_is_not_a_door_even_with_callers_in_a_third_community(tmp_path):
+    files = {"books/cli.py": "from books.ledger import post_entry\n\ndef main():\n    post_entry(None, 1)\n",
+             "books/entry.py": "from books.cli import main\n\ndef boot():\n    main()\n"}
+    root = _app(tmp_path, files=files)
+    spots = dict(SPOTS, **{"n-main": ("books/cli.py", "L3", 4), "n-boot": ("books/entry.py", "L3", 5)})
+    p = root / "g.json"
+    p.write_text(json.dumps(_graph(spots=spots, calls=CALLS + [("n-main", "n-ledger"), ("n-boot", "n-main")])))
+    (d,) = doors.discover([root], graph=p, project=root).doors
+    assert "books.cli.main" not in d.doors
+
+
+REAL = pathlib.Path(__file__).parent / "fixtures" / "graphify" / "support-agent-0.9.107.json"
+SUPPORT_AGENT = pathlib.Path(__file__).resolve().parents[2] / "apps" / "support-agent"
+
+
+@pytest.mark.skipif(not SUPPORT_AGENT.exists(), reason="needs the monorepo's apps/support-agent")
+def test_a_real_graphify_graph_is_read_and_matched(tmp_path):
+    """graph.json written by `graphify update` (graphify 0.9.107, tree-sitter only, no model) for
+    apps/support-agent: every function node maps to a scanned function, and only EXTRACTED `calls`
+    links are used (graphify's `uses` is a parameter type, and its method calls are INFERRED)."""
+    src = SUPPORT_AGENT / "src"
+    g = scan.graph([src])
+    h = graphify.hints(REAL, g, [SUPPORT_AGENT, src])
+    assert h.nodes == 132 and h.matched >= 60 and len(set(h.community.values())) >= 5
+    assert ("support_agent.admin.admin_goodwill", "support_agent.admin.goodwill_refund") in h.calls
+    doc = json.loads(REAL.read_text())
+    inferred = {(e["source"], e["target"]) for e in doc["links"] if e["confidence"] != "EXTRACTED"}
+    assert inferred and len(h.calls) == 11
+    plain = doors.discover([src])
+    real = doors.discover([src], graph=REAL, project=SUPPORT_AGENT)
+    assert [(d.doors, d.sinks, d.allow) for d in real.doors] == [(d.doors, d.sinks, d.allow) for d in plain.doors]

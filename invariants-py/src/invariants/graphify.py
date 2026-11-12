@@ -12,6 +12,12 @@ before it is written, and `inv check` never reads the graph: the scan's own extr
 the only evidence a path law is judged on. Nothing here imports Graphify or runs it; the file is
 read as plain JSON, and nothing at run time depends on it.
 
+Measured on graphs `graphify update` wrote (graphify 0.9.107, tree-sitter only, no model): its
+EXTRACTED `calls` links are plain function calls, a subset of what the scan already extracts; method
+calls on an object are INFERRED, and `uses` is a parameter type. So the graph's value here is its
+communities, and the community rule is strict: a door candidate sits in its own community, every
+caller of it is in a third one, and it is not an entry point (`main`, a route handler).
+
 What is read (graphify v8, schema_version 1): nodes with `source_file` and `source_location`
 ("L42") and an optional `community`; links with `source`, `target`, `relation` and `confidence`
 (EXTRACTED | INFERRED | AMBIGUOUS). Node ids are not interpreted: a node is matched to a scanned
@@ -28,7 +34,7 @@ from typing import Any
 from . import scan as scanner
 
 DEFAULT_PATH = pathlib.Path("graphify-out") / "graph.json"
-CALL_RELATIONS = frozenset({"calls", "call", "invokes", "uses"})   # links that mean "this calls that"
+CALL_RELATIONS = frozenset({"calls"})     # graphify 0.9: `uses` is a parameter type, not a call
 TRUSTED = frozenset({"EXTRACTED"})       # deterministic tree-sitter edges only; INFERRED and AMBIGUOUS are not used
 _LINE = re.compile(r"L?(\d+)")
 MAX_BYTES = 200_000_000

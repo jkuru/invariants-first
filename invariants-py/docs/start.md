@@ -189,8 +189,9 @@ it); the rest are listed in the file. `--no-doors` skips this step.
 **Graphify (optional).** If the project has a Graphify
 graph at `graphify-out/graph.json`, `inv init` reads it as JSON (`--graph PATH` or `--graphify PATH`
 names another file, `--no-graphify` turns it off). Its communities help find doors where nothing is
-named Service: a caller of a write that sits in another community and is itself called is a door
-candidate. Its call links count as callers only when Graphify tagged them `EXTRACTED` (parsed from
+named Service: a caller of a write is a door candidate when it sits in its own community, every one
+of its callers sits in a third community (so it is a layer between two others), and it is not an
+entry point (`main`, a route handler). Its call links count as callers only when Graphify tagged them `EXTRACTED` (parsed from
 the source), never `INFERRED` or `AMBIGUOUS`. Every rule it suggests is still checked by the real
 scan before it is written, and `inv check` never reads the graph.
 
