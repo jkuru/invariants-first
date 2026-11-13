@@ -11,11 +11,11 @@ class CheckedAnswer(inv.Checked):
     """An AnswerReply that passed parse, abstain and K-19."""
 
 
-@inv.model_call("K-19", schema=AnswerReply)
+@inv.model_call("K-19", schema=AnswerReply, returns=CheckedAnswer)
 def compose_answer(question: str, retrieved_ids: list[str], context: list[dict[str, str]],
-                   inv_feedback: str | None = None) -> CheckedAnswer:
+                   inv_feedback: str | None = None) -> str:
     """Ask the model to answer from the retrieved chunks only."""
-    return current_client().complete({"task": "answer", "question": question, "chunks": context},  # type: ignore[return-value]
+    return current_client().complete({"task": "answer", "question": question, "chunks": context},
                                      inv_feedback)
 
 

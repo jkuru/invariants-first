@@ -5,6 +5,7 @@ defect table in README.md (6-10 are runtime defects; 1-5, 11 and 12 are caught b
 """
 from __future__ import annotations
 
+import pydantic
 import pytest
 
 import invariants as inv
@@ -100,9 +101,9 @@ def _parsed(**kw: object) -> object:
 
 
 def test_d9_a_forged_plan_is_refused_at_the_edge(ctx: AgentContext) -> None:
-    raw = make_checked(planner.CheckedPlan, _plan(amount_cents=100), verdict="ok", rule="PLAN-1")
-    with pytest.raises(inv.Rejected, match="not built by inv.parse"):   # a raw model object, even a small one
-        graph.execute_plan(ctx, raw, "C-1")
+    forged = make_checked(planner.CheckedPlan, _plan(amount_cents=99_000), verdict="ok", rule="PLAN-1")
+    with pytest.raises(inv.Rejected):                              # a forged verdict counts for nothing:
+        graph.execute_plan(ctx, forged, "C-1")                     # the edge re-validates and re-checks it
     fair = make_checked(planner.CheckedPlan, _parsed(amount_cents=3_000), verdict="ok", rule="PLAN-1")
     graph.execute_plan(ctx, fair, "C-1")                           # closed and within the order: it runs
     big = make_checked(planner.CheckedPlan, _parsed(amount_cents=99_000), verdict="ok", rule="PLAN-1")
@@ -125,7 +126,7 @@ def test_d9_a_plan_checked_for_one_customer_cannot_run_for_another(ctx: AgentCon
 def test_d10_a_plan_changed_after_the_check_is_refused(ctx: AgentContext) -> None:
     """Falsifier for PLAN-1's edge: the executor re-checks the plan it receives, not the one the planner saw."""
     plan = planner.plan_action(ctx, "refund 100 on O-2", "C-1")
-    with pytest.raises(AttributeError):
+    with pytest.raises(pydantic.ValidationError, match="frozen"):
         plan.value.amount_cents = 99_000                           # type: ignore[misc]   the plan is frozen
     object.__setattr__(plan.value, "amount_cents", 99_000)         # a graph reducer that forces it anyway
     with pytest.raises(inv.Rejected) as e:

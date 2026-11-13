@@ -370,6 +370,27 @@
       "targets": ["py:pool_service.triage.propose_cause", "py:pool_service.triage.remediate"]
     }
   },
+  "scan": {
+    "exclude": [
+      "*/*_test.py",
+      "*/alembic",
+      "*/conftest.py",
+      "*/migrations",
+      "*/test",
+      "*/test_*.py",
+      "*/testing",
+      "*/tests",
+      "*_test.py",
+      "alembic",
+      "conftest.py",
+      "migrations",
+      "test",
+      "test_*.py",
+      "testing",
+      "tests"
+    ],
+    "roots": [".", "src"]
+  },
   "schemas": {
     "sha256:2259d2f352b14f63ef439bbdcf6c0c54b04849a0c1b50f831ad06a89d392ec2f": {
       "name": "openapi.json/components/schemas/PoolIn",
@@ -588,13 +609,13 @@
     "py:pool_service.triage.propose_cause": {
       "effects": "none",
       "reply_schema": {"$ref": "sha256:fc7ddeb69d4758c56a8d52385fd7ba3c3fa5a884676548d0a530caebd806d88b"},
-      "signature": "propose_cause(conn: 'sqlite3.Connection', job_id: 'str', log_excerpt: 'str', inv_feedback: 'str | None' = None) -> 'CheckedCause'",
+      "signature": "propose_cause(conn: 'sqlite3.Connection', job_id: 'str', log_excerpt: 'str', inv_feedback: 'str | None' = None) -> 'str'",
       "types": {
         "conn": "Connection",
         "inv_feedback": {"anyOf": ["null", "str"]},
         "job_id": "str",
         "log_excerpt": "str",
-        "return": "CheckedCause"
+        "return": "str"
       }
     },
     "py:pool_service.triage.remediate": {

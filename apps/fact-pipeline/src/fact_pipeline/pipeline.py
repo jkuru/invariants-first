@@ -75,7 +75,7 @@ class Pipeline:
                 continue
             if reply.predicate in (NO_MORE, ABSTAIN):
                 break
-            out.append(Extracted(chunk.id, dataclasses.asdict(reply), checked.attempts))
+            out.append(Extracted(chunk.id, reply.model_dump(mode="json"), checked.attempts))
         return out, reviews
 
     def extract(self, source_id: str) -> tuple[list[Extracted], list[int]]:

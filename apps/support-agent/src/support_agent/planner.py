@@ -33,7 +33,7 @@ def set_model(m: FakeAgentModel) -> None:
     _model = m
 
 
-@inv.model_call("PLAN-1", schema=Plan)
-def plan_action(ctx: AgentContext, ticket: str, customer_id: str, inv_feedback: str | None = None) -> CheckedPlan:
+@inv.model_call("PLAN-1", schema=Plan, returns=CheckedPlan)
+def plan_action(ctx: AgentContext, ticket: str, customer_id: str, inv_feedback: str | None = None) -> str:
     """One model call; returns the raw reply (the decorator parses and checks it)."""
-    return _model.complete(ticket, customer_id, feedback=inv_feedback)  # type: ignore[return-value]
+    return _model.complete(ticket, customer_id, feedback=inv_feedback)

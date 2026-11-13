@@ -414,6 +414,27 @@
       "targets": ["py:fact_pipeline.store.Store.ingest_door"]
     }
   },
+  "scan": {
+    "exclude": [
+      "*/*_test.py",
+      "*/alembic",
+      "*/conftest.py",
+      "*/migrations",
+      "*/test",
+      "*/test_*.py",
+      "*/testing",
+      "*/tests",
+      "*_test.py",
+      "alembic",
+      "conftest.py",
+      "migrations",
+      "test",
+      "test_*.py",
+      "testing",
+      "tests"
+    ],
+    "roots": ["src"]
+  },
   "schemas": {
     "sha256:00424e2364da02fe4533fb48236c67bd7c78bc4d44b2c864fc677c57a06330cd": {
       "$defs": {
@@ -538,13 +559,13 @@
     "py:fact_pipeline.answer.compose_answer": {
       "effects": "none",
       "reply_schema": {"$ref": "sha256:8834990aa658a2b42dff28e4965d56c0be72c0e2f48ab242c8098eee224b5c0c"},
-      "signature": "compose_answer(question: 'str', retrieved_ids: 'list[str]', context: 'list[dict[str, str]]', inv_feedback: 'str | None' = None) -> 'CheckedAnswer'",
+      "signature": "compose_answer(question: 'str', retrieved_ids: 'list[str]', context: 'list[dict[str, str]]', inv_feedback: 'str | None' = None) -> 'str'",
       "types": {
         "context": {"args": [{"args": ["str", "str"], "generic": "dict"}], "generic": "list"},
         "inv_feedback": {"anyOf": ["null", "str"]},
         "question": "str",
         "retrieved_ids": {"args": ["str"], "generic": "list"},
-        "return": "CheckedAnswer"
+        "return": "str"
       }
     },
     "py:fact_pipeline.answer.render_answer": {
@@ -569,12 +590,12 @@
     "py:fact_pipeline.extract.propose_fact": {
       "effects": "none",
       "reply_schema": {"$ref": "sha256:f190547e860b76ab4accb16be8d8655f60acc9965bda4a3f37e17e59bc5627db"},
-      "signature": "propose_fact(chunk_id: 'str', text: 'str', source_hash: 'str', index: 'int', inv_feedback: 'str | None' = None) -> 'CheckedFact'",
+      "signature": "propose_fact(chunk_id: 'str', text: 'str', source_hash: 'str', index: 'int', inv_feedback: 'str | None' = None) -> 'str'",
       "types": {
         "chunk_id": "str",
         "index": "int",
         "inv_feedback": {"anyOf": ["null", "str"]},
-        "return": "CheckedFact",
+        "return": "str",
         "source_hash": "str",
         "text": "str"
       }

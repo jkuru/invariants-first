@@ -208,6 +208,27 @@
       "targets": []
     }
   },
+  "scan": {
+    "exclude": [
+      "*/*_test.py",
+      "*/alembic",
+      "*/conftest.py",
+      "*/migrations",
+      "*/test",
+      "*/test_*.py",
+      "*/testing",
+      "*/tests",
+      "*_test.py",
+      "alembic",
+      "conftest.py",
+      "migrations",
+      "test",
+      "test_*.py",
+      "testing",
+      "tests"
+    ],
+    "roots": ["src"]
+  },
   "schemas": {
     "sha256:14b55b896df9a783a4766363096ff2a28ee2b2038c6ea7ce718ccc2bf012c174": {
       "dataclass": "Tier",
@@ -291,12 +312,12 @@
     "py:support_agent.planner.plan_action": {
       "effects": "none",
       "reply_schema": {"$ref": "sha256:b1a4730b77739f71abd02647178452f442d520dbb5c97397ae704fdc19ce61a3"},
-      "signature": "plan_action(ctx: 'AgentContext', ticket: 'str', customer_id: 'str', inv_feedback: 'str | None' = None) -> 'CheckedPlan'",
+      "signature": "plan_action(ctx: 'AgentContext', ticket: 'str', customer_id: 'str', inv_feedback: 'str | None' = None) -> 'str'",
       "types": {
         "ctx": "AgentContext",
         "customer_id": "str",
         "inv_feedback": {"anyOf": ["null", "str"]},
-        "return": "CheckedPlan",
+        "return": "str",
         "ticket": "str"
       }
     },

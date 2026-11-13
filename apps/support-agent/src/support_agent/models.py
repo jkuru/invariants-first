@@ -42,7 +42,10 @@ Action = Literal["REFUND", "CREDIT", "CANCEL", "ESCALATE_TO_HUMAN"]
 
 
 class Plan(Closed):
-    """The planner's reply: one action. Every field is required; an unused one is "" or 0."""
+    """The planner's reply: one action. Every field is required; an unused one is "" or 0. Frozen, so a
+    checked plan cannot be edited on its way to the executor."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: Action
     customer_id: str = Field(min_length=1, max_length=40)

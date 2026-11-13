@@ -74,11 +74,11 @@ def prompt_for(job_id: str, log_excerpt: str) -> str:
             f"and answer as JSON {{cause, summary}}.\n--- log ---\n{log_excerpt}")
 
 
-@inv.model_call("R-7", schema=CauseReply)
+@inv.model_call("R-7", schema=CauseReply, returns=CheckedCause)
 def propose_cause(conn: sqlite3.Connection, job_id: str, log_excerpt: str,
-                  inv_feedback: str | None = None) -> CheckedCause:
+                  inv_feedback: str | None = None) -> str:
     """One model call; returns the raw reply text (the decorator parses and checks it)."""
-    return _client.complete(prompt_for(job_id, log_excerpt), feedback=inv_feedback)  # type: ignore[return-value]
+    return _client.complete(prompt_for(job_id, log_excerpt), feedback=inv_feedback)
 
 
 @dataclasses.dataclass(frozen=True)
