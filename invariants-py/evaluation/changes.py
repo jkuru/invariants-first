@@ -284,6 +284,10 @@ REBASED = {
     pid = propose(client, "gpu-a", 150)'''),
 ]),
 
+"F07": (F, "U", [("src/fact_pipeline/pipeline.py",
+    '''                        "chunk_id": chunk.id, "index": index, "error": str(e), "attempts": e.attempts},''',
+    '''                        "chunk_id": chunk.id, "index": index},''')]),
+
 "F12": (F, "B", [
     ("src/fact_pipeline/models.py",
      '''Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in",

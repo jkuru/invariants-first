@@ -268,6 +268,11 @@ def _freeze(v: Any, depth: int = 0) -> Any:
     return v
 
 
+# a frozen Checked value (or a part of one) parses like the plain data it was made from
+_LISTS = (list, FrozenList)
+_DICTS = (dict, FrozenDict)
+
+
 def _thaw(v: Any, depth: int = 0) -> Any:
     """The plain dicts and lists a frozen value was made from (a copy)."""
     if depth > _FREEZE_DEPTH:
@@ -435,10 +440,10 @@ def _finite(v: Any, where: str, depth: int, safe: str | None = None) -> Any:
     if isinstance(v, float):
         if not math.isfinite(v):
             raise _err(f"field {safe}: {_NON_FINITE}", f"field {where}: {_NON_FINITE}")
-    elif type(v) is list:
+    elif type(v) in _LISTS:
         for i, x in enumerate(v):
             _finite(x, f"{where}[{i}]", depth + 1, f"{safe}[{i}]")
-    elif type(v) is dict:
+    elif type(v) in _DICTS:
         for k, x in v.items():
             _finite(x, f"{where}.{k}", depth + 1, f"{safe}.*")     # a reply-made key: only in the feedback
     return v
@@ -476,11 +481,11 @@ def _check(v: Any, t: Any, where: str, depth: int, safe: str | None = None) -> A
             raise _err(f"field {safe}: {_vt(v)} is not null", f"field {where}: {_show(v)} is not null")
         return v
     if origin is list:
-        if type(v) is not list:
+        if type(v) not in _LISTS:
             raise _err(f"field {safe}: {_vt(v)} is not a list", f"field {where}: {_show(v)} is not a list")
         return [_check(x, args[0], f"{where}[{i}]", depth + 1, f"{safe}[{i}]") for i, x in enumerate(v)]
     if origin is dict:
-        if type(v) is not dict:
+        if type(v) not in _DICTS:
             raise _err(f"field {safe}: {_vt(v)} is not an object", f"field {where}: {_show(v)} is not an object")
         out = {}
         for k, x in v.items():
@@ -563,7 +568,7 @@ def _build(data: Any, schema: Any, prefix: str, depth: int, safe: str | None = N
         raw = getattr(schema, "__inv_raw__", None)
         data = raw(data) if raw is not None else {f.name: object.__getattribute__(data, f.name)
                                                   for f in dataclasses.fields(schema)}
-    if type(data) is not dict:
+    if type(data) not in _DICTS:
         what, swhat = ("reply", "reply") if not prefix else (f"field {prefix[:-1]}", f"field {safe[:-1]}")
         raise _err(f"{swhat} is not an object (got {_vt(data)})", f"{what} is not an object (got {type(data).__name__})")
     fields = schema_fields(schema)

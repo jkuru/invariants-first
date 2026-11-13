@@ -63,6 +63,9 @@ The apps have changed since 2026-11-10 (the release that removed everything belo
 - P04's patch no longer applies: R-22 now refuses at the door before the write. `REBASED["P04"]`
   makes the same weakening (4x to 10x, with the falsifier edited to match) on the current rule.
 - P12's patch fails on context, so its text edits from `changes.py` are applied instead.
+- fact-pipeline's pipeline stages now bind their store and model with `inv.Dependency`, which re-indented
+  the review call F07 edits, so `REBASED["F07"]` makes the same edit (the error and attempts dropped
+  from the review) on the current text.
 - pool-service's `pool_api` contract now reads the live app (`{type: openapi, app: ...}`), so
   `openapi.json` is gone and the P02 and P10 patches (which edit it) give way to their text edits.
   R-22 reads the pool's size from the `current_size` provider, which `REBASED["P04"]` follows.

@@ -283,9 +283,7 @@ SERVICE = "ledger/service.py"
 @pytest.mark.parametrize("old,new", [
     ("def withdraw(conn, account: str, amount: int) -> None:",
      "def withdraw(conn, account: 'str', amount: typing.Optional[int]) -> None:"),
-    ("def withdraw(conn, account: str, amount: int) -> None:",
-     "def withdraw(conn, account: 'Text', amount: int) -> None:"),
-], ids=["spelling", "alias"])
+], ids=["spelling"])
 def test_a_signature_spelled_differently_is_not_stale(app, old, new):
     _edit(app / SERVICE, "import invariants as inv\n", "import typing\nimport invariants as inv\nText = str\n")
     if "Optional" in new:          # Optional[int] resolves to int | None: a real type change, pinned in types
@@ -294,6 +292,16 @@ def test_a_signature_spelled_differently_is_not_stale(app, old, new):
     r = _check(app)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "signature" in r.stdout and "(not stale)" in r.stdout
+
+
+def test_an_annotation_renamed_to_an_alias_is_stale(app):
+    """An alias may stand for an Annotated[...] whose Depends or validator no pin carries, so a renamed
+    annotation is stale even when the resolved type is the same (Text = str here)."""
+    _edit(app / SERVICE, "import invariants as inv\n", "import invariants as inv\nText = str\n")
+    _edit(app / SERVICE, "def withdraw(conn, account: str, amount: int) -> None:",
+          "def withdraw(conn, account: 'Text', amount: int) -> None:")
+    r = _check(app)
+    assert r.returncode == 1 and "signature" in r.stderr, r.stdout + r.stderr
 
 
 @pytest.mark.parametrize("new", [

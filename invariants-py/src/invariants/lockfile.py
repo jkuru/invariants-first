@@ -2027,10 +2027,9 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
 
 def _signature_shape(text: str) -> Any:
     """What a pinned signature text means, without how its annotations are spelled: the name, each
-    parameter's name, kind (positional-only, keyword-only, *args, **kwargs), default and whether it is
-    annotated, and whether there is a return annotation. Annotation text is left out (the resolved
-    `types` pin carries the types), except an Annotated one, whose metadata (Depends(...), Field(...))
-    the types drop. None when the text does not parse as a Python signature (it is then compared as
+    parameter's name, kind (positional-only, keyword-only, *args, **kwargs), default and annotation
+    (as written, quotes and spacing aside: an alias may stand for an Annotated[...] whose metadata no
+    pin carries), and the return annotation. None when the text does not parse as a Python signature (it is then compared as
     text, so any change is stale)."""
     head, paren, rest = text.partition("(")
     if not paren:
@@ -2044,10 +2043,19 @@ def _signature_shape(text: str) -> Any:
         return None
 
     def ann(node: ast.expr | None) -> Any:
+        # The annotation as written, normalised ('str' and str, spacing): an alias name can stand for an
+        # Annotated[...] whose metadata (Depends, validators) no pin carries, so any other change is stale.
         if node is None:
             return None
-        src = ast.unparse(node)
-        return src if "Annotated" in src else True
+        for _ in range(4):                     # 'X' and "'X'" (a quoted hint under future annotations)
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                break
+            text: str = node.value
+            try:
+                node = ast.parse(text, mode="eval").body
+            except SyntaxError:
+                return text
+        return ast.unparse(node)
 
     def arg(a: ast.arg, kind: str, default: ast.expr | None = None) -> tuple[Any, ...]:
         return (a.arg, kind, ann(a.annotation), ast.dump(default) if default is not None else None)

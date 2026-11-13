@@ -96,10 +96,11 @@ Lock:
   informational changes.
 - **A signature spelled differently is not stale.** The signature text was compared as text. Now,
   when both sides pin resolved `types`, the text is compared by meaning: the same name and, in order,
-  the same parameters, kinds, defaults and annotation presence, with any `Annotated[...]` annotation
-  compared as written (its metadata, such as `Depends(...)`, is not in `types`). `account: 'str'` for
-  `account: str` is informational; a renamed parameter, a new default, a parameter made keyword-only
-  or a changed `Annotated` marker is stale. Text that does not parse is compared as text.
+  the same parameters, kinds, defaults and annotations, each annotation compared as written with
+  quotes and spacing ignored. `account: 'str'` for `account: str` is informational; a renamed
+  parameter, a new default, a parameter made keyword-only or a renamed annotation is stale (an alias
+  such as `AdminUser` can stand for an `Annotated[...]` whose `Depends(...)` or validator no pin
+  carries, so swapping it for another alias must not pass). Text that does not parse is compared as text.
 
 ### Fix round 19 (runtime)
 

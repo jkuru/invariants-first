@@ -120,12 +120,13 @@ are recorded in the lock but are informational: an edit to a prose field (`state
 `owner`, `class`), and a signature spelled differently with the same meaning. They are listed,
 marked `(not stale)`, and `--check` (and `inv check`) passes; the next `inv lock` refreshes them. A
 signature counts as the same when it has the same name and, in order, the same parameters with
-the same kinds (positional-only, keyword-only, `*args`, `**kwargs`), defaults and whether each is
-annotated, and the entry pins resolved `types` on both sides (which are compared on their own):
-`account: 'str'` for `account: str`, or an alias renamed. A renamed or reordered parameter, a new or
-changed default, a parameter made keyword-only, an annotation added or removed, and any change in an
-`Annotated[...]` annotation (its metadata, such as `Depends(get_repo)`, is not in `types`) are
-stale. Signature text that does not parse as Python (a repr such as `<object ...>`) is compared as
+the same kinds (positional-only, keyword-only, `*args`, `**kwargs`), defaults and annotations
+(compared as written, ignoring quotes and spacing), and the entry pins resolved `types` on both sides
+(which are compared on their own): `account: 'str'` for `account: str`, or re-wrapped lines. A renamed
+or reordered parameter, a new or changed default, a parameter made keyword-only, and an annotation
+added, removed or renamed are stale. A renamed annotation counts even when the resolved type is the
+same, because an alias can stand for an `Annotated[...]` whose metadata (`Depends(get_admin)`, a
+validator) no pin carries: swapping `AdminUser` for `AnyUser` is stale. Signature text that does not parse as Python (a repr such as `<object ...>`) is compared as
 text. It lists each change as
 `<where>: <what>: old -> new`, one line per changed key of a dict value, with values compared
 type-strictly (`1` and `true` differ). A schema change is reported once, as `schema <name>`, with
