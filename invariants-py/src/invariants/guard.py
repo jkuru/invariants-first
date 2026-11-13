@@ -29,7 +29,7 @@ from .evaluate import aact, ablated, act, evaluate, report
 from .loader import closed_schema, literal_eq, schema_fields
 from .model import GUARD_POINTS, Outcome, Rule
 from .providers import ProviderFailed, prefetch_async, prefetch_many
-from .registry import WRAPPED, Handoff, Registry, _wraps, current
+from .registry import WRAPPED, Handoff, Registry, _wraps, current, note_decision
 from .resolve import resolve
 from .snapshot import take_snapshot
 
@@ -108,7 +108,7 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                         if e["point"] in points and reg.mode(rule, e) != "off"]
                 if not live:
                     continue
-                if reg.is_ablated(rule.id):
+                if reg.skips(rule.id):
                     for _, enf in live:
                         ablated(reg, rule, enf.get("point"))
                     continue
@@ -556,7 +556,7 @@ class _ModelRun:
             raise CoverageError(f"@inv.model_call({rule_id!r}): the rule has no model_call enforcer")
         self.i, self.enf = i, enf
         self.passive = rule.status == "retired" or reg.mode(rule, enf) == "off"
-        if not self.passive and reg.is_ablated(rule.id):
+        if not self.passive and reg.skips(rule.id):
             ablated(reg, rule, "model_call")
             self.passive = True
         bound = sig.bind(*a, **kw)
@@ -632,6 +632,7 @@ class _ModelRun:
         return "eval", reply
 
     def handoff(self, reply: Any) -> Handoff:
+        note_decision(self.rule.id)          # an abstain is the rule's decision (see --inv-ablate)
         return Handoff(self.rule.id, "escalate", None, {"reply": reply, **self.base}, list(self.record),
                        reason="abstain")
 
@@ -907,7 +908,7 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
             i, enf = enforcer_for(rule)
             if reg.mode(rule, enf) == "off":
                 return None
-            if reg.is_ablated(rule.id):
+            if reg.skips(rule.id):
                 ablated(reg, rule, "edge")
                 return None
             verdict, reply = _received(value)

@@ -85,7 +85,7 @@ Key behaviours that the one-line docstrings leave out:
 | `using(reg: Registry) -> Iterator[Registry]` | function | Run guards against reg inside the block (context-local), then restore. |
 | `isolated() -> Iterator[Registry]` | function | A fresh, empty registry for the block; inv.load() inside it installs there. |
 | `ablated(rule_id: str, reg: Registry \| None = None, *, scope: str = 'context') -> contextlib.AbstractContextManager[None]` | function | Disable one rule's guards (what `pytest --inv-ablate` does per rule); its falsifiers must then fail. |
-| `is_ablated(rule_id: str, reg: Registry \| None = None) -> bool` | function | True while the rule is ablated (inv.ablated, INV_ABLATE or Registry.ablate). |
+| `is_ablated(rule_id: str, reg: Registry \| None = None) -> bool` | function | True while the rule is ablated (inv.ablated, INV_ABLATE or Registry.ablate). Asking does not count as reaching the rule for `--inv-ablate`. |
 
 ### Operations
 

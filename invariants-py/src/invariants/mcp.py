@@ -150,7 +150,8 @@ def tool_scan(server_root: pathlib.Path, default_rules: pathlib.Path | None, arg
 # --- check and status (child processes: they import the app) ------------------------------------
 def _inv(root: pathlib.Path, *argv: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    for k in ("INV_ALLOW_WEAKENING", "INV_ABLATE", "INV_ABLATE_TESTING", "INV_ABLATE_TRACE"):
+    for k in ("INV_ALLOW_WEAKENING", "INV_ABLATE", "INV_ABLATE_TESTING", "INV_ABLATE_TRACE",
+              "INV_DECISION_TRACE"):
         env.pop(k, None)                            # a reviewer's switch and test-only ablation never leak in
     try:
         p = subprocess.run([sys.executable, "-m", "invariants.cli", *argv], cwd=root, env=env,

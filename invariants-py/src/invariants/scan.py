@@ -201,7 +201,7 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
             continue
         if rid in _ablated():
             from .registry import note_ablation_reached
-            note_ablation_reached(rid)
+            note_ablation_reached(rid, via="scan")
             skipped[rid] = ("ablated (INV_ABLATE); an enforce rule, so the scan cannot pass"
                             if raw.get("status") == "enforce" else "ablated (INV_ABLATE)")
             continue

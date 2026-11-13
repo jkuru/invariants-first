@@ -299,10 +299,13 @@ def test_ablation_reaches_subprocesses_through_inv_ablate(project):
     project.makepyfile(test_app="""
 import os, subprocess, sys
 def test_r1_falsifier():
-    # fix round 4: the child must act on the ablation through the library (here inv.is_ablated),
-    # so the reach is noted; a child that only reads INV_ABLATE itself is "rule not reached"
-    code = "import sys, invariants as inv; inv.load('rules.json'); sys.exit(1 if inv.is_ablated('R-1') else 0)"
-    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+    # fix round 4: the child must act on the ablation through the library (here the guard), so the
+    # reach is noted; a child that only reads INV_ABLATE itself is "rule not reached". Fix round 18:
+    # the child's rejection on the control run is noted too (INV_DECISION_TRACE)
+    code = ("import sys, invariants as inv, plug_app; inv.load('rules.json'); plug_app.BROKEN = True\\n"
+            "try:\\n    plug_app.halve(4)\\nexcept inv.Rejected:\\n    sys.exit(0)\\nsys.exit(1)")
+    path = os.pathsep.join(filter(None, [".", os.environ.get("PYTHONPATH")]))
+    assert subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": path}).returncode == 0
 """)
     r = run(project, "--inv-rules", "rules.json", "--inv-ablate")
     assert r.ret == 0

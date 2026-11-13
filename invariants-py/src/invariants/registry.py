@@ -25,6 +25,7 @@ from .resolve import resolve
 ABLATE_ENV = "INV_ABLATE"
 ABLATE_ARM_ENV = "INV_ABLATE_TESTING"     # INV_ABLATE is honoured only while this is "1" (the pytest plugin)
 ABLATE_TRACE_ENV = "INV_ABLATE_TRACE"     # file the plugin reads: rule ids whose ablation was reached
+DECISION_TRACE_ENV = "INV_DECISION_TRACE"  # file the plugin reads: rule ids whose enforcement decided something
 SINK_ENV = "INV_SINK_SIZE"
 DEBUG_ENV = "INV_DEBUG"
 REPLY_SIZE_ENV = "INV_MAX_REPLY_SIZE"
@@ -121,22 +122,45 @@ def env_ablated() -> set[str]:
 _noted: set[tuple[str, str]] = set()
 
 
-def note_ablation_reached(rule_id: str) -> None:
-    """Append rule_id to the INV_ABLATE_TRACE file (once per file): the ablation changed behaviour.
-
-    The pytest plugin sets INV_ABLATE_TRACE for each ablated re-run, so it can tell a falsifier that
-    failed because the rule was off from one that failed for an unrelated reason. Subprocesses
-    inherit the variable, so an app or `inv scan` they start reports reach too.
-    """
-    path = os.environ.get(ABLATE_TRACE_ENV)
-    if not path or (path, rule_id) in _noted:
+def _trace(env: str, line: str) -> None:
+    """Append line to the file named by env (once per file and line); nothing when env is unset."""
+    path = os.environ.get(env)
+    if not path or (path, line) in _noted:
         return
     try:
         with open(path, "a", encoding="utf-8") as f:
-            f.write(rule_id + "\n")
-        _noted.add((path, rule_id))
+            f.write(line + "\n")
+        _noted.add((path, line))
     except OSError:
         pass
+
+
+def note_ablation_reached(rule_id: str, via: str = "enforcer") -> None:
+    """Note in the INV_ABLATE_TRACE file that an enforcement point skipped rule_id because it is ablated.
+
+    via is "enforcer" (a guard, an edge, a model call, a monitor) or "scan" (`inv scan` skipped it).
+    The pytest plugin sets INV_ABLATE_TRACE for each ablated re-run, so it can tell a falsifier that
+    failed because the rule was off from one that failed for an unrelated reason. Subprocesses
+    inherit the variable, so an app or `inv scan` they start reports reach too. Asking
+    `inv.is_ablated()` is not reaching the rule: only the library's own enforcement points note it.
+    """
+    _trace(ABLATE_TRACE_ENV, f"{rule_id} {via}")
+
+
+def note_decision(rule_id: str) -> None:
+    """Note in the INV_DECISION_TRACE file that rule_id's enforcement decided something.
+
+    A decision is a violation, a parse_error the enforcer acted on (a retry or a rejection, not a
+    detect-mode proceed), or a model call's abstain. The pytest plugin sets INV_DECISION_TRACE for a
+    falsifier's control re-run: a falsifier whose rule never decided anything there passes whether
+    or not the rule holds, so its failure under ablation proves nothing.
+    """
+    _trace(DECISION_TRACE_ENV, rule_id)
+
+
+def is_decision(kind: str, event: dict[str, Any]) -> bool:
+    """True for an event that is a decision of its rule (see note_decision)."""
+    return kind == "violation" or (kind == "parse_error" and event.get("action") not in (None, "proceed"))
 
 
 class EventSink(collections.deque[dict[str, Any]]):
@@ -335,6 +359,8 @@ class Registry:
                 self.sink.append(event)
             if kind == "rule_error" and self.error_spike is not None and rule_id not in self.demoted:
                 spiked = self._spike(rule_id)
+        if is_decision(kind, event):
+            note_decision(rule_id)
         if spiked:
             self.page(Handoff(rule_id, "page", event=event, reason=spiked))
         with _GLOBAL_LOCK:
@@ -441,11 +467,16 @@ class Registry:
     def is_ablated(self, rule_id: str) -> bool:
         """True if the rule is ablated here or everywhere (ablated_everywhere).
 
-        A True answer means a guard, a DDL builder or a scan acted on the ablation, so it is noted
-        as reached for the pytest plugin's --inv-ablate (see note_ablation_reached).
+        Asking is not acting: this never counts as reaching the rule for --inv-ablate (a test
+        asserting `not inv.is_ablated(...)` is not a falsifier). Enforcement points call skips().
         """
-        if (rule_id in self.ablated or self._reg_ablated[rule_id] > 0 or GLOBAL_ABLATED[rule_id] > 0
-                or self._ctx_ablated(rule_id)):
+        return (rule_id in self.ablated or self._reg_ablated[rule_id] > 0 or GLOBAL_ABLATED[rule_id] > 0
+                or self._ctx_ablated(rule_id))
+
+    def skips(self, rule_id: str) -> bool:
+        """is_ablated() for an enforcement point about to skip the rule: a True answer is noted as
+        reached for the pytest plugin's --inv-ablate (see note_ablation_reached)."""
+        if self.is_ablated(rule_id):
             note_ablation_reached(rule_id)
             return True
         return False

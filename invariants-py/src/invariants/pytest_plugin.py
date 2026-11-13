@@ -22,9 +22,17 @@ During an ablation re-run INV_ABLATE also names the rule, so a falsifier that ru
 the app in a subprocess sees the rule turned off too.
 
 A falsifier counts as caught only when the ablation caused its failure: it must pass on a control
-re-run without ablation, the ablated re-run must reach the rule (a guard, `inv.is_ablated` or a
-scan, in this process or a subprocess, acted on the ablation; INV_ABLATE_TRACE carries that), and
-it must pass again on a second control re-run after the ablated one. Otherwise it is inconclusive.
+re-run without ablation, and on that control run the rule's enforcement must have decided
+something (a violation at a guard, an edge, a middleware or a monitor; at a model call a
+violation, a parse_error it retried or rejected, or an abstain; INV_DECISION_TRACE carries that
+from this process or a subprocess). The ablated re-run must reach the rule (an enforcement point
+or a scan, in this process or a subprocess, skipped it because it is ablated; INV_ABLATE_TRACE
+carries that; asking `inv.is_ablated()` is not reaching it), and the test must pass again on a
+second control re-run after the ablated one. Otherwise it is inconclusive. A rule that never
+fired on the control run gives "inconclusive (the rule never fired on the control run ...)": the
+test passes whether or not the rule holds, so whatever fails it under ablation is not the rule.
+A falsifier whose ablated run reached the rule through `inv scan` keeps the scan's own check
+(the scan's findings are what it asserts; there is no in-process decision to see).
 A broader fixture lives across the re-runs, so state it carries (a module-scoped quota each run
 spends) can fail a re-run without the ablation: a second control that fails makes the falsifier
 "inconclusive (state carried between runs ...)", and a failing first control is inconclusive too;
@@ -49,12 +57,13 @@ import pytest
 from .errors import CoverageError, LoadError
 from . import registry
 from .loader import load
-from .registry import ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, Registry, ablated_everywhere, capture, current, default_registry, isolated, observe
+from .registry import ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, Registry, ablated_everywhere, capture, current, default_registry, isolated, observe
 
 KINDS = ("ok", "violation", "rule_error", "parse_error")
 STASH: pytest.StashKey[InvSession] = pytest.StashKey()
 SCAN_ABLATED = 4            # `inv scan`'s exit code when it skipped an ablated enforce rule (cli.ABLATED)
 NO_VERDICT = "inconclusive (read an ablated scan's exit code or pass; assert its findings)"
+NEVER_FIRED = "inconclusive (the rule never fired on the control run: the test passes whether or not it holds)"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -147,13 +156,36 @@ def _env_ablated(rule_id: str, trace: str | None = None) -> Iterator[None]:
                 os.environ[k] = v
 
 
-def _reached(trace: str, rule_id: str) -> bool:
-    """True if some process noted reaching rule_id's ablation in the trace file."""
+@contextlib.contextmanager
+def _env_decisions(trace: str) -> Iterator[None]:
+    """Set INV_DECISION_TRACE for the block: any process notes there the rules that decided something."""
+    saved = os.environ.get(DECISION_TRACE_ENV)
+    os.environ[DECISION_TRACE_ENV] = trace
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop(DECISION_TRACE_ENV, None)
+        else:
+            os.environ[DECISION_TRACE_ENV] = saved
+
+
+def _lines(trace: str) -> list[list[str]]:
     try:
         with open(trace, encoding="utf-8") as f:
-            return rule_id in {line.strip() for line in f}
+            return [line.split() for line in f if line.strip()]
     except OSError:
-        return False
+        return []
+
+
+def _reached(trace: str, rule_id: str) -> set[str]:
+    """How some process noted reaching rule_id's ablation in the trace file: "enforcer", "scan" (none: empty)."""
+    return {(parts[1:] or ["enforcer"])[0] for parts in _lines(trace) if parts[0] == rule_id}
+
+
+def _decided(trace: str) -> set[str]:
+    """Rule ids some process noted a decision for (a violation, an acted-on parse_error, an abstain)."""
+    return {parts[0] for parts in _lines(trace)}
 
 
 class InvSession:
@@ -420,8 +452,11 @@ class InvSession:
         """The falsifier passed with its rules on: a control re-run, then one ablated re-run per rule."""
         counting, self.counting = self.counting, False  # re-runs are not counted in the report
         try:
-            with capture() as events:
-                control = _outcome(rerun(item, nextitem=keep, log=False))
+            with tempfile.TemporaryDirectory() as d:
+                decisions = os.path.join(d, "decided")
+                with capture() as events, _env_decisions(decisions):
+                    control = _outcome(rerun(item, nextitem=keep, log=False))
+                decided = _decided(decisions)
             for rid in rule_ids:
                 if control != "passed":                 # it fails without the ablation: not evidence
                     self._note([rid], item, f"inconclusive ({control} on a control re-run without ablation; "
@@ -444,6 +479,11 @@ class InvSession:
                     result = "inconclusive (rule_error, not violation)"
                 elif out == "failed" and not reached:
                     result = "inconclusive (rule not reached)"
+                elif out == "failed" and "scan" not in reached and rid not in decided:
+                    # the ablated run skipped the rule, but on the control run the rule never
+                    # rejected anything: it was not what kept the test passing (a scan falsifier
+                    # has no in-process decision; its findings are what the test asserts)
+                    result = NEVER_FIRED
                 elif out == "failed":
                     # did the ablation fail it, or state a broader fixture carries from the earlier runs
                     # (a quota, a seeded row)? A second control, with the rule on, tells them apart
