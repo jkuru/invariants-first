@@ -117,7 +117,8 @@ def scan_skip() -> list[str]:
     """The directories the scan always skips, as the lock pins them: each name in SKIP_DIRS, and `.*`
     for every dot-directory. The one place the pin reads the scan's built-in skip list from, so a
     library upgrade or change that skips more shows up in the lock (an added entry is WEAKENED)."""
-    return sorted({*SKIP_DIRS, ".*"})
+    from ..scan.sources import SKIPPED          # the scan's own value: one source of truth
+    return sorted(SKIPPED)
 
 
 def scan_pin(roots: list[str], exclude: list[str], skip: list[str] | None = None) -> dict[str, list[str]]:
