@@ -11,13 +11,13 @@ import copy
 import dataclasses
 import inspect
 import time
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Generator, Iterator
 
 from ..cel import CelError
 from ..errors import CoverageError, Escalation, ParseError
 from ..evaluate import aact, ablated, act, evaluate, report
 from ..model import Outcome, Rule
-from ..providers import ProviderFailed, prefetch_many
+from ..providers import ProviderFailed, prefetch_async, prefetch_many
 from ..registry import Handoff, Registry, current, note_decision
 from ..snapshot import take_snapshot
 from .checked import Checked
@@ -28,20 +28,23 @@ from .replies import _field_of, _same, parse, parse_error_text, recheck, rule_vi
 class _Call:
     """One guarded call: bound arguments, the rules that apply, provider caches and snapshots."""
 
-    __slots__ = ("reg", "providers", "self_", "base", "rules", "snap", "pre", "post", "broken", "started")
+    __slots__ = ("reg", "providers", "self_", "base", "rules", "snap", "pre", "post", "broken", "started",
+                 "timings")
 
-    def __init__(self, reg: Registry, self_: Any, args: dict[str, Any]) -> None:
+    def __init__(self, reg: Registry, self_: Any, args: dict[str, Any], providers: dict[str, Any],
+                 started: int) -> None:
         self.reg, self.self_ = reg, self_
         # one registry generation per call: inv.load mid-call (a hot reload) installs new tables on reg,
         # and this call's rules must keep binding the providers they were loaded with
-        self.providers: dict[str, Any] = reg.providers
+        self.providers = providers
         self.base: dict[str, Any] = {"args": args, "self": self_}
         self.rules: list[tuple[Rule, list[tuple[int, dict[str, Any]]]]] = []
         self.snap: dict[str, Any] = {}
         self.pre: dict[Any, Any] = {}       # provider values read before the effect
         self.post: dict[Any, Any] = {}      # provider values read after it
         self.broken: dict[tuple[str, Any], str] = {}   # (rule id, enforcer) whose provider prefetch failed
-        self.started: dict[str, int] = {"pre_effect": time.time_ns()}   # when each check began (events, spans)
+        self.started: dict[str, int] = {"pre_effect": started}   # when each check began (events, spans)
+        self.timings: set[str] = set()      # the timings some live enforcer checks at (the others are skipped)
 
     def enforcers(self, timing: str) -> Iterator[tuple[Rule, int, dict[str, Any]]]:
         for rule, live in self.rules:
@@ -56,16 +59,29 @@ class _Call:
         return base
 
 
+_SHAPES_MAX = 256       # call shapes a guard remembers as binding (a **kwargs function may see many)
+
+
 def start(sig: inspect.Signature, keys: tuple[str, ...], points: tuple[str, ...],
-          a: tuple[Any, ...], kw: dict[str, Any]) -> _Call:
+          a: tuple[Any, ...], kw: dict[str, Any], shapes: set[tuple[Any, ...]]) -> _Call | None:
     """The call's bound arguments, its live rules (enforcers at points, mode not off, not ablated)
-    and their old_self snapshots, taken before the effect."""
+    and their old_self snapshots, taken before the effect. None when no rule is live (each one
+    retired, off or ablated, with its ablated events emitted as always): call straight through.
+
+    A call that does not bind is the TypeError it always was, before any rule is looked up. Binding
+    depends only on the call's shape (how many positional arguments, which keyword names), so a
+    shape in shapes (the guard's shapes that bound before) is bound only once a live rule needs it.
+    """
     reg = current()
-    bound = sig.bind(*a, **kw)
-    bound.apply_defaults()
-    self_ = bound.arguments.get("self")
-    call = _Call(reg, self_, {k: v for k, v in bound.arguments.items() if k != "self"})
-    call.providers, rules = reg.generation(keys)
+    bound: inspect.BoundArguments | None = None
+    shape = (len(a), *kw)
+    if shape not in shapes:
+        bound = sig.bind(*a, **kw)
+        if len(shapes) < _SHAPES_MAX:
+            shapes.add(shape)
+    started = time.time_ns()
+    providers, rules = reg.generation(keys)
+    call: _Call | None = None
     for rule in rules:
         if rule.status == "retired":
             continue
@@ -77,9 +93,17 @@ def start(sig: inspect.Signature, keys: tuple[str, ...], points: tuple[str, ...]
             for _, enf in live:
                 ablated(reg, rule, enf.get("point"))
             continue
+        if call is None:
+            if bound is None:
+                bound = sig.bind(*a, **kw)
+            bound.apply_defaults()
+            call = _Call(reg, bound.arguments.get("self"),
+                         {k: v for k, v in bound.arguments.items() if k != "self"}, providers, started)
         call.rules.append((rule, live))
+        for _, e in live:
+            call.timings.add(e["timing"])
         if rule.snapshot:
-            call.snap[rule.id] = _old_self(rule, self_)
+            call.snap[rule.id] = _old_self(rule, call.self_)
     return call
 
 
@@ -135,6 +159,9 @@ class _ModelRun:
     is passive: the model is called once and its reply parsed into the closed schema, and nothing
     else happens (no format retries, no abstain escalation, no bad, no event but `ablated`).
     """
+
+    __slots__ = ("started", "reg", "providers", "rule", "i", "enf", "passive", "sig", "bound", "schema",
+                 "refined", "base", "fb", "prov", "fmt_left", "sem_left", "ab", "record", "feedback", "fed_back")
 
     def __init__(self, rule_id: str, schema: Any, refined: Any, sig: inspect.Signature,
                  a: tuple[Any, ...], kw: dict[str, Any]) -> None:
@@ -237,10 +264,20 @@ class _ModelRun:
     def eval_base(self, reply: Any) -> dict[str, Any]:
         return {**self.base, "reply": rule_view(reply)}
 
-    def judged(self, reply: Any) -> tuple[str, Any]:
-        """('retry', None) | ('finish', (outcome, reply))."""
+    async def aprefetch(self, reply: Any) -> str | None:
+        """The async providers the evaluation of reply reads, awaited; why it failed, else None (as
+        @inv.guard: a failed prefetch makes the evaluation a rule_error)."""
+        try:
+            return await prefetch_async(self.reg, self.rule, self.rule.names_for[self.i], self.eval_base(reply),
+                                        self.prov, self.providers)
+        except Exception as e:
+            return f"binding providers raised {type(e).__name__}"
+
+    def judged(self, reply: Any, broken: str | None = None) -> tuple[str, Any]:
+        """('retry', None) | ('finish', (outcome, reply)). broken: why the async prefetch failed."""
         rule, reg = self.rule, self.reg
-        out = evaluate(rule, self.eval_base(reply), self.i, reg, self.prov, self.providers)
+        out = (Outcome("rule_error", rule.id, error=broken) if broken is not None else
+               evaluate(rule, self.eval_base(reply), self.i, reg, self.prov, self.providers))
         self.record.append({"attempt": len(self.record) + 1, "outcome": out.kind, "messages": out.messages,
                             "fed_back": self.fed_back})
         if out.kind == "violation" and self.sem_left and reg.mode(rule, self.enf) == "enforce":
@@ -249,6 +286,23 @@ class _ModelRun:
             report(reg, rule, self.enf, out, "resample", self.record)
             return "retry", None
         return "finish", (out, reply)              # rule_error never resamples: on_error applies
+
+    def steps(self, prefetch: bool) -> Generator[tuple[str, Any], Any, None]:
+        """The retry loop of an active run, driven alike by the sync and the async wrapper (which only
+        call, await and send the answer back). Yields ("call", (args, kwargs)) for the model's next raw
+        reply, ("prefetch", reply) when prefetch (an async run) for why the async providers bad reads
+        failed to fetch (None when they did; a sync run's evaluate() binds its providers itself),
+        ("hand_off", handoff) for the id of the review an abstain opens, and last ("finish",
+        (outcome, value)): the wrapper then acts on the outcome and stops driving."""
+        while True:
+            step, v = self.parsed((yield "call", self.call_args()))
+            if step == "eval":
+                step, v = self.judged(v, (yield "prefetch", v) if prefetch else None)
+            if step == "abstain":
+                raise self.escalation((yield "hand_off", self.handoff(v)))
+            if step == "finish":
+                yield "finish", v
+                return
 
 
 # --- @inv.edge ---------------------------------------------------------------------------------
@@ -262,9 +316,10 @@ def _received(value: Any) -> tuple[str | None, Any]:
     return (verdict, reply) if type(verdict) is str else (None, None)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class _EdgeCall:
-    """One edge call that is checked: what judge() needs, then the consumer's (args, kwargs)."""
+    """One edge call that is checked: what judge() needs, then the consumer's (args, kwargs).
+    broken: why the async prefetch of its providers failed (the evaluation is then a rule_error)."""
 
     reg: Registry
     rule: Rule
@@ -278,6 +333,7 @@ class _EdgeCall:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     cache: dict[Any, Any] = dataclasses.field(default_factory=dict)
+    broken: str | None = None
 
 
 def _get_field(obj: Any, f: str) -> Any:
@@ -361,6 +417,16 @@ class _EdgePlan:
         bound.arguments[self.pname] = _set_path(bound.arguments[self.pname], self.fields, fresh)
         return bound.args, bound.kwargs
 
+    async def aprefetch(self, c: _EdgeCall) -> None:
+        """The async providers bad reads, awaited, when it will be evaluated (as @inv.guard: a failed
+        prefetch makes the evaluation a rule_error)."""
+        if c.verdict != "ok" or c.perr is not None:
+            return
+        try:
+            c.broken = await prefetch_async(c.reg, c.rule, c.rule.names_for[c.i], c.base, c.cache, c.providers)
+        except Exception as e:
+            c.broken = f"binding providers raised {type(e).__name__}"
+
     def judge(self, c: _EdgeCall) -> tuple[Outcome, bool]:
         refusal = c.verdict != "ok"          # a received non-ok verdict is refused, never failed open
         rule, refined = c.rule, self.refined
@@ -372,6 +438,8 @@ class _EdgePlan:
                           rule.id, [f"received a {refined.__name__} with verdict {c.verdict}"])
         elif c.perr is not None:
             out = Outcome("parse_error", rule.id, error=c.perr)
+        elif c.broken is not None:
+            out = Outcome("rule_error", rule.id, error=c.broken)
         else:
             out = evaluate(rule, c.base, c.i, c.reg, c.cache, c.providers)
         return out, refusal

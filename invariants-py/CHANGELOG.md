@@ -78,6 +78,26 @@ byte-identical before and after, and `lockfile.changes()` reports the same chang
   `MODEL_ATTR`, and the anthropic constants; a test checks `invariants.__all__` against api.md;
   layering tests cover guard/, registry/ and cli/.
 
+### Fix round 20 (guard)
+
+- **`@inv.guard` calls straight through when no rule can act.** When every rule it names is retired,
+  in effective mode off or ablated, the arguments are no longer bound, defaulted and copied on every
+  call: a call shape (how many positional arguments, which keyword names) is bound once per guard, so
+  a call that does not bind is still the same `TypeError`, before any rule is looked up. A timing no
+  live enforcer checks at (the post-effect phase of a pre-effect-only rule, and the reverse) is
+  skipped. Events are unchanged: an ablated rule still emits one `ablated` event per enforcer per
+  call, and counts as reached for `--inv-ablate`. In the bundled benchmark an off guard costs about
+  1.2 µs per call instead of 3.0 µs (async 1.4 instead of 6.1); an ablated one 2.8 instead of 4.7.
+- **An async `@inv.model_call` or `@inv.edge` whose provider prefetch fails records the rule_error
+  `@inv.guard` records** (`binding providers raised <Type>`). Before, the failure was dropped and the
+  rule evaluated anyway, which reported the async provider as unreadable ("only an async guard, model
+  call or edge can read it") or let another clause decide. The sync and async model-call wrappers now
+  drive one retry loop (`_ModelRun.steps`).
+- **`@inv.edge` accepts a parameter annotated `CheckedT | None` (`Optional[CheckedT]`),** as it does
+  a state field: a `None` received there is the `TypeError` of any value that is not a `CheckedT`.
+  Before, such a parameter was not found and decorating was a `TypeError`.
+- `_ModelRun` and `_EdgeCall` have `__slots__`.
+
 ### Fixes after the layered refactor
 
 - **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose
