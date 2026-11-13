@@ -92,6 +92,8 @@ class _Parser:
                 if self.peek("("):
                     self.i += 1
                     a = self.args(")")
+                    if name == "has" and e != ("id", "inv"):
+                        raise CelSyntaxError("has() has only the global form: has(a.b)")
                     e = ("call", "inv." + name, None, a) if e == ("id", "inv") else ("call", name, e, a)
                     if name in _MACROS and (len(a) != 2 or a[0][0] != "id"):
                         raise CelSyntaxError(f"{name}() needs (var, expr)")

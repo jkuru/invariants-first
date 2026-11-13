@@ -12,6 +12,9 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 
 ### Fix round 21 (follow-up)
 
+- **CEL subset: receiver-form `has()` is a syntax error** (`x.has(a)` used to parse, then leak an
+  `IndexError` or `TypeError` at evaluation), and **`==` or `in` over a Mapping or record that raises
+  while it is read is a `CelError`** with the cause only in `.detail` (it leaked the raw exception).
 - **`inv mcp` protocol edges:** an unhashable tool name is INVALID_PARAMS (was an internal error);
   `params` that is present but not an object (`[]`, `0`, `""`) is INVALID_PARAMS instead of being
   read as `{}`; `propose_rules` treats `max_doors: null` as absent, like every other argument.

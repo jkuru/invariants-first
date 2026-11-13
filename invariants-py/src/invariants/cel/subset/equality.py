@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from ..errors import CelError, raised
 from .data import _data, _finite, _num, _ty
 
 _SCALAR_TYPES = (str, bytes, bool, int, float, datetime.datetime, datetime.timedelta, type(None))
@@ -30,7 +31,12 @@ def _eq(a: Any, b: Any) -> bool:
 def whole(v: Any) -> Any:
     """v read whole as plain CEL data (the engines' conversion, cel/_engine.to_plain)."""
     from .._engine import to_plain  # _engine imports this package
-    return to_plain(v)
+    try:
+        return to_plain(v)
+    except CelError:
+        raise
+    except Exception as e:              # a custom Mapping or record that raises while it is read
+        raise raised(f"reading {type(v).__name__}", e) from e
 
 
 def _kind(v: Any) -> str:
