@@ -46,11 +46,16 @@ Findings have four kinds:
 |---|---|---|
 | `bypass` | a path of extracted call edges from an entrypoint to the sink that avoids every door | `bypass` |
 | `forbidden` | a bypass idiom | `forbidden/getattr-sink` (and `getattr` on a door), `forbidden/unwrap` (`.__wrapped__`), `forbidden/monkeypatch` |
-| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/parse-error` |
+| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/excluded-callee`, `unresolved/parse-error` |
 | `missing` | a declared sink, door or `allow` entry that does not exist in the scanned code, or an `allow` entry that no longer reaches a sink without a door | `missing/sink`, `missing/door`, `missing/allow`, `missing/allow-unused` |
 
 Each finding carries the function it is in (`owner`, in `--format json`), which is what `allow`
 names to freeze it.
+
+A `forbidden/unwrap` on a function the scan can name (`ResizeService.resize_door.__wrapped__`) is
+listed under the rules where that function is a sink, door or allowed back door, or reaches a sink
+without passing a door; an unwrap of something it cannot name (`fn.__wrapped__` on a parameter) is
+listed under every rule.
 
 ### Method calls
 
@@ -80,8 +85,11 @@ return annotation (`-> Self` is the class itself), and `with session() as r` by 
 Generic classes resolve like plain ones: `class ConcreteRepo(BaseRepo[T])` is a subclass of
 `BaseRepo` (`Generic[T]` and `Protocol` bases are ignored), so a call through a `BaseRepo` (or
 `BaseRepo[int]`) receiver also reaches `ConcreteRepo.save`. `super().save(x)` (or
-`super(Cls, self)`) in a method is an extracted edge to the next `save` in the class's method
-resolution order through the scanned classes; when no scanned base has it, it stays unresolved.
+`super(Cls, self)`) in a method of class `C` is an extracted edge to the next `save` after `C` in the
+method resolution order, through the scanned classes, of `C` and of every scanned subclass of `C`:
+`self` may be any of them, so in `class Leaf(Mixin, SinkRepo)` a `super().save(x)` in `Mixin` reaches
+`SinkRepo.save`. When no scanned class has it, or a subclass has no consistent order, the call is
+name-matched (unresolved).
 
 Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
 and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
@@ -158,7 +166,11 @@ holds it. Test code and migrations are skipped by default, at any depth (`tests/
 `testing/`, `test_*.py`, `*_test.py`, `conftest.py`, `migrations/`, `alembic/`): a unit test that calls
 a sink directly is not a back door. Scan roots and excludes can
 also live in the `pyproject.toml` beside the rule file (an `exclude` there replaces the default list,
-so `exclude = []` scans the tests too):
+so `exclude = []` scans the tests too). Excluded files are not read, but their module names are
+noted: a call from scanned code into an excluded module (production code calling
+`app/testing/helpers.py` or `app/test_fastpath.py`) is `unresolved/excluded-callee`, naming the file
+and the glob, since the scan cannot see where it goes. Narrow the exclude or move the code. Tests
+importing the app are excluded code calling scanned code, and stay quiet:
 
 ```toml
 [tool.invariants.scan]

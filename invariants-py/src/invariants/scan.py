@@ -268,6 +268,7 @@ class _Site:
     """Something the second pass saw at one place, for the per-rule checks."""
 
     what: str                    # getattr | setattr | ref | attrcall | wrapped | reflection | dynimport | sql | patch
+    #                              | excluded (a call into a module the exclude globs leave out)
     owner: str
     line: int
     col: int
@@ -279,17 +280,25 @@ def anywhere(*patterns: str) -> tuple[str, ...]:
     return tuple(x for p in patterns for x in (p, f"*/{p}"))
 
 
-def _excluded(rel: pathlib.PurePath, patterns: Iterable[str]) -> bool:
-    """True if a root-relative posix path (or any parent directory of it) matches a glob."""
+def _excluded(rel: pathlib.PurePath, patterns: Iterable[str]) -> str | None:
+    """The first glob a root-relative posix path (or any parent directory of it) matches, else None."""
     text = rel.as_posix()
     heads = [pathlib.PurePosixPath(*rel.parts[:i]).as_posix() for i in range(1, len(rel.parts))]
-    return any(fnmatch.fnmatch(text, p) or any(fnmatch.fnmatch(h, p.rstrip("/")) for h in heads)
-               for p in patterns)
+    return next((p for p in patterns
+                 if fnmatch.fnmatch(text, p) or any(fnmatch.fnmatch(h, p.rstrip("/")) for h in heads)), None)
 
 
 def iter_sources(roots: Iterable[pathlib.Path],
                  exclude: Iterable[str] = ()) -> Iterator[tuple[pathlib.Path, pathlib.Path, str]]:
     """(root, file, module name) for every .py file under the roots, minus exclude globs (root-relative)."""
+    for base, f, name, pattern in _walk_sources(roots, exclude):
+        if pattern is None:
+            yield base, f, name
+
+
+def _walk_sources(roots: Iterable[pathlib.Path],
+                  exclude: Iterable[str]) -> Iterator[tuple[pathlib.Path, pathlib.Path, str, str | None]]:
+    """(root, file, module name, the exclude glob it matches or None) for every .py file under the roots."""
     exclude = list(exclude)
     roots = list(dict.fromkeys(r.resolve() for r in roots))
     dirs = [r for r in roots if r.is_dir()]
@@ -303,13 +312,12 @@ def iter_sources(roots: Iterable[pathlib.Path],
             rel = f.relative_to(base)
             if any(p in SKIP_DIRS or p.startswith(".") for p in rel.parts[:-1]):
                 continue
-            if exclude and _excluded(rel, exclude):
-                continue
+            pattern = _excluded(rel, exclude) if exclude else None
             parts = list(rel.with_suffix("").parts)
             if parts[-1] == "__init__":
                 parts.pop()
             if parts:
-                yield base, f, ".".join(parts)
+                yield base, f, ".".join(parts), pattern
 
 
 class _Index:
@@ -325,6 +333,19 @@ class _Index:
         self.foreign: set[str] | None = None             # attribute names set from outside their object
         self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
+        self._subs: dict[str, list[str]] | None = None     # class -> its scanned subclasses (subclasses)
+        self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
+
+    def excluded_module(self, fq: str) -> str | None:
+        """The excluded module fq names or lies in (a scanned module of the same name wins), else None."""
+        parts = fq.split(".")
+        for i in range(len(parts), 0, -1):
+            head = ".".join(parts[:i])
+            if head in self.modules or head in self.classes or head in self.funcs:
+                return None
+            if head in self.excluded:
+                return head
+        return None
 
     def add(self, root: pathlib.Path, file: pathlib.Path, name: str) -> None:
         try:
@@ -441,23 +462,57 @@ class _Index:
 
     def mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
         """The method resolution order of a class through the scanned classes (C3; bases the scan does
-        not see are left out)."""
-        if cls not in self.classes or cls in seen:
+        not see are left out; depth first where C3 finds no consistent order)."""
+        return self._c3(cls, seen, strict=False) or []
+
+    def strict_mro(self, cls: str) -> list[str] | None:
+        """mro(), or None when the scanned classes give no consistent C3 order (or inherit in a cycle)."""
+        return self._c3(cls, frozenset(), strict=True)
+
+    def _c3(self, cls: str, seen: frozenset[str], strict: bool) -> list[str] | None:
+        if cls not in self.classes:
             return []
+        if cls in seen:
+            return None if strict else []
         direct = [b for b in self.bases(cls) if b in self.classes]
-        seqs = [self.mro(b, seen | {cls}) for b in direct] + [list(direct)]
+        seqs: list[list[str]] = []
+        for b in direct:
+            got = self._c3(b, seen | {cls}, strict)
+            if got is None:
+                return None
+            seqs.append(list(got))
+        seqs.append(list(direct))
         out = [cls]
         while True:
             seqs = [q for q in seqs if q]
             if not seqs:
                 return out
             head = next((q[0] for q in seqs if not any(q[0] in t[1:] for t in seqs)), None)
-            if head is None:                                   # no consistent order: depth first
-                return out + [c for q in seqs for c in q if c not in out]
+            if head is None:                                   # no consistent order
+                return None if strict else out + [c for q in seqs for c in q if c not in out]
             out.append(head)
             for q in seqs:
                 if q[0] == head:
                     del q[0]
+
+    def subclasses(self, cls: str) -> list[str]:
+        """Every scanned class that inherits cls, directly or not."""
+        if self._subs is None:
+            direct: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+            for c in self.classes:
+                for b in self.bases(c):
+                    direct[b].add(c)
+            self._subs = {}
+            for c in self.classes:
+                seen: set[str] = set()
+                stack = list(direct[c])
+                while stack:
+                    n = stack.pop()
+                    if n not in seen and n != c:
+                        seen.add(n)
+                        stack.extend(direct[n])
+                self._subs[c] = sorted(seen)
+        return self._subs.get(cls, [])
 
     def module_values(self, module: str) -> dict[str, ast.expr]:
         """Module-level `NAME = value` (or `type NAME = value`) bound once in the module: type aliases
@@ -863,32 +918,41 @@ class _Walker:
             self.idx.foreign = out
         return self.idx.foreign
 
-    def _super_method(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> str | None:
-        """super().m (or super(Cls, self).m) inside a method: the next m after the class in its method
-        resolution order through the scanned classes; "" when super() names no scanned method, None when
-        node is not a super() lookup."""
+    def _super_methods(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> list[str] | None:
+        """super().m (or super(Cls, self).m) inside a method of class C: the next m after Cls in the method
+        resolution order of C and of every scanned subclass of C (self may be any of them: a mixin's
+        super() can land on a sibling base). [] when the scan cannot tell (no scanned m, or a subclass's
+        MRO has no consistent order), so the call is name-matched; None when node is not a super() lookup."""
         v = node.value
         if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and me
                 and self._resolve(v.func, local, me) == "builtins.super"):
             return None
-        cls = me[1]
+        start = me[1]
         if v.args:
             named = self._resolve(v.args[0], local, me) if _dotted(v.args[0]) else None
             if named not in self.idx.classes:
-                return ""
-            cls = named
-        for c in self.idx.mro(cls)[1:]:
-            if node.attr in self.idx.classes[c]["methods"]:
-                return self.idx.classes[c]["methods"][node.attr]
-        return ""
+                return []
+            start = named
+        out: set[str] = set()
+        for k in [me[1], *self.idx.subclasses(me[1])]:
+            order = self.idx.strict_mro(k)
+            if order is None:
+                return []                                      # fail closed: name-matched
+            if start not in order:
+                continue
+            for c in order[order.index(start) + 1:]:
+                if node.attr in self.idx.classes[c]["methods"]:
+                    out.add(self.idx.classes[c]["methods"][node.attr])
+                    break
+        return sorted(out)
 
     def _typed(self, node: ast.Attribute, owner: str, local: set[str],
                me: tuple[str, str] | None) -> tuple[list[str], str | None]:
         """For `recv.m` on a receiver the scan can type: the methods it may name (the class's m, and the
         overrides a subclass instance may bring), else the builtin container it is (d.update on a dict)."""
-        sup = self._super_method(node, local, me)
+        sup = self._super_methods(node, local, me)
         if sup is not None:
-            return ([sup] if sup else []), None
+            return sup, None
         rcv = self._receiver(node.value, owner, local, me)
         if rcv is None:
             return [], None
@@ -968,6 +1032,12 @@ class _Walker:
                         self._site("patch", owner, t, fq)
         for child in ast.iter_child_nodes(node):
             self._node(child, owner, local, me)
+
+    def _unwrapped(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str:
+        """The detail of a `x.__wrapped__` site: "x as written|the scanned function x is" (empty when the
+        scan cannot tell which function x is)."""
+        fq = self._resolve(node, local, me) if _dotted(node) else None
+        return f"{_dotted(node) or ''}|{fq if fq in self.idx.funcs else ''}"
 
     def _site(self, what: str, owner: str, node: ast.AST, detail: str = "") -> None:
         self.sites.append(_Site(what, owner, getattr(node, "lineno", 0), getattr(node, "col_offset", 0), detail))
@@ -1084,7 +1154,7 @@ class _Walker:
             if not _dotted(node.func):
                 self._expr(node.func, owner, local, me)
             elif isinstance(node.func, ast.Attribute) and node.func.attr == "__wrapped__":
-                self._site("wrapped", owner, node.func, _dotted(node.func.value) or "")
+                self._site("wrapped", owner, node.func, self._unwrapped(node.func.value, local, me))
             elif isinstance(node.func, ast.Attribute) and _dunder(node.func.attr) \
                     and node.func.attr not in ("__call__", *_HARMLESS_DUNDERS):
                 for base in self._value_refs(node.func.value, owner, local, me):   # f.__get__(o)(...): f
@@ -1094,7 +1164,7 @@ class _Walker:
             return
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             if isinstance(node, ast.Attribute) and node.attr == "__wrapped__":
-                self._site("wrapped", owner, node, _dotted(node.value) or "")
+                self._site("wrapped", owner, node, self._unwrapped(node.value, local, me))
             elif isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS:
                 for base in self._value_refs(node.value, owner, local, me):   # f.__call__, f.__get__,
                     self._site("ref", owner, node, base)                      # f.__func__ read as a value
@@ -1173,6 +1243,8 @@ class _Walker:
             return
         if fq and fq in self.idx.funcs:
             self.edges.append(_Edge(owner, fq, node.lineno, node.col_offset, False))
+        elif fq and (ex := self.idx.excluded_module(fq)):
+            self._site("excluded", owner, node, f"{fq}|{ex}")
         elif fq and fq in self.idx.classes:
             init = self.idx.method(fq, "__init__")
             if init:
@@ -1213,8 +1285,11 @@ class Graph:
 def graph(roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Graph:
     """Index and walk the source roots once (no imports); scan() and `inv init` read the result."""
     idx = _Index()
-    for root, f, name in iter_sources((pathlib.Path(r) for r in roots), exclude):
-        idx.add(root, f, name)
+    for root, f, name, pattern in _walk_sources((pathlib.Path(r) for r in roots), exclude):
+        if pattern is None:
+            idx.add(root, f, name)
+        else:                                          # not scanned; a call into it from scanned code is noted
+            idx.excluded[name] = (f.relative_to(root).as_posix(), pattern)
     edges: list[_Edge] = []
     sites: list[_Site] = []
     for mod in idx.modules.values():
@@ -1320,6 +1395,16 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     sink_names = {s.rsplit(".", 1)[1] for s in sinks}
     guarded_names = sink_names | {d.rsplit(".", 1)[1] for d in doors}
     door_txt = ", ".join(sorted(doors)) or "(no door found)"
+    unwraps: dict[str, bool] = {}
+
+    def unwraps_here(fn: str) -> bool:
+        """An unwrap of fn bears on this rule: fn is unknown, is a sink, door or allowed function, or reaches
+        a sink without passing a door (its own guard may be what stands between them)."""
+        if fn not in idx.funcs or fn in trusted:
+            return True
+        if fn not in unwraps:
+            unwraps[fn] = bool(_reach([fn], edges, doors) & sinks)
+        return unwraps[fn]
 
     # 1. paths from entrypoints to the sink with the doors removed. An allowed back door is not a door:
     # only a path made of allowed functions alone (the call chains frozen when allow was written) is let
@@ -1367,6 +1452,8 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                                 f"getattr-style lookup of the {what} name {lit!r} hides the call from the scan",
                                 s.owner, s.line, s.col))
         elif s.what in ("getattr", "setattr", "delattr", "hasattr") and lit == "__wrapped__":
+            if not unwraps_here(obj):
+                continue
             out.append(_finding(idx, rid, "forbidden", "forbidden/unwrap",
                                 "reaches __wrapped__, which calls a guarded function without its guard",
                                 s.owner, s.line, s.col))
@@ -1391,8 +1478,11 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                                 f"{s.what} on {lit!r} replaces {idx.canon(f'{obj}.{lit}')}, which holds the sink "
                                 f"or door, at run time", s.owner, s.line, s.col))
         elif s.what == "wrapped":
+            shown, _, fn = s.detail.partition("|")
+            if not unwraps_here(fn):
+                continue
             out.append(_finding(idx, rid, "forbidden", "forbidden/unwrap",
-                                f"{s.detail or 'an object'}.__wrapped__ calls a guarded function without its guard",
+                                f"{shown or 'an object'}.__wrapped__ calls a guarded function without its guard",
                                 s.owner, s.line, s.col))
         elif s.what == "ref" and s.detail in sinks:
             out.append(_finding(idx, rid, "unresolved", "unresolved/sink-escapes",
@@ -1402,6 +1492,13 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
             out.append(_finding(idx, rid, "unresolved", "unresolved/unknown-receiver",
                                 f".{s.detail}() on a receiver the scan cannot resolve may be the sink",
                                 s.owner, s.line, s.col))
+        elif s.what == "excluded" and s.owner not in trusted and s.owner not in dominated:
+            fq, _, mod = s.detail.partition("|")
+            path, glob = idx.excluded[mod]
+            out.append(_finding(idx, rid, "unresolved", "unresolved/excluded-callee",
+                                f"calls {fq} in {path}, which the scan does not read (excluded by {glob!r}): "
+                                f"it may reach the sink; scan it (narrow the exclude) or move it out of the "
+                                f"excluded path", s.owner, s.line, s.col))
         elif s.what in ("reflection", "dynimport"):
             out.append(_finding(idx, rid, "unresolved", "unresolved/reflection",
                                 f"{s.detail} runs or looks up code the scan cannot follow", s.owner, s.line, s.col))

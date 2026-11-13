@@ -321,6 +321,35 @@ Known limitations are listed in the README and in each reference page.
 The entries below record each review and certification round before the first release, newest
 first. They are kept for reviewers and for anyone tracing why a behaviour is the way it is.
 
+### Fix round 17: scan
+
+From a second review of `inv scan`. Regression tests: `tests/test_fix_round17_scan.py`; each failed
+before its fix. The three example apps' CI passes; the lock format did not change.
+
+Behaviour changes:
+
+- **`super()` follows the subclasses' MRO (S-9).** Round 16 resolved `super().m()` in class `C`
+  against `C`'s own method resolution order, so in cooperative multiple inheritance
+  (`class Mixin(Base)` calling `super().save(x)`, `class Leaf(Mixin, SinkRepo)`, `Leaf().save(x)`) the
+  edge went to `Base.save` and the run-time path to `SinkRepo.save` was missed: a regression from the
+  name-matched edge before it. The edge now goes to the next `m` after `C` in the MRO of `C` and of
+  every scanned subclass of `C` (their union). When a subclass's MRO has no consistent C3 order, the
+  call is name-matched again (fail closed).
+- **Calls into excluded code are reported (S-10).** A production module whose path matches an
+  exclude (`app/testing/helpers.py`, `app/test_fastpath.py` under the defaults) was not read, so a
+  back door through it from `app/api.py` was invisible. Excluded files are now noted by module name
+  (not parsed), and a call from scanned code into an excluded module, or a function or class in one,
+  is `unresolved/excluded-callee`, naming the file and the exclude glob. Calls inside a door, a sink or
+  code reached only through them are not reported. Excluded code calling scanned code (a test suite
+  importing the app) stays excluded and quiet.
+- **An unwrap goes to the rules it unwraps (S-11; pool-service FRICTION item 12).** A
+  `forbidden/unwrap` (`f.__wrapped__`, `getattr(f, "__wrapped__")`) was listed under every scanned
+  rule. When the scan knows which scanned function is unwrapped, it is listed only under the rules
+  where that function is a sink, door or allowed back door, or reaches a sink without a door. An
+  unwrap of something the scan cannot name still goes to every rule. In pool-service
+  (`inv scan --root src --root bypass`), `ResizeService.resize_door.__wrapped__` at
+  `bypass/pool_service/rogue.py:15` is now under R-21, R-22 and R-23, no longer R-7 and R-20.
+
 ### Fix round 16: the scan review
 
 From a review of `inv scan` and `inv init`. Regression tests: `tests/test_fix_round16_scan.py`. The

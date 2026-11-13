@@ -8,7 +8,7 @@ enforcers, transactional targets and rollback, provider consistency, `tables:`, 
 rules live on API boundaries only. The entries about those features are moot and are listed at the
 end, not kept. The schema's triggers stay as the store's own defence; their message is
 `pool lease capacity exceeded (db constraint)`, not a rule id, so a database refusal is never read as
-an API rule's. Of the rest, every entry is resolved except 12 and 15, which say why.
+an API rule's. Of the rest, every entry is resolved except 15, which says why.
 
 1. **`inv scan` has no exclude setting.**
    - What I tried: keep a deliberate bypass module in the repo and leave it out of the clean scan "by config".
@@ -42,7 +42,7 @@ an API rule's. Of the rest, every entry is resolved except 12 and 15, which say 
 
 12. **Scan findings repeat and are sometimes misattributed.**
     - What happened: one `__wrapped__` site was reported under all five scanned rules, including R-7, which has nothing to do with resize.
-    - **Status (2026-11-12): open, partly fixed.** The scan now reports one finding per call site per rule (S-6 in the CHANGELOG), so no site repeats inside a rule. But the `ResizeService.resize_door.__wrapped__` at `bypass/pool_service/rogue.py:15` is still listed once under each of R-7, R-20, R-21, R-22 and R-23 (checked with `inv scan --root src --root bypass` on 2026-11-12): a `forbidden/unwrap` finding goes to every scanned rule, not only to the rules whose door or sink it unwraps. The library should attribute it to the rules of the function unwrapped (here R-21, R-22, R-23), or print one line per site with the rules affected. (The `DROP TRIGGER` half of this entry was about table mediation and is moot.)
+    - **Status (2026-11-12): resolved in the library** (fix round 17, S-11 in the CHANGELOG). The scan reports one finding per call site per rule (S-6), and a `forbidden/unwrap` now goes only to the rules whose sink, door or allowed function the unwrapped function is, or whose sink it reaches without a door. `inv scan --root src --root bypass` lists `ResizeService.resize_door.__wrapped__` at `bypass/pool_service/rogue.py:15` under R-21, R-22 and R-23 only; R-7 passes and R-20 shows only its own bypass. An unwrap of an object the scan cannot name still goes to every rule. (The `DROP TRIGGER` half of this entry was about table mediation and is moot.)
 
 13. **Log volume.**
     - **Status (2026-11-12): resolved** (fix round 1): `ok` logs at DEBUG and the violation level is configurable; `ci.sh` no longer needs `-p no:logging`.
