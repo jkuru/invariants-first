@@ -912,7 +912,14 @@ def parser() -> argparse.ArgumentParser:
     st.add_argument("--exclude", action="append", default=[], metavar="GLOB")
     st.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE")
     st.add_argument("--json", action="store_true")
+    mc = add("mcp", cmd_mcp, "read-only MCP server over stdio for coding agents (docs/agents.md)", imports=False)
+    mc.add_argument("--root", default=".", metavar="DIR", help="project root (default: the current directory)")
     return p
+
+
+def cmd_mcp(a: argparse.Namespace) -> int:
+    from . import mcp
+    return mcp.main(["--root", a.root, *(["--rules", a.rulefile] if a.rulefile else [])])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
