@@ -347,3 +347,44 @@ def test_at_names_one_checked_parameter():
     with pytest.raises(TypeError, match="naming one of its parameters"):
         @inv.edge("E-1", at="zz")
         def missing(a: CA, b: CB) -> None: ...
+
+
+# --- after the registry/mcp split: small protocol and standing fixes ------------------------------
+def test_mcp_unhashable_tool_name_and_non_object_params_are_invalid_params():
+    from invariants.mcp.protocol import Server, INVALID_PARAMS
+    import pathlib as _p
+    s = Server(_p.Path.cwd().resolve(), None)
+    r = s.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": ["scan"]}})
+    assert r["error"]["code"] == INVALID_PARAMS
+    for bad in ([], 0, ""):
+        r = s.handle({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": bad})
+        assert r["error"]["code"] == INVALID_PARAMS, bad
+    assert "result" in s.handle({"jsonrpc": "2.0", "id": 3, "method": "ping"})
+
+
+def test_standing_honours_a_patch_of_registry_verify_on_the_class(monkeypatch):
+    import importlib
+    import invariants as inv
+    from invariants.errors import CoverageError
+    reg_mod = importlib.import_module("invariants.registry")
+    fx = pathlib.Path(__file__).parent / "fixtures" / "cli" / "clean"
+    monkeypatch.syspath_prepend(str(fx))
+
+    def strict(self, modules=None):
+        raise CoverageError("class-level policy")
+    monkeypatch.setattr(reg_mod.Registry, "verify", strict)
+    r = reg_mod.Registry()
+    with inv.using(r):
+        inv.load(str(fx / "invariants.yaml"))
+        importlib.import_module("ledger.service")
+        state, why = r.standing(next(iter(r.rules)), scan=True)
+    assert state != "held" and any("class-level policy" in w for w in why)
+
+
+def test_propose_rules_treats_max_doors_null_as_absent(tmp_path):
+    from invariants.mcp.propose import tool_propose_rules
+    from invariants.mcp.confine import ToolError
+    try:
+        tool_propose_rules(tmp_path.resolve(), None, {"max_doors": None})
+    except ToolError as e:
+        assert "max_doors" not in str(e), e

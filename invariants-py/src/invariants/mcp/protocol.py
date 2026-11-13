@@ -77,7 +77,7 @@ class Server:
                 return None                         # a response to a request we never send: ignore
             mid = msg.get("id") if isinstance(msg, dict) else None
             return _error(mid, INVALID_REQUEST, "not a JSON-RPC 2.0 request (batches are not supported)")
-        method, params = msg["method"], msg.get("params") or {}
+        method, params = msg["method"], msg.get("params", {})       # absent: {}; anything else must be an object
         notification = "id" not in msg
         if notification:
             if method == "notifications/initialized":
@@ -109,7 +109,7 @@ class Server:
     def call(self, mid: Any, params: dict[str, Any]) -> dict[str, Any]:
         name, args = params.get("name"), params.get("arguments")
         args = {} if args is None else args
-        if name not in TOOLS:
+        if not isinstance(name, str) or name not in TOOLS:
             return _error(mid, INVALID_PARAMS, f"unknown tool: {name}")
         if not isinstance(args, dict):
             return _error(mid, INVALID_PARAMS, "arguments must be an object")

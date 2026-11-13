@@ -10,6 +10,16 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 21 (follow-up)
+
+- **`inv mcp` protocol edges:** an unhashable tool name is INVALID_PARAMS (was an internal error);
+  `params` that is present but not an object (`[]`, `0`, `""`) is INVALID_PARAMS instead of being
+  read as `{}`; `propose_rules` treats `max_doors: null` as absent, like every other argument.
+- **`Registry.standing()` honours a patch of `Registry.verify` on the class**, not only a subclass
+  or instance override.
+- **One hand-off loop:** `hand_off` and `ahand_off` share their store loop, logging and
+  `ReviewNotOpened` (only how a store is opened differs).
+
 ### Refactor: lock/pinning and lock/cel_mono split
 
 `lock/pinning.py` is split into stages: `pin_types` (resolved annotation types, PEP 695 aliases,

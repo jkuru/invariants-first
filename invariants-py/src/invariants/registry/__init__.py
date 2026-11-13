@@ -205,55 +205,57 @@ class Registry:
         dropped silently, and the call does not proceed.
         """
         errors: list[BaseException] = []
-        for which, store in (("review store", self.review_store), ("review fallback", self.review_fallback)):
-            if store is None:
-                continue
+        for which, store in self._review_stores():
             try:
-                rid = store.open(h)
-                if not isinstance(rid, str) or not rid:
-                    raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
+                rid = self._review_id(store, store.open(h))
             except Exception as e:
-                errors.append(e)
-                log.error("invariants %s %r failed for %s %s: %s%s", which, type(store).__name__, h.rule, h.action,
-                          type(e).__name__, f": {e}" if self.debug else "", exc_info=self.debug)
+                self._store_failed(which, store, h, e, errors)
                 continue
-            if errors:
-                log.warning("invariants %s opened %s for %s %s after the review store failed",
-                            which, rid, h.rule, h.action)
-            return rid
-        raise ReviewNotOpened(
-            f"{h.rule} {h.action}: no review was opened (" + "; ".join(type(e).__name__ for e in errors)
-            + "); the hand-off is on .handoff and the call does not proceed", h,
-            outcome=h.outcome, attempts=h.attempts, rule=h.rule,
-            point=(h.event or {}).get("point")) from (errors[-1] if errors else None)
+            return self._opened(which, rid, h, errors)
+        raise self._not_opened(h, errors) from (errors[-1] if errors else None)
 
     async def ahand_off(self, h: Handoff) -> str:
         """hand_off() for async callers: a store with an async aopen() is awaited (JsonlReviews runs its
         fsync in a worker thread); one with only open() has it run in a worker thread
         (asyncio.to_thread), never on the event loop."""
         errors: list[BaseException] = []
-        for which, store in (("review store", self.review_store), ("review fallback", self.review_fallback)):
-            if store is None:
-                continue
+        for which, store in self._review_stores():
             try:
                 aopen = getattr(store, "aopen", None)
-                rid = await aopen(h) if callable(aopen) else await asyncio.to_thread(store.open, h)
-                if not isinstance(rid, str) or not rid:
-                    raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
+                rid = self._review_id(store, await aopen(h) if callable(aopen) else await asyncio.to_thread(store.open, h))
             except Exception as e:
-                errors.append(e)
-                log.error("invariants %s %r failed for %s %s: %s%s", which, type(store).__name__, h.rule, h.action,
-                          type(e).__name__, f": {e}" if self.debug else "", exc_info=self.debug)
+                self._store_failed(which, store, h, e, errors)
                 continue
-            if errors:
-                log.warning("invariants %s opened %s for %s %s after the review store failed",
-                            which, rid, h.rule, h.action)
-            return rid
-        raise ReviewNotOpened(
+            return self._opened(which, rid, h, errors)
+        raise self._not_opened(h, errors) from (errors[-1] if errors else None)
+
+    def _review_stores(self) -> list[tuple[str, Any]]:
+        return [(w, s) for w, s in (("review store", self.review_store), ("review fallback", self.review_fallback))
+                if s is not None]
+
+    @staticmethod
+    def _review_id(store: Any, rid: Any) -> str:
+        if not isinstance(rid, str) or not rid:
+            raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
+        return rid
+
+    def _store_failed(self, which: str, store: Any, h: Handoff, e: BaseException, errors: list[BaseException]) -> None:
+        errors.append(e)
+        log.error("invariants %s %r failed for %s %s: %s%s", which, type(store).__name__, h.rule, h.action,
+                  type(e).__name__, f": {e}" if self.debug else "", exc_info=self.debug)
+
+    @staticmethod
+    def _opened(which: str, rid: str, h: Handoff, errors: list[BaseException]) -> str:
+        if errors:
+            log.warning("invariants %s opened %s for %s %s after the review store failed", which, rid, h.rule, h.action)
+        return rid
+
+    @staticmethod
+    def _not_opened(h: Handoff, errors: list[BaseException]) -> ReviewNotOpened:
+        return ReviewNotOpened(
             f"{h.rule} {h.action}: no review was opened (" + "; ".join(type(e).__name__ for e in errors)
             + "); the hand-off is on .handoff and the call does not proceed", h,
-            outcome=h.outcome, attempts=h.attempts, rule=h.rule,
-            point=(h.event or {}).get("point")) from (errors[-1] if errors else None)
+            outcome=h.outcome, attempts=h.attempts, rule=h.rule, point=(h.event or {}).get("point"))
 
     def page(self, h: Handoff) -> None:
         """Page the owner: the configured pager, else an ERROR log. A failing pager is logged."""
@@ -439,7 +441,7 @@ class Registry:
         if ablation is not None:
             why.extend(_ablation_problems(rule, ablation))
         try:
-            if getattr(self.verify, "__func__", None) is Registry.verify:
+            if getattr(self.verify, "__func__", None) is _REGISTRY_VERIFY:
                 self._verify(view, None)          # the same rules generation as the rest of this answer
             else:
                 self.verify()                     # a subclass or patch that replaces verify is honoured
@@ -463,6 +465,10 @@ def _after_fork_in_child() -> None:
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_after_fork_in_child)
+
+# the library's own verify, so standing() can tell when a subclass, an instance or a patch of the class
+# replaced it (it then calls that, not the generation-consistent _verify)
+_REGISTRY_VERIFY = Registry.verify
 
 
 @contextlib.contextmanager

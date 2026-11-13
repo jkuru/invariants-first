@@ -17,7 +17,8 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
     from .. import bootstrap, cli, doors, graphify
     from ..errors import LoadError
     root = _root(server_root, args)
-    limit = args.get("max_doors", 5)
+    limit = args.get("max_doors")
+    limit = 5 if limit is None else limit
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         raise ToolError("max_doors must be a non-negative integer")
     # where `inv init` would write; never written here. Resolved inside --root: its pyproject.toml settings
