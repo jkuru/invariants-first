@@ -13,7 +13,7 @@ from .guard import Checked, edge, guard, model_call, parse
 from .loader import load, read_document, schema_path
 from .model import Outcome, Provider, Rule, effective_mode
 from .operations import load_resource, monitor
-from .providers import provider
+from .providers import Dependency, provider
 from .registry import (ErrorSpike, Handoff, JsonlReviews, MemoryReviews, Registry, ReviewStore, ablated, capture,
                        configure, current, default_registry, is_ablated, isolated, observe, standing, using,
                        verify, verify_coverage)
@@ -26,7 +26,7 @@ except _metadata.PackageNotFoundError:      # running from a source tree that is
 CEL_BACKEND = "subset"     # the default backend name; see invariants.cel.get_backend
 
 __all__ = [
-    "provider", "guard", "model_call", "edge", "Checked", "parse",
+    "provider", "Dependency", "guard", "model_call", "edge", "Checked", "parse",
     "load", "load_resource", "read_document", "schema_path", "verify", "verify_coverage", "standing",
     "check_snapshot", "evaluate", "evaluate_env", "fill_view", "effective_mode",
     "Registry", "current", "default_registry", "using", "isolated", "ablated", "is_ablated",

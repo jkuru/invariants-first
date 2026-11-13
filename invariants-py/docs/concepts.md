@@ -108,7 +108,7 @@ Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` re
 
 | Standing | When |
 |---|---|
-| `held` | enforced, `mediation.chokepoint` is named, and `inv verify` and `inv scan` pass |
+| `held` | enforced (in effective mode: a spike demotion counts), `mediation.chokepoint` names one of the rule's functions, no live `mediation.allow` back door is left undeclared, `inv verify` and `inv scan` pass, and (when ablation results are given) a falsifier was caught |
 | `enforce(known-callers)` | enforced, but one of the conditions for `held` is missing; the reasons are listed |
 | `monitored` | the rule runs, but no enforcer is in effective mode `enforce` |
 | `candidate` | status `candidate` or `contested`, or every enforcer is `off` |
@@ -128,7 +128,14 @@ Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` re
    target is wrapped by its guard, and that every guard names a rule whose target it is.
 4. **Prove it is load-bearing.** `pytest --inv-ablate` must report every `enforce` rule as caught.
 
-While a rule lists any `mediation.residual_paths`, `inv status` withholds `held`.
+While a rule lists any `mediation.residual_paths`, `inv status` withholds `held`. It also withholds
+it while `mediation.allow` names a back door that still resolves and is not declared in
+`residual_paths`, while the chokepoint text names none of the rule's functions (its target, an edge
+target, the door or the sink) or a `py:` path that does not resolve, and, given the plugin's
+ablation results (`inv.standing(id, ablation=status_report.load_ablation("build/inv-report.json"))`),
+while no falsifier of the rule was caught. `inv verify` also checks that a `py:`-keyed guard wraps
+the function its key names, and runs the route check of every FastAPI app given to
+`integrations.fastapi.install`.
 
 ## Providers
 
@@ -138,17 +145,46 @@ The loader checks its name, its parameters (exactly the keys of `args`) and its 
 
 **When providers are read.** A provider is a plain read at its enforcer's timing: a `pre_effect`
 enforcer reads it before the call, a `post_effect` enforcer after it. Values are cached per
-provider and resolved arguments, per call. A provider that raises or returns the wrong type is a
-`rule_error`.
+provider and resolved arguments (with their types: `1`, `True` and `1.0` are different
+arguments), per call. A provider that raises or returns the wrong type is a `rule_error`. One
+function may serve several names (`@inv.provider("subject_known", "object_known")`), each declared
+under `providers:` with its own `args`.
+
+**Dependencies.** A provider's arguments are binding paths. For what no path reaches (the store of
+a module-level model call), read an `inv.Dependency`:
+
+```python
+STORE: inv.Dependency[Store] = inv.Dependency("store")
+
+@inv.provider("subject_known")
+def subject_known(subject: str) -> bool:
+    return STORE.get().knows(subject)
+
+with STORE.bound(store):
+    propose_fact(chunk)
+```
+
+Bindings are context-local (contextvars): tasks started in the block and `asyncio.to_thread`
+workers see them, other requests do not. `get()` with nothing bound raises `LookupError`, which the
+provider turns into a `rule_error`.
 
 **A check is not a lock.** A rule on an API's arguments is checked per call. Two concurrent callers
 can both pass a check that reads shared state, and both proceed. Keeping concurrent writes
 consistent (the store's own constraints, its transactions) is the implementation's business.
 
-**Providers are eager.** Every provider an enforcer's names map reads is called, even when a clause
-would short-circuit without it. A sync provider called from an async guard runs on the event loop.
-An async provider is awaited by async guards, model calls and edges. A rule whose sync target reads
-an `async def` provider is a `LoadError`, since a sync wrapper cannot await it.
+**Which providers run.** A provider runs only when a clause reads the name it is bound to (a
+`bind:` or `view:` entry no clause reads never calls it). Every clause of an enforcer is evaluated,
+and CEL's `&&` and `||` are commutative over errors (both sides are evaluated), so which providers
+run is fixed by the rule, never by the data: there is no data-dependent short circuit. A sync
+provider called from an async guard runs on the event loop. Async providers are awaited together
+(`asyncio.gather`), each distinct call once, by async guards, model calls and edges. A rule whose
+sync target reads an `async def` provider is a `LoadError`, since a sync wrapper cannot await it.
+
+**Clauses per enforcer are not supported.** A clause belongs to the rule, so it is evaluated at
+every enforcer. Scoping a clause to some points (`bad: [{when, points: [decorator]}]`) would let an
+edit drop a clause from an enforcer without the lock seeing a weakening, so until the lock compares
+per-enforcer clause sets, write two rules (a precondition rule on the door, a state rule for the
+monitor).
 
 ## Views
 
@@ -156,6 +192,12 @@ One rule can have several enforcers, and each may bind the names `bad` reads its
 `view: {leased: provider.pool_leased, n: args.slots}` binds names for a door. `bind:` sets the names for the rule as a whole. When `bind:` is
 omitted, `args`, `result` (or `reply`, for a model call), `self` and `old_self` are bound
 automatically, and so is any provider name that `bad` references.
+
+A root an enforcer never sets is a `LoadError` with the fix: `result` before the call
+(`pre_effect`) or at a `model_call` or `edge` enforcer, `reply` at a guard, `old_self` at a
+`model_call`, `edge` or `monitor` enforcer, and `args.self` or `args.inv_feedback` anywhere (`self`
+is its own root on methods, in guards, model calls and edges alike). The check covers the clauses,
+the `bind` entries they read, every `view` entry and the arguments of the providers they bind.
 
 ## Transition rules: `old_self`
 
@@ -166,9 +208,13 @@ scope: transition
 bad: 'self.prices[args.sku] * 2 > old_self.prices[args.sku] * 3'
 ```
 
-The loader finds every `old_self.<path>` in `bad` and deep-copies only those paths before the call,
-so a database connection on `self` is never touched. Each path must be plain data (numbers,
-strings, lists, maps, and dataclasses of those). That check needs a real instance, so it runs at
+The loader finds every `old_self.<path>` that `bad`, a `bind` entry it reads, a `view` or a
+provider argument reads, and deep-copies only those paths before the call, so a database
+connection on `self` is never touched. Each path must be plain data (numbers, strings, bytes,
+datetimes, durations, UUIDs, Enum members, lists, maps, and dataclasses of those); a clause reads
+them through the same mapping as arguments, so a `date` or a naive `datetime` is refused there, with
+the conversion to make. A field that is absent on `self` is absent from the snapshot, so
+`has(old_self.a.b)` is false when `b` is missing. That check needs a real instance, so it runs at
 test time with `inv.check_snapshot(rule_id, instance)` and fails like a load error. A non-plain path
 reached at run time is a `rule_error`, and nothing is copied. Bare `old_self` is a load error.
 
@@ -215,12 +261,13 @@ map, or a pydantic model with `extra='forbid'`):
   `model_config` sets `strict=False` explicitly opts out and gets pydantic's lax coercion (`"0.5"`
   becomes `0.5`). The non-finite walk still applies, so `"NaN"` is refused there too. A pydantic
   reply must include every field, even fields that have defaults.
-- **What a rule reads from a pydantic reply.** The reply's attributes (`c.at`, `c.cause`) keep its
-  JSON form (an enum's value, a datetime's text). `integrations.pydantic.model_of(c)` is the typed
-  view: on every call it validates those attributes again (strictly, as at parse) and returns a new
-  model instance, so it always matches the JSON form an edge judges, and changing it changes neither
-  the reply nor what any other caller gets (a tampered reply raises `ParseError`). Keep the result
-  in a local rather than calling it in a loop. Rules read the validated instance through the same
+- **A pydantic reply is the model instance.** `c.value` is the validated instance
+  (`isinstance(c.value, Model)`): Enum members, datetimes, nested models, `Field(exclude=True)`
+  fields. An Enum whose values are not JSON scalars (tuples, lists) is validated by pydantic. A
+  `datetime` without a timezone is a `parse_error` (so `format_retries` apply), unless the field is
+  annotated `NaiveDatetime`. Make the model `frozen=True` if consumers must not mutate it; an edge
+  hands its consumer a fresh re-validated copy either way. `integrations.pydantic.model_of(c)`
+  returns another fresh copy, validated again. Rules read the validated instance through the same
   mapping as arguments ([cel.md](cel.md#python-to-cel-types)): a `datetime` field is a timestamp, a
   `timedelta` a duration, a `UUID` a string, an `Enum` its value, and nested models, lists and dicts
   likewise, on `model_call`, at an edge and on a copied or unpickled `Checked`. Reply clauses are
@@ -239,8 +286,14 @@ map, or a pydantic model with `extra='forbid'`):
   is not `1`), the call raises `Escalation` and opens a review before `bad` runs.
 - **Bad.** Then `bad` runs, and on a violation `on_violation` applies, after up to
   `semantic_resamples` fresh resamples. `compares_to: held_data` forces `semantic_resamples: 0`.
-- **Typing.** `@inv.model_call` keeps the declared return type: `propose_cause(...)` is a
-  `CheckedCause` to mypy, not `Any`.
+- **Off, retired and ablated.** When the rule is retired, its `model_call` enforcer is in effective
+  mode `off`, or the rule is ablated, the model is called once and its reply parsed: no format
+  retries, no abstain escalation, no `bad`, no event (but `ablated`). The verdict is `ok` (or
+  `parse_error` with the raw reply); an edge in force still re-checks the value.
+- **Typing.** `@inv.model_call("R-7", schema=CauseReply, returns=CheckedCause)` on
+  `def propose_cause(...) -> str` (the body returns the raw reply): `propose_cause(...)` is a
+  `CheckedCause` to mypy strict, and `await apropose(...)` too for an `async def`. The older form,
+  the body annotated `-> CheckedCause`, still works but needs a cast in the body.
 
 ## Edges
 
@@ -256,6 +309,10 @@ The consumer is then called with a new `Checked` over that copy (equal to the on
 `==` but not `is`): the exact value the rule judged. So a received value that other code mutates or
 swaps after the model call never reaches the consumer, through its attributes or through
 `model_of()`.
+
+A rule may have several edge enforcers (one per consumer); each edge uses the enforcer whose
+`target` is that consumer. Model calls and edges, like guards, read one registry generation per call,
+so a reload mid-call never mixes old rules with new providers. On a method, `self` is a root.
 
 The edge enforcer belongs on the model call's rule (the one with `model_policy`), since that is
 where the schema comes from. An edge enforcer on a rule without `model_policy` is a `LoadError`.

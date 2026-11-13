@@ -111,7 +111,7 @@ class Reply(pydantic.BaseModel):
 
 def test_core_parse_accepts_pydantic_model():
     r = inv.parse('{"cause": "A", "n": 1}', Reply)
-    assert dataclasses.is_dataclass(r) and r.cause == "A"
+    assert isinstance(r, Reply) and r.cause == "A"           # the validated model instance
     assert raises(inv.ParseError, inv.parse, '{"cause": "C", "n": 1}', Reply) is not None
     assert raises(inv.ParseError, inv.parse, '{"cause": "A", "n": 1, "x": 0}', Reply) is not None
 

@@ -65,7 +65,7 @@
          "then": {"required": ["target"]},
          "else": {"not": {"required": ["target"]}}},
         {"if": {"properties": {"view": {"type": "object"}}, "required": ["view"]},
-         "then": {"properties": {"point": {"enum": ["decorator", "model_call", "edge"]}}}}
+         "then": {"properties": {"point": {"enum": ["decorator", "middleware", "model_call", "edge", "monitor"]}}}}
       ]
     },
     "modelPolicy": {
@@ -114,7 +114,8 @@
         "why": {"type": "string"},
         "subject": {
           "type": "object",
-          "properties": {"contract": {"type": "string"}, "target": {"type": "string", "pattern": "^py:"}}
+          "properties": {"contract": {"type": "string"}, "target": {"type": "string", "pattern": "^py:"},
+                         "operation": {"type": "string", "description": "The OpenAPI operation the rule binds to (an operationId, or METHOD /path); overrides the contract's operation."}}
         },
         "scope": {"type": "string"},
         "bind": {"$ref": "#/$defs/nameMap"},

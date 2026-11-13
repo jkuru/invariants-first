@@ -247,8 +247,10 @@ length).
 | `subset` | 7.1 µs | 8.4 µs | 22.7 µs | 28.3 µs |
 | `cel-expr` | 9.6 µs | 10.7 µs | 22.0 µs | 27.9 µs |
 
-- Each clause costs a few microseconds on `subset` and `cel-expr`. Keep the clause count low on tight loops. At HTTP scale (milliseconds per request) the overhead is noise.
-- Providers add their own cost on top: every provider an enforcer reads is called on every call.
+- Each clause costs a few microseconds on `subset` and `cel-expr`. Keep the clause count low on tight
+  loops. At HTTP scale (milliseconds per request) the overhead is noise.
+- Providers add their own cost on top: every provider bound to a name a clause reads is called on
+  every call (async ones concurrently).
 - There is no sampled mode in v0.1.
 - The table's rules do no arithmetic. A clause that does arithmetic pays for the non-finite check
   once per arithmetic expression (plus once per divisor that is itself arithmetic, and per

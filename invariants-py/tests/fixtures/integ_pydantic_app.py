@@ -89,7 +89,7 @@ def propose_cause(log_excerpt: str, job_id: str, inv_feedback: str | None = None
 
 @inv.edge("R-P7")
 def remediate(cause: CheckedCause, job_id: str) -> str:
-    return f"remediate {job_id}: {cause.cause}"
+    return f"remediate {job_id}: {cause.cause.value}"
 
 
 RULES = {

@@ -20,6 +20,7 @@ from .errors import LoadError
 from .model import (DEFAULT_NAMES, ENFORCER_FIELDS, ENUMS, EVALUATED, VIEW_POINTS, FILE_FIELDS, MEDIATION_FIELDS, PATH_ROOTS,
                     POLICY_FIELDS,
                     PROVIDER_FIELDS, RULE_FIELDS, STATUS_RANK, TARGET_FIELDS, Provider, Rule)
+from .providers import provider_names
 from .registry import ABLATE_ENV, Registry, ablation_level, current, env_ablated
 from .resolve import resolve
 from . import typecheck as tc
@@ -354,10 +355,10 @@ def _load_provider(name: str, p: Any) -> Provider:
     if not isinstance(p["args"], dict):
         raise LoadError(f"provider {name}: args must be a mapping")
     fn = resolve(p["from"])
-    got = getattr(fn, "__inv_provider__", None)
-    if got != name:
+    got = provider_names(fn)
+    if name not in got:
         raise LoadError(f"provider {name}: {p['from']} is not registered with @inv.provider({name!r})"
-                        + (f"; it is registered as {got!r}" if got else ""))
+                        + (f"; it is registered as {', '.join(map(repr, got))}" if got else ""))
     params = list(inspect.signature(fn).parameters)
     if set(params) != set(p["args"]):
         raise LoadError(f"provider {name}: signature {params} does not match args {sorted(p['args'])}")
@@ -466,13 +467,6 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
         reads |= set(prog.reads() if hasattr(prog, "reads") else prog.references())
     names = {r[0] for r in refs}
     rule = Rule(raw, clauses, names, refs=frozenset(refs), reads=frozenset(reads))
-    paths = set()
-    for r in refs:
-        if r[0] == "old_self":
-            if len(r) == 1:
-                raise LoadError(f"{rid}: old_self must be followed by a field path (old_self.<path>)")
-            paths.add(r[1:])
-    rule.snapshot = sorted(p for p in paths if not any(q != p and p[:len(q)] == q for q in paths))
     enforcers = raw.get("enforcers", [])
     if not isinstance(enforcers, list):
         raise LoadError(f"{rid}: enforcers must be a list")
@@ -521,8 +515,10 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
                 raise LoadError(f"{rid}: artifact {path} changed; re-run {enf.get('conformance_test')} and re-lock")
     if rule.policy is not None and rule.enforcer("model_call")[1] is None:
         raise LoadError(f"{rid}: model_policy needs a model_call enforcer")
+    rule.snapshot = _snapshot_paths(rule, reg)
     if rule.status == "retired":
         return rule
+    _check_scopes(rule, reg)
     target_key = rule.target_key
     arg_refs = {r[1] for r in refs if r[0] == "args" and len(r) > 1}
     if target_key:
@@ -566,6 +562,82 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     return rule
 
 
+def _read_paths(rule: Rule, reg: Registry, i: Any) -> Iterator[tuple[str, str]]:
+    """(path, how it is read) for every root path one enforcer's evaluation reads: the clauses' own
+    paths, the bind entries they read, every view entry, and the arguments of the providers those
+    bind. A provider argument naming a bound name is covered by that name's own path."""
+    for r in sorted(rule.refs):
+        if r[0] in DEFAULT_NAMES:
+            yield ".".join(r), "bad"
+    m = rule.names_for.get(i, {})
+    view = (rule.enforcers[i].get("view") or {}) if i != "rule" else {}
+    for n, path in m.items():
+        if n not in rule.names and n not in view:
+            continue
+        how = "view" if n in view else "bind"
+        head, *rest = path.split(".")
+        if head == "provider":
+            prov = reg.providers.get(rest[0]) if rest else None
+            for a, ap in ((prov.raw.get("args") or {}) if prov else {}).items():
+                if ap.split(".")[0] in DEFAULT_NAMES:
+                    yield ap, f"provider {rest[0]} argument {a}"
+        else:
+            yield path, f"{how} {n}"
+
+
+def _scope_problem(point: str, timing: str, path: str) -> str | None:
+    """Why `path` is never set at an enforcer of this point and timing, with the fix; None if it is."""
+    head, *rest = path.split(".")
+    if head == "args" and rest and rest[0] == "self":
+        return "args never holds self (self is its own root): write self.<field>"
+    if head == "args" and rest and rest[0] == "inv_feedback":
+        return ("args never holds inv_feedback (it is the parse error the SDK sends the model back); "
+                "read the reply or the other arguments")
+    guard = point in ("decorator", "middleware")
+    if head == "result" and point in EVALUATED and not (guard and timing == "post_effect"):
+        if not guard:
+            return f"result is never set at a {point} enforcer: the model's parsed reply is `reply`"
+        return ("result is never set before the call (pre_effect): it exists only at a post_effect decorator "
+                "or middleware enforcer; read args, or put the clause on a post_effect enforcer")
+    if head == "reply" and guard:
+        return (f"reply is never set at a {point} enforcer: it is the parsed reply of an @inv.model_call (read "
+                f"at its model_call and edge enforcers); read args or result")
+    if head == "old_self" and point in ("model_call", "edge", "monitor"):
+        return (f"old_self is never set at a {point} enforcer: it is the snapshot of self an @inv.guard takes "
+                f"before the call; read self or args")
+    return None
+
+
+def _check_scopes(rule: Rule, reg: Registry) -> None:
+    """LoadError for a root an enforcer never sets (it would be a rule_error on every evaluation)."""
+    for i, enf in enumerate(rule.enforcers):
+        point = enf["point"]
+        if point not in VIEW_POINTS:
+            continue                          # held elsewhere (type, gateway, build, structure)
+        for path, how in _read_paths(rule, reg, i if i in rule.names_for else "rule"):
+            why = _scope_problem(point, enf["timing"], path)
+            if why:
+                raise LoadError(f"{rule.id}: enforcer[{i}] ({point}, {enf['timing']}) reads {path} ({how}), "
+                                f"but {why}")
+
+
+def _snapshot_paths(rule: Rule, reg: Registry) -> list[tuple[str, ...]]:
+    """The old_self paths a guard must copy before the call: read by bad, by a bind entry bad reads,
+    by any enforcer's view, or by a provider argument of those (only the shortest prefixes)."""
+    paths = set()
+    keys = list(rule.names_for) or ["rule"]
+    for i in keys:
+        for path, how in _read_paths(rule, reg, i):
+            head, *rest = path.split(".")
+            if head != "old_self":
+                continue
+            if not rest:
+                raise LoadError(f"{rule.id}: old_self must be followed by a field path (old_self.<path>), "
+                                f"in {how}")
+            paths.add(tuple(rest))
+    return sorted(p for p in paths if not any(q != p and p[:len(q)] == q for q in paths))
+
+
 def _schema_type(schema: Any) -> tc.T:
     """The static type of `reply`: a closed pydantic schema is typed by its model's annotations
     (rules read the validated instance, see guard.rule_view), a dataclass by its fields."""
@@ -575,7 +647,7 @@ def _schema_type(schema: Any) -> tc.T:
     if model is not None:
         return tc.from_py(model)
     if isinstance(schema, dict):
-        return tc.T({"map"}, fields={k: tc.from_py(v) for k, v in schema.items()})
+        return tc.T({"map"}, fields={k: tc.from_py(v) for k, v in schema.items()}, closed=True)
     return tc.from_py(schema)
 
 

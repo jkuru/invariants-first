@@ -123,10 +123,12 @@ def test_detect_mode_exhausted_parse_returns_parse_error_verdict(reg):
     assert c is not None and c.verdict == "parse_error" and c.value == "z"
 
 
-def test_off_mode_acts_as_detect(reg):
-    with inv.using(load_variant(lambda d: rule(d, "R-7")["enforcers"][0].update(mode="off"))):
-        c, _ = model('{"cause": "TIMEOUT", "message": "x"}')
-    assert c is not None and c.verdict == "violation"
+def test_off_mode_skips_the_rule_and_the_edge_still_checks(reg):
+    with inv.using(load_variant(lambda d: rule(d, "R-7")["enforcers"][0].update(mode="off"))) as r:
+        with inv.capture(r) as evs:
+            c, _ = model('{"cause": "TIMEOUT", "message": "x"}')
+        assert c is not None and c.verdict == "ok" and [e for e in evs if e["rule"] == "R-7"] == []
+        assert raises(inv.Rejected, triage.remediate, c, "J-oom") is not None
 
 
 def test_fail_open_and_page_verdict_is_rule_error(reg):

@@ -344,14 +344,17 @@ def test_otel_exporter_emits_invariant_spans(iso):
         def set_attributes(self, a: dict[str, Any]) -> None:
             self.attrs.update(a)
 
-        def end(self) -> None:
+        def set_status(self, s: Any) -> None:
+            self.status = s
+
+        def end(self, end_time: int | None = None) -> None:
             self.ended = True
 
     class Tracer:
         def __init__(self) -> None:
             self.spans: list[Span] = []
 
-        def start_span(self, name: str) -> Span:
+        def start_span(self, name: str, start_time: int | None = None) -> Span:
             self.spans.append(Span(name))
             return self.spans[-1]
     t = Tracer()

@@ -1,7 +1,10 @@
-"""@inv.provider and the runtime that binds provider values for one call."""
+"""@inv.provider, inv.Dependency, and the runtime that binds provider values for one call."""
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+import asyncio
+import contextlib
+import contextvars
+from typing import Any, Callable, Generic, Iterator, TypeVar
 
 from .cel import CelError
 from .cel.errors import raised
@@ -9,14 +12,88 @@ from .model import Provider, Rule
 from .registry import Registry
 
 F = TypeVar("F", bound=Callable[..., Any])
+T = TypeVar("T")
 
 
-def provider(name: str) -> Callable[[F], F]:
-    """@inv.provider("approval"): register a read-only provider; the loader checks name, args and return type."""
+def provider(name: str, *more: str) -> Callable[[F], F]:
+    """@inv.provider("approval"): register a read-only provider; the loader checks name, args and return type.
+
+    One function may serve several provider names (@inv.provider("subject_known", "object_known"),
+    or stacked decorators): each name is declared under providers: with its own args.
+    """
+    names = (name, *more)
+    if not all(isinstance(n, str) and n for n in names):
+        raise TypeError(f"@inv.provider names must be non-empty strings, got {list(names)!r}")
+
     def deco(fn: F) -> F:
-        fn.__inv_provider__ = name  # type: ignore[attr-defined]
+        had: tuple[str, ...] = tuple(getattr(fn, "__inv_providers__", ()))
+        every = tuple(dict.fromkeys((*had, *names)))
+        fn.__inv_providers__ = every  # type: ignore[attr-defined]
+        fn.__inv_provider__ = every[0]  # type: ignore[attr-defined]
         return fn
     return deco
+
+
+def provider_names(fn: Any) -> tuple[str, ...]:
+    """The provider names fn is registered under (empty when it is not a provider)."""
+    names = getattr(fn, "__inv_providers__", None)
+    if isinstance(names, tuple):
+        return names
+    one = getattr(fn, "__inv_provider__", None)
+    return (one,) if isinstance(one, str) else ()
+
+
+class Dependency(Generic[T]):
+    """A context-local value providers read: a store, a client, a tenant (contextvars underneath).
+
+        STORE: inv.Dependency[Store] = inv.Dependency("store")
+
+        @inv.provider("subject_known")
+        def subject_known(subject: str) -> bool:
+            return STORE.get().knows(subject)
+
+        with STORE.bound(store):           # around the guarded call, model call or edge
+            propose_fact(chunk)
+
+    A provider's arguments are binding paths only; a dependency carries what no path reaches (a
+    module-level model call has no self). Bindings are context-local: tasks started inside the
+    block and threads started with asyncio.to_thread see them, other requests do not. get()
+    outside any binding raises LookupError, which a provider turns into a rule_error.
+    """
+
+    __slots__ = ("name", "_var")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._var: contextvars.ContextVar[T] = contextvars.ContextVar(f"inv_dependency_{name}")
+
+    def get(self) -> T:
+        """The value bound in this context; LookupError when none is."""
+        try:
+            return self._var.get()
+        except LookupError:
+            raise LookupError(f"inv.Dependency {self.name!r} is not bound in this context: run the call "
+                              f"inside `with <dependency>.bound(value):`") from None
+
+    def set(self, value: T) -> contextvars.Token[T]:
+        """Bind value for the rest of this context; returns the token reset() takes."""
+        return self._var.set(value)
+
+    def reset(self, token: contextvars.Token[T]) -> None:
+        """Undo a set()."""
+        self._var.reset(token)
+
+    @contextlib.contextmanager
+    def bound(self, value: T) -> Iterator[T]:
+        """Bind value for the block, then restore what was bound before."""
+        token = self._var.set(value)
+        try:
+            yield value
+        finally:
+            self._var.reset(token)
+
+    def __repr__(self) -> str:
+        return f"inv.Dependency({self.name!r})"
 
 
 class ProviderFailed:
@@ -65,9 +142,15 @@ def resolve_path(base: dict[str, Any], path: str) -> Any:
 
 
 def _arg_key(v: Any) -> Any:
+    """A cache key part for one argument value, tagged with its type: 1, True and 1.0 are equal (and
+    hash alike) in Python, but they are different arguments to a provider."""
+    if type(v) is tuple:
+        return (tuple, tuple(_arg_key(x) for x in v))
+    if type(v) is frozenset:
+        return (frozenset, frozenset(_arg_key(x) for x in v))
     try:
         hash(v)
-        return v
+        return (type(v), v)
     except Exception:
         return ("id", id(v))            # unhashable: share only the very same object
 
@@ -85,17 +168,26 @@ def _typed(prov: Provider, v: Any) -> Any:
 Pending = list[tuple[Any, Provider, dict[str, Any]]]
 
 
+def read_by_clauses(rule: Rule, n: str) -> bool:
+    """True if a clause of rule reads the name n (a provider bound to a name no clause reads is never called)."""
+    names = getattr(rule, "names", None)
+    return names is None or n in names
+
+
 def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str, Any],
                     cache: dict[Any, Any], pending: Pending | None = None,
                     providers: dict[str, Provider] | None = None) -> dict[str, Any]:
-    """Call every provider the names map reads; return {name: value} for this rule.
+    """Call every provider bound to a name a clause reads; return {name: value} for this rule.
 
-    Provider args resolve in this rule's binding environment. Values are cached per
-    (provider, resolved args) for the call. A provider that raises or returns the wrong
-    type gives a value that turns into rule_error when read. pending: collect async provider calls there (prefetch_async awaits
-    them) instead of failing them. providers: the provider table of the registry generation the
-    call started under (a reload mid-call must not swap it); default reg.providers.
-    Never raises: anything that goes wrong becomes a ProviderFailed for that provider.
+    A provider bound (in bind or a view) to a name no clause reads is not called. Every clause of
+    an enforcer is evaluated (there is no short circuit across clauses, and CEL's && and || are
+    commutative over errors), so which providers run is fixed by the rule, never by the data.
+    Provider args resolve in this rule's binding environment. Values are cached per (provider,
+    resolved args, with their types) for the call. A provider that raises or returns the wrong
+    type gives a value that turns into rule_error when read. pending: collect async provider calls
+    there (prefetch_async awaits them) instead of failing them. providers: the provider table of
+    the registry generation the call started under (a reload mid-call must not swap it); default
+    reg.providers. Never raises: anything that goes wrong becomes a ProviderFailed for that provider.
     """
     table = reg.providers if providers is None else providers
     local, out = dict(base), {}
@@ -105,8 +197,8 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
                 local[n] = resolve_path(base, p)
             except Exception:
                 pass
-    for p in m.values():
-        if not p.startswith("provider."):
+    for n, p in m.items():
+        if not p.startswith("provider.") or not read_by_clauses(rule, n):
             continue
         name = p.split(".")[1]
         if name in out:
@@ -142,21 +234,38 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
 
 async def prefetch_async(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str, Any],
                          cache: dict[Any, Any], providers: dict[str, Provider] | None = None) -> str | None:
-    """Fill cache for one names map, awaiting async providers. Sync providers run inline.
+    """Fill cache for one names map, awaiting async providers (together). Sync providers run inline.
 
     Never raises (a provider's own exception is cached as a ProviderFailed); returns why, when the
     prefetch itself failed, so the caller can turn that rule's evaluation into a rule_error.
     """
+    return (await prefetch_many(reg, [(rule, m, base)], cache, providers))[0]
+
+
+async def prefetch_many(reg: Registry, items: list[tuple[Rule, dict[str, str], dict[str, Any]]],
+                        cache: dict[Any, Any], providers: dict[str, Provider] | None = None) -> list[str | None]:
+    """prefetch_async for several (rule, names map, base) at once: every async provider call they
+    need (each distinct one once) is awaited concurrently with asyncio.gather. One `why` per item."""
     pending: Pending = []
-    try:
-        fetch_providers(reg, rule, m, base, cache, pending, providers)
-    except Exception as e:
-        return f"binding providers raised {type(e).__name__}"
-    for key, prov, args in pending:
-        if key in cache:
-            continue
+    whys: list[str | None] = []
+    for rule, m, base in items:
         try:
-            cache[key] = _typed(prov, await prov.fn(**args))
+            fetch_providers(reg, rule, m, base, cache, pending, providers)
+            whys.append(None)
         except Exception as e:
-            cache[key] = _raised(reg, prov.name, e)
-    return None
+            whys.append(f"binding providers raised {type(e).__name__}")
+    todo: dict[Any, tuple[Provider, dict[str, Any]]] = {}
+    for key, prov, args in pending:
+        if key not in cache and key not in todo:
+            todo[key] = (prov, args)
+
+    async def one(prov: Provider, args: dict[str, Any]) -> Any:
+        try:
+            return _typed(prov, await prov.fn(**args))
+        except Exception as e:
+            return _raised(reg, prov.name, e)
+    if todo:
+        got = await asyncio.gather(*(one(p, a) for p, a in todo.values()))
+        for key, v in zip(todo, got):
+            cache[key] = v
+    return whys

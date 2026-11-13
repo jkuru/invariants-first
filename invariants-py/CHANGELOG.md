@@ -351,6 +351,67 @@ Behaviour changes:
   `bootstrap.to_cel` takes the parameter kinds as an optional argument; without it, it behaves as
   before.
 
+### Fix round 16: the runtime review
+
+Regression tests: `tests/test_fix_round16.py` (fixture `tests/fixtures/round16.py`); each failed
+before its fix. mypy is clean. The lock format did not change.
+
+Behaviour changes:
+
+- **Off, retired and ablated model calls are skipped.** A model call whose rule is retired, whose
+  `model_call` enforcer is in effective mode `off` (it used to act as `detect`), or whose rule is
+  ablated calls the model once and parses the reply: no format retries, no abstain escalation (both
+  used to run before the ablation check), no `bad`, no event. `act()` is a no-op for an `off` enforcer.
+- **`old_self` from `bind` and views.** The snapshot covers every `old_self` path read by `bad`, by a
+  `bind` entry it reads, by any enforcer `view` or by a provider argument (`bind: {prev:
+  old_self.balance}` was an empty snapshot and a rule_error). It takes bytes, datetimes, durations,
+  UUIDs and Enum members (read through cel/values.py as arguments are), and a field absent on
+  `self` is absent from the snapshot, so `has(old_self.a.b)` is false instead of a rule_error.
+- **`self` in model calls and edges.** On a method, `self` is a root (as in guards); `args` no longer
+  holds it.
+- **Roots an enforcer never sets are load errors**, with the fix: `result` before the call or at a
+  model_call or edge, `reply` at a guard, `old_self` at a model_call, edge or monitor, and
+  `args.self` or `args.inv_feedback` anywhere.
+- **Each edge uses its own enforcer**: the edge enforcer whose `target` is the consumer, not the
+  rule's first edge enforcer.
+- **One generation per call** in model calls and edges too (rules and providers read together;
+  `judged` passes the call's providers). `standing()` reads effective modes, so a spike-demoted rule
+  is `monitored`. A reload clears the spike demotion of a rule whose record changed, and keeps it for
+  an unchanged one.
+- **Standing is stricter.** `held` is withheld while `mediation.allow` names a back door that still
+  resolves and is not in `residual_paths`, while the chokepoint names none of the rule's functions
+  or a `py:` path that does not resolve, and, given the pytest plugin's ablation results
+  (`inv.standing(id, ablation=...)`, `status_report.build(reg, report, ablation=...)`,
+  `status_report.load_ablation(path)`), while no falsifier was caught. `inv verify` reports a
+  `py:`-keyed guard on another function than its key names, and runs `verify_routes` for every app
+  given to `integrations.fastapi.install` (or `register`) through the new `Registry.verifiers`.
+- **Typing.** A `TypedDict` argument is typed by its keys (it was an open map). A `{field: type}`
+  reply schema is closed: `reply.x` for an undeclared `x` is a LoadError. The JSON Schema allows
+  `view` on middleware and monitor enforcers and declares `subject.operation`.
+- **Providers.** Cache keys keep the argument types (`1`, `True` and `1.0` no longer share a
+  value). Async providers are awaited together with `asyncio.gather`, each distinct call once. A
+  provider bound to a name no clause reads is not called. `@inv.provider("a", "b")` registers one
+  function under several names. New `inv.Dependency`: a context-local value a provider reads.
+  Clauses per enforcer (FRICTION fact-pipeline 6) are not added: the lock compares a rule's clauses
+  as one list and could not see a clause dropped from one enforcer; see concepts.md.
+- **Pydantic replies are model instances** (`isinstance(c.value, Model)`): Enum members,
+  datetimes and nested models, not the JSON-form dataclass. `Field(exclude=True)` fields no longer
+  make every reply a parse_error (KeyError). An Enum with list or tuple values is validated by
+  pydantic instead of always failing. A `datetime` without a timezone is a parse_error (so
+  format_retries apply) instead of a rule_error when a rule reads it. `model_of()` returns a fresh
+  validated copy. Migration: `dataclasses.asdict(c.value)` becomes `c.value.model_dump(mode="json")`;
+  a model that must be immutable sets `frozen=True`; a forged model instance is no longer refused as
+  "not built by inv.parse" (it is re-validated and re-checked, as a dataclass instance is).
+- **`Any` fields are copied** at parse and at an edge, so the sender mutating an `Any` value after
+  the check cannot change what the consumer reads.
+- **`model_call(..., returns=CheckedT)`.** The body is annotated with what it returns (`-> str`),
+  and the decorated function is `CheckedT` (awaitable for `async def`) under mypy strict, with no
+  `type: ignore`. The older form (body annotated `-> CheckedT`) still works.
+- **`JsonlReviews.aopen`** runs the write and fsync in a worker thread; async guards, model calls and
+  edges await it (`Registry.ahand_off`, `evaluate.aact`). `open()` is unchanged.
+- **OpenTelemetry spans** start when the check began and end when the outcome was recorded (events
+  carry `start_ns` and `end_ns`), and a violation, rule_error or parse_error sets status ERROR.
+
 ### Fix round 15 (certification round 12 findings)
 
 From certification round 12 (no blockers or majors; four minors and a group of nits). Regression

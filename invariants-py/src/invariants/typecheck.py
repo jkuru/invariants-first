@@ -72,14 +72,17 @@ class TypeMismatch(Exception):
 class T:
     """A static type: a set of kinds (None: dyn), a list element or map value type, and fields.
 
-    refused: why a value of this type cannot be read by a rule (a Python type the CEL mapping refuses)."""
+    refused: why a value of this type cannot be read by a rule (a Python type the CEL mapping refuses).
+    closed: fields lists every field a value has (a {field: type} reply schema): any other is refused."""
 
-    __slots__ = ("kinds", "elem", "fields", "py", "refused")
+    __slots__ = ("kinds", "elem", "fields", "py", "refused", "closed")
 
     def __init__(self, kinds: Iterable[str] | None, elem: T | None = None,
-                 fields: dict[str, T] | None = None, py: Any = None, refused: str | None = None) -> None:
+                 fields: dict[str, T] | None = None, py: Any = None, refused: str | None = None,
+                 closed: bool = False) -> None:
         self.kinds = frozenset(kinds) if kinds is not None else None
         self.elem, self.fields, self.py, self.refused = elem, fields, py, refused
+        self.closed = closed and fields is not None
 
     def __repr__(self) -> str:
         if self.refused is not None:
@@ -97,6 +100,9 @@ class T:
         """
         if self.fields is not None and name in self.fields:
             return self.fields[name]
+        if self.closed and self.fields is not None:
+            raise TypeMismatch(f"no field {name!r} on the {{field: type}} schema "
+                               f"(fields: {', '.join(sorted(self.fields)) or 'none'})")
         if self.py is not None:
             hints = _hints(self.py)
             if name in hints and name not in values.api_names(self.py):
@@ -138,7 +144,7 @@ def _field_names(py: Any) -> frozenset[str] | None:
             return None                          # extra fields are readable attributes
         names |= set(py.model_fields)
     elif typing.is_typeddict(py):
-        names |= set(getattr(py, "__annotations__", {}))
+        return frozenset(_hints(py) or getattr(py, "__annotations__", {}))     # its keys, never dict's methods
     else:
         return None
     names |= set(getattr(py, "__annotations__", {}))
@@ -154,9 +160,10 @@ def merge(a: T, b: T) -> T:
         return DYN
     for x, y in ((a, b), (b, a)):                # T | None keeps T's element, fields and record type
         if y.kinds == frozenset({"null"}) and y.elem is None and y.fields is None and y.py is None:
-            return T(a.kinds | b.kinds, x.elem, x.fields, x.py)
+            return T(a.kinds | b.kinds, x.elem, x.fields, x.py, closed=x.closed)
+    same = a.fields is b.fields
     return T(a.kinds | b.kinds, a.elem if a.elem is b.elem else None,
-             a.fields if a.fields is b.fields else None, a.py if a.py is b.py else None)
+             a.fields if same else None, a.py if a.py is b.py else None, closed=same and a.closed and b.closed)
 
 
 def from_py(ann: Any, _depth: int = 0) -> T:
@@ -208,6 +215,8 @@ def from_py(ann: Any, _depth: int = 0) -> T:
     if issubclass(base, bytes):
         return T({"bytes"})
     args = typing.get_args(ann)
+    if typing.is_typeddict(base):
+        return T({"map"}, py=base)          # a record of its keys (field() reads its annotations)
     if issubclass(base, collections.abc.Mapping):
         return T({"map"}, elem=from_py(args[1], _depth + 1) if len(args) == 2 else DYN)
     if issubclass(base, (list, tuple, collections.abc.Sequence)) and not issubclass(base, (str, bytes)):

@@ -13,16 +13,22 @@ model, so the core parse, retry, abstain and edge logic run unchanged:
 - a ValidationError (or a non-finite value) becomes ParseError: its str() is value-free
   ('loc: error type', reply-made keys as '*'), for events and logs; its .feedback ('loc: message')
   is what the core feeds back as inv_feedback;
-- the reply's attributes hold the model's JSON-mode values (enum values, not members, datetime
-  text); model_of(reply) returns a new pydantic instance validated from them on each call (so it
-  is always what an edge re-validates; changing it changes nothing else). Rules read the instance
-  (guard.rule_view), through cel/values.py like arguments, so a datetime field is a timestamp and a
-  timedelta a duration; the loader types `reply` by the model's annotations. An edge re-check, a
-  copy and an unpickled reply all validate again from the JSON-mode attributes.
+- a datetime without a timezone is refused (a ParseError, so format_retries apply), as for a
+  dataclass schema: CEL timestamps are instants. A field annotated pydantic.NaiveDatetime opts out
+  (and the loader refuses a rule that reads it);
+- the parsed reply is the validated model instance itself (`isinstance(c.value, Model)`): Enum
+  members, datetimes, nested models, and fields declared Field(exclude=True). Rules read it
+  through cel/values.py like arguments, so a datetime field is a timestamp and a timedelta a
+  duration; the loader types `reply` by the model's annotations. An edge re-validates the received
+  instance (from its JSON form, strictly, as at parse) and hands its consumer the fresh copy, so a
+  mutation of the received instance after the check never reaches the consumer;
+- closed(Model) is the schema descriptor the core reads (field names, Literal fields for abstain
+  and enum notes); it is never instantiated. model_of(reply) returns a fresh validated copy.
 """
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import enum
 import functools
 import importlib
@@ -31,12 +37,12 @@ import math
 import pathlib
 import types
 import typing
-from typing import Any, Callable, Iterator, ParamSpec, TypeVar
+from typing import Any, Callable, Iterator, ParamSpec, TypeVar, overload
 
 import pydantic as _pd
 
 from ..errors import LoadError, ParseError
-from ..guard import INSTANCE_ATTR
+from ..guard import Checked, ModelCallDecorator
 from ..guard import model_call as _core_model_call
 from ..guard import parse as _core_parse
 from ..loader import read_document
@@ -44,8 +50,9 @@ from ..registry import Registry, current
 
 P = ParamSpec("P")
 R = TypeVar("R")
+C = TypeVar("C", bound=Checked)
 MODEL_ATTR = "__inv_pydantic__"        # on a closed() schema: the pydantic model it wraps
-_INSTANCE_ATTR = INSTANCE_ATTR         # on a reply: the validated pydantic instance (what rules read)
+_JSON_SCALARS = (str, int, float, bool, type(None))
 
 
 def is_model(obj: Any) -> bool:
@@ -154,6 +161,39 @@ def _non_finite(v: Any, where: str, safe: str, depth: int = 0) -> tuple[str, str
     return None
 
 
+def _allows_naive(ann: Any, depth: int = 0) -> bool:
+    """True when an annotation is (or holds) pydantic's NaiveDatetime: naive values are declared."""
+    if depth > 16:
+        return False
+    if getattr(ann, "__name__", None) == "NaiveDatetime" and str(getattr(ann, "__module__", "")).startswith("pydantic"):
+        return True
+    return any(_allows_naive(a, depth + 1) for a in typing.get_args(ann))
+
+
+def _naive(v: Any, where: str, depth: int = 0) -> str | None:
+    """The value-free path of the first datetime without a timezone in validated values, else None
+    (fields annotated NaiveDatetime are skipped)."""
+    if depth > 200:
+        return None
+    if isinstance(v, datetime.datetime):
+        return (where or "(root)") if v.utcoffset() is None else None
+    if isinstance(v, _pd.BaseModel):
+        for n, f in type(v).model_fields.items():
+            if _allows_naive(f.annotation):
+                continue
+            if (bad := _naive(getattr(v, n, None), f"{where}.{n}" if where else n, depth + 1)) is not None:
+                return bad
+    elif isinstance(v, dict):
+        for x in v.values():
+            if (bad := _naive(x, f"{where}.*" if where else "*", depth + 1)) is not None:
+                return bad
+    elif isinstance(v, (list, tuple)):
+        for i, x in enumerate(v):
+            if (bad := _naive(x, f"{where}[{i}]", depth + 1)) is not None:
+                return bad
+    return None
+
+
 def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
     """data validated into model: strict over its JSON form unless the model is lax; ParseError on failure.
 
@@ -164,6 +204,10 @@ def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
         if is_lax(model):
             inst = model.model_validate(data)
         else:
+            pre = _non_finite(data, "", "")       # json.dumps would only say "not JSON data"
+            if pre is not None:
+                what = "non-finite number (NaN or Infinity) is not allowed"
+                raise ParseError(f"field {pre[1]}: {what}", feedback=f"field {pre[0]}: {what}")
             try:
                 text = json.dumps(data, allow_nan=False)
             except (TypeError, ValueError):
@@ -175,7 +219,23 @@ def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
     if bad is not None:
         what = "non-finite number (NaN or Infinity) is not allowed"
         raise ParseError(f"field {bad[1]}: {what}", feedback=f"field {bad[0]}: {what}")
+    naive = _naive(inst, "")
+    if naive is not None:
+        raise ParseError(f"field {naive}: a datetime without a timezone is not allowed",
+                         feedback=f"field {naive}: a datetime without a timezone is not allowed; give an "
+                                  f"offset or Z (2024-01-31T09:30:00Z)")
     return inst
+
+
+@functools.cache
+def _adapter(model: type[_pd.BaseModel], name: str) -> _pd.TypeAdapter[Any]:
+    return _pd.TypeAdapter(typing.cast(Any, model.model_fields[name].annotation))
+
+
+def json_fields(model: type[_pd.BaseModel], inst: _pd.BaseModel) -> dict[str, Any]:
+    """Every field of a model instance in its JSON form (Field(exclude=True) fields too: a dump
+    leaves them out, and validating the dump again would then miss them)."""
+    return {n: _adapter(model, n).dump_python(getattr(inst, n), mode="json") for n in model.model_fields}
 
 
 @functools.cache
@@ -187,29 +247,32 @@ def closed(model: type[_pd.BaseModel]) -> type:
     hints: dict[str, Any] = {}
     for name, f in model.model_fields.items():
         values = enum_values(f.annotation)
-        hints[name] = typing.Literal[tuple(values)] if values else object
+        # a closed set of JSON scalars is a Literal (abstain checks, enum notes); an Enum of tuples,
+        # lists or other values is left to pydantic, which validates it
+        scalar = bool(values) and all(type(v) in _JSON_SCALARS for v in values or ())
+        hints[name] = typing.Literal[tuple(values or ())] if scalar else object
 
     def __post_init__(self: Any) -> None:
-        inst = validate(model, {n: getattr(self, n) for n in hints})
-        dumped = inst.model_dump(mode="json")
-        for n in hints:
-            object.__setattr__(self, n, dumped[n])
-        object.__setattr__(self, _INSTANCE_ATTR, inst)
+        raise TypeError(f"closed({model.__name__}) is a schema descriptor: inv.parse returns {model.__name__} "
+                        f"instances")
 
-    def __reduce__(self: Any) -> Any:      # pickles by model: the class itself is not importable by name
-        return (_rebuild, (model, {n: getattr(self, n) for n in hints}))
+    def build(cls: Any, data: dict[str, Any]) -> _pd.BaseModel:
+        return validate(model, data)
+
+    def raw(cls: Any, inst: _pd.BaseModel) -> dict[str, Any]:
+        return json_fields(model, inst)
 
     cls = dataclasses.make_dataclass(model.__name__, list(hints.items()), frozen=True,
-                                     namespace={"__post_init__": __post_init__, "__reduce__": __reduce__,
-                                                MODEL_ATTR: model,
+                                     namespace={"__post_init__": __post_init__, "__inv_build__": classmethod(build),
+                                                "__inv_raw__": classmethod(raw), MODEL_ATTR: model,
                                                 "__doc__": f"Closed schema for {model.__qualname__}."})
     cls.__module__, cls.__qualname__ = model.__module__, model.__qualname__
     return cls
 
 
 def _rebuild(model: type[_pd.BaseModel], data: dict[str, Any]) -> Any:
-    """Unpickle a closed-schema reply: validated again through closed(model)."""
-    return closed(model)(**data)
+    """Unpickle a 0.x closed-schema reply: validated again into a model instance."""
+    return validate(model, data)
 
 
 def schema_for(schema: Any) -> Any:
@@ -218,20 +281,18 @@ def schema_for(schema: Any) -> Any:
 
 
 def model_of(reply: Any) -> _pd.BaseModel:
-    """A new pydantic instance validated from a reply's JSON attributes (the reply, or a Checked holding one).
+    """A fresh copy of a pydantic reply (the reply, or a Checked holding one), validated again.
 
-    Every call validates again (strict, as at parse) and returns a fresh instance: it always equals
-    the JSON form an edge re-validates and judges, and changing it never changes the reply or what
-    another caller gets. A reply whose attributes were tampered with into something the model
-    refuses raises ParseError. Keep the result in a local rather than calling this in a loop.
+    The reply already is the model instance (c.value); this gives a copy validated strictly from
+    its JSON form, as an edge does, so changing the copy never changes the reply or what another
+    caller gets. A reply tampered with into something the model refuses raises ParseError.
     """
-    from ..guard import Checked
     if isinstance(reply, Checked):
         reply = object.__getattribute__(reply, "value")
-    model = getattr(type(reply), MODEL_ATTR, None)
-    if model is None or not dataclasses.is_dataclass(reply):
+    if not isinstance(reply, _pd.BaseModel):
         raise TypeError(f"{type(reply).__name__} was not parsed through a closed pydantic schema")
-    return validate(model, {f.name: object.__getattribute__(reply, f.name) for f in dataclasses.fields(reply)})
+    model = type(reply)
+    return validate(model, json_fields(model, reply))
 
 
 def parse(raw: Any, schema: Any) -> Any:
@@ -239,9 +300,17 @@ def parse(raw: Any, schema: Any) -> Any:
     return _core_parse(raw, schema_for(schema))
 
 
-def model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]:
+@overload
+def model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]: ...
+
+
+@overload
+def model_call(rule_id: str, schema: Any, *, returns: None = None) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
     """inv.model_call, also accepting a pydantic model as the schema."""
-    return _core_model_call(rule_id, schema_for(schema))
+    return _core_model_call(rule_id, schema_for(schema), returns=returns)
 
 
 # --- contracts ----------------------------------------------------------------------------------

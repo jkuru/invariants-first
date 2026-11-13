@@ -113,7 +113,7 @@ def test_model_call_never_returns_ok_holding_non_finite_nested(iso, where, token
 def test_model_call_and_edge_agree_on_a_strict_reply(iso):
     r8.REPLIES[:] = [nested()]
     c = r8.nmodel("p")
-    assert c.verdict == "ok" and r8.nuse(c).inner["confidence"] == 0.5
+    assert c.verdict == "ok" and r8.nuse(c).inner.confidence == 0.5      # the model instance
 
 
 # --- 2. minor: non-finite arithmetic is a rule_error on every backend --------------------------------

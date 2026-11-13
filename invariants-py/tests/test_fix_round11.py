@@ -162,24 +162,23 @@ def test_a_mutated_model_of_instance_never_reaches_the_consumer(backend):
         model_load(backend, "R-M", BAD)
         r11.REPLY["v"] = r11.reply()
         c = r11.ask()
-        inv_pd.model_of(c).legs[0].at = FUTURE
-        object.__getattribute__(object.__getattribute__(c, "value"), "_inv_model").legs[0].at = FUTURE
+        inv_pd.model_of(c).legs[0].at = FUTURE           # a copy: the reply is unchanged
         assert r11.use(c) == "used"
         assert r11.SEEN["m"].legs[0].at == NOW
         assert inv_pd.model_of(r11.SEEN["c"]).legs[0].at == NOW
 
 
-def test_a_swapped_instance_never_reaches_the_consumer(backend):
+def test_a_mutated_reply_is_judged_as_received_and_the_consumer_gets_a_copy(backend):
     with inv.isolated():
         model_load(backend, "R-M", BAD)
         r11.REPLY["v"] = r11.reply()
         c = r11.ask()
-        evil = r11.Rep.model_validate(json.loads(r11.reply(legs=[{"at": "2031-01-01T00:00:00Z"}])))
-        object.__setattr__(object.__getattribute__(c, "value"), "_inv_model", evil)
-        assert r11.use(c) == "used"                     # the edge judged the JSON form, which is fine
-        assert r11.SEEN["m"].legs[0].at == NOW          # and the consumer reads exactly that form
+        assert r11.use(c) == "used"
         got = object.__getattribute__(r11.SEEN["c"], "value")
-        assert object.__getattribute__(got, "_inv_model").legs[0].at == NOW
+        assert got == c.value and got is not c.value and got.legs[0] is not c.value.legs[0]
+        c.value.legs[0].at = FUTURE                     # the received instance, changed: the edge sees it
+        with pytest.raises(inv.Rejected):
+            r11.use(c)
 
 
 def test_tampered_json_attributes_are_still_caught_at_the_edge(backend):
