@@ -29,6 +29,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import fractions
+import os
 import re
 import typing
 import uuid
@@ -61,6 +62,65 @@ REFUSED: tuple[tuple[type, str], ...] = (
 # Values that are scalars to CEL even though Python objects have attributes: never read as records.
 SCALARS = (datetime.date, datetime.time, datetime.timedelta, uuid.UUID, decimal.Decimal, fractions.Fraction,
            complex)
+
+
+# A str holding a surrogate code point (U+D800..U+DFFF: json.loads('"\\ud800"'), a FastAPI or
+# pydantic python-mode body, text re-dumped with ensure_ascii=False) is not Unicode text and has no
+# UTF-8 form: cel-cpp crashes converting one, and its length and comparisons would differ from a
+# real character's. A clause that reads one is a rule_error on every backend (the value itself is
+# never in the message).
+NOT_TEXT = ("a string holding a surrogate code point (U+D800 to U+DFFF, e.g. from json.loads of a '\\ud800' "
+            "escape) is not valid Unicode text and cannot be read by a rule")
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def text(s: str) -> str:
+    """s, or CelError(NOT_TEXT) if it holds a surrogate code point (an ASCII str is O(1) to check)."""
+    if s.isascii() or _SURROGATE.search(s) is None:
+        return s
+    raise CelError(NOT_TEXT)
+
+
+# The string-size limit: contains(), startsWith(), endsWith() and matches() refuse an operand longer
+# than this many characters (a rule_error, on every backend alike), so no call's work grows without
+# bound with the request. INV_CEL_STRING_LIMIT sets it at import; cel.set_string_limit() at run time.
+STRING_LIMIT_ENV = "INV_CEL_STRING_LIMIT"
+DEFAULT_STRING_LIMIT = 1_000_000
+
+
+def _limit_from_env() -> int:
+    raw = os.environ.get(STRING_LIMIT_ENV, "")
+    try:
+        n = int(raw) if raw.strip() else DEFAULT_STRING_LIMIT
+    except ValueError:
+        n = DEFAULT_STRING_LIMIT
+    return n if n > 0 else DEFAULT_STRING_LIMIT
+
+
+_string_limit = [_limit_from_env()]
+
+
+def string_limit() -> int:
+    """The current string-size limit (characters)."""
+    return _string_limit[0]
+
+
+def set_string_limit(n: int) -> int:
+    """Set the string-size limit (a positive int of characters); returns the previous one."""
+    if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+        raise ValueError("the string-size limit is a positive int (characters)")
+    old, _string_limit[0] = _string_limit[0], n
+    return old
+
+
+def sized(name: str, s: str) -> str:
+    """s, or CelError if it is longer than the string-size limit (its length only in .detail)."""
+    if len(s) > _string_limit[0]:
+        err = CelError(f"{name}(): a string operand is longer than the string-size limit "
+                       f"({_string_limit[0]:,} characters; {STRING_LIMIT_ENV} or cel.set_string_limit)")
+        err.detail = f"{len(s):,} characters"
+        raise err
+    return s
 
 
 _API_NAMES: dict[type, frozenset[str]] = {}

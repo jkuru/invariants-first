@@ -21,16 +21,28 @@ _ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{3}|
 _SIMPLE = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "a": "\a"}
 
 
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def decode_string(raw: str) -> str:
-    """Decode the escapes in a CEL string literal body (non-ASCII text is kept as is)."""
+    """Decode the escapes in a CEL string literal body (non-ASCII text is kept as is). A literal
+    holding a surrogate code point (U+D800..U+DFFF: '\\ud800' or the character itself) or an escape
+    past U+10FFFF is not text: CelSyntaxError, as cel-cpp refuses it."""
     def one(m: re.Match[str]) -> str:
         e = m.group(1)
         if e[0] in "xuU":
-            return chr(int(e[1:], 16))
+            n = int(e[1:], 16)
+            if n > 0x10FFFF:
+                raise CelSyntaxError(f"invalid string literal: \\{e} is past U+10FFFF")
+            return chr(n)
         if len(e) == 3 and e.isdigit():
             return chr(int(e, 8))
         return _SIMPLE.get(e, e)
-    return _ESC.sub(one, raw)
+    out = _ESC.sub(one, raw)
+    if not out.isascii() and _SURROGATE.search(out):
+        raise CelSyntaxError("invalid string literal: it holds a surrogate code point (U+D800 to U+DFFF), "
+                             "which is not valid Unicode text")
+    return out
 
 
 def tokenize(src: str) -> list[tuple[str, Any]]:

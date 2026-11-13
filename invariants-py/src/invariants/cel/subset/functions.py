@@ -10,7 +10,7 @@ from .. import values
 from ..errors import CelError, check_result
 from .catalog import _GETTERS, CONVERSIONS
 from .convert import _convert
-from .cost import _matches
+from .cost import _matches, charge
 from .data import _int_range, _num, _on_map
 
 # name -> fn(name, has_receiver, vals, budget); vals holds the receiver first, if there is one
@@ -27,8 +27,11 @@ def _size(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
 def _string_test(name: str, recv: bool, vals: list[Any], budget: list[int]) -> bool:
     if len(vals) != 2 or not all(isinstance(v, str) for v in vals):
         raise CelError(f"{name}() needs strings")
-    s, t = vals
-    return {"contains": t in s, "startsWith": s.startswith(t), "endsWith": s.endswith(t)}[name]
+    s, t = values.sized(name, vals[0]), values.sized(name, vals[1])
+    charge(budget, len(s) + len(t) if name == "contains" else min(len(s), len(t)))
+    if name == "contains":
+        return t in s
+    return s.startswith(t) if name == "startsWith" else s.endswith(t)
 
 
 def _inv_sum(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
@@ -40,7 +43,7 @@ def _inv_sum(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
 def _match(name: str, recv: bool, vals: list[Any], budget: list[int]) -> bool:
     if len(vals) != 2 or not all(isinstance(v, str) for v in vals):
         raise CelError("matches() needs a string and a pattern")
-    return _matches(vals[0], vals[1], budget)
+    return _matches(values.sized(name, vals[0]), values.sized(name, vals[1]), budget)
 
 
 def _inv_zip(name: str, recv: bool, vals: list[Any], budget: list[int]) -> list[list[Any]]:

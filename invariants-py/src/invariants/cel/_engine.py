@@ -56,6 +56,8 @@ _OWN = re.compile("|".join((                # the library's own texts, raised in
     r"unknown timezone(?: \(an offset must be between -23:59 and \+23:59\))?|timezone must be a string",
     r"inv\.sum\(\) needs a list of numbers|inv\.zip\(\) needs two lists|inv\.zip\(\): length mismatch|"
     r"inv\.unique_by\(\) needs a list or map",
+    r"(?:contains|startsWith|endsWith|matches)\(\): a string operand is longer than the string-size limit "
+    r"\([0-9,]+ characters; " + re.escape(values.STRING_LIMIT_ENV) + r" or cel\.set_string_limit\)",
 )))
 _KINDS: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), k) for p, k in (
     (r"(?:key not found|no such key)\b", "no such key"),
@@ -206,8 +208,10 @@ def _map_kids(n: Node, f: Any) -> Node:
 def mark_finite(n: Node, inside: bool = False) -> Node:
     """The tree with a ("fin", node) check, which unparse prints, on each value evaluation can make
     a NaN or +-Infinity from finite input: the root of each arithmetic tree (+, -, *, / and unary -),
-    each divisor, and each double() result. A one-argument double(x) becomes ("fin_double", x), so a
-    backend can also convert strings.
+    each divisor, and each double() and int() result. A one-argument double(x) becomes
+    ("fin_double", x), so a backend can also convert strings. (A backend's check may also look at
+    an int result: the roots, int() results and the data are where every int a clause compares
+    comes from.)
 
     Checking the root of an arithmetic tree is enough because a NaN or +-Infinity operand of +, -
     or * makes a NaN or +-Infinity result, and so does one in a numerator; only a divisor can hide
@@ -223,14 +227,25 @@ def mark_finite(n: Node, inside: bool = False) -> Node:
     m = _map_kids(n, mark_finite)
     if m[0] == "call" and m[1] == "double" and m[2] is None and len(m[3]) == 1:
         return ("fin_double", m[3][0])
-    if m[0] == "call" and m[1] == "double" and m[2] is None:
-        return ("fin", m)
+    if m[0] == "call" and m[1] in ("double", "int") and m[2] is None:
+        return ("fin", m)       # int(): its result is checked for an int past 2^53 (see expr_python)
     return m
 
 
+TEXT_FUNCS = ("contains", "startsWith", "endsWith", "matches")    # the string-size limit applies (values.py)
+COMPREHENSIONS = frozenset({"all", "exists", "exists_one", "map", "filter", "inv.unique_by"})
+
+
+def has_comprehension(n: Node) -> bool:
+    """True if the tree has a comprehension macro (inv.unique_by is printed as a map())."""
+    if n[0] == "call" and n[1] in COMPREHENSIONS:
+        return True
+    return any(has_comprehension(c) for c in subset.kids(n))
+
+
 def needs_finite(n: Node) -> bool:
-    """True if the tree has arithmetic or a double() call."""
-    if (n[0] == "bin" and n[1] in ARITH) or (n[0] == "call" and n[1] == "double"):
+    """True if the tree has arithmetic or a double() or int() call."""
+    if (n[0] == "bin" and n[1] in ARITH) or (n[0] == "call" and n[1] in ("double", "int")):
         return True
     return any(needs_finite(c) for c in subset.kids(n))
 
@@ -239,10 +254,22 @@ def _is_text(x: Node) -> bool:
     return x[0] == "lit" and isinstance(x[1], str)
 
 
+def _checked_zone(x: Node) -> bool:
+    """A timezone argument the engine must not read itself: not a string literal, or a literal that
+    values.zone refuses (cel-cpp reads '+25:00' as a 25-hour offset; the subset refuses it)."""
+    if not _is_text(x):
+        return True
+    try:
+        values.check_zone(x[1])
+    except CelError:
+        return True
+    return False
+
+
 def zone_calls(n: Node) -> bool:
-    """True if the tree calls a timestamp getter with a timezone that is not a string literal."""
+    """True if the tree calls a timestamp getter with a timezone _checked_zone holds."""
     if n[0] == "call" and n[1] in subset._GETTERS and n[2] is not None and len(n[3]) == 1 \
-            and not _is_text(n[3][0]):
+            and _checked_zone(n[3][0]):
         return True
     return any(zone_calls(c) for c in subset.kids(n))
 
@@ -276,7 +303,11 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
     for an engine with a recursion limit: fin["timestamp"] and fin["duration"] ({0}: the argument
     of a timestamp() or duration() call that is not a string literal), and fin["chunk"]: print a
     +/- chain longer than CHAIN terms as nested cel.bind chunks, which keep its left-to-right order
-    (and so its rounding and overflow) while its nesting grows with the square root of its length.
+    (and so its rounding and overflow) while its nesting grows with the square root of its length;
+    fin["let"] ({var}, {value}, {body}), if given, prints each chunk in place of cel.bind.
+    fin["text"] ({0}: a string operand), if given, is printed around each operand of matches() that
+    is not a string literal, and fin["contains"], fin["startsWith"] and fin["endsWith"] ({0}: the
+    string, {1}: the other operand) in place of those calls (the string-size limit, values.py).
     avoid: identifiers of the rule text; a cel.bind variable never takes one of them.
     """
     def u(x: Node) -> str:
@@ -323,7 +354,7 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
         if fin and "chunk" in fin and n[1] in ("+", "-"):
             terms = _chain(n)
             if len(terms) > CHAIN:
-                return _chunked(terms, u, avoid)
+                return _chunked(terms, u, avoid, fin.get("let", "cel.bind({var}, {value}, {body})"))
         return f"({u(n[2])}) {n[1]} ({u(n[3])})"
     if k == "call":
         name, tgt, args = n[1], n[2], n[3]
@@ -331,8 +362,16 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
                 and not _is_text(args[0]):
             return fin[name].format(u(args[0]))
         if fin and "zone" in fin and name in subset._GETTERS and tgt is not None and len(args) == 1 \
-                and not _is_text(args[0]):    # a timezone from data: checked by values.zone first
+                and _checked_zone(args[0]):    # a timezone from data, or a bad one: values.zone first
             return f"{p(tgt)}.{name}({fin['zone'].format(u(args[0]))})"
+        if fin and "text" in fin and name in TEXT_FUNCS and len(args) + (tgt is not None) == 2:
+            s, t = (tgt, args[0]) if tgt is not None else (args[0], args[1])
+            if name in fin:                     # contains, startsWith, endsWith: the backend's function
+                return fin[name].format(u(s), u(t))
+
+            def checked(x: Node) -> str:         # matches(): the engine's, on size-checked operands
+                return u(x) if _is_text(x) else fin["text"].format(u(x))
+            return f"{checked(s)}.{name}({checked(t)})"
         if name == "inv.unique_by":
             lst, var, body = args[0], args[1], args[2]
             return f"{rename['inv.unique']}({p(lst)}.map({var[1]}, {u(body)}))"
@@ -345,15 +384,19 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
     raise CelSyntaxError(f"cannot print node {k}")
 
 
-def _chunked(terms: list[tuple[str | None, Node]], u: Callable[[Node], str], avoid: frozenset[str]) -> str:
-    """t0 op1 t1 ... as cel.bind(s0, <first chunk>, cel.bind(s1, s0 <next chunk>, ... s_k <last chunk>))."""
-    size = max(CHAIN, int(len(terms) ** 0.5 + 0.999))
+def _chunked(terms: list[tuple[str | None, Node]], u: Callable[[Node], str], avoid: frozenset[str],
+             let: str = "cel.bind({var}, {value}, {body})") -> str:
+    """t0 op1 t1 ... as cel.bind(s0, <first chunk>, cel.bind(s1, s0 <next chunk>, ... s_k <last chunk>)),
+    each cel.bind printed by the let template instead if one is given."""
+    weight = 1 if let.startswith("cel.bind(") else 2      # nesting levels one chunk adds (a map() and its [0]: 2)
+    size = max(CHAIN, int((weight * len(terms)) ** 0.5 + 0.999))
     chunks = [terms[i:i + size] for i in range(0, len(terms), size)]
     base = "__inv_s"
     while any(x.startswith(base) for x in avoid):
         base += "_"
+    texts: list[tuple[str, str]] = []
     acc: str | None = None
-    head: list[str] = []
+    body = ""
     for i, chunk in enumerate(chunks):
         text = acc or ""
         for op, t in chunk:
@@ -362,9 +405,11 @@ def _chunked(terms: list[tuple[str | None, Node]], u: Callable[[Node], str], avo
             body = text
             break
         var = f"{base}{i}"
-        head.append(f"cel.bind({var}, {text}, ")
+        texts.append((var, text))
         acc = var
-    return "".join(head) + body + ")" * len(head)
+    for var, text in reversed(texts):
+        body = let.format(var=var, value=text, body=body)
+    return body
 
 
 # ---- shared: turning env values into plain data, reading only referenced paths -----------
@@ -407,13 +452,17 @@ def to_plain(v: Any, _stack: tuple[int, ...] = (), leaf: Leaf = _same) -> Any:
         return subset.check_int(int(v))
     if type(v) is float:
         return check_finite(v)
-    if v is None or type(v) in (bool, str, bytes):
+    if type(v) is str:
+        return v if v.isascii() else values.text(v)     # a surrogate code point is not text
+    if v is None or type(v) in (bool, bytes):
         return v
     if isinstance(v, values.SCALARS):
         x = values.scalar(v)
         return x if isinstance(x, str) else leaf(x)
     for t in (bool, float, str, bytes):        # subclasses become the base type
         if isinstance(v, t):
+            if t is str:
+                return values.text(str(v))
             return check_finite(float(v)) if t is float else t(v)  # type: ignore[arg-type]
     if id(v) in _stack or len(_stack) > _MAX_DEPTH:
         raise CelError("value is cyclic or nested too deeply")
@@ -516,6 +565,7 @@ class FrontEnd:
         self.reads = frozenset(subset.reads(self.ast))      # what projection converts (inside lists too)
         self.names = frozenset(v for k, v in subset.tokenize(source) if k == "id")   # rule-text identifiers
         self._probe = subset.SubsetProgram(source, self.ast)
+        self.exact = self._probe            # the subset program, for a backend that defers to it
 
     def text_for(self, native: tuple[str, ...], rename: Mapping[str, str],
                  fin: Mapping[str, str] | None = None) -> str:
@@ -523,7 +573,8 @@ class FrontEnd:
         or (with fin) the rule has arithmetic or double() whose results must be checked finite."""
         rest = tuple(f for f in INV_FUNCS if f not in native)
         if fin is not None and (needs_finite(self.ast) or conv_calls(self.ast, frozenset(fin) & _TIME_CONV)
-                                or ("zone" in fin and zone_calls(self.ast))):
+                                or ("zone" in fin and zone_calls(self.ast))
+                                or ("text" in fin and uses_inv(self.ast, TEXT_FUNCS))):
             return unparse(mark_finite(self.ast), rename, fin, self.names)
         if not uses_inv(self.ast, rest):
             return self.source
@@ -535,4 +586,5 @@ class FrontEnd:
 
 
 __all__ = ["FrontEnd", "project", "to_plain", "unparse", "uses_inv", "ext_sum", "ext_zip", "ext_unique",
-           "INV_FUNCS", "ENGINE_FUNCTIONS", "redact", "engine_error", "mark_finite", "needs_finite", "conv_calls"]
+           "INV_FUNCS", "ENGINE_FUNCTIONS", "redact", "engine_error", "mark_finite", "needs_finite", "conv_calls",
+           "has_comprehension"]

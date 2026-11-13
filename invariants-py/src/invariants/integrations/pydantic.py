@@ -35,6 +35,7 @@ import functools
 import importlib
 import json
 import math
+import os
 import pathlib
 import threading
 import types
@@ -260,11 +261,24 @@ def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
                          feedback=f"field {naive}: a datetime without a timezone is not allowed; give an "
                                   f"offset or Z (2024-01-31T09:30:00Z)")
     if key is not None:
-        with _WALKED_LOCK:
-            _WALKED[key] = model.model_validate_json(key[1], strict=True)   # its own copy, never the one handed out
+        kept = model.model_validate_json(key[1], strict=True)   # its own copy, never the one handed out
+        with _WALKED_LOCK:             # (validated outside the lock: held only for the dict operations)
+            _WALKED[key] = kept
             while len(_WALKED) > _WALKED_MAX:
                 _WALKED.popitem(last=False)
     return inst
+
+
+def _after_fork_in_child() -> None:
+    """A fresh _WALKED_LOCK and an empty cache in a forked child: another thread of the parent may have
+    held the lock (and been mid-update) at the fork, and no thread of the child would ever release it."""
+    global _WALKED_LOCK
+    _WALKED_LOCK = threading.Lock()
+    _WALKED.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 @functools.cache

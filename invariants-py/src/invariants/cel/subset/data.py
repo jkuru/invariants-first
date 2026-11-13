@@ -79,10 +79,12 @@ def _safe_repr(v: Any) -> str:
 def _data(v: Any) -> Any:
     """A Python value as CEL reads it (cel/values.py): an Enum member is its value, ints must fit int64,
     a NaN or +-Infinity is an error unless allowed (check_finite), a UUID is its string, an aware
-    datetime a UTC timestamp, a timedelta a duration; a naive datetime, a date, a time and a Decimal
-    are errors."""
+    datetime a UTC timestamp, a timedelta a duration; a naive datetime, a date, a time, a Decimal
+    and a str holding a surrogate code point are errors."""
     t = type(v)
-    if t is str or t is bool or t is dict or t is list or v is None:
+    if t is str:
+        return v if v.isascii() else values.text(v)     # a surrogate code point is not text (values.text)
+    if t is bool or t is dict or t is list or v is None:
         return v
     if isinstance(v, enum.Enum):
         v = v.value
@@ -94,6 +96,8 @@ def _data(v: Any) -> Any:
         return values.scalar(v)
     elif isinstance(v, (set, frozenset)):
         raise CelError(values.SET)
+    elif isinstance(v, str):            # a str Enum value or a str subclass
+        values.text(v)
     return v
 
 
