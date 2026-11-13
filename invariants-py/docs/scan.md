@@ -221,6 +221,41 @@ blocks an agent's edit of `[tool.invariants]`.
 not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still needs a `bad` and a
 `structure` enforcer.
 
+### Files and roots
+
+- **One name per file, every root's name resolves.** A file several roots hold (the default roots
+  `src` and `.` both hold `src/app/x.py`) is indexed once, named from the deepest root that holds it
+  (`app.x`, the name `inv lock` imports it by). The name each other root gives it (`src.app.x`) is an
+  alias of the same module: an import, a call or a rule target through it resolves to the same code.
+  Adding a root may change the name a file is shown under; it never loses a call into it.
+- **Relative imports resolve by directory.** `from ..payments import send` in `src/app/sub/ops.py`
+  is `app.payments.send` whichever root names the file. A relative import that names no module under
+  the roots (a missing file, or one that climbs above every root) is `unresolved/relative-import`
+  under every rule, never dropped.
+- **Excludes are matched from every root.** A file is left out only when, from every root that holds
+  it, an exclude glob matches its path or it lies in an always-skipped directory; so adding a root
+  never excludes more (and dropping one, a weakening the lock reports, may). A glob that matches a
+  file from some of its roots only leaves it scanned, and `inv scan` prints a note naming the glob and
+  the file. Write globs that match from every root (`*/legacy/*`) when the roots overlap.
+- **What Python imports wins.** In one directory a package (`ops/__init__.py`) wins over an extension
+  module (`ops.*.so`, `ops.pyd`), which wins over `ops.py`, which wins over a sourceless `ops.pyc`;
+  across roots, the first root wins. The scan reads the winner; any other scanned file of the same
+  module name is `unresolved/shadowed-module` under every rule, since someone may think it runs. A
+  stale `.pyc` beside its source is not reported.
+- **Code with no source is not read as empty.** An importable module in a root with no Python source
+  (an extension module or a sourceless `.pyc`) is `unresolved/no-source` under every rule, and any
+  reference into it from scanned code is `unresolved/excluded-callee` (an import of it counts as
+  running code). Inside an excluded or always-skipped directory it is treated like the `.py` files
+  there.
+- **The always-skipped directories are counted.** `inv scan` prints how many files each
+  always-skipped directory left out (`skipped (directories the scan always skips): build/ 3 file(s)`;
+  `skipped` in `--format json`). The list is `invariants.scan.SKIPPED` (dot-directories, then
+  `__pycache__`, `build`, `dist`, `node_modules`, `site-packages`, `venv`). A file there that scanned
+  code cannot import (it is not under the project's package names) but that itself imports the module
+  a rule's sink lives in is `unresolved/skipped-importer` under that rule: a standalone script in
+  `build/` or `.ops/` would call the sink unchecked. Files under `site-packages` or `node_modules`, and
+  copies of scanned modules (`build/lib/app/x.py` beside `app/x.py`), stay quiet.
+
 ## Limitations
 
 - `inv scan` builds an approximate call graph. When a method call cannot be resolved, the scan

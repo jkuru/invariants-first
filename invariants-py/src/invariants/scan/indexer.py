@@ -15,6 +15,7 @@ _BUILTINS = frozenset(dir(builtins))
 # top-level modules whose classes are known bases: a base from one of them is not project code
 _KNOWN_BASE_MODULES = frozenset({*sys.stdlib_module_names, "typing_extensions"})
 _TYPE_ALIAS = getattr(ast, "TypeAlias", None)            # `type X = ...` (Python 3.12+)
+_NOWHERE = "<above the source roots>"                    # a relative import above every root: no module
 
 
 class _Index:
@@ -40,6 +41,17 @@ class _Index:
         self._effects: dict[str, bool] = {}               # excluded module -> runs code at import time
         # (first parameter name, class) -> how the methods naming it so use it: cm, plain, static
         self.first_params: collections.defaultdict[tuple[str, str], set[str]] = collections.defaultdict(set)
+        # files and roots (fix round 23): a file several roots hold has one name and aliases; a relative
+        # import resolves by directory; what the scan cannot read or what Python never imports is noted
+        self.module_alias: dict[str, str] = {}           # another root's name for a module -> its name
+        self.long_package: dict[str, str] = {}           # module -> its package named from the shallowest root
+        self.no_source: dict[str, pathlib.Path] = {}     # importable module with no source (.so, .pyd, .pyc)
+        # (root, file, line, code, message) reported under every scanned rule, like a parse error
+        self.problems: list[tuple[pathlib.Path, pathlib.Path, int, str, str]] = []
+        self.skipped_dirs: collections.Counter[str] = collections.Counter()   # always-skipped dir -> files
+        self.skipped_files: list[tuple[pathlib.Path, pathlib.Path, str]] = []  # (root, file, its directory)
+        self.skipped_imports: dict[pathlib.Path, list[tuple[int, str]]] = {}   # skipped file -> its imports
+        self.notes: list[str] = []
 
     def short_names(self) -> set[str]:
         """The last name of every scanned function (`save` for app.repo.Repo.save): what a sink may be named."""
@@ -52,9 +64,23 @@ class _Index:
         its class that names its first parameter so: `cls()` builds an instance of it or of a subclass."""
         return me is not None and self.first_params.get(me) == {"cm"}
 
+    def real(self, fq: str) -> str:
+        """fq with a module name another root gives a file (`src.app.x` with the roots `src` and `.`)
+        replaced by the name the scan indexes it under (`app.x`)."""
+        if not self.module_alias or fq in self.modules:
+            return fq
+        parts = fq.split(".")
+        for i in range(len(parts), 0, -1):
+            head = ".".join(parts[:i])
+            if head in self.modules:
+                return fq
+            if head in self.module_alias:
+                return ".".join([self.module_alias[head], *parts[i:]])
+        return fq
+
     def excluded_module(self, fq: str) -> str | None:
         """The excluded module fq names or lies in (a scanned module of the same name wins), else None."""
-        parts = fq.split(".")
+        parts = self.real(fq).split(".")
         for i in range(len(parts), 0, -1):
             head = ".".join(parts[:i])
             if head in self.modules or head in self.classes or head in self.funcs:
@@ -77,7 +103,7 @@ class _Index:
             if isinstance(node, ast.Import):
                 for a in node.names:
                     if a.asname:
-                        mod.aliases[a.asname] = a.name
+                        mod.aliases[a.asname] = self.real(a.name)
                     else:
                         top = a.name.split(".")[0]
                         mod.aliases[top] = top
@@ -90,13 +116,48 @@ class _Index:
                         mod.aliases[a.asname or a.name] = f"{src}.{a.name}" if src else a.name
         self._defs(mod, tree.body, prefix=name, cls=None)
 
-    @staticmethod
-    def _absolute(mod: _Module, node: ast.ImportFrom) -> str:
+    def _absolute(self, mod: _Module, node: ast.ImportFrom) -> str:
+        """The module an import from names. A relative one resolves by the file's directory: from its name
+        under the shallowest root that holds it, so `from ..payments import x` in src/app/sub/ops.py is
+        app.payments whichever root names the file; one that climbs above every root names nothing."""
+        got = self._relative(mod, node)
+        return self.real(got) if got is not None else _NOWHERE
+
+    def _relative(self, mod: _Module, node: ast.ImportFrom) -> str | None:
         if not node.level:
             return node.module or ""
-        base = mod.package.split(".") if mod.package else []
-        base = base[: len(base) - (node.level - 1)] if node.level > 1 else base
+        package = self.long_package.get(mod.name, mod.package)
+        base = package.split(".") if package else []
+        if node.level - 1 > len(base):
+            return None                                  # above the top of every root
+        base = base[: len(base) - (node.level - 1)]
         return ".".join([*base, *([node.module] if node.module else [])])
+
+    def unresolved_imports(self) -> None:
+        """A relative import in a scanned module that names no module under the roots (above the top of
+        every root, or a file that is not there) is a problem: its names would silently resolve to nothing."""
+        known = {*self.modules, *self.excluded, *self.no_source}
+        heads = {".".join(m.split(".")[:i]) for m in known for i in range(1, m.count(".") + 1)}
+
+        def found(name: str) -> bool:
+            r = self.real(name)
+            return r in known or r in heads
+        for mod in self.modules.values():
+            for node in ast.walk(mod.tree):
+                if not isinstance(node, ast.ImportFrom) or not node.level:
+                    continue
+                got = self._relative(mod, node)
+                text = "." * node.level + (node.module or "")
+                if got is None:
+                    why = f"from {text} import ... climbs above the top of every source root"
+                elif not (got and found(got)) and not any(
+                        found(f"{got}.{a.name}" if got else a.name) for a in node.names if a.name != "*"):
+                    why = f"from {text} import ... names no module under the source roots ({got or '.'})"
+                else:
+                    continue
+                self.problems.append((mod.root, mod.file, node.lineno, "unresolved/relative-import",
+                                      f"{why}: the names it imports are not followed, so calls through them "
+                                      f"cannot be traced; fix the import or add the missing root"))
 
     def _defs(self, mod: _Module, body: list[ast.stmt], prefix: str, cls: str | None) -> None:
         for node in body:
@@ -125,6 +186,8 @@ class _Index:
         """Follow re-exports and inheritance until fq names a known function, class or module."""
         if fq in self.funcs or fq in self.classes or fq in self.modules or depth > 12:
             return fq
+        if self.module_alias and (r := self.real(fq)) != fq:
+            return self.canon(r, depth + 1)
         parts = fq.split(".")
         for i in range(len(parts) - 1, 0, -1):
             head = ".".join(parts[:i])
@@ -252,6 +315,9 @@ class _Index:
         (`@router.post`, `@app.get`) or a top-level call, other than constants, dataclass and typing
         definitions and logging setup. A module the scan cannot parse counts as running code."""
         if name not in self._effects:
+            if name in self.no_source:                   # compiled code runs whatever it likes on import
+                self._effects[name] = True
+                return True
             got = self._excluded_module(name) if name in self.excluded_files else None
             self._effects[name] = (_runs_code(got[0].body, got[1]) if got is not None
                                    else name in self.excluded_files)

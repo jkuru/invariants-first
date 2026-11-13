@@ -68,6 +68,10 @@ class Report:
     # per rule: every function on a path that reaches the sink without the door, from any entrypoint
     # (a finding shows one path per call site; `inv init` freezes all of them)
     on_paths: dict[str, set[str]] = dataclasses.field(default_factory=dict)
+    # fix round 23 (files and roots): files per always-skipped directory name, and notes on the roots and
+    # excludes (an exclude glob that matches a file from some of its roots only); shown, never findings
+    skipped: dict[str, int] = dataclasses.field(default_factory=dict)
+    notes: list[str] = dataclasses.field(default_factory=list)
 
     def for_rule(self, rule_id: str) -> list[Finding]:
         return [f for f in self.findings if f.rule == rule_id]
@@ -91,7 +95,7 @@ class Report:
         return "unresolved" if c.get("unresolved") else "pass"
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "files": self.files, "functions": self.functions,
             "rules": {rid: {"result": self.rule_result(rid), "sinks": m.sinks, "doors": m.doors,
                             "allow": m.allow, "counts": self.counts(rid)}
@@ -99,6 +103,11 @@ class Report:
             "not_scanned": self.not_scanned,
             "findings": [f.as_dict() for f in self.findings],
         }
+        if self.skipped:
+            out["skipped"] = dict(self.skipped)
+        if self.notes:
+            out["notes"] = list(self.notes)
+        return out
 
 
 @dataclasses.dataclass

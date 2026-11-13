@@ -10,6 +10,28 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 23 (scan: files and roots)
+
+- **Adding a root no longer drops calls.** A file several roots hold is still named from its deepest
+  root, and every other root's name for it is now an alias of the same module (an import, a call or a
+  rule target through `src.app.x` reaches `app.x`). Relative imports resolve by the file's directory,
+  so a nested root (`src/app/sub`) no longer turns `from ..payments import send` into nothing; a
+  relative import that names no module under the roots is `unresolved/relative-import`.
+- **Adding a root never excludes more.** A file is excluded only when the excludes (or an
+  always-skipped directory) leave it out from every root that holds it; a glob that matches from some
+  roots only leaves the file scanned and prints a note. A glob written relative to one of several
+  overlapping roots (`app/legacy/*` with the roots `src` and `.`) no longer excludes: write it to
+  match from every root (`*/legacy/*`).
+- **What Python imports is what the scan reads.** A package `ops/` wins over `ops.py` beside it (the
+  scan used to read whichever sorted last), and the shadowed file, or a same-named module from a later
+  root, is `unresolved/shadowed-module`.
+- **Modules with no source are unresolved, not empty.** A sourceless `.pyc` or an extension module
+  (`.so`, `.pyd`) in a root is `unresolved/no-source`, and a call into it or an import of it is
+  `unresolved/excluded-callee`; an extension module beside its `.py` wins, as in Python.
+- **The always-skipped directories are visible.** `inv scan` prints how many files each one left out
+  (`skipped` in `--format json`); the list is `invariants.scan.SKIPPED`. A file in one that imports the
+  module a sink lives in, and that scanned code cannot import, is `unresolved/skipped-importer`.
+
 ### Fix round 22
 
 - **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).
