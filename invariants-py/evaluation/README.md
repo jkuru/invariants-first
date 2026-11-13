@@ -32,6 +32,10 @@ python evaluation/run.py --work /tmp/inv-eval --python .venv/bin/python
 - `--python` is the interpreter `ci.sh` runs (it is passed as `PYTHON`); `inv` must sit next to it.
   A `PYTHONPATH` in the environment is kept after each app's `src/`, so
   `PYTHONPATH=$PWD/src python evaluation/run.py` tests this checkout's library without installing it.
+- The apps' replay tests (`tests/test_replay.py`) are left out by default: the published runs
+  predate them. They match every request to the model exactly, so a change to what reaches the
+  model fails them whatever it is: with `--with-replay`, F06 (one chunk fewer retrieved, a defect no
+  rule covers) is caught by two of them, and F12 (a new predicate, benign) fails two of them in B1.
 - Results go to `WORK/results` (or `--results DIR`): one `<ID>.json` and the logs of every CI run,
   re-pinned run and baseline run per change, and `summary.txt` with the comparison table.
 

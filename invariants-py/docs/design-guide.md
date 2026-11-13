@@ -144,7 +144,7 @@ printed on `apps/support-agent` with no rule file yet:
 
 ```text
 wrote invariants.yaml
-  read 11 source file(s)
+  read 12 source file(s)
   pinned 4 pydantic model(s) with 23 constraint(s)
   suggested 1 rule(s) from function preconditions (commented out; see the file)
   door LEDGER-REPO-DOOR: support_agent.repo.LedgerRepo through support_agent.service.BillingService.cancel
@@ -260,7 +260,7 @@ For the tool above, `inv check` fails:
                    support_agent.service.BillingService.refund
         LEDGER-REPO-DOOR: pass (no findings)
         STRIPE-GATEWAY-DOOR: fail (1 bypass)
-        scanned 12 file(s), 48 function(s)
+        scanned 13 file(s), 54 function(s)
 fail
 ```
 
@@ -1100,7 +1100,7 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 
 | Path | Holds |
 |---|---|
-| `invariants-py/` | the library, its test suite (about 3,200 tests, run on both CEL engines) and its docs |
+| `invariants-py/` | the library, its test suite (about 3,600 tests, run on both CEL engines) and its docs |
 | `invariants-py/docs/` | `start.md` (the ten-minute start), `rule-file.md` (every field), `concepts.md`, `scan.md`, `lockfile.md`, `api.md`, `cel.md`, `cookbook.md`, `evaluation.md` |
 | `apps/support-agent/` | the tool-calling agent and its twelve defects |
 | `apps/pool-service/`, `apps/fact-pipeline/` | the other two apps |

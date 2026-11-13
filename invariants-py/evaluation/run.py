@@ -45,11 +45,17 @@ class Run:
         self.results = pathlib.Path(a.results).resolve() if a.results else self.work / "results"
         self.py = str(pathlib.Path(a.python).absolute()) if a.python else sys.executable
         self.inv = str(pathlib.Path(self.py).parent / "inv")
+        # The published runs predate the apps' replay tests (tests/test_replay.py). Those match every
+        # model request exactly, so any change to what reaches the model fails them, a defect (F06)
+        # or a benign edit (F12) alike; they are left out unless --with-replay.
+        self.addopts = "" if a.with_replay else "--ignore=tests/test_replay.py"
         self.results.mkdir(parents=True, exist_ok=True)
 
     # --- environment ----------------------------------------------------------------------------
     def env(self, app: str, extra: dict[str, str] | None = None) -> dict[str, str]:
         e = {k: v for k, v in os.environ.items() if not k.startswith("INV_")}
+        if self.addopts:
+            e["PYTEST_ADDOPTS"] = " ".join(filter(None, [e.get("PYTEST_ADDOPTS"), self.addopts]))
         path = os.pathsep.join(filter(None, [str(self.work / app / "src"), os.environ.get("PYTHONPATH")]))
         e.update({"PYTHON": self.py, "PYTHONPATH": path, "PYTHONDONTWRITEBYTECODE": "1"}, **(extra or {}))
         return e
@@ -227,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--work", help="working directory for the copies (default: a new temporary directory)")
     p.add_argument("--results", help="where results go (default: WORK/results)")
     p.add_argument("--python", help="interpreter for ci.sh, with inv next to it (default: this one)")
+    p.add_argument("--with-replay", action="store_true",
+                   help="also run the apps' replay tests (not in the published runs; see README)")
     a = p.parse_args(argv)
     unknown = [i for i in a.ids if i not in CHANGES]
     if unknown:
