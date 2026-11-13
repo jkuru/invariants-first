@@ -224,11 +224,16 @@ repos:
     hooks:
       - id: inv-check
         name: invariants check
-        entry: inv check --relock
+        entry: inv check --relock --fail-on-repin
         language: system
         pass_filenames: false
         always_run: true
 ```
+
+When nothing weakens a rule but the lock is stale (a tighter cap, a new rule), the hook re-pins
+`invariants.lock` and fails the commit once with "invariants.lock re-pinned; review and
+`git add invariants.lock`", so the new lock is reviewed and goes into the same commit. A
+weakening fails the commit and leaves the lock alone.
 
 It uses `language: system` because `inv check` imports your app to pin its models, so it must run
 in your project's environment. You can also point `repo:` at this repository and use `id: inv-check`;
@@ -236,7 +241,13 @@ the hook is defined in `.pre-commit-hooks.yaml` at the repository root.
 
 **CI: compare against the base branch.** `inv check --base origin/main` compares the rules with
 the lock committed on `main`, not with the lock in the pull request. A weakening that the pull
-request re-pinned itself still fails:
+request re-pinned itself still fails. The check fails closed: a base ref that does not exist (not
+fetched, a typo), a checkout that is not a git repository, or a lock on the base that this
+invariants cannot read or compare (damaged, or an older or newer lock version) fails the step. Only
+a base with no `invariants.lock` at all passes, as a first adoption (the whole lock is reviewed in
+that pull request). A reviewer can accept a base lock that cannot be compared with the same
+`--allow-weakening` or `INV_ALLOW_WEAKENING=1` that accepts a weakening; nothing accepts a missing
+base ref.
 
 ```text
 $ inv check --base main
@@ -262,6 +273,9 @@ jobs:
         with:
           accept-label: accept-weakening     # a reviewer adds this label to accept a weakening
 ```
+
+The action fetches the base branch and fails with an error if the fetch fails or the ref is still
+missing afterwards, rather than skipping the comparison.
 
 Labels can be added by anyone with write access, and that includes an agent holding a token. Also
 make a person own the rule files with a `CODEOWNERS` line, and require code-owner review on `main`:
@@ -289,13 +303,23 @@ invariants.lock  @your-org/payments-owners
 - **`inv hook pretool`** blocks any shell command containing `--accept-weakening`,
   `--allow-weakening` or `INV_ALLOW_WEAKENING`. The agent is told to report the weakening to
   you instead.
-  It also blocks any direct edit of `invariants.lock`: an edit or write tool on it, or a shell
-  command that writes it (`>`, `tee`, `sed -i`, `cp`, `mv`, `rm` and the like). Reading the lock and
-  `inv lock && git add invariants.lock` are fine: only `inv lock` and `inv check --relock` write it.
+  It also blocks any direct edit of `invariants.lock`: an edit or write tool on it (symlinks are
+  resolved first), or a shell command that names it (or a glob such as `invariants.l*`) and is not
+  clearly read-only. Read-only means `cat`, `less`, `head`, `tail`, `grep` and the like, `git
+  diff|show|log|status`, and `inv check|lock --check|status|scan|validate`, with no redirect into a
+  file. `git add invariants.lock` is allowed too, so `inv lock && git add invariants.lock` is fine:
+  only `inv lock` and `inv check --relock` write the lock. The hook also blocks an edit that changes
+  the `[tool.invariants]` tables of `pyproject.toml` (the scan roots and excludes) and any shell
+  command that writes `pyproject.toml`.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
   it sends the agent back with the failure, once per stop, so it can't loop.
 
 Both commands read Claude Code's hook JSON on stdin, and both block by exiting with code 2.
+
+The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
+command can always be talked past (a script that writes the file, a name built at run time), and an
+agent may run without hooks. The gate is `inv check --base` in CI, with the rule files owned by a
+person: it compares with the lock on the base branch, whatever happened on the way.
 
 For other agents, put this in `AGENTS.md`, and rely on pre-commit and CI to enforce it:
 

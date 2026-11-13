@@ -858,10 +858,10 @@ pass".
 
 | Where | What runs | What it stops |
 |---|---|---|
-| the agent, before each tool call | `inv hook pretool` (a Claude Code `PreToolUse` hook) | a command that accepts or allows a weakening (`--accept-weakening`, `--allow-weakening`, `INV_ALLOW_WEAKENING`), and any direct edit of `invariants.lock`: an Edit or Write tool on it, or a shell command that writes it (a redirect, `tee`, `sed -i`, `cp`, `mv`, `rm` ...) |
+| the agent, before each tool call | `inv hook pretool` (a Claude Code `PreToolUse` hook) | a command that accepts or allows a weakening (`--accept-weakening`, `--allow-weakening`, `INV_ALLOW_WEAKENING`); any direct edit of `invariants.lock` (an Edit or Write tool on it, symlinks resolved, or a shell command naming it that is not clearly read-only); an edit of `[tool.invariants]` in `pyproject.toml` or a shell command that writes `pyproject.toml` |
 | the agent, when it tries to finish | `inv hook stop` (a `Stop` hook) | finishing while `inv check` fails: the agent is sent back once, with the failure |
-| each commit | `inv check --relock` (the pre-commit hook `inv-check`) | a commit that weakens a law; tightenings are re-pinned automatically |
-| each pull request | the GitHub Action, or `inv check --base origin/main` | a weakening, even one the branch re-pinned itself |
+| each commit | `inv check --relock --fail-on-repin` (the pre-commit hook `inv-check`) | a commit that weakens a law; a tightening is re-pinned, and the commit fails once so the new lock is staged |
+| each pull request | the GitHub Action, or `inv check --base origin/main` | a weakening, even one the branch re-pinned itself; a missing base ref or an unreadable base lock fails too |
 
 The Claude Code configuration:
 
@@ -872,6 +872,10 @@ The Claude Code configuration:
 ```
 
 The matcher must include the file-editing tools, or the hook never sees an edit to the lock.
+
+The two agent hooks are an early warning against an agent's shortcuts, not the gate: a text check of
+a shell command can be talked past, and an agent may run without them. The gate is the last layer,
+`inv check --base` in CI, which compares with the lock on the base branch whatever the branch did.
 
 Last, protect the protection: put `invariants.yaml`, `invariants.lock`, the tests named in `tests`,
 the hook configuration and the CI workflow under required human review (a CODEOWNERS entry). The

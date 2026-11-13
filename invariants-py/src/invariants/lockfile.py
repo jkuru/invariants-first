@@ -8,12 +8,15 @@ Lock version 3 pins, per entry, only what a rule's meaning depends on:
 - targets: each target's signature (unwrapped through its decorators) as text and as resolved types,
   its declared effects, and the reply schema of a model-call target;
 - providers: each provider's declared type, args, and its function's signature;
-- contracts: a pydantic, dataclass or {field: type} schema, an openapi file as the parameters, request
-  body and response schemas of the operations rules name, a python module as its reference only (its
-  targets are pinned above), any other file by its digest;
+- contracts: a pydantic model's JSON Schema, a dataclass or TypedDict as a JSON Schema too, a {field:
+  type} schema, an openapi file (or a live app's `app.openapi()`, `app: module:app`) as the
+  parameters, request body and response schemas of its operations, a python module as its reference
+  only (its targets are pinned above), any other file by its digest;
 - schemas: every resolved schema the entries above use, keyed by the sha256 of its canonical JSON, so
   a model used by a target and a contract is stored once. Prose (title, description, summary, tags,
-  examples) is stripped from pinned schemas, so a docstring edit does not re-pin.
+  examples) is stripped from pinned schemas, so a docstring edit does not re-pin;
+- scan: when a rule has a sink, the source roots and exclude globs `inv check` scans with, so an
+  exclude added or a root dropped is a weakening like any other.
 
 Types are resolved, not read as annotation text: an alias, and the fields of a dataclass, TypedDict or
 pydantic model a signature names (recursively, bounded), are part of the pin. A body-only refactor of a
@@ -29,6 +32,7 @@ The lock is JSON with sorted keys, so a change in coverage also shows up as a di
 from __future__ import annotations
 
 import collections
+import collections.abc
 import dataclasses
 import enum
 import fnmatch
@@ -43,12 +47,18 @@ from typing import Any
 
 from .errors import LoadError
 from .resolve import resolve
+from .scan import anywhere
 
 LOCK_NAME = "invariants.lock"
 LOCK_VERSION = 3
 PY_CONTRACTS = frozenset({"python", "pydantic"})
 SCHEMA_CONTRACTS = frozenset({"pydantic", "dataclass", "schema"})
 # rule fields that are prose, pinned by digest only; everything else is semantic
+# Test code and migrations are not production paths: by default the scan skips them (at any depth), so
+# a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
+# this list (exclude = [] scans them too).
+DEFAULT_SCAN_EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
+                                "migrations", "alembic")
 DOC_FIELDS = ("statement", "why", "owner", "class")
 MEDIATION_DOC = ("chokepoint",)
 
@@ -84,7 +94,7 @@ FIELD_POLICY: dict[str, str] = {
     # the file
     "file.spec": NEUTRAL, "file.contracts": ANALYSED, "file.targets": ANALYSED, "file.providers": ANALYSED,
     "file.rules": ANALYSED,
-    "contract.type": WEAKENING, "contract.ref": WEAKENING,
+    "contract.type": WEAKENING, "contract.ref": WEAKENING, "contract.app": WEAKENING,
     "contract.schema": PIN, "contract.operations": PIN, "contract.hash": PIN, "contract.signature": PIN,
     "contract.types": PIN,
     # targets and providers
@@ -150,6 +160,7 @@ NOTES = {
     "rule.mediation.tables": REMOVED_NOTE, "target.transaction": REMOVED_NOTE, "provider.consistency": REMOVED_NOTE,
     "contract.constraints": REMOVED_NOTE,
     "contract.ref": "the contract the rule names points elsewhere",
+    "contract.app": "the OpenAPI document is read from a different app",
 }
 
 
@@ -362,6 +373,108 @@ def resolved_schema(schema: Any, defs: dict[str, Any] | None = None, seen: set[i
     return _plain(strip_prose(out)) if top else _plain(out)
 
 
+def json_schema(cls: type) -> Any:
+    """The JSON Schema of a dataclass or TypedDict contract, so constraint_weakening judges it as it
+    judges a pydantic model: pydantic's TypeAdapter when pydantic is installed (it reads Field and
+    annotated_types constraints), else stdlib_json_schema. Prose is stripped."""
+    try:
+        import pydantic
+    except ImportError:
+        return _plain(strip_prose(stdlib_json_schema(cls)))
+    try:
+        return _plain(strip_prose(pydantic.TypeAdapter(cls).json_schema()))
+    except Exception:                                          # a type pydantic cannot describe
+        return _plain(strip_prose(stdlib_json_schema(cls)))
+
+
+_JSON_TYPES = {bool: "boolean", int: "integer", float: "number", str: "string", type(None): "null"}
+_ARRAYS = frozenset({list, tuple, set, frozenset, collections.abc.Sequence, collections.abc.Set,
+                     collections.abc.MutableSequence, collections.abc.Iterable})
+_MAPS = frozenset({dict, collections.abc.Mapping, collections.abc.MutableMapping})
+# annotated_types (and pydantic's Field metadata) attribute -> JSON Schema keyword (strings, then arrays)
+_BOUND_ATTRS = {"gt": "exclusiveMinimum", "ge": "minimum", "lt": "exclusiveMaximum", "le": "maximum",
+                "multiple_of": "multipleOf", "pattern": "pattern"}
+_LEN_ATTRS = {"min_length": ("minLength", "minItems"), "max_length": ("maxLength", "maxItems")}
+
+
+def stdlib_json_schema(cls: type) -> dict[str, Any]:
+    """A JSON Schema of a dataclass or TypedDict from its resolved annotations, without pydantic:
+    types, Literal, Optional and unions, containers, enums, nested dataclasses ($defs), and the
+    bounds an Annotated metadata object carries as gt/ge/lt/le/min_length/max_length attributes."""
+    defs: dict[str, Any] = {}
+    top = _local_def(_json_type(cls, defs, 0), defs)
+    return {**top, "$defs": defs} if defs else top
+
+
+def _local_def(top: Any, defs: dict[str, Any]) -> Any:
+    ref = top.get("$ref", "") if isinstance(top, dict) else ""
+    return defs.pop(ref[len("#/$defs/"):]) if ref.startswith("#/$defs/") else top
+
+
+def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
+    if depth > MAX_DEPTH:
+        return {}
+    d = depth + 1
+    if t is Any:
+        return {}
+    if t in _JSON_TYPES:
+        return {"type": _JSON_TYPES[t]}
+    origin, args = typing.get_origin(t), typing.get_args(t)
+    if origin is typing.Annotated:
+        return {**_json_type(args[0], defs, d), **_annotated_bounds(args[0], args[1:])}
+    if origin is typing.Literal:
+        vals = [_plain(a) for a in args]
+        return {"const": vals[0]} if len(vals) == 1 else {"enum": vals}
+    if origin is typing.Union or type(t).__name__ == "UnionType":
+        return {"anyOf": [_json_type(a, defs, d) for a in args]}
+    if origin in _ARRAYS or t in _ARRAYS:
+        items = [a for a in args if a is not Ellipsis]
+        return {"type": "array", **({"items": _json_type(items[0], defs, d)} if len(items) == 1 else
+                                    {"prefixItems": [_json_type(a, defs, d) for a in items]} if items else {})}
+    if origin in _MAPS or t in _MAPS:
+        return {"type": "object", **({"additionalProperties": _json_type(args[1], defs, d)} if len(args) == 2 else {})}
+    if isinstance(t, type) and issubclass(t, enum.Enum):
+        return {"enum": [_plain(m.value) for m in t]}
+    if isinstance(t, type) and (dataclasses.is_dataclass(t) or _is_typeddict(t)):
+        return _json_object(t, defs, d)
+    return {"x-python-type": getattr(t, "__qualname__", repr(t))}
+
+
+def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
+    array = typing.get_origin(base) in _ARRAYS or base in _ARRAYS
+    out: dict[str, Any] = {}
+    for m in meta:
+        for attr, kw in _BOUND_ATTRS.items():
+            if getattr(m, attr, None) is not None:
+                out[kw] = _plain(getattr(m, attr))
+        for attr, (text_kw, array_kw) in _LEN_ATTRS.items():
+            if getattr(m, attr, None) is not None:
+                out[array_kw if array else text_kw] = getattr(m, attr)
+    return out
+
+
+def _json_object(cls: type, defs: dict[str, Any], depth: int) -> dict[str, Any]:
+    """A dataclass or TypedDict as {"$ref": "#/$defs/Name"}, its object schema in `defs`."""
+    name = cls.__qualname__
+    ref = {"$ref": f"#/$defs/{name}"}
+    if name in defs:
+        return ref
+    defs[name] = {}                                            # placeholder: cuts recursion
+    try:
+        hints = typing.get_type_hints(cls, include_extras=True)
+    except Exception as e:
+        raise LoadError(f"schema {name}: cannot resolve its annotations ({e})") from e
+    if dataclasses.is_dataclass(cls):
+        names = [f.name for f in dataclasses.fields(cls)]
+        required = sorted(f.name for f in dataclasses.fields(cls)
+                          if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING)
+    else:
+        names, required = list(hints), sorted(getattr(cls, "__required_keys__", ()))
+    defs[name] = {"type": "object", "properties": {n: _json_type(hints[n], defs, depth) for n in names},
+                  "required": required}
+    return ref
+
+
 # --- signatures ---------------------------------------------------------------------------------
 def signature_types(obj: Any, pins: Schemas) -> dict[str, Any]:
     """Resolved parameter and return types of a callable: {param: type, "return": type}.
@@ -420,20 +533,40 @@ _PARAM_KEYS = ("name", "in", "required", "schema", "content", "style", "explode"
                "allowReserved")
 
 
-def _openapi_operations(name: str, path: pathlib.Path, ops: list[str], pins: Schemas) -> dict[str, Any]:
-    """The operations named by rules, keyed by operationId: method, path, and the schemas of their
-    parameters, request body and responses. Shared component schemas go to the schema table once."""
+def _openapi_file(name: str, path: pathlib.Path) -> Any:
     text = path.read_text()
     try:
-        spec = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError:
         try:
             import yaml
-            spec = yaml.safe_load(text)
+            return yaml.safe_load(text)
         except Exception as e:
             raise LoadError(f"contract {name}: {path.name} is neither JSON nor YAML ({e})") from e
+
+
+def _openapi_app(name: str, ref: str) -> Any:
+    """The OpenAPI document of a live app (`module:app`, for example a FastAPI app): app.openapi()."""
+    app = _python_ref(name, ref)
+    make = getattr(app, "openapi", None)
+    if not callable(make):
+        raise LoadError(f"contract {name}: {ref} has no openapi() method (a FastAPI app has one)")
+    try:
+        return make()
+    except Exception as e:
+        raise LoadError(f"contract {name}: {ref}.openapi() failed ({type(e).__name__}: {e})") from e
+
+
+def _operation_ids(spec: Any) -> list[str]:
+    return sorted({op["operationId"] for item in (spec.get("paths") or {}).values() if isinstance(item, dict)
+                   for op in item.values() if isinstance(op, dict) and isinstance(op.get("operationId"), str)})
+
+
+def _openapi_operations(name: str, label: str, spec: Any, ops: list[str], pins: Schemas) -> dict[str, Any]:
+    """The operations named by rules, keyed by operationId: method, path, and the schemas of their
+    parameters, request body and responses. Shared component schemas go to the schema table once."""
     if not isinstance(spec, dict):
-        raise LoadError(f"contract {name}: {path.name} is not an OpenAPI document")
+        raise LoadError(f"contract {name}: {label} is not an OpenAPI document")
 
     def lookup(ref: str) -> Any:
         target: Any = spec
@@ -452,7 +585,7 @@ def _openapi_operations(name: str, path: pathlib.Path, ops: list[str], pins: Sch
                 if ref in stack:
                     return {"$ref": ref, "recursive": True}
                 body = schema(lookup(ref), (*stack, ref))
-                got = (pins.add({"name": f"{path.name}{ref[1:]}", "schema": body})
+                got = (pins.add({"name": f"{label}{ref[1:]}", "schema": body})
                        if ref.startswith(_SHARED_SCHEMAS) else body)
                 rest = {k: schema(v, stack) for k, v in node.items() if k != "$ref" and k not in SCHEMA_PROSE}
                 return {"allOf": [got], **rest} if rest else got
@@ -501,7 +634,7 @@ def _openapi_operations(name: str, path: pathlib.Path, ops: list[str], pins: Sch
             found[op["operationId"]] = strip_prose(entry)
     missing = sorted(set(ops) - set(found))
     if missing:
-        raise LoadError(f"contract {name}: {path.name} has no operation {', '.join(missing)}")
+        raise LoadError(f"contract {name}: {label} has no operation {', '.join(missing)}")
     return _plain(found)
 
 
@@ -510,16 +643,20 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     """Pin one contract at contract granularity (see the module docstring). Without `pins`, schemas are
     inlined in the entry instead of going to a schema table."""
     pins = Schemas(inline=True) if pins is None else pins
+    ctype = c.get("type")
+    if ctype == "openapi" and "app" in c:
+        return _openapi_app_pin(name, c, operations, pins)
     ref = c.get("ref")
     if not isinstance(ref, str) or not ref:
         raise LoadError(f"contract {name}: needs a string ref")
-    ctype = c.get("type")
     entry: dict[str, Any] = {"type": ctype, "ref": ref}
     if ctype in PY_CONTRACTS or (ctype in SCHEMA_CONTRACTS and ":" in ref):
         obj = _python_ref(name, ref)
         if inspect.ismodule(obj):
             return entry                                # its targets and providers carry the pins
-        if _is_schema_class(obj) or isinstance(obj, dict) or getattr(obj, "__inv_pydantic__", None) is not None:
+        if (isinstance(obj, type) and dataclasses.is_dataclass(obj)) or _is_typeddict(obj):
+            entry["schema"] = pins.add({"name": _class_ref(obj), "jsonschema": json_schema(obj)})
+        elif _is_schema_class(obj) or isinstance(obj, dict) or getattr(obj, "__inv_pydantic__", None) is not None:
             label = _class_ref(obj) if isinstance(obj, type) else ref
             entry["schema"] = pins.add({"name": label, **resolved_schema(obj)})
         elif isinstance(obj, type) and issubclass(obj, enum.Enum):
@@ -536,10 +673,25 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     if not f.is_file():
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:
-        entry["operations"] = _openapi_operations(name, f, sorted(set(operations)), pins)
+        entry["operations"] = _openapi_operations(name, f.name, _openapi_file(name, f), sorted(set(operations)), pins)
     else:
         entry["hash"] = _sha(f.read_bytes())
     return entry
+
+
+def _openapi_app_pin(name: str, c: dict[str, Any], operations: list[str] | None, pins: Schemas) -> dict[str, Any]:
+    """An `openapi` contract read from a live app (`app: module:app`): the operations rules (or the
+    contract's `operation`) name, or every operation when none does: the document is generated, so
+    there is no file to digest."""
+    app = c.get("app")
+    if not isinstance(app, str) or ":" not in app:
+        raise LoadError(f"contract {name}: app must be `module:attribute` (a FastAPI app, for example)")
+    if "ref" in c:
+        raise LoadError(f"contract {name}: give ref (an OpenAPI file) or app (a live app), not both")
+    spec = _openapi_app(name, app)
+    named = [*(operations or []), *([c["operation"]] if isinstance(c.get("operation"), str) else [])]
+    ops = sorted(set(named)) if named else _operation_ids(spec if isinstance(spec, dict) else {})
+    return {"type": "openapi", "app": app, "operations": _openapi_operations(name, app, spec, ops, pins)}
 
 
 # --- building -----------------------------------------------------------------------------------
@@ -589,8 +741,18 @@ def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]
     return _plain(entry)
 
 
-def build(doc: dict[str, Any], base_dir: pathlib.Path) -> dict[str, Any]:
-    """The lock for a rule document. Imports target modules; call after the file loads cleanly."""
+def scan_pin(roots: list[str], exclude: list[str]) -> dict[str, list[str]]:
+    """The scan configuration a lock pins: source roots relative to the rule file, and exclude globs."""
+    return {"roots": sorted(set(roots)), "exclude": sorted(set(exclude))}
+
+
+def mediated(doc: dict[str, Any]) -> bool:
+    return any(isinstance(r, dict) and r.get("mediation") for r in doc.get("rules") or [])
+
+
+def build(doc: dict[str, Any], base_dir: pathlib.Path, scan: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    """The lock for a rule document. Imports target modules; call after the file loads cleanly.
+    `scan` (scan_pin of the roots and excludes `inv check` scans) is pinned when a rule has a sink."""
     expanded = expand_applies_to(doc)
     declared = doc.get("targets") or {}
     pins = Schemas()
@@ -622,8 +784,11 @@ def build(doc: dict[str, Any], base_dir: pathlib.Path) -> dict[str, Any]:
                  if isinstance(p, dict)}
     contracts = {n: contract_hash(n, c, base_dir, ops.get(n), pins)
                  for n, c in sorted((doc.get("contracts") or {}).items())}
-    return _plain({"lock_version": LOCK_VERSION, "spec": doc.get("spec"), "rules": rules, "targets": targets,
-                   "providers": providers, "contracts": contracts, "schemas": pins.table})
+    lock = {"lock_version": LOCK_VERSION, "spec": doc.get("spec"), "rules": rules, "targets": targets,
+            "providers": providers, "contracts": contracts, "schemas": pins.table}
+    if scan is not None and mediated(doc):
+        lock["scan"] = scan_pin(scan["roots"], scan["exclude"])
+    return _plain(lock)
 
 
 DUMP_WIDTH = 128
@@ -709,6 +874,13 @@ def validate(lock: dict[str, Any], path: pathlib.Path | str = LOCK_NAME) -> None
                     raise bad(f"{sec}.{k}.{field}", "a list" if kind is list else "an object", entry[field])
     if "spec" in lock and lock["spec"] is not None and not isinstance(lock["spec"], str):
         raise bad("spec", "a string", lock["spec"])
+    scan = lock.get("scan")
+    if scan is not None:
+        if not isinstance(scan, dict):
+            raise bad("scan", "an object", scan)
+        for k in ("roots", "exclude"):
+            if not (isinstance(scan.get(k), list) and all(isinstance(x, str) for x in scan[k])):
+                raise bad(f"scan.{k}", "a list of strings", scan.get(k))
 
 
 def _refs_in(node: Any, found: list[str]) -> None:
@@ -1700,7 +1872,8 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
         if policy(loc) == PIN:
             found: list[tuple[str, str, str]] = []
             for p, xv, yv in _json_paths(x, y, f, found):
-                out.append(Change(where, p, xv, yv))
+                why = constraint_weakening(p, xv, yv, a, b) if kind == "contract" else None
+                out.append(Change(where, p, xv, yv, why is not None, why or ""))
             refs += [(f"{where} {p}", p, da, db) for p, da, db in found]
             continue
         cs = _field_change(where, f, loc, x, y)
@@ -1713,68 +1886,202 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
     return out
 
 
-# --- pydantic constraints: the rules a codebase already has ---------------------------------------
+# --- schema constraints: the rules a codebase already has -----------------------------------------
 # A pinned pydantic schema is the model's JSON Schema, so its Field(gt=..., le=..., max_length=...),
-# Literal and required constraints are pinned too. A change that lets the model accept more input is
-# a weakening; a change that only tightens it is not. Other schema changes stay plain pin changes.
+# Literal and required constraints are pinned too; so is the JSON Schema of a dataclass or TypedDict
+# contract, and the schemas of an OpenAPI contract's operations. A change that lets the schema accept
+# more input is a weakening; a change that only tightens it is not. Other changes stay pin changes.
 UPPER_BOUNDS = frozenset({"maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties", "maxContains"})
 LOWER_BOUNDS = frozenset({"minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties", "minContains"})
 EXACT_CONSTRAINTS = frozenset({"pattern", "format", "multipleOf", "const", "type", "uniqueItems",
                                "additionalProperties", "decimal_places", "max_digits"})
+JUDGED_SCHEMAS = frozenset({"pydantic", "jsonschema", "schema", "operations"})
 _NAME_SEGMENTS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+# a bound may be replaced by its exclusive or inclusive twin: removed -> (twin, is an upper bound)
+_TWIN_BOUNDS = {"minimum": ("exclusiveMinimum", False), "exclusiveMinimum": ("minimum", False),
+                "maximum": ("exclusiveMaximum", True), "exclusiveMaximum": ("maximum", True)}
 
 
 def _number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def constraint_weakening(path: str, old: Any, new: Any) -> str | None:
-    """Why a change at `path` of a pinned pydantic schema lets the model accept more input, or None.
+def _node(root: Any, segs: typing.Sequence[str]) -> Any:
+    """The value at a _json_paths path (segments split on "."; "name[i]" indexes a list), or None."""
+    node = root
+    for seg in segs:
+        name, _, idx = seg.partition("[")
+        if not isinstance(node, dict) or name not in node:
+            return None
+        node = node[name]
+        for i in [i for i in idx.rstrip("]").split("][") if i]:
+            if not isinstance(node, list) or not i.isdigit() or int(i) >= len(node):
+                return None
+            node = node[int(i)]
+    return node
+
+
+def _local_ref(root: Any, prefix: str, ref: Any) -> Any:
+    """The schema a local `#/...` reference names inside the schema at `prefix`, or None."""
+    if not (isinstance(ref, str) and ref.startswith("#/")):
+        return None
+    return _node(_node(root, [prefix]), [p.replace("~1", "/").replace("~0", "~") for p in ref[2:].split("/")])
+
+
+def _twin_tightens(key: str, old: Any, node: Any) -> bool:
+    """A bound removed while its exclusive or inclusive twin is now at least as tight: `ge=1` to `gt=0`
+    on an integer, `le=10` to `lt=10` on any number."""
+    twin, upper = _TWIN_BOUNDS[key]
+    new = node.get(twin) if isinstance(node, dict) else None
+    if not (_number(old) and _number(new)):
+        return False
+    if key.startswith("exclusive"):                    # x > old became x >= new (or x < old, x <= new)
+        return new < old if upper else new > old
+    slack = 1 if node.get("type") == "integer" else 0  # an integer x > k is x >= k + 1
+    return new <= old + slack if upper else new >= old - slack
+
+
+def _types(v: Any) -> set[str] | None:
+    if isinstance(v, str):
+        return {v}
+    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+        return set(v)
+    return None
+
+
+def _anchors(p: str) -> tuple[str, bool, bool]:
+    """A pattern without its ^ and $ anchors, and whether it had each (an escaped \\$ is no anchor)."""
+    start = p.startswith("^")
+    body = p[1:] if start else p
+    escapes = len(body[:-1]) - len(body[:-1].rstrip("\\"))
+    end = body.endswith("$") and escapes % 2 == 0
+    return (body[:-1] if end else body), start, end
+
+
+def _pattern_narrower(old: Any, new: Any) -> bool:
+    """The new pattern is the old one with ^ or $ anchors added, so it matches less. Only this easy
+    case is decided; a pattern with a top-level | is left alone."""
+    if not (isinstance(old, str) and isinstance(new, str)) or "|" in old:
+        return False
+    (bo, so, eo), (bn, sn, en) = _anchors(old), _anchors(new)
+    return bo == bn and sn >= so and en >= eo
+
+
+def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, new_root: Any = None) -> str | None:
+    """Why a change at `path` of a pinned schema lets it accept more input, or None.
 
     `path` is as _json_paths reports it inside one schema-table entry ("pydantic.properties.amount.maximum",
-    "pydantic.required removed"). Only schemas pinned from a pydantic model are judged."""
-    if not path.startswith("pydantic."):
-        return None
+    "pydantic.required removed") or contract entry ("operations.createRefund.requestBody..."). `old_root`
+    and `new_root` are that entry, for changes judged with their neighbours (a bound and its twin, an
+    enum and a const, a $ref and its target). Only JUDGED_SCHEMAS are judged: a pydantic model's JSON
+    Schema, a dataclass or TypedDict contract's, and OpenAPI schemas."""
     base, _, suffix = path.partition(" ")                        # "x.enum added" / "x.required removed"
     segs = base.split(".")
-    key, parent = segs[-1], (segs[-2] if len(segs) > 1 else "")
+    if segs[0] not in JUDGED_SCHEMAS or len(segs) < 2:
+        return None
+    key, parent = segs[-1], segs[-2]
+    new_node = _node(new_root, segs[:-1])
     if parent in _NAME_SEGMENTS:                                 # a field (or model) entry itself
         if new is None and parent == "properties":
             return f"field {key} removed: its constraints no longer apply"
+        if new is None and parent in ("$defs", "definitions"):
+            return _def_removed(segs, key, old, old_root, new_root)
         return None
-    if key in UPPER_BOUNDS:
+    if key == "$ref":
+        return _ref_changed(segs[0], old, new, old_root, new_root)
+    if key in UPPER_BOUNDS or key in LOWER_BOUNDS:
+        upper = key in UPPER_BOUNDS
         if new is None:
-            return f"{key} removed: no upper bound"
-        if old is not None and _number(old) and _number(new) and new > old:
-            return f"{key} raised: larger values pass"
-        return None
-    if key in LOWER_BOUNDS:
-        if new is None:
-            return f"{key} removed: no lower bound"
-        if old is not None and _number(old) and _number(new) and new < old:
-            return f"{key} lowered: smaller values pass"
+            if key in _TWIN_BOUNDS and _twin_tightens(key, old, new_node):
+                return None                                      # ge=1 -> gt=0 on an integer
+            return f"{key} removed: no {'upper' if upper else 'lower'} bound"
+        if _number(old) and _number(new) and (new > old if upper else new < old):
+            return f"{key} {'raised: larger' if upper else 'lowered: smaller'} values pass"
         return None
     if key == "enum":
+        if suffix == "" and new is None and isinstance(new_node, dict) and "const" in new_node \
+                and isinstance(old, list) and any(same(new_node["const"], v) for v in old):
+            return None                                          # narrowed to one of its values
         if suffix == "added" or (suffix == "" and old is not None):
             return "enum widened: more values pass" if new is not None else "enum removed: any value passes"
         return None
     if key == "required":
-        if suffix == "removed" or (suffix == "" and old is not None and new is None):
-            return "a field is no longer required"
-        if suffix == "" and old is not None and new is not None:
-            return "the required fields changed"
+        return _required_weakening(suffix, old, new)
+    if key == "additionalProperties":
+        if old is True or new is False or same(old, new) or (isinstance(old, dict) and isinstance(new, dict)):
+            return None
+        if old is None or new is None or new is True:
+            return f"additionalProperties {_short(old)} -> {_short(new)}: extra properties now pass"
+        return None
+    if key == "type":
+        return _type_weakening(suffix, old, new)
+    if key == "pattern" and _pattern_narrower(old, new):
         return None
     if key in EXACT_CONSTRAINTS:
         if old is None:
             return None                                          # a new constraint only tightens
-        if key == "additionalProperties" and new is False:
-            return None
         if key == "uniqueItems" and new is True:
             return None
-        return f"{key} {'removed' if new is None else 'changed'}: the model may accept more input"
+        return f"{key} {'removed' if new is None else 'changed'}: the schema may accept more input"
     if key in ("anyOf", "oneOf") and old is not None:
-        return f"{key} changed: the model may accept more input"
+        return f"{key} changed: the schema may accept more input"
     return None
+
+
+def _required_weakening(suffix: str, old: Any, new: Any) -> str | None:
+    if isinstance(old, bool) or isinstance(new, bool):          # an OpenAPI parameter or request body
+        return "no longer required" if old is True and new is not True else None
+    if suffix == "removed" or (suffix == "" and old is not None and new is None):
+        return "a field is no longer required"
+    if suffix == "" and old is not None and new is not None:
+        return "the required fields changed"
+    return None
+
+
+def _type_weakening(suffix: str, old: Any, new: Any) -> str | None:
+    if suffix == "removed" or (suffix == "" and old is None):
+        return None                                              # fewer types pass, or a type is added
+    a, b = _types(old), _types(new)
+    if suffix == "" and a is not None and b is not None and all(
+            t in a or (t == "integer" and "number" in a) for t in b):
+        return None                                              # number -> integer
+    return f"type {_short(old)} -> {_short(new)}: the schema may accept more input"
+
+
+def _ref_changed(prefix: str, old: Any, new: Any, old_root: Any, new_root: Any) -> str | None:
+    """A reference removed (the value is now unconstrained, as `{}` or Any) or pointed at another schema."""
+    if old is None:
+        return None                                              # a reference replaces an inline schema
+    if new is None:
+        return f"reference {old} removed: the value is no longer checked against it"
+    a, b = _local_ref(old_root, prefix, old), _local_ref(new_root, prefix, new)
+    if a is not None and b is not None and same(a, b):
+        return None                                              # the same schema under a new name
+    return f"reference {old} -> {new}: the value is checked against a different schema"
+
+
+def _def_removed(segs: typing.Sequence[str], key: str, old: Any, old_root: Any, new_root: Any) -> str | None:
+    """A $defs entry removed while the old schema referred to it, and no new entry holds the same body."""
+    ref = "#/" + "/".join(s.replace("~", "~0").replace("/", "~1") for s in segs[1:])
+    found: list[str] = []
+    _local_refs(_node(old_root, segs[:1]), found)
+    if old_root is not None and ref not in found:
+        return None
+    defs = _node(new_root, segs[:-1])
+    if isinstance(defs, dict) and any(same(old, v) for v in defs.values()):
+        return None
+    return f"schema {key} removed while it was referenced: what referred to it is no longer checked"
+
+
+def _local_refs(node: Any, found: list[str]) -> None:
+    if isinstance(node, dict):
+        if isinstance(node.get("$ref"), str):
+            found.append(node["$ref"])
+        for v in node.values():
+            _local_refs(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _local_refs(v, found)
 
 
 def _schema_changes(refs: list[tuple[str, str, str, str]], old_tab: dict[str, Any],
@@ -1802,7 +2109,7 @@ def _schema_changes(refs: list[tuple[str, str, str, str]], old_tab: dict[str, An
         nested: list[tuple[str, str, str]] = []
         diffs = _json_paths(sa, sb, "", nested)
         for i, (p, x, y) in enumerate(diffs):
-            why = constraint_weakening(p, x, y)
+            why = constraint_weakening(p, x, y, sa, sb)
             note = "; ".join(n for n in (why, used if i == 0 else "") if n)
             out.append(Change(where, p, x, y, weakened=why is not None, note=note))
         for p, xa, xb in nested:
@@ -1829,18 +2136,55 @@ def changes(old: dict[str, Any], new: dict[str, Any],
         else:
             out += _rule_changes(rid, ra[rid], rb[rid], (types or {}).get(rid))
     refs: list[tuple[str, str, str, str]] = []
-    for section, kind, removed_weak in (("targets", "target", False), ("providers", "provider", False),
-                                        ("contracts", "contract", False)):
+    for section, kind in (("targets", "target"), ("providers", "provider"), ("contracts", "contract")):
         sa, sb = old.get(section) or {}, new.get(section) or {}
         for name in sorted(set(sa) | set(sb)):
             where = f"{kind} {name}"
-            if name not in sb:
-                out.append(Change(where, "removed", weakened=removed_weak))
+            if name not in sb and kind == "contract":
+                out.append(Change(where, "removed", weakened=True, note=_contract_users(name, ra)))
+            elif name not in sb:
+                out.append(Change(where, "removed"))
             elif name not in sa:
                 out.append(Change(where, "added"))
             else:
                 out += _entry_changes(where, kind, sa[name], sb[name], refs)
     out += _schema_changes(refs, old.get("schemas") or {}, new.get("schemas") or {})
+    out += _scan_changes(old.get("scan"), new.get("scan"))
+    return out
+
+
+def _contract_users(name: str, rules: dict[str, Any]) -> str:
+    """Why removing a contract is a weakening. Always one: a rule may name it, and a contract no rule
+    names (the pydantic models `inv init` pins) is itself the pin of the constraints it holds."""
+    users = sorted(rid for rid, e in rules.items() if isinstance(e, dict)
+                   and ((e.get("semantic") or {}).get("subject") or {}).get("contract") == name)
+    if users:
+        return f"rule {', '.join(users)} named it in the stored lock"
+    return "its pinned schema or constraints are no longer checked"
+
+
+def _scan_changes(old: Any, new: Any) -> list[Change]:
+    """The pinned scan roots and excludes. An added exclude or a removed root scans less: WEAKENED.
+    A lock pinned before the scan was pinned is compared with the default excludes."""
+    if same(old, new) or new is None:
+        return []
+    first = old is None
+    if first:
+        old = {"roots": new["roots"], "exclude": list(DEFAULT_SCAN_EXCLUDE)}
+    out: list[Change] = []
+    for key, weak_when, why in (("exclude", "added", "files matching it are no longer scanned for back doors"),
+                                ("roots", "removed", "the scan no longer reads this source root")):
+        a, b = set(old.get(key) or []), set(new.get(key) or [])
+        for verb, items in (("added", sorted(b - a)), ("removed", sorted(a - b))):
+            for x in items:
+                weak = verb == weak_when
+                notes = [why if weak else "",
+                         "compared with the default: the scan was not pinned before" if first else ""]
+                out.append(Change("scan", f"{key} {verb}", None if verb == "added" else x,
+                                  x if verb == "added" else None, weak, "; ".join(n for n in notes if n)))
+    if first and not out:
+        out.append(Change("scan", "pinned", None, new,
+                          note="the scan roots and excludes are pinned for the first time"))
     return out
 
 

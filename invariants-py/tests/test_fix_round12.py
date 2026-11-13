@@ -298,7 +298,7 @@ def test_openapi_contract_pins_only_the_operations_rules_name(tmp_path):
 def test_lock_layout(app):                      # version 3 since fix round 13 (see test_fix_round13)
     lock = json.loads((app / "invariants.lock").read_text())
     assert lock["lock_version"] == lockfile.LOCK_VERSION == 3
-    assert set(lock) == {"lock_version", "spec", "rules", "targets", "providers", "contracts", "schemas"}
+    assert set(lock) == {"lock_version", "spec", "rules", "targets", "providers", "contracts", "schemas", "scan"}
     l1 = lock["rules"]["L-1"]
     assert set(l1["doc"]) == {"statement", "owner", "class", "mediation.chokepoint"}
     assert "statement" not in l1["semantic"] and "chokepoint" not in l1["semantic"]["mediation"]

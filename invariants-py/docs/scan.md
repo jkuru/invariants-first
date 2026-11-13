@@ -164,6 +164,11 @@ roots = ["src"]
 exclude = ["*/legacy/*"]
 ```
 
+The lock pins the roots and excludes `inv check` scans with (the `scan` section of
+[lockfile.md](lockfile.md)), so adding an exclude, here or with `inv check --exclude`, or dropping a
+root is a weakening that a person accepts, like any other. The agent hook `inv hook pretool` also
+blocks an agent's edit of `[tool.invariants]`.
+
 `--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
 `--format sarif` gives SARIF 2.1.0 for code-scanning tools. A rule ablated through `INV_ABLATE` is
 not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still needs a `bad` and a

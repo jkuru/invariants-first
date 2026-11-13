@@ -79,6 +79,49 @@ removed.
   `PreToolUse` matcher in docs/start.md is now `Bash|Edit|Write|MultiEdit|NotebookEdit`, so an edit
   tool reaches it.
 
+### Security: the weakening gate fails closed
+
+- **`inv check --base` fails closed.** A base ref that does not exist, a checkout that is not a git
+  repository, and a lock at the base that cannot be read or compared (damaged, or another lock
+  version) now fail the step; before, each passed with a note. A reviewer may accept an unreadable
+  or old base lock with `--allow-weakening` or `INV_ALLOW_WEAKENING=1`; nothing accepts a missing
+  ref. Only a base with no `invariants.lock` passes, reported as a first adoption. The GitHub Action
+  no longer ignores a failed `git fetch` (`|| true` is gone) and checks that the base ref exists
+  after it, with a clear error.
+- **The scan configuration is pinned.** When a rule has a sink, the lock has a `scan` section: the
+  roots and exclude globs `inv check` scans with (`[tool.invariants.scan]`, the defaults, and any
+  `inv check --root/--exclude`). An added exclude or a removed root is WEAKENED; the reverse is a
+  change only. `inv lock` takes `--root` and `--exclude` to pin extra ones. A lock taken before is
+  compared with the default excludes, so its first `scan` pin is a non-weakening re-pin unless it
+  adds an exclude (`inv check --relock` takes it). `lockfile.DEFAULT_SCAN_EXCLUDE` holds the
+  defaults (`cli.DEFAULT_SCAN_EXCLUDE` is the same tuple).
+- **Contract removals and schema references are judged.** Removing a contract is WEAKENED (a rule
+  may name it, and an unreferenced contract such as an `inv init` pydantic pin is itself the pin of
+  its constraints). In a pinned schema, a `$ref` removed (the value becomes `{}`, Any) or pointed
+  at a schema with a different body, a `$defs` entry removed while referenced, and
+  `additionalProperties` going from `false` to absent or `true`, or from absent to `true`, are
+  WEAKENED.
+- **Dataclass, TypedDict and live OpenAPI contracts are examined.** A dataclass or TypedDict contract
+  is pinned as a JSON Schema (`{name, jsonschema}`: pydantic's `TypeAdapter` when pydantic is
+  installed, else `lockfile.stdlib_json_schema`) and judged like a pydantic model; an existing lock
+  shows its old `fields` pin replaced once, as a change only. A new contract form
+  `{type: openapi, app: "module:app"}` pins the operations of a live app's `app.openapi()` (a
+  FastAPI app), and the schemas of an OpenAPI contract's operations are now judged too.
+- **Fewer false weakenings.** These are tightenings now: `ge=1` to `gt=0` on an integer (and the
+  maximum side; `le=k` to `lt=k` on any number), an `enum` replaced by a `const` it held, `type`
+  `number` to `integer` or a type dropped from a list, and `^`/`$` anchors added to an otherwise
+  identical `pattern`. A type added to a type list is now WEAKENED (it was missed).
+- **`inv hook pretool` is harder to talk past.** File paths are resolved with `os.path.realpath`
+  first, so a symlink to the lock is the lock. A shell command that names `invariants.lock` (or a
+  glob that could match it) is blocked unless every segment naming it is clearly read-only (`cat`,
+  `less`, `head`, `grep` and the like, `git diff|show|log|status|add`, `inv check|lock
+  --check|status|scan|validate`, no redirect into a file). An edit that changes `[tool.invariants]`
+  in `pyproject.toml`, and a shell command that writes `pyproject.toml`, are blocked too. The docs
+  now say plainly that the hooks are an early warning and `inv check --base` in CI is the gate.
+- **pre-commit stages the re-pinned lock.** `inv check --relock --fail-on-repin` (the `inv-check`
+  hook's entry now) re-pins a lock that no change weakens and then exits 1 with "invariants.lock
+  re-pinned; review and `git add invariants.lock`", so a commit never leaves the new lock unstaged.
+
 ### Added
 
 - **Receiver types follow attribute chains.** `ctx.billing.refund()` with `ctx: AgentContext`, where

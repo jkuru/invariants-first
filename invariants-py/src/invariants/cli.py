@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import importlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -153,6 +154,8 @@ def _contract_modules(doc: dict[str, Any]) -> list[str]:
     for c in (doc.get("contracts") or {}).values():
         if isinstance(c, dict) and c.get("type") in lockfile.PY_CONTRACTS and isinstance(c.get("ref"), str):
             mods.append(c["ref"].partition(":")[0])
+        elif isinstance(c, dict) and c.get("type") == "openapi" and isinstance(c.get("app"), str):
+            mods.append(c["app"].partition(":")[0])
     return mods
 
 
@@ -273,7 +276,8 @@ def cmd_lock(a: argparse.Namespace) -> int:
     doc = read_document(path)
     with _import_path(path, a.path), isolated() as reg:
         load(path)
-        fresh = lockfile.build(doc, path.resolve().parent)
+        fresh = lockfile.build(doc, path.resolve().parent,
+                               scan_settings(a, path) if lockfile.mediated(doc) else None)
         types = lockfile.clause_types(reg)
         for w in outside_roots(path, doc, a.path):
             _err(w)
@@ -384,11 +388,7 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
     return cfg
 
 
-# Test code and migrations are not production paths: by default the scan skips them (at any depth), so
-# a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
-# this list (exclude = [] scans them too).
-DEFAULT_SCAN_EXCLUDE = scanner.anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
-                                        "migrations", "alembic")
+DEFAULT_SCAN_EXCLUDE = lockfile.DEFAULT_SCAN_EXCLUDE
 
 
 def _exclude(a: argparse.Namespace, path: pathlib.Path) -> list[str]:
@@ -406,6 +406,13 @@ def _roots(a: argparse.Namespace, path: pathlib.Path) -> list[pathlib.Path]:
         if not r.exists():
             raise Usage(f"source root {r} does not exist")
     return roots
+
+
+def scan_settings(a: argparse.Namespace, path: pathlib.Path) -> dict[str, list[str]]:
+    """The roots (relative to the rule file) and excludes `inv check` scans with, as the lock pins them."""
+    base = path.resolve().parent
+    roots = [pathlib.Path(os.path.relpath(r.resolve(), base)).as_posix() for r in _roots(a, path)]
+    return lockfile.scan_pin(roots, _exclude(a, path))
 
 
 def cmd_scan(a: argparse.Namespace) -> int:
@@ -476,7 +483,7 @@ def cmd_init(a: argparse.Namespace) -> int:
         return OK
     _out("running `inv lock` to pin them ...")
     code = cmd_lock(argparse.Namespace(rulefile=str(path), check=False, update_artifacts=False, lock=None,
-                                       accept_weakening=False, path=a.path))
+                                       accept_weakening=False, path=a.path, root=[], exclude=[]))
     if code == OK:
         _out("next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit "
              "(see docs/start.md)")
@@ -517,36 +524,63 @@ def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
     return p.returncode, p.stdout if p.returncode == 0 else p.stderr.strip()
 
 
-def base_changes(path: pathlib.Path, lock_path: pathlib.Path, ref: str,
-                 extra: Sequence[str]) -> tuple[list[lockfile.Change] | None, str]:
-    """The changes between the lock committed at git `ref` and the rule file as it is now, or (None, why)
-    when there is nothing to compare (no git, no lock at ref, an older lock version)."""
+class BaseUnavailable(Exception):
+    """`--base` cannot compare with the base branch. A reviewer may accept it (--allow-weakening) when
+    the base lock exists but cannot be read or compared; never when the base ref itself is missing."""
+
+    def __init__(self, why: str, acceptable: bool = False) -> None:
+        super().__init__(why)
+        self.acceptable = acceptable
+
+
+def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None, str]:
+    """The lock committed at git `ref` and its name there, or (None, name) when `ref` has no lock."""
     where = lock_path.resolve().parent
     code, top = _git(where, "rev-parse", "--show-toplevel")
     if code != 0:
-        return None, f"not a git checkout ({top})"
+        raise BaseUnavailable(f"not a git checkout ({top}); --base needs the repository and the base ref")
+    if _git(where, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")[0] != 0:
+        raise BaseUnavailable(f"base ref {ref} not found; fetch it first (for example `git fetch origin main`)")
     rel = lock_path.resolve().relative_to(pathlib.Path(top.strip()).resolve()).as_posix()
-    code, text = _git(where, "show", f"{ref}:{rel}")
-    if code != 0:
-        return None, f"no {rel} at {ref}: nothing to compare (the first lock is reviewed as a whole)"
+    name = f"{ref}:{rel}"
+    if _git(where, "cat-file", "-e", name)[0] != 0:
+        return None, name
+    code, text = _git(where, "show", name)
     try:
+        if code != 0:
+            raise ValueError(text)
         stored = json.loads(text)
-        lockfile.validate(stored, f"{ref}:{rel}")
+        if not isinstance(stored, dict):
+            raise ValueError("not a JSON object")
+        version = lockfile.check_version(stored, name)
+        lockfile.validate(stored, name)
     except (ValueError, LoadError) as e:
-        return None, f"{ref}:{rel} is not a lock this invariants reads ({e})"
-    if stored.get("lock_version") != lockfile.LOCK_VERSION:
-        return None, f"{ref}:{rel} is lock version {stored.get('lock_version')}; compare after it is migrated"
+        raise BaseUnavailable(f"{name} is not a lock this invariants reads ({e})", acceptable=True) from e
+    if version != lockfile.LOCK_VERSION:
+        raise BaseUnavailable(f"{name} is lock version {version}; this invariants compares version "
+                              f"{lockfile.LOCK_VERSION} only, so weakenings since {ref} cannot be shown "
+                              f"(migrate the lock on {ref} first)", acceptable=True)
+    return stored, name
+
+
+def base_changes(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str],
+                 scan: dict[str, Any] | None = None) -> tuple[list[lockfile.Change] | None, str]:
+    """The changes between the lock committed at git `ref` and the rule file as it is now, or (None, why)
+    when `ref` has no lock (a first adoption, reviewed as a whole). BaseUnavailable when there is no
+    git checkout, no such ref, or a lock at `ref` that cannot be read or compared."""
+    stored, name = _base_lock(lock_path, ref)
+    if stored is None:
+        return None, f"no {name}: first adoption of invariants, nothing to compare (review the whole lock)"
     doc = read_document(path)
     with _import_path(path, extra), isolated() as reg:
         load(path)
-        fresh = lockfile.build(doc, path.resolve().parent)
+        fresh = lockfile.build(doc, path.resolve().parent, scan)
         types = lockfile.clause_types(reg)
     return _compare(lambda: lockfile.changes(stored, fresh, types), lock_path), ""
 
 
 def cmd_check(a: argparse.Namespace) -> int:
     """Everything CI, pre-commit and an agent hook need, with one exit code."""
-    import os
     path = _rule_file(a.rulefile)
     lock_path = path.with_name(lockfile.LOCK_NAME)
     doc = read_document(path)
@@ -572,19 +606,23 @@ def cmd_check(a: argparse.Namespace) -> int:
     if code != OK:
         _out("fail")
         return FAILED
+    scan = {"root": a.root, "exclude": a.exclude}
     code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=True, update_artifacts=False,
-                                                        lock=None, accept_weakening=False, path=a.path))
+                                                        lock=None, accept_weakening=False, path=a.path, **scan))
     if code != OK and a.relock and lock_path.exists():
         code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=False,
                                                             update_artifacts=False, lock=None,
-                                                            accept_weakening=False, path=a.path))
+                                                            accept_weakening=False, path=a.path, **scan))
         if code == OK:
             text = f"re-pinned {lock_path.name}: no change weakens a rule (review the lock diff)"
+            if a.fail_on_repin:
+                code, text = FAILED, f"{lock_path.name} re-pinned; review and `git add {lock_path.name}`"
     step("lock", code, text, None if text.startswith("re-pinned") else f"{lock_path.name} matches")
     if a.base:
         allow = a.allow_weakening or os.environ.get(ALLOW_WEAKENING_ENV) == "1"
-        code, text = _captured(lambda _: _base_step(path, lock_path, a.base, a.path, allow),
-                               argparse.Namespace())
+        code, text = _captured(lambda ns: _base_step(path, lock_path, a.base, a.path, allow,
+                                                     scan_settings(ns, path) if mediated else None),
+                               argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
     if targeted:
         code, text = _captured(cmd_verify, argparse.Namespace(rulefile=str(path), path=a.path, imports=a.imports,
@@ -602,8 +640,18 @@ def cmd_check(a: argparse.Namespace) -> int:
     return FAILED if failed else OK
 
 
-def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool) -> int:
-    changes, why = base_changes(path, lock_path, ref, extra)
+def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool,
+               scan: dict[str, Any] | None = None) -> int:
+    try:
+        changes, why = base_changes(path, lock_path, ref, extra, scan)
+    except BaseUnavailable as e:
+        if allow and e.acceptable:
+            _out(f"{e} (allowed by a reviewer)")
+            return OK
+        _out(f"cannot compare with {ref}: {e}")
+        if e.acceptable:
+            _out(f"a person may accept this: --allow-weakening or {ALLOW_WEAKENING_ENV}=1, set by a reviewer")
+        return FAILED
     if changes is None:
         _out(why)
         return OK
@@ -623,19 +671,131 @@ def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Seq
 WEAKENING_SWITCHES = ("--accept-weakening", "--allow-weakening", ALLOW_WEAKENING_ENV)
 
 
-# a shell command that writes the lock itself: a redirect, an in-place edit, a copy, move or delete onto it
-LOCK_WRITE = re.compile(r"(?:>>?|\btee\b|\bsed\s+(?:-\w+\s+)*-i|\bperl\s+-\w*i|\bcp\b|\bmv\b|\brm\b|\btruncate\b|"
-                        r"\bdd\b)[^|;&]*\binvariants\.lock\b")
+PROTECTED = (lockfile.LOCK_NAME, "pyproject.toml")
+# what a shell command may do with a protected file and still pass the hook: read it
+READ_COMMANDS = frozenset({"cat", "less", "more", "head", "tail", "grep", "egrep", "rg", "wc", "jq", "diff", "ls",
+                           "stat"})
+READ_GIT = frozenset({"diff", "show", "log", "status", "blame", "add"})   # add stages the file as it is
+READ_INV = frozenset({"check", "status", "scan", "validate", "verify"})
+SHELL_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
+HARMLESS_REDIRECT = re.compile(r"\d?>&\d|\d?>\s*/dev/null")
+
+
+def _mentions(command: str, name: str) -> bool:
+    """The command names the file, or a glob that could match it (invariants.l*, pyproject.*)."""
+    stem = name.partition(".")[0]
+    return name in command or re.search(re.escape(stem) + r"\.\w*[*?\[{]", command) is not None
+
+
+def _reads_only(segment: str) -> bool:
+    """A shell command segment that only reads files: no redirect into a file, and a reading command."""
+    import shlex
+    if ">" in HARMLESS_REDIRECT.sub("", segment) or "`" in segment or "$(" in segment:
+        return False
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        return False
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words = words[1:]                           # VAR=value before the command
+    if not words:
+        return False
+    cmd, rest = pathlib.PurePath(words[0]).name, words[1:]
+    if cmd in READ_COMMANDS:
+        return True
+    if cmd == "git":
+        while rest[:1] in (["-C"], ["-c"]):
+            rest = rest[2:]
+        return bool(rest) and rest[0] in READ_GIT
+    if cmd == "inv" and rest:
+        return rest[0] in READ_INV or (rest[0] == "lock" and "--check" in rest)
+    return False
+
+
+def _shell_writes(command: str) -> str | None:
+    """The protected file a shell command may write: one it names outside a read-only segment."""
+    for name in PROTECTED:
+        if _mentions(command, name) and not all(
+                _reads_only(seg) for seg in SHELL_SPLIT.split(command) if _mentions(seg, name)):
+            return name
+    return None
+
+
+def _invariants_table(text: str) -> Any:
+    """[tool.invariants] of a pyproject.toml text; the text itself when it does not parse."""
+    import tomllib
+    try:
+        return (tomllib.loads(text).get("tool") or {}).get("invariants")
+    except tomllib.TOMLDecodeError:
+        return text if "invariants" in text else None
+
+
+def _edited_text(tool_input: dict[str, Any], before: str) -> str | None:
+    """The file's text after an Edit, MultiEdit or Write tool call, or None when it cannot be told."""
+    if isinstance(tool_input.get("content"), str):
+        return str(tool_input["content"])
+    given = tool_input.get("edits")
+    edits: list[Any] = given if isinstance(given, list) else [tool_input]
+    text = before
+    for e in edits:
+        old, new = (e.get("old_string"), e.get("new_string")) if isinstance(e, dict) else (None, None)
+        if not (isinstance(old, str) and isinstance(new, str)):
+            return None
+        text = text.replace(old, new) if e.get("replace_all") else text.replace(old, new, 1)
+    return text
+
+
+def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) -> bool:
+    """An edit of pyproject.toml that changes its [tool.invariants] tables (the scan roots and excludes)."""
+    try:
+        before = path.read_text()
+    except OSError:
+        before = ""
+    after = _edited_text(tool_input, before)
+    if after is None:
+        return "invariants" in json.dumps(tool_input)
+    return not lockfile.same(_invariants_table(before), _invariants_table(after))
+
+
+def _pretool(event: dict[str, Any]) -> int:
+    given = event.get("tool_input")
+    tool_input: dict[str, Any] = given if isinstance(given, dict) else {}
+    cwd = str(event.get("cwd") or os.getcwd())
+    command = str(tool_input.get("command") or "")
+    files = [pathlib.Path(os.path.realpath(os.path.join(cwd, str(tool_input[k]))))
+             for k in ("file_path", "path", "notebook_path") if tool_input.get(k)]
+    written = _shell_writes(command)
+    if any(f.name == lockfile.LOCK_NAME for f in files) or written == lockfile.LOCK_NAME:
+        _err(f"invariants: blocked a direct edit of {lockfile.LOCK_NAME}. The lock is written only by "
+             f"`inv lock` or `inv check --relock`, which refuse a weakening; edit invariants.yaml or the "
+             f"code, then run one of them.")
+        return 2
+    if written or any(f.name == "pyproject.toml" and _touches_invariants_table(f, tool_input) for f in files):
+        _err("invariants: blocked an edit of the [tool.invariants] settings in pyproject.toml (or a shell "
+             "command that writes pyproject.toml). The scan roots and excludes decide which code is checked "
+             "for back doors; tell the user what you want to change and let them make the edit.")
+        return 2
+    hit = next((s for s in WEAKENING_SWITCHES if s in command), None)
+    if hit:
+        _err(f"invariants: blocked `{hit}`. Accepting a weakened rule is a person's decision. Tell the user "
+             f"which rule your change weakens and why (run `inv check` to list it), and let them accept it.")
+        return 2
+    return OK
 
 
 def cmd_hook(a: argparse.Namespace) -> int:
     """An AI coding agent's hook (Claude Code's JSON on stdin; exit 2 blocks and tells the agent why).
 
     pretool: refuse a shell command that accepts a weakening (--accept-weakening, --allow-weakening,
-             INV_ALLOW_WEAKENING), so only a person can, and any direct edit of invariants.lock (an edit
-             or write tool on it, or a shell command that writes it): only `inv lock` and
-             `inv check --relock` write the lock, and they refuse a weakening.
-    stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop)."""
+             INV_ALLOW_WEAKENING), so only a person can; any direct edit of invariants.lock (an edit or
+             write tool on it, symlinks resolved, or a shell command naming it that is not clearly
+             read-only): only `inv lock` and `inv check --relock` write the lock, and they refuse a
+             weakening; and an edit of pyproject.toml's [tool.invariants] tables, or a shell command
+             that writes pyproject.toml.
+    stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop).
+
+    The hooks are an early warning against an agent's shortcuts, not the gate: a determined command
+    can always get past a text check. `inv check --base` in CI is the gate."""
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     try:
         event = json.loads(raw) if raw.strip() else {}
@@ -643,21 +803,7 @@ def cmd_hook(a: argparse.Namespace) -> int:
         event = {}
     event = event if isinstance(event, dict) else {}
     if a.event == "pretool":
-        given = event.get("tool_input")
-        tool_input: dict[str, Any] = given if isinstance(given, dict) else {}
-        command = str(tool_input.get("command") or "")
-        hit = next((s for s in WEAKENING_SWITCHES if s in command), None)
-        paths = [str(tool_input.get(k) or "") for k in ("file_path", "path", "notebook_path")]
-        if any(pathlib.PurePath(p).name == lockfile.LOCK_NAME for p in paths if p) or LOCK_WRITE.search(command):
-            _err(f"invariants: blocked a direct edit of {lockfile.LOCK_NAME}. The lock is written only by "
-                 f"`inv lock` or `inv check --relock`, which refuse a weakening; edit invariants.yaml or the "
-                 f"code, then run one of them.")
-            return 2
-        if hit:
-            _err(f"invariants: blocked `{hit}`. Accepting a weakened rule is a person's decision. Tell the user "
-                 f"which rule your change weakens and why (run `inv check` to list it), and let them accept it.")
-            return 2
-        return OK
+        return _pretool(event)
     if event.get("stop_hook_active"):
         return OK                                   # already sent back once: do not loop
     base = pathlib.Path(str(event.get("cwd") or "."))
@@ -666,7 +812,8 @@ def cmd_hook(a: argparse.Namespace) -> int:
         rule = pathlib.Path(a.rulefile)
     if rule is None:
         return OK
-    code, text = _captured(cmd_check, argparse.Namespace(rulefile=str(rule), path=a.path, relock=True, base=None, root=[], exclude=[],
+    code, text = _captured(cmd_check, argparse.Namespace(rulefile=str(rule), path=a.path, relock=True,
+                                                         fail_on_repin=False, base=None, root=[], exclude=[],
                                                          allow_weakening=False, imports=[]))
     if code == OK:
         return OK
@@ -705,6 +852,10 @@ def parser() -> argparse.ArgumentParser:
                     help="re-pin even when a change may weaken a rule (lower status or mode, removed enforcer or "
                          "clause, fail_open, a looser threshold, a changed bind, view, provider, "
                          "model_policy or artifact); without it `inv lock` refuses")
+    lk.add_argument("--root", action="append", default=[], metavar="DIR",
+                    help="pin this scan root (as `inv check --root`; prefer [tool.invariants.scan] roots)")
+    lk.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                    help="pin this scan exclude (as `inv check --exclude`; prefer [tool.invariants.scan] exclude)")
     vf = add("verify", cmd_verify, "import the app and check every target is guarded and every guard named")
     vf.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE",
                     help="also import MODULE (contracts of type python are imported already)")
@@ -738,6 +889,9 @@ def parser() -> argparse.ArgumentParser:
     ck.add_argument("--relock", action="store_true",
                     help="re-pin a stale lock when no change weakens a rule (for pre-commit); a weakening "
                          "still fails")
+    ck.add_argument("--fail-on-repin", action="store_true",
+                    help="with --relock: exit 1 after re-pinning, so the new lock is reviewed and staged (the "
+                         "pre-commit hook)")
     ck.add_argument("--base", metavar="REF",
                     help="also fail when the rules weaken since the lock committed at git REF (e.g. origin/main), "
                          "even if the change re-pinned the lock with --accept-weakening")

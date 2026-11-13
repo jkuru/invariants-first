@@ -65,7 +65,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 | Field | Meaning |
 |---|---|
 | `spec` | `invariant/v0.1`. |
-| `contracts` | Named contracts: `{type: python \| pydantic \| dataclass \| schema \| openapi \| ..., ref: ...}`. A `pydantic` contract pins the model's constraints, and loosening one is a weakening ([lockfile.md](lockfile.md#weakening)). `inv lock` pins each one at contract granularity: see [lockfile.md](lockfile.md). |
+| `contracts` | Named contracts: `{type: python \| pydantic \| dataclass \| schema \| openapi \| ..., ref: ...}`, or `{type: openapi, app: "module:app"}` to read the OpenAPI document of a live app (`app.openapi()`, as a FastAPI app has). A `pydantic`, `dataclass` or TypedDict contract pins its JSON Schema's constraints, and loosening one is a weakening ([lockfile.md](lockfile.md#weakening)); removing a contract is one too. `inv lock` pins each one at contract granularity: see [lockfile.md](lockfile.md). |
 | `targets` | `"py:pkg.mod.fn": {effects: none \| external}`. Effects belong to the target, once. An unlisted target is `external`. |
 | `providers` | `name: {type, from, args}`. See below. |
 | `rules` | The list of rules. |
