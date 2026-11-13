@@ -27,8 +27,17 @@ Behaviour changes:
   excluded module is reported: a name or attribute read as a value (so a base class, a decorator, a
   callback and a getattr() target too) and a star import. The message says `calls`, `refers to` or
   `star-imports`. References inside a door, a sink or code reached only through them are still not
-  reported, and an annotation (`h: Helper = x`) is not a reference. An import with no use is not
-  reported (a module the scan does not read can still run code when imported).
+  reported, and an annotation (`h: Helper = x`) is not a reference.
+- **An import of excluded code that runs at import time is reported (S-15).** A bare module-level
+  `import app.admin_test` (or `from app import admin_test`, or `from app.admin_test import route`)
+  with no later use passed, though the module registers routes when imported. Excluded modules are now
+  read lightly for import-time effects: a decorated function or class (`@router.post`, `@app.get`) or a
+  top-level call or statement other than constants, dataclass, enum and typing definitions and logging
+  setup (`if __name__ == "__main__":` blocks are skipped; a module that cannot be parsed counts as
+  running code). A module-level import of such a module (or of an excluded package on its path) is
+  `unresolved/excluded-callee`: "imports app.admin_test in app/admin_test.py, which runs code at import
+  time that the scan does not read". A module-level import of an excluded module with no such effects
+  stays quiet, and imports and references inside functions keep the door/sink exemption.
 - **Skipped directories inside the project are excluded modules (S-13).** Files under the directories
   the scan always skips (`build`, `dist`, `venv`, `node_modules`, `site-packages`, `__pycache__`,
   dot-directories) were dropped before the exclude logic, so `from app.build.jobs import route;

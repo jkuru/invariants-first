@@ -89,9 +89,11 @@ def test_a_router_in_an_excluded_file_mounted_by_scanned_code_is_reported(tmp_pa
             def route(x: int):
                 SinkRepo().save(x)
             """})
-    assert _codes(rep) == ["unresolved/excluded-callee"], rep.findings
-    assert "app.admin_test.router" in rep.findings[0].message
-    assert "refers to" in rep.findings[0].message
+    # the import (its module registers a route when imported) and the mounted router
+    assert _codes(rep) == ["unresolved/excluded-callee"] * 2, rep.findings
+    msgs = sorted(f.message for f in rep.findings)
+    assert msgs[0].startswith("imports app.admin_test") and "runs code at import time" in msgs[0]
+    assert msgs[1].startswith("refers to app.admin_test.router")
 
 
 def test_a_reference_inside_a_door_stays_behind_the_door(tmp_path):
@@ -204,4 +206,63 @@ def test_an_excluded_subclass_without_super_users_changes_nothing(tmp_path):
     rep = _scan(tmp_path, MIX + "def handler(m: Mixin, x):\n    m.save(x)\n", {
         "app/testing/__init__.py": "",
         "app/testing/leaf.py": "from app.repo import Base\nclass Other(Base):\n    pass\n"})
+    assert rep.findings == [], rep.findings
+
+
+# --- S-15: a module-level import of an excluded module that runs code at import time --------------------
+ROUTES = """
+    from fastapi import APIRouter
+    from app.repo import SinkRepo
+    router = APIRouter()
+    @router.post('/x')
+    def route(x: int):
+        SinkRepo().save(x)
+    """
+QUIET = """
+    import dataclasses
+    import logging
+    import typing
+    from app.repo import SinkRepo
+    log = logging.getLogger(__name__)
+    T = typing.TypeVar("T")
+    LIMIT = 10
+    @dataclasses.dataclass
+    class Row:
+        x: int = 0
+    def route(x):
+        SinkRepo().save(x)
+    if __name__ == "__main__":
+        route(1)
+    """
+
+
+@pytest.mark.parametrize("ops", ["import app.admin_test\n", "from app import admin_test\n",
+                                 "from app.admin_test import route\n"],
+                         ids=["import", "from-package", "from-module"])
+def test_an_import_of_an_excluded_module_with_import_time_effects_is_reported(tmp_path, ops):
+    rep = _scan(tmp_path, ops, {"app/admin_test.py": ROUTES})
+    assert _codes(rep) == ["unresolved/excluded-callee"], rep.findings
+    assert "imports app.admin_test" in rep.findings[0].message
+    assert "runs code at import time" in rep.findings[0].message
+
+
+def test_a_top_level_call_in_an_excluded_module_is_an_import_time_effect(tmp_path):
+    rep = _scan(tmp_path, "import app.admin_test\n", {
+        "app/admin_test.py": "from app.repo import SinkRepo\nSinkRepo().save(1)\n"})
+    assert _codes(rep) == ["unresolved/excluded-callee"], rep.findings
+
+
+def test_an_import_of_an_excluded_module_without_import_time_effects_stays_quiet(tmp_path):
+    rep = _scan(tmp_path, "import app.admin_test\nfrom app import admin_test as a\n",
+                {"app/admin_test.py": QUIET})
+    assert rep.findings == [], rep.findings
+
+
+def test_a_function_level_import_inside_a_door_stays_behind_the_door(tmp_path):
+    rep = _scan(tmp_path, "", {"app/admin_test.py": ROUTES, "app/svc.py": """
+        from app.repo import SinkRepo
+        def door(repo: SinkRepo, x):
+            import app.admin_test
+            repo.save(x)
+        """})
     assert rep.findings == [], rep.findings

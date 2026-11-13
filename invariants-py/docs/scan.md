@@ -175,7 +175,12 @@ noted: any reference from scanned code into an excluded module (production code 
 a callback, a decorator, a base class or a getattr() target, a star import of one, a router from one
 mounted with `include_router`) is `unresolved/excluded-callee`, naming the file and the glob, since the
 scan cannot see where it goes. A reference inside a door, a sink or code reached only through them is
-not reported, nor is an annotation or an import with no use. Narrow the exclude or move the code.
+not reported, nor is an annotation. A module-level import of an excluded module (`import
+app.admin_test`, `from app import admin_test`) is reported even with no later use when that module
+runs code at import time ("imports ..., which runs code at import time that the scan does not read"):
+excluded modules are read lightly for a decorated function or class (`@router.post`, `@app.get`) or a
+top-level call other than constants, dataclass, enum and typing definitions and logging setup. An
+import of an excluded module with no such effects stays quiet. Narrow the exclude or move the code.
 Directories the scan always skips (`build`, `dist`, `venv`, `node_modules`, `site-packages`,
 `__pycache__`, dot-directories) count as excluded the same way when their modules are importable under
 the project's own package names (`app/build/jobs.py` is `app.build.jobs`); a virtualenv or a

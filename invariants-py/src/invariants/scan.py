@@ -343,6 +343,8 @@ class _Index:
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
         self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
         self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
+        self._excluded_trees: dict[str, tuple[ast.Module, dict[str, str]] | None] = {}
+        self._effects: dict[str, bool] = {}               # excluded module -> runs code at import time
 
     def excluded_module(self, fq: str) -> str | None:
         """The excluded module fq names or lies in (a scanned module of the same name wins), else None."""
@@ -492,25 +494,37 @@ class _Index:
                                  and b.split(".")[0] not in _KNOWN_BASE_MODULES)
                    for b in self._base_names(cls))
 
+    def _excluded_module(self, name: str) -> tuple[ast.Module, dict[str, str]] | None:
+        """An excluded module's tree and its import aliases, parsed once (never walked like scanned code)."""
+        if name not in self._excluded_trees:
+            file = self.excluded_files[name]
+            try:
+                tree = ast.parse(file.read_bytes(), filename=str(file))
+            except (SyntaxError, ValueError, OSError):
+                self._excluded_trees[name] = None
+                return None
+            package = name if file.name == "__init__.py" else name.rpartition(".")[0]
+            mod = _Module(name, file, file.parent, tree, package)
+            aliases: dict[str, str] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    aliases.update({a.asname or a.name.split(".")[0]: a.name if a.asname else a.name.split(".")[0]
+                                    for a in node.names})
+                elif isinstance(node, ast.ImportFrom):
+                    src = self._absolute(mod, node)
+                    aliases.update({a.asname or a.name: f"{src}.{a.name}" for a in node.names if a.name != "*"})
+            self._excluded_trees[name] = (tree, aliases)
+        return self._excluded_trees[name]
+
     def excluded_subclass(self, classes: set[str]) -> str | None:
         """A class in an excluded module (read for its class statements only) with a base in classes."""
         if self._excluded_bases is None:
             self._excluded_bases = []
-            for name, file in self.excluded_files.items():
-                try:
-                    tree = ast.parse(file.read_bytes(), filename=str(file))
-                except (SyntaxError, ValueError, OSError):
+            for name in self.excluded_files:
+                got_mod = self._excluded_module(name)
+                if got_mod is None:
                     continue
-                package = name if file.name == "__init__.py" else name.rpartition(".")[0]
-                mod = _Module(name, file, file.parent, tree, package)
-                aliases: dict[str, str] = {}
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        aliases.update({a.asname or a.name.split(".")[0]: a.name if a.asname else a.name.split(".")[0]
-                                        for a in node.names})
-                    elif isinstance(node, ast.ImportFrom):
-                        src = self._absolute(mod, node)
-                        aliases.update({a.asname or a.name: f"{src}.{a.name}" for a in node.names if a.name != "*"})
+                tree, aliases = got_mod
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ClassDef):
                         got = set()
@@ -521,6 +535,16 @@ class _Index:
                                 got.add(self._follow(self.canon(".".join(filter(None, [aliases.get(head, head), rest])))))
                         self._excluded_bases.append((f"{name}.{node.name}", got))
         return next((c for c, bs in self._excluded_bases if bs & classes), None)
+
+    def import_effects(self, name: str) -> bool:
+        """The excluded module runs code at import time beyond definitions: a decorated function or class
+        (`@router.post`, `@app.get`) or a top-level call, other than constants, dataclass and typing
+        definitions and logging setup. A module the scan cannot parse counts as running code."""
+        if name not in self._effects:
+            got = self._excluded_module(name) if name in self.excluded_files else None
+            self._effects[name] = (_runs_code(got[0].body, got[1]) if got is not None
+                                   else name in self.excluded_files)
+        return self._effects[name]
 
     def mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
         """The method resolution order of a class through the scanned classes (C3; bases the scan does
@@ -602,6 +626,63 @@ class _Index:
                 binds.update((a.asname or a.name).split(".")[0] for a in n.names)
         self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
         return out
+
+
+# calls and decorators that only define things at import time (constants, dataclasses, typing, logging)
+_DEFINING_MODULES = frozenset({"typing", "typing_extensions", "dataclasses", "logging", "enum", "re",
+                               "collections", "functools", "abc", "contextlib"})
+_DEFINING_NAMES = frozenset({"frozenset", "set", "dict", "list", "tuple", "str", "int", "float", "bool",
+                             "bytes", "object", "property", "staticmethod", "classmethod", "len", "range"})
+
+
+def _defines_only(node: ast.AST | None, aliases: dict[str, str]) -> bool:
+    """Every call in node (a decorator, an assigned value) only defines something."""
+    if node is None:
+        return True
+    for n in ast.walk(node):
+        f = n.func if isinstance(n, ast.Call) else n if n is node and _dotted(n) else None
+        if f is None:
+            continue
+        d = _dotted(f)
+        if d is None:
+            return False
+        head, _, rest = d.partition(".")
+        full = ".".join(filter(None, [aliases.get(head, head), rest]))
+        if not (full.split(".")[0] in _DEFINING_MODULES or full in _DEFINING_NAMES
+                or full.endswith(".getLogger")):
+            return False
+    return True
+
+
+def _runs_code(body: list[ast.stmt], aliases: dict[str, str]) -> bool:
+    """A module body (or a top-level if/try branch of one) runs code beyond definitions when imported."""
+    for st in body:
+        if isinstance(st, (ast.Import, ast.ImportFrom, ast.Pass, ast.Global)):
+            continue
+        if isinstance(st, ast.If):
+            t = st.test                                      # `if __name__ == "__main__":` runs only as a script
+            if isinstance(t, ast.Compare) and _dotted(t.left) == "__name__":
+                continue
+            if _runs_code(st.body, aliases) or _runs_code(st.orelse, aliases) or not _defines_only(t, aliases):
+                return True
+        elif isinstance(st, ast.Try):
+            if any(_runs_code(b, aliases) for b in (st.body, st.orelse, st.finalbody,
+                                                    *[h.body for h in st.handlers])):
+                return True
+        elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # a decorator runs at import (`@router.post` registers a route); class bodies are not read
+            if not all(_defines_only(d, aliases) for d in st.decorator_list):
+                return True
+        elif isinstance(st, (ast.Assign, ast.AnnAssign)):
+            if not _defines_only(st.value, aliases):
+                return True
+        elif isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant):
+            continue                                         # a docstring
+        elif _TYPE_ALIAS is not None and isinstance(st, _TYPE_ALIAS):
+            continue
+        else:                                                # a call, a loop, a with block, ...
+            return True
+    return False
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -1093,6 +1174,17 @@ class _Walker:
             src = self.idx._absolute(self.mod, node)
             if ex := self.idx.excluded_module(src):           # its names are unknown to the scan
                 self._site("excluded", owner, node, f"{src}|{ex}|star")
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and owner.endswith(".<module>"):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            else:
+                src = self.idx._absolute(self.mod, node)
+                names = [src, *(f"{src}.{a.name}" for a in node.names)]
+            # importing a.b.c runs a, a.b and a.b.c: one that is excluded and runs code is reported
+            run = [p for n in names for p in (".".join(n.split(".")[:i]) for i in range(1, n.count(".") + 2))
+                   if self.idx.excluded_module(p) == p and self.idx.import_effects(p)]
+            if run:
+                self._site("excluded", owner, node, f"{run[0]}|{run[0]}|import")
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -1582,11 +1674,13 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
         elif s.what == "excluded" and s.owner not in trusted and s.owner not in dominated:
             fq, mod, how = s.detail.split("|")
             path, glob = idx.excluded[mod]
-            verb = {"call": "calls", "ref": "refers to", "star": "star-imports"}[how]
+            verb = {"call": "calls", "ref": "refers to", "star": "star-imports", "import": "imports"}[how]
             why = (f"in a {glob!r} directory, which the scan always skips" if glob in SKIP_DIRS or
                    glob.startswith(".") else f"excluded by {glob!r}")
+            what = ("which runs code at import time that the scan does not read" if how == "import"
+                    else "which the scan does not read")
             out.append(_finding(idx, rid, "unresolved", "unresolved/excluded-callee",
-                                f"{verb} {fq} in {path}, which the scan does not read ({why}): "
+                                f"{verb} {fq} in {path}, {what} ({why}): "
                                 f"it may reach the sink; scan it (narrow the exclude) or move it out of the "
                                 f"excluded path", s.owner, s.line, s.col))
         elif s.what in ("reflection", "dynimport"):
