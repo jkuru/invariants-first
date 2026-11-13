@@ -7,6 +7,7 @@ import pathlib
 from typing import Any, Iterator
 
 from .. import cel
+from ..confinement import confined
 from ..errors import LoadError
 from ..model import DEFAULT_NAMES, ENFORCER_FIELDS, EVALUATED, RULE_FIELDS, STATUS_RANK, VIEW_POINTS, Rule
 from ..registry import Registry
@@ -149,7 +150,7 @@ def _load_enforcer(rule: Rule, reg: Registry, base_dir: pathlib.Path, names: set
 
 def _check_artifact(rid: str, enf: dict[str, Any], base_dir: pathlib.Path) -> None:
     path, _, digest = str(enf["artifact"]).partition("#sha256:")
-    f = base_dir / path
+    f = confined(base_dir / path, f"{rid}: artifact {path}")
     if not f.exists():
         raise LoadError(f"{rid}: artifact {path} missing")
     if digest and hashlib.sha256(f.read_bytes()).hexdigest() != digest:

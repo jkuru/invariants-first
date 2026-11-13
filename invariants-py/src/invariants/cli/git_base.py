@@ -12,7 +12,7 @@ from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import isolated
 from .common import ALLOW_WEAKENING_ENV, FAILED, OK, _compare, _out, _print_changes
-from .project import DEFAULT_SCAN_EXCLUDE, _import_path, _str_list
+from .project import DEFAULT_SCAN_EXCLUDE, _import_path, _setuptools_where, _str_list
 
 
 def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
@@ -149,9 +149,7 @@ def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
     cfg = (tool.get("invariants") or {}).get("scan") or {}
     roots = [posixpath.normpath(r) for r in _str_list(cfg.get("roots"))]
     if not roots:
-        finder = (tool.get("setuptools") or {}).get("packages") or {}
-        found = (finder.get("find") or {}).get("where") if isinstance(finder, dict) else None
-        dirs = [posixpath.normpath(d) for d in [*_str_list(found), "src"]] if has_py else []
+        dirs = [posixpath.normpath(d) for d in [*_setuptools_where(tool), "src"]] if has_py else []
         roots = [*(d for d in dirs if d != "." and tree.get(posixpath.normpath(pre + d)) == "tree"), "."]
     exclude = _str_list(cfg["exclude"]) if isinstance(cfg.get("exclude"), list) else list(DEFAULT_SCAN_EXCLUDE)
     return lock.scan_pin(roots, exclude)

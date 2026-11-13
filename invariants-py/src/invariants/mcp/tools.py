@@ -10,6 +10,7 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
+from ..confinement import CONFINE_ENV
 from .confine import ToolError, _opt_str, _rel, _root, _rule_file, _source_roots, _strs
 
 CHILD_TIMEOUT = 600
@@ -57,11 +58,16 @@ def tool_scan(server_root: pathlib.Path, default_rules: pathlib.Path | None, arg
 
 
 # --- check and status (child processes: they import the app) ------------------------------------
-def _inv(root: pathlib.Path, *argv: str) -> tuple[int, str, str]:
+def _inv(root: pathlib.Path, server_root: pathlib.Path, rule_file: pathlib.Path, *argv: str) -> tuple[int, str, str]:
+    """`inv ARGV` in a child process at root. Contract refs and enforcer artifacts of a rule file inside
+    the server's --root are confined to it (INV_CONFINE_ROOT): the child refuses to read, and so to
+    echo, a file outside. The server's own --rules outside --root is the operator's, and so are its refs."""
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     for k in ("INV_ALLOW_WEAKENING", "INV_ABLATE", "INV_ABLATE_TESTING", "INV_ABLATE_TRACE",
-              "INV_DECISION_TRACE"):
+              "INV_DECISION_TRACE", CONFINE_ENV):
         env.pop(k, None)                            # a reviewer's switch and test-only ablation never leak in
+    if rule_file.resolve().is_relative_to(server_root):
+        env[CONFINE_ENV] = str(server_root)
     try:
         p = subprocess.run([sys.executable, "-m", "invariants.cli", *argv], cwd=root, env=env,
                            capture_output=True, text=True, timeout=CHILD_TIMEOUT, stdin=subprocess.DEVNULL)
@@ -81,7 +87,7 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
         argv += ["--root", r]
     for g in _strs(args, "exclude"):
         argv += ["--exclude", g]
-    code, out, err = _inv(root, *argv)                 # never --relock, --base or --allow-weakening
+    code, out, err = _inv(root, server_root, rule_file, *argv)   # never --relock, --base or --allow-weakening
     steps: list[dict[str, Any]] = []
     for line in out.splitlines():
         m = STEP.match(line)
@@ -96,7 +102,7 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
 def tool_status(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
     rule_file = _rule_file(root, args, default_rules, server_root)
-    code, out, err = _inv(root, "status", str(rule_file), "--json")
+    code, out, err = _inv(root, server_root, rule_file, "status", str(rule_file), "--json")
     if code != 0:
         raise ToolError(f"inv status exited {code}: {(err or out).strip()}")
     try:

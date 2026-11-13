@@ -11,6 +11,7 @@ import json
 import pathlib
 from typing import Any
 
+from ..confinement import confined
 from ..errors import LoadError
 from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha
 from .pin_jsonschema import json_schema
@@ -179,7 +180,7 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     entry: dict[str, Any] = {"type": ctype, "ref": ref}
     if ctype in PY_CONTRACTS or (ctype in SCHEMA_CONTRACTS and ":" in ref):
         return _python_contract_pin(name, ref, entry, pins)
-    f = base_dir / ref
+    f = confined(base_dir / ref, f"contract {name}: {ref}")
     if not f.is_file():                                        # is_file() itself returns False on an OSError
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:

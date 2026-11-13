@@ -33,7 +33,7 @@ STAGES = {
     "guard": {"checked": set(), "replies": {"checked"}, "plan": {"checked", "replies"},
               "decorators": {"checked", "plan", "replies"}},
     "cli": {"common": set(), "project": {"common"}, "git_base": {"common", "project"},
-            "commands": {"common", "git_base", "project"}, "hooks": {"commands", "common"},
+            "commands": {"common", "git_base", "project"}, "hooks": {"commands", "common", "project"},
             "__main__": {"__init__"}},
     "mcp": {"confine": set(), "tools": {"confine"}, "propose": {"confine", "tools"},
             "protocol": {"confine", "propose", "tools"}, "__main__": {"__init__"}},

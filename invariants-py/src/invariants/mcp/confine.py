@@ -111,10 +111,8 @@ def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None
             tool = cli._pyproject(proj).get("tool") or {}
         except cli.Usage as e:
             raise ToolError(str(e)) from e
-        find = ((tool.get("setuptools") or {}).get("packages") or {})
-        find = (find.get("find") or {}) if isinstance(find, dict) else {}
         for setting, values in (("[tool.invariants.scan] roots", ((tool.get("invariants") or {}).get("scan") or {})
-                                 .get("roots")), ("[tool.setuptools.packages.find] where", find.get("where"))):
+                                 .get("roots")), ("[tool.setuptools.packages.find] where", cli._setuptools_where(tool))):
             for r in cli._str_list(values):
                 path = (proj / r).resolve()
                 if not path.is_relative_to(server_root):

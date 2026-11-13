@@ -10,6 +10,28 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 23 (gate: roots, hook, mcp)
+
+- **Any change to the set of scan roots is a weakening.** An added root was judged harmless, but
+  the scan names a file from the deepest root that holds it and matches excludes against
+  root-relative paths: a new root (`[tool.invariants.scan] roots`, `[tool.setuptools.packages.find]
+  where` with no invariants table, a new `src/`, `--root`) renamed the files under it, so a relative
+  import into a sink stopped resolving and `inv check --relock --base HEAD` passed a hidden back
+  door, and an existing exclude glob (`legacy`) matched files it did not match before. An added or
+  removed root now needs `--accept-weakening` (and a reviewer's `--allow-weakening` against the
+  base). The order of the roots does not change any file's name and is not pinned.
+- **The scan's always-skipped directories are pinned** as `scan.skip` (`SKIP_DIRS` and `.*`), so an
+  upgrade or change that skips more directories is WEAKENED instead of silent. A lock pinned by an
+  earlier version is compared with the list those versions used: `inv lock --check` reports
+  `scan: skip pinned` once, stale but not a weakening; run `inv lock` (or `inv check --relock`) to
+  re-pin. Older invariants read the new lock unchanged (they ignore `skip`).
+- **`inv hook pretool` blocks an edit of `[tool.setuptools.packages]`** in `pyproject.toml`, not only
+  `[tool.invariants]`: its `find.where` gives the default scan roots when no invariants table sets
+  them.
+- **`inv mcp` `check` and `status` no longer read a contract `ref` or enforcer `artifact` outside the
+  server's `--root`** (`ref: ../outside_api.json` used to be read and its contents echoed in the
+  lock diff). They run `inv` with `INV_CONFINE_ROOT`; plain `inv check` is unchanged.
+
 ### Fix round 22
 
 - **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).

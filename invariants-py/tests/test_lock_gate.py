@@ -184,7 +184,8 @@ def test_a_pyproject_exclude_is_a_weakening_and_removing_one_is_not(tmp_path):
     ({"roots": ["src"], "exclude": []}, {"roots": ["src"], "exclude": ["x"]}, True),
     ({"roots": ["src"], "exclude": ["x"]}, {"roots": ["src"], "exclude": []}, False),
     ({"roots": [".", "src"], "exclude": []}, {"roots": ["src"], "exclude": []}, True),
-    ({"roots": ["src"], "exclude": []}, {"roots": [".", "src"], "exclude": []}, False),
+    # an added root renames the files under it and widens the excludes (fix round 23)
+    ({"roots": ["src"], "exclude": []}, {"roots": [".", "src"], "exclude": []}, True),
     (None, {"roots": ["src"], "exclude": list(lockfile.DEFAULT_SCAN_EXCLUDE)}, False),
     (None, {"roots": ["src"], "exclude": ["x"]}, True),
 ])

@@ -38,6 +38,26 @@ def _str_list(v: Any) -> list[str]:
     return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
 
 
+def _setuptools_where(tool: dict[str, Any]) -> list[str]:
+    """[tool.setuptools.packages.find] where of a parsed [tool] table (the project's source directories)."""
+    st = tool.get("setuptools")
+    packages = st.get("packages") if isinstance(st, dict) else None
+    find = packages.get("find") if isinstance(packages, dict) else None
+    return _str_list(find.get("where") if isinstance(find, dict) else None)
+
+
+def scan_inputs(pyproject: Any) -> dict[str, Any]:
+    """The parts of a parsed pyproject.toml that the scan settings (scan_settings: the roots, exclude
+    globs and so the names of the scanned files) and the import roots are derived from: all of
+    [tool.invariants] and [tool.setuptools.packages] (its find.where is a default source root when
+    [tool.invariants.scan] sets no roots). An edit that changes these changes what `inv check` scans."""
+    tool = pyproject.get("tool") if isinstance(pyproject, dict) else None
+    tool = tool if isinstance(tool, dict) else {}
+    st = tool.get("setuptools")
+    return {"tool.invariants": tool.get("invariants"),
+            "tool.setuptools.packages": st.get("packages") if isinstance(st, dict) else None}
+
+
 def import_roots(rule_file: pathlib.Path, extra: Sequence[str] = ()) -> list[pathlib.Path]:
     """Where `inv` imports the app from, ahead of site-packages: every --path, then this checkout's
     source directories (the project's src/, its setuptools `packages.find.where` and
@@ -45,10 +65,8 @@ def import_roots(rule_file: pathlib.Path, extra: Sequence[str] = ()) -> list[pat
     the source beside the rule file, not an installed copy or another checkout sharing the venv."""
     proj = project_root(rule_file)
     tool = _pyproject(proj).get("tool") or {}
-    where = ((tool.get("setuptools") or {}).get("packages") or {})
-    where = (where.get("find") or {}).get("where") if isinstance(where, dict) else None
     scan_roots = ((tool.get("invariants") or {}).get("scan") or {}).get("roots")
-    srcs = [proj / r for r in [*_str_list(where), *_str_list(scan_roots), "src"]]
+    srcs = [proj / r for r in [*_setuptools_where(tool), *_str_list(scan_roots), "src"]]
     out: list[pathlib.Path] = []
     for d in [*(pathlib.Path(p).resolve() for p in extra), *(s.resolve() for s in srcs if s.is_dir()),
               rule_file.resolve().parent, proj]:
@@ -66,10 +84,8 @@ def source_dirs(rule_file: pathlib.Path) -> list[pathlib.Path]:
     if not (proj / "pyproject.toml").is_file():
         return []
     tool = _pyproject(proj).get("tool") or {}
-    where = ((tool.get("setuptools") or {}).get("packages") or {})
-    where = (where.get("find") or {}).get("where") if isinstance(where, dict) else None
     out: list[pathlib.Path] = []
-    for r in [*_str_list(where), "src"]:
+    for r in [*_setuptools_where(tool), "src"]:
         d = (proj / r).resolve()
         if d.is_dir() and d != proj and d not in out:
             out.append(d)

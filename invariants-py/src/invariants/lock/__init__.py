@@ -17,8 +17,9 @@ Lock version 3 pins, per entry, only what a rule's meaning depends on:
 - schemas: every resolved schema the entries above use, keyed by the sha256 of its canonical JSON, so
   a model used by a target and a contract is stored once. Prose (title, description, summary, tags,
   examples) is stripped from pinned schemas, so a docstring edit does not re-pin;
-- scan: when a rule has a sink, the source roots and exclude globs `inv check` scans with, so an
-  exclude added or a root dropped is a weakening like any other.
+- scan: when a rule has a sink, the source roots, exclude globs and always-skipped directories `inv
+  check` scans with, so an exclude or skipped directory added, or a root added or dropped (a root
+  renames the files under it), is a weakening like any other.
 
 Types are resolved, not read as annotation text: an alias, and the fields of a dataclass, TypedDict or
 pydantic model a signature names (recursively, bounded), are part of the pin. A body-only refactor of a
@@ -47,13 +48,13 @@ from ..errors import LoadError
 # the public names of the stages, re-exported (with the private ones this module composes)
 from .cel_mono import Typer, canon_tree, clause_types, compare_bad, make_typer, new_error_sites
 from .contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
-                        ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LOCK_NAME, LOCK_VERSION,
-                        MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN, PRESENCE,
-                        PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS, STATUS_RANK, TIMING_RANK,
-                        VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
+                        ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LEGACY_SCAN_SKIP, LOCK_NAME,
+                        LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
+                        PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS, STATUS_RANK,
+                        TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
 from .pinning import (SCHEMA_PROSE, Schemas, build, contract_hash, expand_applies_to, json_schema, mediated,
                       normalize_semantic, param_schemas, resolved_schema, rule_hash, rule_semantics, scan_pin,
-                      signature_types, stdlib_json_schema, strip_prose)
+                      scan_skip, signature_types, stdlib_json_schema, strip_prose)
 from .rule_diff import _entry_changes, _rule_changes, _scan_changes
 from .schema_diff import (EXACT_CONSTRAINTS, JUDGED_SCHEMAS, LOWER_BOUNDS, STRUCTURAL, UPPER_BOUNDS, _schema_changes,
                           constraint_weakening, pin_json_schema)
@@ -133,7 +134,9 @@ def validate(lock: dict[str, Any], path: pathlib.Path | str = LOCK_NAME) -> None
         return
     if not isinstance(scan, dict):
         raise _malformed(path, "scan", "an object", scan)
-    for k in ("roots", "exclude"):
+    for k in ("roots", "exclude", "skip"):
+        if k == "skip" and "skip" not in scan:
+            continue                                # a lock pinned before the skip list was
         if not (isinstance(scan.get(k), list) and all(isinstance(x, str) for x in scan[k])):
             raise _malformed(path, f"scan.{k}", "a list of strings", scan.get(k))
 

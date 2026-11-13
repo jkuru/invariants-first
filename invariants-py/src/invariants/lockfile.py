@@ -18,9 +18,9 @@ from .lock.cel_mono import (_BOOL_CALLS, _BOOL_OPS, _CMP, _FALSE, _INT64, _INTEG
                             _numeric, _order, _unique, _walk, canon_tree, clause_types, compare_bad, make_typer,
                             new_error_sites)
 from .lock.contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
-                             ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LOCK_NAME, LOCK_VERSION,
-                             MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
-                             PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS,
+                             ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LEGACY_SCAN_SKIP, LOCK_NAME,
+                             LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES,
+                             PIN, PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS,
                              STATUS_RANK, TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _json_paths,
                              _plain, _sha, _short, canonical, policy, same)
 from .lock.pinning import (_ARRAYS, _BOUND_ATTRS, _DATA_KEYS, _JSON_TYPES, _LEN_ATTRS, _MAPS, _NAME_MAPS, _PARAM_KEYS,
@@ -30,7 +30,7 @@ from .lock.pinning import (_ARRAYS, _BOUND_ATTRS, _DATA_KEYS, _JSON_TYPES, _LEN_
                            _openapi_file, _openapi_operations, _operation_ids, _provider_pin, _python_ref,
                            _signature_pin, _type_schema, build, contract_hash, expand_applies_to, json_schema, mediated,
                            normalize_semantic, param_schemas, resolved_schema, rule_hash, rule_semantics, scan_pin,
-                           signature_types, stdlib_json_schema, strip_prose)
+                           scan_skip, signature_types, stdlib_json_schema, strip_prose)
 from .lock.rule_diff import (_bad_changes, _clauses, _direction_change, _enforcer_key, _entry_changes, _field_change,
                              _keyed, _label, _mediation_changes, _model_policy_changes, _named_operations,
                              _operation_renames, _rule_changes, _scan_changes, _signature_shape)
