@@ -368,8 +368,8 @@ tool. Instead it runs the real scan on its proposed rule, finds this chain, and 
   `grant`, `reserve` and many more); or
 - its body writes through a store client: an ORM session (`session.add`,
   `session.execute(update(...))`), a Django manager (`Order.objects.create`), a Mongo collection
-  (`insert_one`), a DynamoDB table (`put_item`), a client's `create` call (`stripe.Refund.create`),
-  or raw SQL (`INSERT`, `UPDATE`, `DELETE`).
+  (`insert_one`), a DynamoDB table (`put_item`) or a client's `create` call (`stripe.Refund.create`).
+  A raw SQL string is not read: it is below the API.
 
 It recognises a store client by its name (`session`, `db`, `conn`, `cursor`, `collection` ...) or by
 its type annotation, whatever it is called: `s: Session`, `db: AsyncSession`, or an alias such as

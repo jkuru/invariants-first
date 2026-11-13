@@ -185,7 +185,7 @@ Then `inv init` runs `inv lock` to pin the resolved JSON Schema of each model in
 `doors.discover()` builds the project's AST call graph and identifies:
 1. **Sinks (The Lowest Write APIs):**
    - Methods with write verbs (`add`, `insert`, `create`, `update`, `delete`, `save`, `refund`, `charge`, `cancel`, ...) inside classes or modules named like a repository (`*Repo`, `*Repository`, `*Store`, `*Gateway`, `*DAO`, `repo.py`, `store.py`, `crud.py`).
-   - Or *any* function whose body performs a write on a store client: SQLAlchemy/SQLModel sessions (`session.add`, `s.commit`—detected both by variable name and by type annotation like `s: Session` or `SessionDep = Annotated[Session, Depends(get_db)]`), Django managers (`Order.objects.create`), MongoDB collections (`col.insert_one`), DynamoDB tables (`table.put_item`), Stripe clients (`stripe.Refund.create`), or raw SQL (`conn.execute("INSERT ...")`).
+   - Or *any* function whose body performs a write on a store client: SQLAlchemy/SQLModel sessions (`session.add`, `s.commit`—detected both by variable name and by type annotation like `s: Session` or `SessionDep = Annotated[Session, Depends(get_db)]`), Django managers (`Order.objects.create`), MongoDB collections (`col.insert_one`), DynamoDB tables (`table.put_item`), or Stripe clients (`stripe.Refund.create`). A raw SQL string is not read: it is below the API.
 2. **Doors (The Upper Service APIs):**
    - Callers of those sinks that live in a service layer (`*Service`, `*UseCase`, `*Manager`, `service.py`), or a thin layer called by HTTP routes (`@router.post`, `@app.get`), or shared functions that at least 2 upstream callers route through (`MIN_CALLERS = 2`).
 

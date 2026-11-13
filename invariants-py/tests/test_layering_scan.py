@@ -8,8 +8,8 @@ import pathlib
 
 import invariants
 from invariants import _scan_hooks, scan
-from invariants.scan import reachability, sarif, sql
-from invariants.scan.contracts import Finding, Mediation, Report, SqlWrite, _Edge
+from invariants.scan import reachability, sarif
+from invariants.scan.contracts import Finding, Mediation, Report, _Edge
 
 SCAN = pathlib.Path(scan.__file__).parent
 FORBIDDEN = ("invariants.guard", "invariants.registry", "invariants.cli")
@@ -48,25 +48,6 @@ def test_ablation_hooks_are_wired_by_the_package():
     assert invariants._registry is invariants.registry
 
 
-# --- sql_writes ----------------------------------------------------------------------------------
-def test_sql_writes_verbs_tables_and_computed_names():
-    got = sql.sql_writes("INSERT INTO leases (id) VALUES (1); UPDATE pools SET size = 2; DELETE FROM x WHERE 1")
-    assert got == [SqlWrite("INSERT", frozenset({"insert"}), "leases"),
-                   SqlWrite("UPDATE", frozenset({"update"}), "pools"),
-                   SqlWrite("DELETE", frozenset({"delete"}), "x")]
-    assert sql.sql_writes("UPDATE {table} SET a = 1") == [SqlWrite("UPDATE", frozenset({"update"}), None)]
-    assert sql.sql_writes("insert into %s values (?)")[0].table is None
-
-
-def test_sql_writes_ignores_comments_reads_and_short_text():
-    assert sql.sql_writes("SELECT * FROM leases -- INSERT INTO leases") == []
-    assert sql.sql_writes("/* DROP TABLE t */ SELECT 1") == []
-    assert sql.sql_writes("") == [] and sql.sql_writes("DROP") == []
-    assert sql.sql_writes("DROP TABLE IF EXISTS old") == [SqlWrite("DROP", frozenset({"ddl"}), "old")]
-
-
-def test_sql_writes_is_the_package_function():
-    assert scan.sql_writes is sql.sql_writes
 
 
 # --- _shortest / _paths ----------------------------------------------------------------------------

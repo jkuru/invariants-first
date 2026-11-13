@@ -24,20 +24,19 @@ from typing import Any, Iterable, Iterator
 
 from .checks import _canon_py, _check_rule
 from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report, ScanConfigError,
-                        SqlWrite, _Edge, _Module, _Site)
+                        _Edge, _Module, _Site)
 from .indexer import _Index
 from .mediation import _mediation, _not_scanned
 from .reachability import _entrypoints, door_only
 from .sarif import to_sarif
 from .sources import SKIPPED, _layout, _skipped, _Source, anywhere, iter_sources
-from .sql import sql_writes
 from .text import to_text
 from .walker import _Walker
 
 # `from invariants.scan import *` exports these names and no submodules.
 __all__ = ["DYNAMIC_IMPORT", "Finding", "Graph", "KINDS", "Mediation", "REFLECTION",
-           "Report", "SKIP_DIRS", "ScanConfigError", "SqlWrite", "anywhere", "door_only", "graph",
-           "iter_sources", "mediations", "scan", "sql_writes", "to_sarif", "to_text"]
+           "Report", "SKIP_DIRS", "ScanConfigError", "anywhere", "door_only", "graph",
+           "iter_sources", "mediations", "scan", "to_sarif", "to_text"]
 
 
 # defined here, not in .mediation: `inv validate` labels its errors by this function's module ("scan:")
@@ -59,7 +58,7 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
 
 @dataclasses.dataclass
 class Graph:
-    """The scan's view of the code: functions, call edges, sites (raw SQL and the like), entrypoints."""
+    """The scan's view of the code: functions, call edges, sites, entrypoints."""
 
     idx: _Index
     edges: list[_Edge]
@@ -69,10 +68,6 @@ class Graph:
     def functions(self) -> list[str]:
         return sorted(f for f, fn in self.idx.funcs.items() if fn.node is not None)
 
-    def sql_writes(self) -> list[tuple[str, SqlWrite, int]]:
-        """(owner function, write, line) for every raw SQL write string; `inv init` reads it to find
-        repositories (a function that writes raw SQL is one). The scan's checks never read it."""
-        return [(s.owner, w, s.line) for s in self.sites if s.what == "sql" for w in sql_writes(s.detail)]
 
 
 _NO_SOURCE_WHY = {"extension": "<an extension module, with no Python source the scan can read>",

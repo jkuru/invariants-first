@@ -298,12 +298,12 @@ def test_discover_finds_the_door_and_freezes_the_back_doors(tmp_path):
     root = _bank(tmp_path)
     found = doors.discover([root], TEST_EXCLUDE)
     (d,) = found.doors
-    assert (d.rid, d.doors, d.sinks) == ("BALANCES-DOOR", ["bank.service.apply_transfer"],
+    assert (d.rid, d.doors, d.sinks) == ("STORE-DOOR", ["bank.service.apply_transfer"],
                                          ["bank.store.write_balance"])
     assert d.allow == ["bank.batch.refund_all"] and d.active     # fix_balance's raw SQL is below the API
     assert d.callers == ["bank.api.payout", "bank.api.transfer"] and "tables" not in d.rule()
     assert len(d.back_doors) == 1 and d.back_doors[0].startswith("bank/batch.py:")
-    assert _scan(root, d.rule()).rule_result("BALANCES-DOOR") == "pass"
+    assert _scan(root, d.rule()).rule_result("STORE-DOOR") == "pass"
 
 
 def test_discover_freezes_the_call_chain_of_a_back_door(tmp_path):
@@ -318,8 +318,8 @@ def test_discover_freezes_the_call_chain_of_a_back_door(tmp_path):
 def test_discover_gives_each_writer_its_own_door(tmp_path):
     root = write_project(tmp_path / "p", {
         "p/__init__.py": "",
-        "p/store.py": "def insert(c, n):\n    c.execute('INSERT INTO pools (n) VALUES (?)', (n,))\n"
-                      "def resize(c, n):\n    c.execute('UPDATE pools SET n = ?', (n,))\n",
+        "p/store.py": "def insert(session, n):\n    session.add(n)\n"
+                      "def resize(session, n):\n    session.merge(n)\n",
         "p/service.py": "from p.store import insert, resize\n"
                         "def create(c, n):\n    insert(c, n)\ndef grow(c, n):\n    resize(c, n)\n",
         "p/api.py": "from p.service import create, grow\n"
@@ -329,21 +329,21 @@ def test_discover_gives_each_writer_its_own_door(tmp_path):
     assert d.back_doors == [] and d.active
 
 
-def test_discover_needs_a_shared_door_and_lists_tables_without_one(tmp_path):
+def test_discover_needs_a_shared_door_and_lists_writers_without_one(tmp_path):
     root = write_project(tmp_path / "n", {
         "n/__init__.py": "",
-        "n/a.py": "def one(c):\n    c.execute('DELETE FROM jobs')\n",
-        "n/b.py": "def two(c):\n    c.execute('UPDATE jobs SET x = 1')\n"})
+        "n/store.py": "def delete_job(session, j):\n    session.delete(j)\n"
+                      "def update_job(session, j):\n    session.merge(j)\n"})
     found = doors.discover([root])
-    assert found.doors == [] and found.no_door == {"table jobs": ["n.a.one", "n.b.two"]}
+    assert found.doors == [] and found.no_door == {"n.store": ["n.store.delete_job", "n.store.update_job"]}
     text = "\n".join(doors.render(found))
-    assert "no shared door" in text and "table jobs: n.a.one, n.b.two" in text
+    assert "no shared door" in text and "n.store: n.store.delete_job, n.store.update_job" in text
 
 
 def test_discover_ranks_money_first_and_lists_what_it_drops(tmp_path):
     files = {"m/__init__.py": ""}
     for t in ("alpha", "beta", "balances"):
-        files[f"m/{t}.py"] = (f"def w_{t}(c):\n    c.execute('UPDATE {t} SET x = 1')\n"
+        files[f"m/{t}.py"] = (f"def w_{t}(session):\n    session.add({t!r})\n"
                               f"def door_{t}(c):\n    w_{t}(c)\n"
                               f"def e1_{t}(c):\n    door_{t}(c)\ndef e2_{t}(c):\n    door_{t}(c)\n")
     found = doors.discover([write_project(tmp_path / "m", files)], limit=1)
@@ -358,7 +358,7 @@ def test_a_back_door_outside_any_function_leaves_the_rule_commented_out(tmp_path
     (d,) = doors.discover([root], TEST_EXCLUDE).doors
     assert not d.active and "not inside a function" in d.why_inactive
     text = "\n".join(doors.render(doors.DoorsFound([d], [], {}, 1)))
-    assert "  # - id: BALANCES-DOOR" in text and "\n  - id:" not in text
+    assert "  # - id: STORE-DOOR" in text and "\n  - id:" not in text
 
 
 # --- inv init and inv check, end to end ------------------------------------------------------------
@@ -366,9 +366,9 @@ def test_init_writes_a_door_rule_that_check_passes_and_a_new_back_door_fails(tmp
     root = _bank(tmp_path)
     r = run_inv("init", "--no-lock", cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "door BALANCES-DOOR" in r.stdout and "found 1 back door(s) in bank/batch.py" in r.stdout
+    assert "door STORE-DOOR" in r.stdout and "found 1 back door(s) in bank/batch.py" in r.stdout
     text = (root / "invariants.yaml").read_text()
-    assert '  - id: BALANCES-DOOR\n    door: "py:bank.service.apply_transfer"' in text
+    assert '  - id: STORE-DOOR\n    door: "py:bank.service.apply_transfer"' in text
     assert run_inv("lock", cwd=root).returncode == 0
     r = run_inv("check", cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -410,7 +410,7 @@ def test_init_no_doors_skips_discovery(tmp_path):
     root = _bank(tmp_path)
     r = run_inv("init", "--no-lock", "--no-doors", cwd=root)
     assert r.returncode == 0 and "door" not in r.stdout.replace("back door", "")
-    assert "BALANCES-DOOR" not in (root / "invariants.yaml").read_text()
+    assert "STORE-DOOR" not in (root / "invariants.yaml").read_text()
 
 
 # --- the repository layer: ORMs, document stores and API clients, no SQL needed ------------------

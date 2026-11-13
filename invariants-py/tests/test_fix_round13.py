@@ -1,8 +1,7 @@
 """Fix round 13 (certification round 10 findings): every field that changes what `bad` reads or how a
 check runs is a possible weakening, and every rule-file field is classified (R10-1); `bad` is compared
 as a canonical tree (R10-2); resolved types are pinned, through aliases and into dataclass, TypedDict
-and pydantic fields (R10-3); raw-SQL detection gaps and false positives (R10-4); the sink's own SQL
-writes count for the held standing (R10-5); lock version 3 with a content-addressed schema table and
+and pydantic fields (R10-3); lock version 3 with a content-addressed schema table and
 no prose in pins (R10-6); per-key diffs, type-strict compares and malformed locks (R10-7)."""
 from __future__ import annotations
 
@@ -364,42 +363,6 @@ class Node:
 def test_a_recursive_dataclass_terminates():
     s = lockmod.resolved_schema(Node)
     assert s["fields"]["children"] == {"generic": "list", "args": [{"$ref": f"{__name__}.Node"}]}
-
-
-# --- R10-4: raw SQL ------------------------------------------------------------------------------------
-@pytest.mark.parametrize("sql,want", [
-    ("MERGE INTO leases USING s ON (1) WHEN MATCHED THEN UPDATE SET a = 1", ("MERGE", "leases")),
-    ("INSERT /* hint */ INTO leases VALUES (1)", ("INSERT", "leases")),
-    ("INSERT INTO /* x */ leases VALUES (1)", ("INSERT", "leases")),
-    ("DELETE -- why\nFROM leases", ("DELETE", "leases")),
-    ("UPDATE leases AS l SET a = 1", ("UPDATE", "leases")),
-    ("UPDATE leases l SET a = 1", ("UPDATE", "leases")),
-    ("UPDATE ONLY leases SET a = 1", ("UPDATE", "leases")),
-    ("DELETE FROM ONLY leases", ("DELETE", "leases")),
-    ("INSERT leases VALUES (1)", ("INSERT", "leases")),
-    ("INSERT IGNORE INTO leases VALUES (1)", ("INSERT", "leases")),
-    ("ALTER TABLE IF EXISTS leases ADD COLUMN z", ("ALTER", "leases")),
-    ("INSERT INTO {table} VALUES (1)", ("INSERT", None)),
-    ("INSERT INTO {0} VALUES (1)", ("INSERT", None)),
-    ("INSERT INTO %(t)s VALUES (1)", ("INSERT", None)),
-    ("INSERT INTO lea{} VALUES (1)", ("INSERT", None)),
-    ("UPDATE {} SET a = 1", ("UPDATE", None)),
-])
-def test_sql_forms(sql, want):
-    got = [(w.verb, w.table) for w in scan.sql_writes(sql)]
-    assert want in got, got
-
-
-@pytest.mark.parametrize("sql", ["SELECT * FROM leases", "CREATE TABLE IF NOT EXISTS leases (a)",
-                                 "INSERT INTO leases_archive VALUES (1)", "SELECT update_count FROM leases",
-                                 "INSERT INTO t VALUES (1) ON CONFLICT (id) DO UPDATE SET a = 2"])
-def test_sql_non_matches(sql):
-    assert not [w for w in scan.sql_writes(sql) if w.table == "leases"]
-
-
-def test_merge_counts_as_insert_update_and_delete():
-    [w] = scan.sql_writes("MERGE INTO leases USING s ON (1) WHEN MATCHED THEN DELETE")
-    assert w.ops == {"insert", "update", "delete"}
 
 
 # --- R10-6: lock version 3 ---------------------------------------------------------------------------

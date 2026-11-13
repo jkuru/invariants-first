@@ -108,7 +108,7 @@ is the one support script that calls the gateway directly. `inv init` finds both
 
 - a **sink** is a repository write: a write method of a Repo, Store, Gateway or DAO class (or a write
   function in a `repo`/`store`/`db` module), or a function that writes through an ORM session, a
-  Django manager, a Mongo collection, a DynamoDB table, a client's `create` call or raw SQL. Reads
+  Django manager, a Mongo collection, a DynamoDB table or a client's `create` call. Reads
   (`get`, `current`, `select(...)`) are not sinks;
 - a **door** is a service-layer caller of a sink (a method of a `…Service` or `…Manager` class, or a
   function in a `service` module), or, where there is no service layer, the one caller most other
@@ -186,7 +186,7 @@ new caller of an allowed function, or new code inside one that reaches the sink,
 How `inv init` finds them. A function is a repository write (a sink) when its class or module is
 named like a repository (`Repo`, `Store`, `Gateway`, `DAO`, `repo`, `store`, `crud`, `db` ...) and
 its name is a write verb, or when its body writes through a store client: an ORM session, a Django
-manager, a Mongo collection, a DynamoDB table, a client's `create` call, or raw SQL. A receiver is a
+manager, a Mongo collection, a DynamoDB table, or a client's `create` call. A receiver is a
 store client by its name (`session`, `db`, `conn` ...) or by its annotation, whatever it is called:
 `s: Session`, `db: AsyncSession`, or an alias such as `SessionDep = Annotated[Session, Depends(get_db)]`
 imported from another module. The doors are the callers in a service layer (a module or class named

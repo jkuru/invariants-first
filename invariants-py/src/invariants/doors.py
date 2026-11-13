@@ -1,18 +1,18 @@
 """`inv init`: find the doors a codebase already has, and the back doors around them.
 
 The boundary is the repository layer, in Python, whatever is behind it (Postgres through SQLAlchemy,
-Django, MongoDB, DynamoDB, an HTTP API such as Stripe, or raw SQL):
+Django, MongoDB, DynamoDB, or an HTTP API such as Stripe):
 
 - a *sink* is a function that writes: a write method of a Repo/Store class (or a write function in a
   repo or store module), or any function whose body writes through an ORM session, a Django manager,
-  a Mongo collection, a DynamoDB table, a client's `create` call, or a raw SQL string;
+  a Mongo collection, a DynamoDB table, or a client's `create` call;
 - a *door* is the one function most callers go through to reach a sink: the service method that
   checks the rules before the write;
 - a *back door* is any other way to the same write: a caller that reaches a sink without passing a
-  door (and, where the sinks use raw SQL, raw SQL to the same table somewhere else).
+  door.
 
 Discovery reads the source with the scan's own index (Python's `ast`; nothing is imported) and is
-deterministic. It groups the sinks by repository (a class, a module, or the table raw SQL writes),
+deterministic. It groups the sinks by repository (a class or a module),
 picks each sink's door, and checks the proposed rule with the real scan, so the back doors it reports
 are exactly what `inv check` would fail on. Known back doors are frozen in `allow:` (the way ArchUnit
 freezes existing violations): today's code passes, a new back door fails, and removing an `allow`
@@ -31,7 +31,6 @@ from typing import Any, Iterable
 
 from . import scan as scanner
 
-WRITE_OPS = frozenset({"insert", "update", "delete"})
 # Names that suggest an invariant someone cares about: money, quotas, approvals, inventory.
 IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit", "debit", "charge", "transfer",
              "payout", "account", "wallet", "fund", "quota", "usage", "limit", "budget", "allowance", "approv",
@@ -127,8 +126,8 @@ def _store_call(call: ast.Call, typed: frozenset[str] = frozenset()) -> str | No
     if not isinstance(f, ast.Attribute) or f.attr not in ORM_WRITES:
         return None
     if f.attr in ("execute", "executemany"):
-        # a SQL string is judged by the scan's SQL reader (a SELECT is not a write); otherwise only a
-        # statement built by insert(...), update(...) or delete(...) (SQLAlchemy Core) is a write
+        # a SQL string is not read (it is below the API): only a statement built by insert(...),
+        # update(...) or delete(...) (SQLAlchemy Core) is a write
         arg = call.args[0] if call.args else None
         built = arg.func if isinstance(arg, ast.Call) else None
         while isinstance(built, ast.Attribute) and isinstance(built.value, ast.Call):
@@ -166,7 +165,7 @@ def _writes_in(fn: ast.AST, aliases: frozenset[str] = frozenset()) -> list[str]:
 @dataclasses.dataclass
 class Door:
     rid: str
-    resource: str                            # the repository: a class, a module, or "table <name>"
+    resource: str                            # the repository: a class or a module
     doors: list[str]                         # module.qualname of each door
     sinks: list[str]
     callers: list[str]                       # the doors' callers (the paths that do go through them)
@@ -175,7 +174,6 @@ class Door:
     active: bool = True                      # written as a rule (False: commented out, with the reason)
     why_inactive: str = ""
     score: int = 0
-    label: str = ""                          # what the rule id is made from: the one table written, else the repo
 
     def rule(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.rid,
@@ -265,7 +263,7 @@ def _score(*names: str) -> int:
 
 
 def _rule_id(d: Door, taken: set[str]) -> str:
-    label = d.label or d.resource.rsplit(".", 1)[-1].replace("table ", "")
+    label = d.resource.rsplit(".", 1)[-1]
     label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", label)
     base = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").upper() + "-DOOR"
     rid, n = base, 2
@@ -285,13 +283,9 @@ def _resource(g: scanner.Graph, fid: str) -> str | None:
     return None
 
 
-def sinks_of(g: scanner.Graph) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """(repository -> its write functions, write function -> tables it writes with raw SQL)."""
+def sinks_of(g: scanner.Graph) -> dict[str, set[str]]:
+    """Repository -> its write functions."""
     real = set(g.functions())
-    tables: dict[str, set[str]] = collections.defaultdict(set)
-    for owner, write, _line in g.sql_writes():
-        if write.table and write.ops & WRITE_OPS and owner in real:
-            tables[owner].add(write.table)
     groups: dict[str, set[str]] = collections.defaultdict(set)
     # aliases are collected across modules: SessionDep is written in deps.py and imported by the routes
     aliases = frozenset().union(*(store_aliases(mod.tree) for mod in g.idx.modules.values()))
@@ -299,19 +293,18 @@ def sinks_of(g: scanner.Graph) -> tuple[dict[str, set[str]], dict[str, set[str]]
         node = g.idx.funcs[fid].node
         name = fid.rsplit(".", 1)[-1]
         res = _resource(g, fid)
-        writes = bool(tables.get(fid)) or bool(
-            node is not None and _writes_in(node, aliases))
+        writes = node is not None and bool(_writes_in(node, aliases))
         if res and (_is_write_name(name) or writes) and not name.startswith("_"):
             groups[res].add(fid)
         elif writes and not res:
-            groups[f"table {sorted(tables[fid])[0]}" if tables.get(fid) else g.idx.funcs[fid].module].add(fid)
-    return groups, tables
+            groups[g.idx.funcs[fid].module].add(fid)
+    return groups
 
 
 def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: int = 5,
              graph: pathlib.Path | None = None, project: pathlib.Path | None = None) -> DoorsFound:
     """Door rules for the repositories in the roots: which service API every call to a repository's
-    write API must pass. Raw SQL in a function's body only marks it as a writer (a sink).
+    write API must pass.
 
     graph: a Graphify graph.json; its communities and resolved calls propose more doors (see
     graphify.py). Each proposal is still checked by the scan before it is written."""
@@ -330,7 +323,7 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
             callers[b].add(a)
     community = hint.community if hint else None
     routes = frozenset(route_handlers(g))
-    groups, written = sinks_of(g)
+    groups = sinks_of(g)
     found: list[Door] = []
     no_door: dict[str, list[str]] = {}
     for res in sorted(groups):
@@ -342,20 +335,15 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
                 if door not in door_list:
                     door_list.append(door)
         if not door_list:
-            if len(members) > 1 or not res.startswith("table "):
-                no_door[res] = sorted(members)
+            no_door[res] = sorted(members)
             continue
-        repo = not res.startswith("table ") and _resource(g, sorted(members)[0]) == res
+        repo = _resource(g, sorted(members)[0]) == res
         # a repository's write methods are all sinks: nobody but a door may call any of them. Outside a
         # repository, only the writers that have a door are (the rest are listed with no door).
         sinks = sorted(members) if repo else sorted(w for w in members
                                                     if _doors_for(w, callers, real, inside, community, routes))
         via = sorted({c for d in door_list for c in callers[d]} - set(door_list))
-        ts = sorted({t for s in sinks for t in written.get(s, ())})
-        generic = res.rsplit(".", 1)[-1] in REPO_MODULE or res.startswith("table ")
-        found.append(Door("", res, door_list, sinks, via,
-                          score=_score(res, *door_list, *sinks, *ts),
-                          label=ts[0] if len(ts) == 1 and generic else ""))
+        found.append(Door("", res, door_list, sinks, via, score=_score(res, *door_list, *sinks)))
     found.sort(key=lambda d: (-d.score, -len(d.callers), d.resource))
     kept, dropped = found[:limit], found[limit:]
     taken: set[str] = set()

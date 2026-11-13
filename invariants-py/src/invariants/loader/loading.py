@@ -71,10 +71,6 @@ def _load_contracts(doc: dict[str, Any], reg: Registry) -> None:
     contracts = doc.get("contracts") or {}
     if not isinstance(contracts, dict):
         raise LoadError("contracts: expected a mapping")
-    for name, c in contracts.items():
-        if isinstance(c, dict) and c.get("type") == "sql":
-            raise LoadError(f"contract {name}: sql contracts were removed (the schema is below the API); pin "
-                            f"the pydantic model or OpenAPI operation the API takes instead, and delete it")
     reg.contracts = dict(contracts)
 
 

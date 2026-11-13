@@ -13,16 +13,6 @@ REFLECTION = frozenset({"eval", "exec", "compile", "__import__", "globals", "var
 DYNAMIC_IMPORT = frozenset({"importlib.import_module", "importlib.__import__"})
 
 
-@dataclasses.dataclass(frozen=True)
-class SqlWrite:
-    """One write statement found in a string: its verb, statement kinds, and table (None: computed)."""
-
-    verb: str
-    ops: frozenset[str]
-    table: str | None
-
-
-
 class ScanConfigError(ValueError):
     """The rule file's mediation fields for the scan are malformed."""
 
@@ -147,7 +137,7 @@ class _Edge:
 class _Site:
     """Something the second pass saw at one place, for the per-rule checks."""
 
-    what: str                    # getattr | setattr | ref | attrcall | wrapped | reflection | dynimport | sql | patch
+    what: str                    # getattr | setattr | ref | attrcall | wrapped | reflection | dynimport | patch
     #                              | excluded (a reference into a module the exclude globs, or the
     #                                directories the scan always skips, leave out)
     owner: str

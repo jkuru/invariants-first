@@ -238,4 +238,4 @@ def test_a_real_graph_of_unconventionally_named_layers_adds_no_door():
     plain = doors.discover([SHOP])
     with_graph = doors.discover([SHOP], graph=graph, project=SHOP)
     assert plain.doors == [] and with_graph.doors == []
-    assert set(plain.no_door) == set(with_graph.no_door) == {"table entries"}
+    assert plain.no_door == with_graph.no_door

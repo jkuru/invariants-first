@@ -110,7 +110,6 @@ def test_load_rejects_missing_artifact():
      "storage enforcers were removed"),
     (lambda d: rule(d, "R-21")["mediation"].update(sink="py:pool.set_size", tables=["pools"]),
      "tables (raw SQL write checks) were removed"),
-    (lambda d: d["contracts"].update(schema={"type": "sql", "ref": "pool_schema.sql"}), "sql contracts were removed"),
 ])
 def test_removed_below_the_api_fields_say_what_to_do(mutate, needle):
     e = load_error(mutate)

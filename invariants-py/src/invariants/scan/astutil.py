@@ -24,37 +24,6 @@ def _dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
-def _fold_str(node: ast.AST) -> str | None:
-    """'INSERT INTO ' + 'leases ...' (or + name) as one text, a non-literal part as '{}'; None if no literal."""
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        a, b = _fold_str(node.left), _fold_str(node.right)
-        if a is None and b is None:
-            return None
-        return (a if a is not None else "{}") + (b if b is not None else "{}")
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return "".join(str(v.value) if isinstance(v, ast.Constant) else "{}" for v in node.values)
-    return None
-
-
-def _add_leaves(node: ast.AST) -> list[ast.AST]:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [*_add_leaves(node.left), *_add_leaves(node.right)]
-    return [node]
-
-
-def _docstrings(tree: ast.AST) -> set[int]:
-    ids = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = node.body
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
-                ids.add(id(body[0].value))
-    return ids
-
-
 def _locals(fn: ast.AST) -> set[str]:
     """Parameters and assigned names in a function, including nested scopes (an over-approximation)."""
     names: set[str] = set()

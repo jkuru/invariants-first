@@ -5,7 +5,7 @@ import ast
 
 from typing import Any, Callable
 
-from .astutil import _HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _lit, _locals, _params
+from .astutil import _HARMLESS_DUNDERS, _dotted, _dunder, _lit, _locals, _params
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Module, _Site
 from .indexer import _Index
 from .inference import _Inference
@@ -31,7 +31,6 @@ class _Walker(_Inference):
         super().__init__(idx, mod)
         self.edges: list[_Edge] = []
         self.sites: list[_Site] = []
-        self.doc_ids = _docstrings(mod.tree)
         self._called: set[int] = set()                        # ids of call targets: a call, not a value
 
     def run(self) -> None:
@@ -250,14 +249,6 @@ class _Walker(_Inference):
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             self._load(node, owner, local, me)
             return
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in self.doc_ids:
-            self._site("sql", owner, node, node.value)
-            return
-        if isinstance(node, ast.JoinedStr):
-            text = "".join(str(v.value) if isinstance(v, ast.Constant) else "{}" for v in node.values)
-            self._site("sql", owner, node, text)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and self._folded(node, owner, local, me):
-            return
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
             self._rebound(node, owner, local, me)
         if isinstance(node, ast.Lambda):
@@ -347,18 +338,6 @@ class _Walker(_Inference):
         if (fq is None or self._via_function(node, local, me)) and self._typed(node, owner, local, me) == ([], None):
             self._site("attrref", owner, at, node.attr)
 
-    def _folded(self, node: ast.BinOp, owner: str, local: set[str], me: tuple[str, str] | None) -> bool:
-        """'INSERT INTO ' + 'leases ...' (or + name): one text, one site; the non-literal parts are walked."""
-        folded = _fold_str(node)
-        if folded is None:
-            return False
-        self._site("sql", owner, node, folded)
-        for part in _add_leaves(node):
-            if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                continue
-            self._exprs([v for v in part.values if not isinstance(v, ast.Constant)]
-                        if isinstance(part, ast.JoinedStr) else [part], owner, local, me)
-        return True
 
     def _call(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         func = node.func
