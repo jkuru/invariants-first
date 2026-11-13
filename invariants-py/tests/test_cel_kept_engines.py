@@ -125,6 +125,10 @@ def test_case_insensitive_matching_folds_single_characters(backend, text, patter
      "non-finite number (NaN or Infinity) from arithmetic (division by zero or overflow)"),
     ("something new SECRET cost limit exceeded", "evaluation error"),
     ("INTERNAL: SECRET Iteration budget exceeded", "evaluation error"),
+    # a kind's words later in the message (request data) never pick the kind: matched at the start only
+    ("something new: SECRET no such key", "evaluation error"),
+    ("UNKNOWN: SECRET invalid regular expression", "evaluation error"),
+    ("INTERNAL: SECRET No matching overloads found : _+_(string, int64)", "evaluation error"),
 ])
 def test_redact_never_returns_request_text(msg, want):
     assert _engine.redact(msg) == want
