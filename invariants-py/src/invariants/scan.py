@@ -20,6 +20,7 @@ import dataclasses
 import fnmatch
 import pathlib
 import re
+import sys
 from typing import Any, Iterable, Iterator
 
 KINDS = ("bypass", "forbidden", "unresolved", "missing")
@@ -27,6 +28,8 @@ SKIP_DIRS = frozenset({"__pycache__", "node_modules", "site-packages", "build", 
 REFLECTION = frozenset({"eval", "exec", "compile", "__import__", "globals", "vars", "locals"})
 DYNAMIC_IMPORT = frozenset({"importlib.import_module", "importlib.__import__"})
 _BUILTINS = frozenset(dir(builtins))
+# top-level modules whose classes are known bases: a base from one of them is not project code
+_KNOWN_BASE_MODULES = frozenset({*sys.stdlib_module_names, "typing_extensions"})
 _TYPE_ALIAS = getattr(ast, "TypeAlias", None)            # `type X = ...` (Python 3.12+)
 # builtin containers, as receivers: their own methods (d.update(), s.add()) are not a scanned sink
 _CONTAINERS = {"builtins.dict": "builtins.dict", "typing.Dict": "builtins.dict", "builtins.set": "builtins.set",
@@ -268,7 +271,8 @@ class _Site:
     """Something the second pass saw at one place, for the per-rule checks."""
 
     what: str                    # getattr | setattr | ref | attrcall | wrapped | reflection | dynimport | sql | patch
-    #                              | excluded (a call into a module the exclude globs leave out)
+    #                              | excluded (a reference into a module the exclude globs, or the
+    #                                directories the scan always skips, leave out)
     owner: str
     line: int
     col: int
@@ -290,15 +294,18 @@ def _excluded(rel: pathlib.PurePath, patterns: Iterable[str]) -> str | None:
 
 def iter_sources(roots: Iterable[pathlib.Path],
                  exclude: Iterable[str] = ()) -> Iterator[tuple[pathlib.Path, pathlib.Path, str]]:
-    """(root, file, module name) for every .py file under the roots, minus exclude globs (root-relative)."""
-    for base, f, name, pattern in _walk_sources(roots, exclude):
+    """(root, file, module name) for every .py file under the roots, minus exclude globs (root-relative)
+    and the directories the scan always skips (SKIP_DIRS, dot-directories)."""
+    for base, f, name, pattern, _ in _walk_sources(roots, exclude):
         if pattern is None:
             yield base, f, name
 
 
 def _walk_sources(roots: Iterable[pathlib.Path],
-                  exclude: Iterable[str]) -> Iterator[tuple[pathlib.Path, pathlib.Path, str, str | None]]:
-    """(root, file, module name, the exclude glob it matches or None) for every .py file under the roots."""
+                  exclude: Iterable[str]) -> Iterator[tuple[pathlib.Path, pathlib.Path, str, str | None, bool]]:
+    """(root, file, module name, the exclude glob it matches or None, skipped) for every .py file under the
+    roots. A file under a skipped directory (SKIP_DIRS, a dot-directory) has that directory's name as its
+    pattern and skipped True."""
     exclude = list(exclude)
     roots = list(dict.fromkeys(r.resolve() for r in roots))
     dirs = [r for r in roots if r.is_dir()]
@@ -310,14 +317,13 @@ def _walk_sources(roots: Iterable[pathlib.Path],
             if any(f.is_relative_to(d) for d in inner):
                 continue                               # named from the deeper root that holds it
             rel = f.relative_to(base)
-            if any(p in SKIP_DIRS or p.startswith(".") for p in rel.parts[:-1]):
-                continue
-            pattern = _excluded(rel, exclude) if exclude else None
+            skip = next((p for p in rel.parts[:-1] if p in SKIP_DIRS or p.startswith(".")), None)
+            pattern = (_excluded(rel, exclude) if exclude else None) or skip
             parts = list(rel.with_suffix("").parts)
             if parts[-1] == "__init__":
                 parts.pop()
             if parts:
-                yield base, f, ".".join(parts), pattern
+                yield base, f, ".".join(parts), pattern, skip is not None
 
 
 class _Index:
@@ -335,6 +341,8 @@ class _Index:
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
         self._subs: dict[str, list[str]] | None = None     # class -> its scanned subclasses (subclasses)
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
+        self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
+        self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
 
     def excluded_module(self, fq: str) -> str | None:
         """The excluded module fq names or lies in (a scanned module of the same name wins), else None."""
@@ -447,18 +455,72 @@ class _Index:
     def bases(self, cls: str) -> list[str]:
         """The canonical names of a class's bases, as written (`Base[T]`, a generic base, is Base; a
         builtin such as `dict` is builtins.dict)."""
+        return [n for n in self._base_names(cls) if n is not None]
+
+    def _base_names(self, cls: str) -> list[str | None]:
+        """bases(), with None for a base that is not a plain name (a call, `*bases`, a getattr())."""
         info = self.classes[cls]
-        mod = self.modules[info["module"]]
-        out = []
+        out: list[str | None] = []
         for b in info["bases"]:
             d = _dotted(b.value if isinstance(b, ast.Subscript) else b)
-            if d:
-                head, _, rest = d.partition(".")
-                here = f"{mod.name}.{head}"
-                first = mod.aliases.get(head) or (
-                    f"builtins.{head}" if head in _BUILTINS and here not in self.classes else here)
-                out.append(self.canon(".".join(filter(None, [first, rest]))))
+            out.append(self._follow(self._name_in(info["module"], d)) if d else None)
         return out
+
+    def _name_in(self, module: str, dotted: str) -> str:
+        """The canonical name a dotted name written in a scanned module refers to."""
+        mod = self.modules[module]
+        head, _, rest = dotted.partition(".")
+        here = f"{mod.name}.{head}"
+        first = mod.aliases.get(head) or (
+            f"builtins.{head}" if head in _BUILTINS and here not in self.classes else here)
+        return self.canon(".".join(filter(None, [first, rest])))
+
+    def _follow(self, fq: str, depth: int = 0) -> str:
+        """fq, or the class a module-level alias of it names (`B = SinkRepo`, bound once in its module)."""
+        module, _, name = fq.rpartition(".")
+        if fq in self.classes or module not in self.modules or depth > 8:
+            return fq
+        value = self.module_values(module).get(name)
+        d = _dotted(value) if value is not None else None
+        return self._follow(self._name_in(module, d), depth + 1) if d else fq
+
+    def unseen_bases(self, cls: str) -> bool:
+        """cls has a base that is neither a scanned class nor a builtin or standard-library class: a call,
+        a getattr(), `*bases`, an unresolved name, a third-party or excluded class. The scan cannot place
+        it in the method resolution order."""
+        return any(b is None or (b not in self.classes and not b.startswith("builtins.")
+                                 and b.split(".")[0] not in _KNOWN_BASE_MODULES)
+                   for b in self._base_names(cls))
+
+    def excluded_subclass(self, classes: set[str]) -> str | None:
+        """A class in an excluded module (read for its class statements only) with a base in classes."""
+        if self._excluded_bases is None:
+            self._excluded_bases = []
+            for name, file in self.excluded_files.items():
+                try:
+                    tree = ast.parse(file.read_bytes(), filename=str(file))
+                except (SyntaxError, ValueError, OSError):
+                    continue
+                package = name if file.name == "__init__.py" else name.rpartition(".")[0]
+                mod = _Module(name, file, file.parent, tree, package)
+                aliases: dict[str, str] = {}
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        aliases.update({a.asname or a.name.split(".")[0]: a.name if a.asname else a.name.split(".")[0]
+                                        for a in node.names})
+                    elif isinstance(node, ast.ImportFrom):
+                        src = self._absolute(mod, node)
+                        aliases.update({a.asname or a.name: f"{src}.{a.name}" for a in node.names if a.name != "*"})
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef):
+                        got = set()
+                        for b in node.bases:
+                            d = _dotted(b.value if isinstance(b, ast.Subscript) else b)
+                            if d:
+                                head, _, rest = d.partition(".")
+                                got.add(self._follow(self.canon(".".join(filter(None, [aliases.get(head, head), rest])))))
+                        self._excluded_bases.append((f"{name}.{node.name}", got))
+        return next((c for c, bs in self._excluded_bases if bs & classes), None)
 
     def mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
         """The method resolution order of a class through the scanned classes (C3; bases the scan does
@@ -921,8 +983,9 @@ class _Walker:
     def _super_methods(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> list[str] | None:
         """super().m (or super(Cls, self).m) inside a method of class C: the next m after Cls in the method
         resolution order of C and of every scanned subclass of C (self may be any of them: a mixin's
-        super() can land on a sibling base). [] when the scan cannot tell (no scanned m, or a subclass's
-        MRO has no consistent order), so the call is name-matched; None when node is not a super() lookup."""
+        super() can land on a sibling base). [] when the scan cannot tell (no scanned m, a subclass's
+        MRO has no consistent order, a class in one has a base the scan cannot see, or an excluded module
+        subclasses C or a subclass), so the call is name-matched; None when node is not a super() lookup."""
         v = node.value
         if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and me
                 and self._resolve(v.func, local, me) == "builtins.super"):
@@ -934,9 +997,12 @@ class _Walker:
                 return []
             start = named
         out: set[str] = set()
-        for k in [me[1], *self.idx.subclasses(me[1])]:
+        family = [me[1], *self.idx.subclasses(me[1])]
+        if self.idx.excluded_subclass(set(family)):
+            return []                                          # a subclass the scan does not read
+        for k in family:
             order = self.idx.strict_mro(k)
-            if order is None:
+            if order is None or any(self.idx.unseen_bases(c) for c in order):
                 return []                                      # fail closed: name-matched
             if start not in order:
                 continue
@@ -1023,6 +1089,10 @@ class _Walker:
         if isinstance(node, ast.expr):
             self._expr(node, owner, local, me)
             return
+        if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+            src = self.idx._absolute(self.mod, node)
+            if ex := self.idx.excluded_module(src):           # its names are unknown to the scan
+                self._site("excluded", owner, node, f"{src}|{ex}|star")
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -1031,6 +1101,8 @@ class _Walker:
                     if fq:
                         self._site("patch", owner, t, fq)
         for child in ast.iter_child_nodes(node):
+            if isinstance(node, ast.AnnAssign) and child is node.annotation:
+                continue                                       # `h: Helper = x` names a type, runs nothing
             self._node(child, owner, local, me)
 
     def _unwrapped(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str:
@@ -1173,6 +1245,8 @@ class _Walker:
                 self._site("reflection", owner, node, f"{fq.rpartition('.')[2]} used as a value")
             elif fq == "sys.modules":                                         # sys.modules[name].Repo
                 self._site("reflection", owner, node, "sys.modules")
+            elif id(node) not in self._called and fq and (ex := self.idx.excluded_module(fq)):
+                self._site("excluded", owner, node, f"{fq}|{ex}|ref")         # cb = helpers.write
             elif id(node) not in self._called:                                # cb = repo.save: escapes
                 for ref in self._value_refs(node, owner, local, me):
                     self._site("ref", owner, node, ref)
@@ -1244,7 +1318,7 @@ class _Walker:
         if fq and fq in self.idx.funcs:
             self.edges.append(_Edge(owner, fq, node.lineno, node.col_offset, False))
         elif fq and (ex := self.idx.excluded_module(fq)):
-            self._site("excluded", owner, node, f"{fq}|{ex}")
+            self._site("excluded", owner, node, f"{fq}|{ex}|call")
         elif fq and fq in self.idx.classes:
             init = self.idx.method(fq, "__init__")
             if init:
@@ -1285,11 +1359,24 @@ class Graph:
 def graph(roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Graph:
     """Index and walk the source roots once (no imports); scan() and `inv init` read the result."""
     idx = _Index()
-    for root, f, name, pattern in _walk_sources((pathlib.Path(r) for r in roots), exclude):
+    skipped: list[tuple[pathlib.Path, pathlib.Path, str, str]] = []
+    for root, f, name, pattern, skip in _walk_sources((pathlib.Path(r) for r in roots), exclude):
         if pattern is None:
             idx.add(root, f, name)
-        else:                                          # not scanned; a call into it from scanned code is noted
+        elif skip:
+            skipped.append((root, f, name, pattern))
+        else:                                          # not scanned; a reference into it from scanned code is noted
             idx.excluded[name] = (f.relative_to(root).as_posix(), pattern)
+            idx.excluded_files[name] = f
+    # a skipped directory (build/, dist/, venv/, ...) counts only where its modules are importable under the
+    # project's own package names (app/build/jobs.py is app.build.jobs); a virtualenv's site-packages or a
+    # build/lib copy is named from the skipped directory down, so third-party code stays quiet
+    tops = {m.split(".")[0] for m in idx.modules}
+    for root, f, name, pattern in skipped:
+        if name.split(".")[0] in tops and all(p.isidentifier() for p in name.split(".")) \
+                and name not in idx.modules and name not in idx.excluded:
+            idx.excluded[name] = (f.relative_to(root).as_posix(), pattern)
+            idx.excluded_files[name] = f
     edges: list[_Edge] = []
     sites: list[_Site] = []
     for mod in idx.modules.values():
@@ -1493,10 +1580,13 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                                 f".{s.detail}() on a receiver the scan cannot resolve may be the sink",
                                 s.owner, s.line, s.col))
         elif s.what == "excluded" and s.owner not in trusted and s.owner not in dominated:
-            fq, _, mod = s.detail.partition("|")
+            fq, mod, how = s.detail.split("|")
             path, glob = idx.excluded[mod]
+            verb = {"call": "calls", "ref": "refers to", "star": "star-imports"}[how]
+            why = (f"in a {glob!r} directory, which the scan always skips" if glob in SKIP_DIRS or
+                   glob.startswith(".") else f"excluded by {glob!r}")
             out.append(_finding(idx, rid, "unresolved", "unresolved/excluded-callee",
-                                f"calls {fq} in {path}, which the scan does not read (excluded by {glob!r}): "
+                                f"{verb} {fq} in {path}, which the scan does not read ({why}): "
                                 f"it may reach the sink; scan it (narrow the exclude) or move it out of the "
                                 f"excluded path", s.owner, s.line, s.col))
         elif s.what in ("reflection", "dynimport"):

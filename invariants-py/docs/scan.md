@@ -88,8 +88,11 @@ Generic classes resolve like plain ones: `class ConcreteRepo(BaseRepo[T])` is a 
 `super(Cls, self)`) in a method of class `C` is an extracted edge to the next `save` after `C` in the
 method resolution order, through the scanned classes, of `C` and of every scanned subclass of `C`:
 `self` may be any of them, so in `class Leaf(Mixin, SinkRepo)` a `super().save(x)` in `Mixin` reaches
-`SinkRepo.save`. When no scanned class has it, or a subclass has no consistent order, the call is
-name-matched (unresolved).
+`SinkRepo.save`. When no scanned class has it, a subclass has no consistent order, a class in one of
+these orders has a base the scan cannot see (a call such as `pick()`, a `getattr()`, `*bases`, an
+unresolved name, a third-party or excluded class; builtin and standard-library bases are known), or a
+class in an excluded module subclasses `C` or one of its subclasses, the call is name-matched
+(unresolved). A module-level alias bound once (`B = SinkRepo`) is resolved to its class, as a base.
 
 Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
 and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
@@ -167,10 +170,17 @@ holds it. Test code and migrations are skipped by default, at any depth (`tests/
 a sink directly is not a back door. Scan roots and excludes can
 also live in the `pyproject.toml` beside the rule file (an `exclude` there replaces the default list,
 so `exclude = []` scans the tests too). Excluded files are not read, but their module names are
-noted: a call from scanned code into an excluded module (production code calling
-`app/testing/helpers.py` or `app/test_fastpath.py`) is `unresolved/excluded-callee`, naming the file
-and the glob, since the scan cannot see where it goes. Narrow the exclude or move the code. Tests
-importing the app are excluded code calling scanned code, and stay quiet:
+noted: any reference from scanned code into an excluded module (production code calling
+`app/testing/helpers.py` or `app/test_fastpath.py`, or using a function or class from one as a value,
+a callback, a decorator, a base class or a getattr() target, a star import of one, a router from one
+mounted with `include_router`) is `unresolved/excluded-callee`, naming the file and the glob, since the
+scan cannot see where it goes. A reference inside a door, a sink or code reached only through them is
+not reported, nor is an annotation or an import with no use. Narrow the exclude or move the code.
+Directories the scan always skips (`build`, `dist`, `venv`, `node_modules`, `site-packages`,
+`__pycache__`, dot-directories) count as excluded the same way when their modules are importable under
+the project's own package names (`app/build/jobs.py` is `app.build.jobs`); a virtualenv or a
+`build/lib` copy inside a root is third-party code and stays quiet. Tests importing the app are
+excluded code calling scanned code, and stay quiet:
 
 ```toml
 [tool.invariants.scan]

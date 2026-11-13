@@ -10,6 +10,46 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 18: scan
+
+From a third review of `inv scan`. Regression tests: `tests/test_fix_round18_scan.py`; each failed
+before its fix. The three example apps' CI passes and their `inv scan` output is unchanged; the lock
+format did not change.
+
+Behaviour changes:
+
+- **Any reference into excluded code is reported, not only a direct call (S-12).** Round 17's
+  `unresolved/excluded-callee` saw `write(x)` but not the same function reached any other way: an alias
+  (`w = write; w(x)`), a callback (`Thread(target=write)`, `map(write, xs)`), a decorator imported from
+  an excluded module, `from app.testing.helpers import *`, `getattr(helpers, "write")(x)`, a scanned
+  subclass inheriting a method from an excluded class, or a FastAPI router in `app/admin_test.py`
+  mounted with `api.include_router(admin_test.router)`. Now every reference from scanned code into an
+  excluded module is reported: a name or attribute read as a value (so a base class, a decorator, a
+  callback and a getattr() target too) and a star import. The message says `calls`, `refers to` or
+  `star-imports`. References inside a door, a sink or code reached only through them are still not
+  reported, and an annotation (`h: Helper = x`) is not a reference. An import with no use is not
+  reported (a module the scan does not read can still run code when imported).
+- **Skipped directories inside the project are excluded modules (S-13).** Files under the directories
+  the scan always skips (`build`, `dist`, `venv`, `node_modules`, `site-packages`, `__pycache__`,
+  dot-directories) were dropped before the exclude logic, so `from app.build.jobs import route;
+  route(x)` passed. They are now noted like excluded files, with the directory's name as the pattern
+  ("in a 'build' directory, which the scan always skips"), when their module name is importable under
+  one of the project's own package names (`app/build/jobs.py` is `app.build.jobs`). Third-party code
+  stays quiet: a virtualenv's `site-packages` or a `build/lib` copy is named from the skipped directory
+  down (`venv.lib...`), which no project code imports. `iter_sources` (and `inv init`) still leave
+  these files out.
+- **`super()` fails closed on bases the scan cannot see (S-14).** Round 17's MRO through the scanned
+  classes dropped a base it could not resolve, so `class Leaf(Mixin, pick())` or
+  `class Leaf(Mixin, getattr(r, "SinkRepo"))` left `super().save(x)` in `Mixin` pointing at
+  `Base.save`. Now, when any class in the MRO of the class holding `super()` or of one of its scanned
+  subclasses has a base that is neither a scanned class nor a builtin or standard-library
+  (or `typing_extensions`) class (a call, a getattr(), `*bases`, an unresolved name, a third-party or
+  excluded class), the call is name-matched (unresolved). A module-level alias (`B = SinkRepo`, bound
+  once) now resolves to its class, as a base anywhere, so `class Leaf(Mixin, B)` is a bypass. Excluded
+  modules are read for their class statements only: one that subclasses the class holding `super()`
+  or a subclass of it (`app/testing/leaf.py: class Leaf(Mixin, SinkRepo)`) also makes the call fail
+  closed.
+
 ### Fix round 17: ablation, MCP, providers
 
 - **`--inv-ablate` no longer counts state carried between re-runs as caught.** The re-runs keep
