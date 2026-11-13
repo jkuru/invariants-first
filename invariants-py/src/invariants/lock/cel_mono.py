@@ -4,19 +4,14 @@ cannot be decided (the polarity walk, _walk), and new_error_sites lists what an 
 raise. Pure, apart from the typer, which is built from the loader's static type environments.
 
 The canonical form and the typer are in cel_canon, the error sites in cel_sites; this module
-judges the direction of an edit and re-exports their names, public and private."""
+judges the direction of an edit."""
 from __future__ import annotations
 
 import typing
 from typing import Any
 
-from .cel_canon import (_BOOL_CALLS, _BOOL_OPS, _INT64, _INTEGRAL, _MACRO_CALLS, _MIRROR, _NEGATE, Typer, _Canon,
-                        _clause_key, _disjuncts, _int_lit, _lit, _mask, _num, _numeric, _order, _unique,
-                        canon_tree, clause_types, make_typer)
-from .cel_sites import _TOTAL_CALLS, _can_raise, _describe_site, _error_sites, _magnitude, new_error_sites
-
-# the private class of cel_canon keeps the module name it had before the split
-_Canon.__module__ = __name__
+from .cel_canon import Typer, _num, canon_tree
+from .cel_sites import new_error_sites
 
 
 def _new_sites_text(old: str, new: str, typer: Typer | None) -> list[str]:

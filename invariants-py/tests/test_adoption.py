@@ -12,7 +12,7 @@ import textwrap
 
 import pytest
 
-from invariants import bootstrap, lockfile
+from invariants import bootstrap, lock
 from invariants.errors import LoadError
 from invariants.loader import expand_short_forms, schema_path
 from cli_support import run_inv, write_project
@@ -128,8 +128,8 @@ def test_short_form_and_rules_null_pass_the_json_schema():
 
 
 def test_every_new_schema_field_is_classified():
-    assert lockfile.policy("rule.guard") == lockfile.ANALYSED
-    assert lockfile.policy("rule.tests") == lockfile.NEUTRAL
+    assert lock.policy("rule.guard") == lock.ANALYSED
+    assert lock.policy("rule.tests") == lock.NEUTRAL
 
 
 # --- pydantic constraints ------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def test_every_new_schema_field_is_classified():
     ("fields.amount.maximum", 1, 2, False),                                # not a pydantic schema: a pin only
 ])
 def test_constraint_weakening(path, old, new, weak):
-    assert (lockfile.constraint_weakening(path, old, new) is not None) is weak
+    assert (lock.constraint_weakening(path, old, new) is not None) is weak
 
 
 # --- Python -> CEL -------------------------------------------------------------------------------
@@ -264,7 +264,7 @@ def test_init_pins_api_boundaries_only(tmp_path):
 ])
 def test_module_constants_are_inlined(consts, src, cel):
     tree = ast.parse(consts + f"def f(x, s, f):\n    if {src}:\n        raise ValueError('no')\n")
-    (g,) = bootstrap._guards("m", tree)
+    (g,) = bootstrap.finding._guards("m", tree)
     assert g.clauses == [(cel, "no")]
 
 
@@ -278,7 +278,7 @@ def test_module_constants_are_inlined(consts, src, cel):
 ])
 def test_names_that_are_not_constants_are_not_inlined(consts):
     tree = ast.parse(consts + "def f(x):\n    if x > CAP:\n        raise ValueError('no')\n")
-    g = next(g for g in bootstrap._guards("m", tree) if g.qualname == "f")
+    g = next(g for g in bootstrap.finding._guards("m", tree) if g.qualname == "f")
     assert g.clauses == [] and "CAP is not a parameter or a module constant" in g.skipped[0]
 
 

@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from cli_support import run_inv, write_project
-from invariants import lock, lockfile, mcp
+from invariants import lock, mcp
 from invariants.cli import commands
 from invariants.lock import pinning
 
@@ -73,7 +73,7 @@ def test_settings_refuse_a_pyproject_symlinked_outside_root(tmp_path):
     (root / "invariants.json").write_text("{}")
     (root / "pyproject.toml").symlink_to(outside)
     with pytest.raises(mcp.ToolError, match="pyproject.toml resolves to .*outside the server's --root"):
-        mcp._settings_inside(root.resolve(), root / "invariants.json")
+        mcp.confine._settings_inside(root.resolve(), root / "invariants.json")
 
 
 @pytest.mark.parametrize("args, what", [
@@ -100,7 +100,7 @@ def test_a_wrongly_typed_rules_or_root_is_a_tool_error_in_every_tool(tmp_path):
 # --- 3. validate labels -----------------------------------------------------------------------------
 def test_validate_labels_come_from_the_table():
     assert [label for label, _ in commands.VALIDATE_CHECKS] == ["scan", "lockfile"]
-    assert lockfile.expand_applies_to is pinning.expand_applies_to is lock.expand_applies_to
+    assert lock.expand_applies_to is pinning.expand_applies_to
 
 
 def test_validate_label_of_an_applies_to_problem(tmp_path):

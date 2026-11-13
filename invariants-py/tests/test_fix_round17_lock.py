@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from invariants import cli, lockfile
+from invariants import cli, lock as lockmod
 from cli_support import run_inv, write_project
 
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -95,7 +95,7 @@ def test_a_lock_that_stayed_still_compares(tmp_path):
 
 # --- 2. additionalProperties ------------------------------------------------------------------------
 def _schema_diff(a, b):
-    ch = lockfile._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", "pydantic": a}},
+    ch = lockmod.schema_diff._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", "pydantic": a}},
                                   {"B": {"name": "M", "pydantic": b}})
     return any(c.weakened for c in ch), [str(c) for c in ch]
 
@@ -120,7 +120,7 @@ def test_additional_properties(old, new, weak):
 
 @pytest.mark.parametrize("old,new,weak", [(False, {}, True), (False, {"type": "string"}, True), (True, False, False)])
 def test_additional_properties_without_neighbours(old, new, weak):
-    assert (lockfile.constraint_weakening("pydantic.additionalProperties", old, new) is not None) is weak
+    assert (lockmod.constraint_weakening("pydantic.additionalProperties", old, new) is not None) is weak
 
 
 # --- 3. OpenAPI operation renames -------------------------------------------------------------------
@@ -134,16 +134,16 @@ def _api(ops: dict) -> dict:
 
 
 def _lock(contract: dict, rules: dict | None = None) -> dict:
-    return {"lock_version": lockfile.LOCK_VERSION, "rules": rules or {}, "targets": {}, "providers": {},
+    return {"lock_version": lockmod.LOCK_VERSION, "rules": rules or {}, "targets": {}, "providers": {},
             "contracts": {"api": contract}, "schemas": {}}
 
 
 def test_a_renamed_operation_is_compared_field_by_field():
-    cs = lockfile.changes(_lock(_api({"create_refund": _op(10000)})), _lock(_api({"make_refund": _op(10**9)})))
+    cs = lockmod.changes(_lock(_api({"create_refund": _op(10000)})), _lock(_api({"make_refund": _op(10**9)})))
     weak = [c for c in cs if c.weakened]
     assert weak and any("maximum" in c.what for c in weak), [str(c) for c in cs]
     assert any("renamed" in c.what for c in cs), [str(c) for c in cs]
-    cs = lockfile.changes(_lock(_api({"create_refund": _op(10000)})), _lock(_api({"make_refund": _op(100)})))
+    cs = lockmod.changes(_lock(_api({"create_refund": _op(10000)})), _lock(_api({"make_refund": _op(100)})))
     assert not any(c.weakened for c in cs), [str(c) for c in cs]
 
 
@@ -151,9 +151,9 @@ def test_an_operation_removed_with_no_counterpart():
     rules = {"R": {"semantic": {"subject": {"contract": "api", "operation": "create_refund"}}, "targets": [],
                    "doc": {}}}
     old = _api({"create_refund": _op(10000), "health": _op(1, "GET", "/health")})
-    cs = lockfile.changes(_lock(old, rules), _lock(_api({"health": _op(1, "GET", "/health")}), rules))
+    cs = lockmod.changes(_lock(old, rules), _lock(_api({"health": _op(1, "GET", "/health")}), rules))
     assert any(c.weakened and "create_refund" in c.what for c in cs), [str(c) for c in cs]
-    cs = lockfile.changes(_lock(old), _lock(_api({"create_refund": _op(10000)})))
+    cs = lockmod.changes(_lock(old), _lock(_api({"create_refund": _op(10000)})))
     gone = [c for c in cs if "health" in c.what]
     assert gone and not any(c.weakened for c in gone), [str(c) for c in cs]
 
@@ -235,7 +235,7 @@ def test_first_scan_pin_against_the_base_defaults(tmp_path, scan, weak):
     assert run_inv("lock", cwd=root).returncode == 0
     lock = json.loads((root / "invariants.lock").read_text())
     lock.pop("scan")                                   # pinned before the scan was pinned
-    (root / "invariants.lock").write_text(lockfile.dumps(lock))
+    (root / "invariants.lock").write_text(lockmod.dumps(lock))
     _git(root, "init", "-q", "-b", "main")
     _commit(root)
     _git(root, "checkout", "-qb", "pr")
@@ -249,11 +249,11 @@ def test_first_scan_pin_against_the_base_defaults(tmp_path, scan, weak):
 
 
 def test_scan_changes_with_a_default():
-    old = {"lock_version": lockfile.LOCK_VERSION}
-    new = {"lock_version": lockfile.LOCK_VERSION, "scan": {"roots": ["src"], "exclude": ["tests"]}}
-    cs = lockfile.changes(old, new, scan_default={"roots": [".", "src"], "exclude": ["tests"]})
+    old = {"lock_version": lockmod.LOCK_VERSION}
+    new = {"lock_version": lockmod.LOCK_VERSION, "scan": {"roots": ["src"], "exclude": ["tests"]}}
+    cs = lockmod.changes(old, new, scan_default={"roots": [".", "src"], "exclude": ["tests"]})
     assert any(c.weakened and c.what == "roots removed" for c in cs), [str(c) for c in cs]
-    cs = lockfile.changes(old, new, scan_default={"roots": ["src"], "exclude": ["tests"]})
+    cs = lockmod.changes(old, new, scan_default={"roots": ["src"], "exclude": ["tests"]})
     assert not any(c.weakened for c in cs), [str(c) for c in cs]
 
 

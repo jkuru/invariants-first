@@ -122,7 +122,7 @@ def test_ablation_with_logging_configured_logs_once(monkeypatch):
 def test_under_pytest_ignores_pytest_current_test(monkeypatch):
     from invariants import registry
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr(registry._SESSION, "pytest_sessions", 0)     # no configured session (round 5: not sys.modules)
+    monkeypatch.setattr(registry.session._SESSION, "pytest_sessions", 0)     # no configured session (round 5: not sys.modules)
     assert registry.under_pytest() is False
     assert registry.ablation_level() == logging.ERROR
 

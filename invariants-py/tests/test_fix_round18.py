@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from invariants import lockfile, mcp
+from invariants import lock, mcp
 from invariants.integrations import anthropic as inv_an
 
 
@@ -235,8 +235,8 @@ def test_model_for_replay_compares_the_configured_model(tmp_path):
 # --- 7. schema weakenings ----------------------------------------------------------------------------
 def _weak(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     a, b = {"jsonschema": old}, {"jsonschema": new}
-    return [why for p, x, y in lockfile._json_paths(a, b, "", [])
-            if (why := lockfile.constraint_weakening(p, x, y, a, b))]
+    return [why for p, x, y in lock.contracts._json_paths(a, b, "", [])
+            if (why := lock.constraint_weakening(p, x, y, a, b))]
 
 
 CLOSED = {"type": "object", "properties": {"amount": {"type": "integer", "maximum": 100}},
@@ -280,7 +280,7 @@ def test_schema_weakenings_round18(old, new, weak):
     ("schema.properties.amount.x-nullable", None, True, True),
 ])
 def test_openapi_nullable_turned_on_is_a_weakening(path, old, new, weak):
-    assert (lockfile.constraint_weakening(path, old, new) is not None) is weak
+    assert (lock.constraint_weakening(path, old, new) is not None) is weak
 
 
 # --- follow-up: a property added to a closed schema --------------------------------------------------
@@ -313,8 +313,8 @@ def test_pydantic_extra_forbid_optional_field_is_a_weakening():
 
     a, b = {"pydantic": Old.model_json_schema()}, {"pydantic": New.model_json_schema()}
     assert a["pydantic"]["additionalProperties"] is False
-    whys = [why for p, x, y in lockfile._json_paths(a, b, "", [])
-            if (why := lockfile.constraint_weakening(p, x, y, a, b))]
+    whys = [why for p, x, y in lock.contracts._json_paths(a, b, "", [])
+            if (why := lock.constraint_weakening(p, x, y, a, b))]
     assert any("is_admin" in w for w in whys), whys
 
 

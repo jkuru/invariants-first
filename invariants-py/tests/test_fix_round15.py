@@ -10,7 +10,7 @@ import tomllib
 
 import pytest
 
-from invariants import cli, lockfile, scan
+from invariants import cli, lock, scan
 from invariants import typecheck as tc
 from invariants.cel import subset
 from cli_support import run_inv, write_project
@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _cmp(old: str, new: str, typer=None) -> str:
-    return lockfile.compare_bad(old, new, subset.parse, typer)
+    return lock.compare_bad(old, new, subset.parse, typer)
 
 
 # --- R12-1: error-introducing edits --------------------------------------------------------------------------
@@ -54,14 +54,14 @@ def test_legitimate_tightenings_stay_stronger(old, new):
 
 
 def test_new_error_sites_are_described():
-    ta = lockfile.canon_tree(subset.parse('args.region in ["xx"]'))
-    tb = lockfile.canon_tree(subset.parse('args.region in ["xx", args.cfg.extra]'))
-    assert lockfile.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
-    assert lockfile.new_error_sites(ta, ta) == []
+    ta = lock.canon_tree(subset.parse('args.region in ["xx"]'))
+    tb = lock.canon_tree(subset.parse('args.region in ["xx", args.cfg.extra]'))
+    assert lock.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
+    assert lock.new_error_sites(ta, ta) == []
 
 
 def test_a_uint_factor_keeps_its_polarity_but_may_overflow():
-    typer = lockfile.make_typer([{"args": tc.T({"map"}, fields={"u": tc.UINT})}])
+    typer = lock.make_typer([{"args": tc.T({"map"}, fields={"u": tc.UINT})}])
     assert _cmp("args.u * 2 > 5", "args.u * 2 > 4", typer) == "stronger"
     assert _cmp("args.u * 2 > 5", "args.u * 3 > 5", typer) == "unknown"
 
@@ -184,7 +184,7 @@ def test_the_cookbook_runs_ci_sh_with_bash():
 # --- R12-5: docs and scan roots ----------------------------------------------------------------------------------
 def test_changelog_and_docstring_no_longer_trust_declared_int():
     assert "declared `int` at every enforcer" not in (ROOT / "CHANGELOG.md").read_text()
-    assert "declared types make int or uint" not in (lockfile._Canon.integral.__doc__ or "")
+    assert "declared types make int or uint" not in (lock.cel_canon._Canon.integral.__doc__ or "")
 
 
 def test_readme_documents_path():

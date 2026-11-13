@@ -29,6 +29,9 @@ from invariants.errors import LoadError
 from invariants.lock import pinning
 from invariants.lock.contracts import _json_paths
 from invariants.lock.schema_diff import _param_schema_changes, constraint_weakening
+from invariants.lock import pin_jsonschema
+from invariants.lock import pin_signatures
+from invariants.lock import pin_types
 
 te = pytest.importorskip("typing_extensions")
 try:
@@ -63,14 +66,14 @@ def test_alias_arguments_are_substituted_in_types() -> None:
 def test_constraint_of_an_alias_argument_is_pinned() -> None:
     pin = pinning._signature_pin(box_int, "t", pinning.Schemas(inline=True))
     assert pin["param_schemas"]["b"]["exclusiveMinimum"] == 0
-    assert pinning._has_constraints(PosBox[int])
+    assert pin_signatures._has_constraints(PosBox[int])
 
 
 def test_json_type_substitutes_alias_arguments() -> None:
-    assert pinning._json_type(Box[int], {}, 0) == {"type": "array", "items": {"type": "integer"}}
-    assert pinning._json_type(PosBox[int], {}, 0) == {"type": "integer", "exclusiveMinimum": 0}
-    assert pinning._json_type(Annotated[Box[int], at.MaxLen(3)], {}, 0)["maxItems"] == 3
-    assert pinning._json_type(PosBox[Box[int]], {}, 0)["type"] == "array"
+    assert pin_jsonschema._json_type(Box[int], {}, 0) == {"type": "array", "items": {"type": "integer"}}
+    assert pin_jsonschema._json_type(PosBox[int], {}, 0) == {"type": "integer", "exclusiveMinimum": 0}
+    assert pin_jsonschema._json_type(Annotated[Box[int], at.MaxLen(3)], {}, 0)["maxItems"] == 3
+    assert pin_jsonschema._json_type(PosBox[Box[int]], {}, 0)["type"] == "array"
 
 
 Loose = TypeAliasType("Loose", Annotated[T, at.Gt(-5)], type_params=(T,))
@@ -97,15 +100,15 @@ def test_pep695_syntax_alias() -> None:
     pin = pinning._signature_pin(ns["f"], "t", pinning.Schemas(inline=True))
     assert pin["types"] == {"a": {"generic": "list", "args": ["int"]}, "b": "int", "return": "null"}
     assert pin["param_schemas"]["b"]["exclusiveMinimum"] == 0
-    assert pinning._json_type(ns["PosBox"][int], {}, 0) == {"type": "integer", "exclusiveMinimum": 0}
+    assert pin_jsonschema._json_type(ns["PosBox"][int], {}, 0) == {"type": "integer", "exclusiveMinimum": 0}
 
 
 def test_alias_arguments_that_do_not_fit_keep_both() -> None:
     Ts = te.TypeVarTuple("Ts")
     Row = TypeAliasType("Row", tuple[Annotated[int, at.Gt(0)], te.Unpack[Ts]], type_params=(Ts,))
     ann = Row[Annotated[int, at.Le(3)]]
-    assert pinning._has_constraints(ann)
-    got = pinning._type_schema(ann, {}, set())
+    assert pin_signatures._has_constraints(ann)
+    got = pin_types._type_schema(ann, {}, set())
     assert got["generic"] == "Row" and "value" in got and got["args"]
 
 
@@ -149,7 +152,7 @@ class MixedTD(typing.TypedDict):                               # typing's class,
 
 @pytest.mark.parametrize("cls, required", [(PartTD, ["a", "c"]), (FullTD, ["c", "d"]), (MixedTD, ["b"])])
 def test_typeddict_qualifiers_are_unwrapped(cls: type, required: list[str]) -> None:
-    s = pinning.stdlib_json_schema(cls)
+    s = pin_jsonschema.stdlib_json_schema(cls)
     assert s["required"] == required
     assert all("x-python-type" not in p for p in s["properties"].values()), s
     if "a" in s["properties"] and cls is not MixedTD:
@@ -157,7 +160,7 @@ def test_typeddict_qualifiers_are_unwrapped(cls: type, required: list[str]) -> N
 
 
 def test_typeddict_qualifier_keeps_annotated_metadata() -> None:
-    assert pinning.stdlib_json_schema(FullTD)["properties"]["c"] == {"type": "integer", "minimum": 0}
+    assert pin_jsonschema.stdlib_json_schema(FullTD)["properties"]["c"] == {"type": "integer", "minimum": 0}
 
 
 def test_typeddict_qualifiers_in_the_resolved_schema() -> None:
@@ -177,22 +180,22 @@ def _nested(bound: str) -> type:
 
 
 def test_nested_class_key_has_no_dot() -> None:
-    s = pinning.stdlib_json_schema(_nested("at.Le(5)"))
+    s = pin_jsonschema.stdlib_json_schema(_nested("at.Le(5)"))
     assert list(s["$defs"]) == ["Inner"] and s["properties"]["inner"] == {"$ref": "#/$defs/Inner"}
 
 
 @pytest.mark.parametrize("old, new", [("at.Le(5)", "at.Lt(5)"), ("at.Ge(1)", "at.Gt(0)")])
 def test_nested_class_equivalent_bound_is_no_weakening(old: str, new: str) -> None:
-    assert _weakenings(pinning.stdlib_json_schema(_nested(old)), pinning.stdlib_json_schema(_nested(new))) == []
+    assert _weakenings(pin_jsonschema.stdlib_json_schema(_nested(old)), pin_jsonschema.stdlib_json_schema(_nested(new))) == []
 
 
 def test_nested_class_loosened_bound_is_a_weakening() -> None:
-    assert _weakenings(pinning.stdlib_json_schema(_nested("at.Le(5)")),
-                       pinning.stdlib_json_schema(_nested("at.Le(50)"))) == ["maximum raised: larger values pass"]
+    assert _weakenings(pin_jsonschema.stdlib_json_schema(_nested("at.Le(5)")),
+                       pin_jsonschema.stdlib_json_schema(_nested("at.Le(50)"))) == ["maximum raised: larger values pass"]
 
 
 def test_old_dotted_key_re_pinned_is_no_weakening() -> None:
-    new = pinning.stdlib_json_schema(_nested("at.Le(5)"))
+    new = pin_jsonschema.stdlib_json_schema(_nested("at.Le(5)"))
     old = {**new, "properties": {"inner": {"$ref": "#/$defs/Outer.Inner"}}, "$defs": {"Outer.Inner": new["$defs"]["Inner"]}}
     assert _weakenings(old, new) == []
 
@@ -212,14 +215,14 @@ def _two_items(bound: int) -> type:
 
 
 def test_two_classes_of_one_name_are_two_definitions() -> None:
-    s = pinning.stdlib_json_schema(_two_items(5))
+    s = pin_jsonschema.stdlib_json_schema(_two_items(5))
     assert s["properties"]["a"] != s["properties"]["b"]
     assert sorted(s["$defs"]) == ["Item", "r21_mb__Item"]
 
 
 def test_two_classes_of_one_name_loosened_is_a_weakening() -> None:
-    assert _weakenings(pinning.stdlib_json_schema(_two_items(5)),
-                       pinning.stdlib_json_schema(_two_items(50))) == ["maximum raised: larger values pass"]
+    assert _weakenings(pin_jsonschema.stdlib_json_schema(_two_items(5)),
+                       pin_jsonschema.stdlib_json_schema(_two_items(50))) == ["maximum raised: larger values pass"]
 
 
 def test_one_class_twice_is_one_definition() -> None:
@@ -227,5 +230,5 @@ def test_one_class_twice_is_one_definition() -> None:
     class Twice:
         a: PartTD
         b: list[PartTD]
-    s = pinning.stdlib_json_schema(Twice)
+    s = pin_jsonschema.stdlib_json_schema(Twice)
     assert list(s["$defs"]) == ["PartTD"] and s["properties"]["b"]["items"] == {"$ref": "#/$defs/PartTD"}

@@ -6,7 +6,7 @@ schema goes to the content-addressed table (Schemas) once, without its prose. Im
 
 The work is staged: pin_types (resolved types, the schema table), pin_jsonschema (JSON Schema of a
 dataclass or TypedDict), pin_signatures (signature pins) and pin_contracts (contract pins); this
-module builds the lock from them and re-exports their names, public and private."""
+module builds the lock from them."""
 from __future__ import annotations
 
 import fnmatch
@@ -15,27 +15,11 @@ from typing import Any
 
 from ..errors import LoadError
 from ..resolve import resolve
-from ..scan import SKIP_DIRS
-from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MAX_DEFS, MAX_DEPTH,
-                        MEDIATION_DOC, PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha, canonical)
-from .pin_contracts import (_PARAM_KEYS, _SHARED_SCHEMAS, _OpenAPIDoc, _openapi_app, _openapi_app_pin,
-                            _openapi_file, _openapi_operations, _operation_ids, _pin_every_operation,
-                            _python_contract_pin, _python_ref, contract_hash)
-from .pin_jsonschema import (_ARRAYS, _BOUND_ATTRS, _JSON_TYPES, _LEN_ATTRS, _MAPS, _Defs, _annotated_bounds,
-                             _def_key, _json_object, _json_type, _key_text, _local_def, _refers_to, json_schema,
-                             stdlib_json_schema)
-from .pin_signatures import (_annotation_schema, _callable_hints, _constrains, _has_constraints, _param_schemas,
-                             _signature_pin, _signature_types, param_schemas, signature_types)
-from .pin_types import (_DATA_KEYS, _KEY_QUALIFIERS, _NAME_MAPS, SCHEMA_PROSE, Schemas, _class_fields, _class_ref,
-                        _class_shape, _ClassShape, _generic_schema, _is_alias, _is_pydantic, _is_schema_class,
-                        _is_typeddict, _key_qualifiers, _schema_class_ref, _substitute, _type_schema, _unalias,
-                        resolved_schema, strip_prose)
-
-# the private classes of the stages keep the module name they had before the split (the package
-# resets the public ones it imports, Schemas among them, to invariants.lockfile)
-for _cls in (_ClassShape, _Defs, _OpenAPIDoc):
-    _cls.__module__ = __name__
-del _cls
+from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MEDIATION_DOC, _plain, _sha,
+                        canonical)
+from .pin_contracts import contract_hash
+from .pin_signatures import _signature_pin
+from .pin_types import Schemas, _class_ref, resolved_schema
 
 
 def rule_hash(raw: dict[str, Any]) -> str:

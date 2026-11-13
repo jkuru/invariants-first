@@ -140,7 +140,7 @@ LONG = "abcde" * 20000            # 100,000 characters
 
 
 def test_long_input_matches_on_the_full_re2_backends_gives_a_result():
-    if get_backend().__class__.__module__.endswith("subset"):
+    if type(get_backend()).__name__ == "SubsetBackend":
         pytest.skip("the subset's bound is pinned below")
     assert get_backend().compile('s.matches("(a|b|c|d|e)*f")').evaluate({"s": LONG}) is False
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import textwrap
 
-from invariants import lockfile, scan
+from invariants import lock, scan
 from cli_support import write_project
 
 REPO = textwrap.dedent("""
@@ -123,7 +123,7 @@ def test_a_call_into_an_excluded_production_module_is_reported(tmp_path):
         def handler2(x):
             test_fastpath.write(x)
         """, {"app/testing/__init__.py": "", "app/testing/helpers.py": HELPER, "app/test_fastpath.py": HELPER},
-        exclude=lockfile.DEFAULT_SCAN_EXCLUDE)
+        exclude=lock.DEFAULT_SCAN_EXCLUDE)
     got = [(f.code, f.owner) for f in rep.findings]
     assert got == [("unresolved/excluded-callee", "app.ops.handler"),
                    ("unresolved/excluded-callee", "app.ops.handler2")], got
@@ -146,7 +146,7 @@ def test_a_test_suite_importing_app_code_stays_excluded_and_quiet(tmp_path):
                       SinkRepo().save(handler(1))
                   """,
               "app/testing/__init__.py": "", "app/testing/fixtures.py": HELPER},
-        exclude=lockfile.DEFAULT_SCAN_EXCLUDE)
+        exclude=lock.DEFAULT_SCAN_EXCLUDE)
     assert rep.findings == [] and rep.rule_result("T-1") == "pass"
 
 
@@ -160,7 +160,7 @@ def test_a_door_calling_an_excluded_helper_is_behind_the_door(tmp_path):
                 repo.save(x)
             """,
         "app/testing/__init__.py": "", "app/testing/audit.py": "def note(x):\n    pass\n"},
-        exclude=lockfile.DEFAULT_SCAN_EXCLUDE)
+        exclude=lock.DEFAULT_SCAN_EXCLUDE)
     assert rep.findings == [], rep.findings
 
 

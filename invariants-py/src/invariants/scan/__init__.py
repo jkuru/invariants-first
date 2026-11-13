@@ -14,7 +14,7 @@ and missing (a declared sink or door that does not exist in the scanned code).
 The pipeline: sources (which files) -> indexer (first pass: modules, functions, classes) -> walker with
 inference (second pass: call edges and sites) -> reachability and checks (findings per rule) -> Report.
 """
-# ruff: noqa: F401  (the imports below re-export the namespace scan.py had: public and private names)
+# ruff: noqa: F401  (the imports below are the package's API)
 from __future__ import annotations
 
 import ast
@@ -22,28 +22,21 @@ import dataclasses
 import pathlib
 from typing import Any, Iterable, Iterator
 
-from .astutil import (_HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _locals,
-                      _own_nodes, _pairs, _single_types)
-from .checks import _canon_py, _check_rule, _finding, _holds, _loc
-from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report,
-                        ScanConfigError, SqlWrite, _Edge, _Func, _Module, _Site)
-from .indexer import (_BUILTINS, _DEFINING_MODULES, _DEFINING_NAMES, _KNOWN_BASE_MODULES, _TYPE_ALIAS, _Index,
-                      _defines_only, _runs_code)
-from .inference import (_ANNOTATED, _CM, _CONTAINERS, _LITERALS, _OPTIONAL, _PROPERTY, _SELF, _UNION, _YIELDS,
-                        _Inference)
-from .mediation import _mediation, _not_scanned, _str_list
-from .reachability import _entrypoints, _paths, _reach, _shortest, door_only
-from .sarif import _LEVEL, to_sarif
-from .sources import SKIPPED, _excluded, _layout, _skipped, _Source, _walk_sources, anywhere, iter_sources
-from .sql import _KEYWORDS, _SQL_COMMENT, _SQL_FORMS, _TABLE, sql_writes
+from .checks import _canon_py, _check_rule
+from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report, ScanConfigError,
+                        SqlWrite, _Edge, _Module, _Site)
+from .indexer import _Index
+from .mediation import _mediation, _not_scanned
+from .reachability import _entrypoints, door_only
+from .sarif import to_sarif
+from .sources import SKIPPED, _layout, _skipped, _Source, anywhere, iter_sources
+from .sql import sql_writes
 from .text import to_text
-from .walker import _REFLECTIVE, _Walker
+from .walker import _Walker
 
-# `from invariants.scan import *` exports exactly the public names scan.py's star import gave (it had no
-# __all__), and no modules: without this list it would bind the submodules (text, sql, checks, ...) over
-# a caller's own names. The stdlib modules scan.py leaked (re, sys, ast, ...) are not re-exported.
-__all__ = ["Any", "DYNAMIC_IMPORT", "Finding", "Graph", "Iterable", "Iterator", "KINDS", "Mediation", "REFLECTION",
-           "Report", "SKIP_DIRS", "ScanConfigError", "SqlWrite", "annotations", "anywhere", "door_only", "graph",
+# `from invariants.scan import *` exports these names and no submodules.
+__all__ = ["DYNAMIC_IMPORT", "Finding", "Graph", "KINDS", "Mediation", "REFLECTION",
+           "Report", "SKIP_DIRS", "ScanConfigError", "SqlWrite", "anywhere", "door_only", "graph",
            "iter_sources", "mediations", "scan", "sql_writes", "to_sarif", "to_text"]
 
 
@@ -240,11 +233,3 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     return report
-
-# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
-# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
-# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
-for _obj in list(globals().values()):
-    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
-        _obj.__module__ = 'invariants.scan'
-del _obj

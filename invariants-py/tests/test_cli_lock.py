@@ -6,7 +6,7 @@ import json
 import pytest
 
 import invariants as inv
-from invariants import lockfile
+from invariants import lock as lockmod
 from cli_support import CLEAN, copy_app, run_inv
 
 
@@ -92,20 +92,20 @@ def test_custom_lock_path(app, tmp_path):
 # --- in-process unit tests (no app imports) -----------------------------------------------------
 def test_rule_hash_ignores_evidence_only():          # the version-1 pin, still used to migrate
     r = {"id": "R", "bad": "x"}
-    assert lockfile.rule_hash(r) == lockfile.rule_hash({**r, "evidence": {"runs": 3}})
-    assert lockfile.rule_hash(r) != lockfile.rule_hash({**r, "bad": "y"})
-    assert lockfile.rule_hash({"a": 1, "b": 2}) == lockfile.rule_hash({"b": 2, "a": 1})
+    assert lockmod.rule_hash(r) == lockmod.rule_hash({**r, "evidence": {"runs": 3}})
+    assert lockmod.rule_hash(r) != lockmod.rule_hash({**r, "bad": "y"})
+    assert lockmod.rule_hash({"a": 1, "b": 2}) == lockmod.rule_hash({"b": 2, "a": 1})
 
 
 def test_expand_applies_to():
     doc = {"targets": {"py:a.x": {}, "py:a.y": {}, "py:b.z": {}},
            "rules": [{"id": "R", "applies_to": "py:a.*"}, {"id": "S", "applies_to": ["py:b.*", "py:a.x"]},
                      {"id": "T"}]}
-    assert lockfile.expand_applies_to(doc) == {"R": ["py:a.x", "py:a.y"], "S": ["py:a.x", "py:b.z"]}
+    assert lockmod.expand_applies_to(doc) == {"R": ["py:a.x", "py:a.y"], "S": ["py:a.x", "py:b.z"]}
     with pytest.raises(inv.LoadError, match="matches no entry"):
-        lockfile.expand_applies_to({"targets": {}, "rules": [{"id": "R", "applies_to": "py:q.*"}]})
+        lockmod.expand_applies_to({"targets": {}, "rules": [{"id": "R", "applies_to": "py:q.*"}]})
     with pytest.raises(inv.LoadError, match="applies_to must be"):
-        lockfile.expand_applies_to({"targets": {}, "rules": [{"id": "R", "applies_to": []}]})
+        lockmod.expand_applies_to({"targets": {}, "rules": [{"id": "R", "applies_to": []}]})
 
 
 def test_diff():
@@ -113,8 +113,8 @@ def test_diff():
          "targets": {"py:t": {"signature": "f(a)"}}, "contracts": {}}
     b = {"lock_version": 2, "spec": "s", "rules": {"R": {"semantic": {"bad": "x > 2"}}, "New": {}},
          "targets": {"py:t": {"signature": "f(a, b)"}}, "contracts": {}}
-    assert lockfile.diff(a, a) == []
-    assert lockfile.diff(a, b) == [
+    assert lockmod.diff(a, a) == []
+    assert lockmod.diff(a, b) == [
         "rule Gone: removed  WEAKENED (the rule no longer exists)", "rule New: added",
         "rule R: bad: 'x > 1' -> 'x > 2'  WEAKENED (the condition now matches fewer cases)",
         "target py:t: signature: 'f(a)' -> 'f(a, b)'"]
@@ -122,7 +122,7 @@ def test_diff():
 
 def test_file_contract_hash(tmp_path):
     (tmp_path / "api.proto").write_text("syntax = 'proto3';")
-    e = lockfile.contract_hash("api", {"type": "protobuf", "ref": "api.proto"}, tmp_path)
+    e = lockmod.contract_hash("api", {"type": "protobuf", "ref": "api.proto"}, tmp_path)
     assert e["hash"].startswith("sha256:")
     with pytest.raises(inv.LoadError, match="not found"):
-        lockfile.contract_hash("api", {"type": "protobuf", "ref": "missing.proto"}, tmp_path)
+        lockmod.contract_hash("api", {"type": "protobuf", "ref": "missing.proto"}, tmp_path)

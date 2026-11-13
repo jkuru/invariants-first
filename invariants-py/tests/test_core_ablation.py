@@ -71,7 +71,7 @@ def test_inv_ablate_env_var(monkeypatch):
 def test_inv_ablate_alone_is_ignored(monkeypatch, caplog):
     """INV_ABLATE without the test-only switch does nothing, and says so."""
     import invariants.registry as registry
-    monkeypatch.setattr(registry._SESSION, "warned_unarmed", False)
+    monkeypatch.setattr(registry.session._SESSION, "warned_unarmed", False)
     monkeypatch.setenv("INV_ABLATE", "R-1,P-2")
     monkeypatch.delenv("INV_ABLATE_TESTING", raising=False)
     with caplog.at_level("WARNING", logger="invariants"), inv.isolated() as r:

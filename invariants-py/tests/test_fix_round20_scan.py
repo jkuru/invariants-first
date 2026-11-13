@@ -20,7 +20,7 @@ import textwrap
 
 import pytest
 
-from invariants import lockfile, scan
+from invariants import lock, scan
 from cli_support import write_project
 
 REPO = """
@@ -78,7 +78,7 @@ def _scan(tmp_path, ops, allow=None, sink="py:app.repo.SinkRepo.save"):
     files = {"app/__init__.py": "", "app/repo.py": textwrap.dedent(REPO), "app/svc.py": textwrap.dedent(SVC),
              "app/ops.py": textwrap.dedent(ops), "app/testing/__init__.py": "",
              "app/testing/helpers.py": textwrap.dedent(HELPER)}
-    return scan.scan(_doc(allow, sink), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    return scan.scan(_doc(allow, sink), [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
 
 
 def _codes(rep):
@@ -234,7 +234,7 @@ def test_an_inherited_enter_returning_self_is_the_receivers_class(tmp_path, ann)
             with SinkRepo() as repo:
                 repo.save(x)
         """)}
-    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
     assert _codes(rep) == ["bypass"], rep.findings
     assert rep.findings[0].path == ["app.ops.handler", "app.repo.SinkRepo.save"]
 
@@ -260,7 +260,7 @@ def test_a_class_named_self_is_not_typing_self(tmp_path):
                 repo.save(x)
         """)}
     rep = scan.scan(_doc(sink="py:app.repo.Self.save"), [write_project(tmp_path, files)],
-                    lockfile.DEFAULT_SCAN_EXCLUDE)
+                    lock.DEFAULT_SCAN_EXCLUDE)
     assert _codes(rep) == ["bypass"], rep.findings
     assert rep.findings[0].path == ["app.ops.handler", "app.repo.Self.save"]
 
@@ -348,7 +348,7 @@ def test_a_base_init_that_sets_the_name_of_a_subclass_sink_is_a_monkeypatch(tmp_
     files = {"app/__init__.py": "", "app/svc.py": textwrap.dedent(SVC), "app/ops.py": "",
              "app/repo.py": "class Base:\n    def __init__(self):\n        self.save = print\n"
                             "class SinkRepo(Base):\n    def save(self, x):\n        pass\n"}
-    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
     assert _codes(rep) == ["forbidden/monkeypatch"], rep.findings
 
 
@@ -371,6 +371,6 @@ def test_other_rebindings_are_not_reported(tmp_path, body):
 def test_assignments_in_the_sink_class_init_keep_their_typed_result(tmp_path, body, codes):
     files = {"app/__init__.py": "", "app/svc.py": textwrap.dedent(SVC), "app/ops.py": "",
              "app/repo.py": "class SinkRepo:\n    def __init__(self):\n" + body + "    def save(self, x):\n        pass\n"}
-    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
     assert _codes(rep) == codes, rep.findings
 

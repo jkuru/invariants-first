@@ -6,40 +6,26 @@ Exit codes: 0 ok; 1 a check failed (invalid rule file, stale lock, verify or sca
 
 The package: common (exit codes, output, the rule file), project (pyproject.toml, import and scan
 roots), commands (the cmd_* subcommands), git_base (`inv check --base`), hooks (`inv hook`); this
-module builds the parser and dispatches. Every name the single-file cli.py had is re-exported here.
+module builds the parser and dispatches.
 """
 from __future__ import annotations
 
-# ruff: noqa: F401   (this module re-exports the names the single-file cli.py had)
+# ruff: noqa: F401   (the names below are the package's API)
 import argparse
-import contextlib
-import importlib
-import json
-import os
-import pathlib
-import re
 import sys
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Sequence
 
-from .. import lock, scan as scanner, status_report
+from .. import scan as scanner
 from ..errors import LoadError
-from ..loader import load, read_document, schema_path
-from ..registry import Registry, isolated
-from .commands import (_against_stored, _check_result, _fresh_lock, _init_doors, _init_lock, _lock_step,
-                       _migration, _report_updated_artifacts, _schema_errors, _stale_form, _write_lock, cmd_check,
-                       cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify, update_artifacts)
-from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, USAGE, Usage, _captured,
-                     _compare, _describe, _err, _importing, _out, _print_changes, _rule_file)
-from .git_base import (BaseUnavailable, _base_lock, _base_scan_default, _base_step, _git, _ls_tree, _repo_root,
-                       _symlinked, base_changes)
-from .hooks import (_BRACE_LIMIT, _GLOB, GREP_COMMANDS, OPAQUE, PROTECTED, READ_COMMANDS, READ_GIT, READ_INV, SUSPECT,
-                    WEAKENING_FLAGS, WEAKENING_SWITCHES, WRITE_COMMANDS, _ansi_c, _brace_alternatives,
-                    _computed_target, _edited_text, _event, _expand_braces, _invariants_table, _lock_dir, _mentions,
-                    _names, _pretool, _reads_only, _segments, _shell_writes, _stop, _tokens,
-                    _touches_invariants_table, _weakening_switch, _writes_redirect, cmd_hook)
-from .project import (DEFAULT_SCAN_EXCLUDE, _app_modules, _contract_modules, _exclude, _import_path, _load_app,
-                      _pyproject, _roots, _setuptools_where, _str_list, import_roots, outside_roots, project_root,
-                      scan_config, scan_inputs, scan_settings, source_dirs)
+from ..loader import read_document
+from .commands import (cmd_check, cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify,
+                       update_artifacts)
+from .common import ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, USAGE, Usage, _describe, _err
+from .git_base import BaseUnavailable, base_changes
+from .hooks import (GREP_COMMANDS, OPAQUE, PROTECTED, READ_COMMANDS, READ_GIT, READ_INV, SUSPECT, WEAKENING_FLAGS,
+                    WEAKENING_SWITCHES, WRITE_COMMANDS, cmd_hook)
+from .project import (DEFAULT_SCAN_EXCLUDE, _exclude, _pyproject, _roots, _setuptools_where, _str_list, import_roots,
+                      outside_roots, project_root, scan_config, scan_inputs, scan_settings, source_dirs)
 
 _Subparser = Callable[[argparse.ArgumentParser], None]
 
@@ -226,11 +212,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as e:          # an app module failing at import, for example
         _err(f"inv {a.command}: {_describe(e, typed=True)}")
         return FAILED
-
-# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
-# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
-# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
-for _obj in list(globals().values()):
-    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
-        _obj.__module__ = 'invariants.cli'
-del _obj

@@ -7,7 +7,7 @@
    alone, inside X | None, and a parameterised one.
 3. An OpenAPI contract file that cannot be opened (a permission error) says it cannot be read, with
    the error type, not that it is not UTF-8 text.
-4. lockfile.read reads the lock as UTF-8 whatever the locale's preferred encoding is.
+4. lockmod.read reads the lock as UTF-8 whatever the locale's preferred encoding is.
 """
 from __future__ import annotations
 
@@ -23,10 +23,11 @@ from typing import Annotated, Any
 import annotated_types as at
 import pytest
 
-from invariants import lockfile
+from invariants import lock as lockmod
 from invariants.errors import LoadError
-from invariants.lock import pinning
 from invariants.lock.contracts import _json_paths
+from invariants.lock import pin_contracts
+from invariants.lock import pin_jsonschema
 
 try:
     TypeAliasType: Any = typing.TypeAliasType  # type: ignore[attr-defined]
@@ -66,18 +67,18 @@ def _resolves(schema: dict[str, Any], ref: str) -> bool:
 
 
 def test_self_referential_dataclass_keeps_its_definition() -> None:
-    s = pinning.stdlib_json_schema(Node)
+    s = pin_jsonschema.stdlib_json_schema(Node)
     assert _refs(s) and all(_resolves(s, r) for r in _refs(s))
     assert s["$ref"] == "#/$defs/Node"
     assert s["$defs"]["Node"]["properties"]["n"] == {"type": "integer", "maximum": 5}
 
 
 def test_self_referential_loosened_bound_is_a_weakening() -> None:
-    old = pinning.stdlib_json_schema(Node)
-    new = json.loads(json.dumps(pinning.stdlib_json_schema(LooseNode)).replace("LooseNode", "Node"))
+    old = pin_jsonschema.stdlib_json_schema(Node)
+    new = json.loads(json.dumps(pin_jsonschema.stdlib_json_schema(LooseNode)).replace("LooseNode", "Node"))
     oe, ne = {"name": "Node", "jsonschema": old}, {"name": "Node", "jsonschema": new}
     found = [(p, why) for p, a, b in _json_paths(oe, ne)
-             if (why := lockfile.constraint_weakening(p, a, b, oe, ne)) is not None]
+             if (why := lockmod.constraint_weakening(p, a, b, oe, ne)) is not None]
     assert [p for p, _ in found] == ["jsonschema.$defs.Node.properties.n.maximum"], found
 
 
@@ -93,7 +94,7 @@ class Top:
 
 
 def test_non_recursive_top_class_stays_inline() -> None:
-    s = pinning.stdlib_json_schema(Top)
+    s = pin_jsonschema.stdlib_json_schema(Top)
     assert "$ref" not in s and s["type"] == "object" and set(s["$defs"]) == {"Leaf"}
 
 
@@ -111,11 +112,11 @@ Box = TypeAliasType("Box", list[T], type_params=(T,))
     (list[Small], {"type": "array", "items": {"type": "integer", "maximum": 5}}),
 ])
 def test_json_type_unwraps_a_type_alias(ann: Any, want: Any) -> None:
-    assert pinning._json_type(ann, {}, 0) == want
+    assert pin_jsonschema._json_type(ann, {}, 0) == want
 
 
 def test_json_type_unwraps_a_parameterised_alias() -> None:
-    assert pinning._json_type(Box[int], {}, 0)["type"] == "array"
+    assert pin_jsonschema._json_type(Box[int], {}, 0)["type"] == "array"
 
 
 # --- 3. an unreadable OpenAPI file ----------------------------------------------------------------
@@ -127,7 +128,7 @@ def test_openapi_permission_error_is_not_called_an_encoding_error(tmp_path: path
     f.chmod(0)
     try:
         with pytest.raises(LoadError) as e:
-            pinning._openapi_file("api", f)
+            pin_contracts._openapi_file("api", f)
     finally:
         f.chmod(0o644)
     assert "UTF-8" not in str(e.value) and "cannot be read (PermissionError)" in str(e.value)
@@ -137,7 +138,7 @@ def test_openapi_bad_bytes_still_say_utf8(tmp_path: pathlib.Path) -> None:
     f = tmp_path / "api.json"
     f.write_bytes(b"\xff\xfe{}")
     with pytest.raises(LoadError, match="cannot be read as UTF-8 text"):
-        pinning._openapi_file("api", f)
+        pin_contracts._openapi_file("api", f)
 
 
 # --- 4. the lock reads the same under any locale --------------------------------------------------
@@ -148,13 +149,13 @@ def test_lock_reads_as_utf8_under_a_latin1_locale(tmp_path: pathlib.Path) -> Non
                            env=env, capture_output=True, text=True)
     if "utf" in probe.stdout.lower().replace("-", ""):
         pytest.skip("no non-UTF-8 locale on this machine")
-    lock = {"lock_version": lockfile.LOCK_VERSION, "spec": "invariants/v1", "rules": {}, "targets": {},
+    lock = {"lock_version": lockmod.LOCK_VERSION, "spec": "invariants/v1", "rules": {}, "targets": {},
             "providers": {}, "contracts": {}, "schemas": {"x": {"note": "Überweisung ≤ 5 €"}}}
-    path = tmp_path / lockfile.LOCK_NAME
-    path.write_bytes(lockfile.dumps(lock).encode("utf-8"))
-    here = lockfile.read(path)
-    code = ("import json, pathlib, sys; from invariants import lockfile; "
-            "print(json.dumps(lockfile.read(pathlib.Path(sys.argv[1])), sort_keys=True))")
+    path = tmp_path / lockmod.LOCK_NAME
+    path.write_bytes(lockmod.dumps(lock).encode("utf-8"))
+    here = lockmod.read(path)
+    code = ("import json, pathlib, sys; from invariants import lock; "
+            "print(json.dumps(lock.read(pathlib.Path(sys.argv[1])), sort_keys=True))")
     r = subprocess.run([sys.executable, "-c", code, str(path)], env=env, capture_output=True, text=True,
                        encoding="utf-8")
     assert r.returncode == 0, r.stderr

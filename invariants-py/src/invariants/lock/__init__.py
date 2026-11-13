@@ -35,8 +35,7 @@ The package is staged: contracts (the shared tables, canonical JSON, Change), pi
 pins: build, over pin_types, pin_jsonschema, pin_signatures and pin_contracts), schema_diff (is a
 schema change a weakening?), cel_mono (is a `bad` edit stronger or weaker? over cel_canon and
 cel_sites), rule_diff (one entry's changes) and this module, which composes them (changes, diff), reads,
-validates and writes the lock file, and migrates versions 1 and 2. `invariants.lockfile` re-exports
-all of it under its old name.
+validates and writes the lock file, and migrates versions 1 and 2.
 """
 from __future__ import annotations
 
@@ -46,15 +45,20 @@ from typing import Any
 
 from ..errors import LoadError
 # the public names of the stages, re-exported (with the private ones this module composes)
-from .cel_mono import Typer, canon_tree, clause_types, compare_bad, make_typer, new_error_sites
+from .cel_canon import Typer, canon_tree, clause_types, make_typer
+from .cel_mono import compare_bad
+from .cel_sites import new_error_sites
 from .contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
                         ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LEGACY_SCAN_SKIP, LOCK_NAME,
                         LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
                         PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS, STATUS_RANK,
                         TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
-from .pinning import (SCHEMA_PROSE, Schemas, build, contract_hash, expand_applies_to, json_schema, mediated,
-                      normalize_semantic, param_schemas, resolved_schema, rule_hash, rule_semantics, scan_pin,
-                      scan_skip, signature_types, stdlib_json_schema, strip_prose)
+from .pin_contracts import contract_hash
+from .pin_jsonschema import json_schema, stdlib_json_schema
+from .pin_signatures import param_schemas, signature_types
+from .pin_types import SCHEMA_PROSE, Schemas, resolved_schema, strip_prose
+from .pinning import (build, expand_applies_to, mediated, normalize_semantic, rule_hash, rule_semantics, scan_pin,
+                      scan_skip)
 from .rule_diff import _entry_changes, _rule_changes, _scan_changes
 from .schema_diff import (EXACT_CONSTRAINTS, JUDGED_SCHEMAS, LOWER_BOUNDS, STRUCTURAL, UPPER_BOUNDS, _schema_changes,
                           constraint_weakening, pin_json_schema)
@@ -302,11 +306,3 @@ def migrate_v2(old: dict[str, Any], fresh: dict[str, Any],
     references are compared. Version 3 pins resolved types and stores schemas once without prose, so
     those pins are re-taken rather than compared."""
     return changes(_comparable(old, True), _comparable(fresh, False), types)
-
-# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
-# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
-# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
-for _obj in list(globals().values()):
-    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
-        _obj.__module__ = 'invariants.lockfile'
-del _obj

@@ -9,7 +9,7 @@ The package splits by owner:
 - context.py: which registry is current, and the module-level calls on reg or the current one
 This module keeps Registry and the state its one fork reset owns: _GLOBAL_LOCK (rebound in a forked
 child, so it lives where every reader is: Registry.record, Registry.is_ablated, ablated_everywhere,
-observe), OBSERVERS and _REGISTRIES. Every name the modules held as registry.<name> is re-exported.
+observe), OBSERVERS and _REGISTRIES.
 """
 from __future__ import annotations
 
@@ -25,18 +25,16 @@ import weakref
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from ..errors import CoverageError, LoadError, ReviewNotOpened
-from ..model import GUARD_POINTS, Provider, Rule  # noqa: F401  (GUARD_POINTS: re-exported)
+from ..model import Provider, Rule  # noqa: F401
 from ..resolve import resolve
-from .ablation import _CTX_ABLATED, GLOBAL_ABLATED, _has_real_handler, _warn_guards_off, ablation_level, env_ablated
-from .coverage import (WRAPPED, _ablation_problems, _chokepoint_problems, _edge_problem, _function_names,
-                       _mediation_problems, _resolves, _scope, _target_problems, _targetless_problems, _wraps,
-                       _Wrapped)
+from .ablation import _CTX_ABLATED, GLOBAL_ABLATED, ablation_level, env_ablated
+from .coverage import (WRAPPED, _ablation_problems, _edge_problem, _mediation_problems, _scope, _target_problems,
+                       _targetless_problems, _wraps)
 from .events import (DEBUG_ENV, DEFAULT_REPLY_SIZE, DEFAULT_SINK_SIZE, REPLY_SIZE_ENV, SINK_ENV, ErrorSpike,
                      EventSink, Exporter, Observer, Pager, _env_int, log)
-from .reviews import Handoff, JsonlReviews, MemoryReviews, ReviewStore, _jsonable
-from .session import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, _SESSION, _trace,
-                      is_decision, note_ablation_reached, note_decision, pytest_session_ended,
-                      pytest_session_started, under_pytest)
+from .reviews import Handoff, JsonlReviews, MemoryReviews, ReviewStore
+from .session import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, is_decision,
+                      note_ablation_reached, note_decision, pytest_session_ended, pytest_session_started, under_pytest)
 
 OBSERVERS: list[Observer] = []          # called on every record() in any registry
 _GLOBAL_LOCK = threading.Lock()
@@ -498,13 +496,5 @@ def observe(fn: Observer) -> Callable[[], None]:
 
 
 # Defined after Registry and observe, which it imports from this package.
-from .context import (_CURRENT, _DEFAULT, _UNSET, ablated, capture, configure, current,  # noqa: E402
-                      default_registry, is_ablated, isolated, standing, using, verify, verify_coverage)
-
-# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
-# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
-# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
-for _obj in list(globals().values()):
-    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
-        _obj.__module__ = 'invariants.registry'
-del _obj
+from .context import (ablated, capture, configure, current, default_registry, is_ablated, isolated, standing, using,
+                      verify, verify_coverage)

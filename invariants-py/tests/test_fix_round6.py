@@ -404,7 +404,7 @@ def test_deepcopy_then_mutate_is_still_refused(iso):
 
 
 def test_unpickle_refuses_a_non_checked_class():
-    from invariants.guard import _rebuild_checked
+    from invariants.guard.checked import _rebuild_checked
     with pytest.raises(TypeError):
         _rebuild_checked(dict, {}, 1, "r", "ok")
 

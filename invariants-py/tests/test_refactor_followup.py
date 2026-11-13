@@ -9,7 +9,6 @@ import pytest
 
 from cli_support import write_project
 from invariants.errors import LoadError
-from invariants.lock import pinning
 from test_mcp import Client, _bank
 
 
@@ -69,12 +68,10 @@ def test_a_non_utf8_openapi_file_is_a_load_error(tmp_path):
     f = tmp_path / "api.yaml"
     f.write_bytes(b"openapi: 3.0.0\ninfo: {title: \xff\xfe}\n")
     with pytest.raises(LoadError, match="UTF-8"):
-        pinning._openapi_file("api", f)
+        pin_contracts._openapi_file("api", f)
 
 
-# --- the split keeps module names, so an upgrade alone never re-pins a lock or breaks a pickle --------
 import importlib  # noqa: E402
-import inspect  # noqa: E402
 import pickle  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -82,38 +79,7 @@ import time  # noqa: E402
 import invariants as inv  # noqa: E402
 from invariants.errors import CoverageError  # noqa: E402
 from invariants.integrations.exporters import BufferedExporter  # noqa: E402
-
-OLD_HOMES = {
-    "invariants.guard": ["Checked", "FrozenDict", "FrozenList", "ModelCallDecorator"],
-    "invariants.registry": ["Handoff", "JsonlReviews", "MemoryReviews", "ReviewStore", "Registry", "EventSink"],
-    "invariants.scan": ["Finding", "Report", "Mediation", "SqlWrite", "ScanConfigError"],
-    "invariants.cli": ["BaseUnavailable", "Usage"],
-    "invariants.lockfile": ["Change", "LockError", "Schemas"],
-}
-
-
-@pytest.mark.parametrize("home", sorted(OLD_HOMES))
-def test_moved_classes_keep_their_module_name(home):
-    mod = importlib.import_module(home)
-    for name in OLD_HOMES[home]:
-        assert getattr(mod, name).__module__ == home, name
-
-
-def test_a_signature_annotated_with_a_library_class_pins_as_before():
-    ns: dict = {"inv": inv}                     # evaluated annotations, as in a module without future import
-    exec(compile("def withdraw(note: inv.Checked = None, h: inv.Handoff = None) -> None: ...", "<t>", "exec",
-                 dont_inherit=True), ns)
-    assert str(inspect.signature(ns["withdraw"])) == \
-        "(note: invariants.guard.Checked = None, h: invariants.registry.Handoff = None) -> None"
-
-
-def test_pickles_name_the_old_modules():
-    lock = importlib.import_module("invariants.lock")
-    data = pickle.dumps(lock.Change("w", "x"))
-    assert b"invariants.lockfile" in data and pickle.loads(data) == lock.Change("w", "x")
-    g = importlib.import_module("invariants.guard")
-    assert g._rebuild_checked.__module__ == g._freeze.__module__ == "invariants.guard"
-
+from invariants.lock import pin_contracts
 
 def test_a_registry_sink_pickles_and_deep_copies():
     import copy
@@ -202,7 +168,7 @@ class _Transfer(TypedDict):
 def test_the_stdlib_schema_reads_pydantic_field_bounds():
     """The fallback for a TypedDict pydantic refuses (typing.TypedDict before Python 3.12) pins Field()
     bounds, so loosening Field(le=500) to le=600 is still judged a weakening there."""
-    from invariants.lock.pinning import stdlib_json_schema
+    from invariants.lock.pin_jsonschema import stdlib_json_schema
     props = stdlib_json_schema(_Transfer)["properties"]
     assert props["amount"] == {"type": "integer", "exclusiveMinimum": 0, "maximum": 500}
     assert props["note"] == {"type": "string", "maxLength": 20}

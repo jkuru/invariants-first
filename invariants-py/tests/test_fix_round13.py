@@ -15,7 +15,7 @@ import typing
 import pydantic
 import pytest
 
-from invariants import lockfile, scan
+from invariants import lock as lockmod, scan
 from invariants.cel import subset
 from invariants.loader import schema_path
 from invariants import model
@@ -47,14 +47,14 @@ def _schema_fields() -> set[str]:
 
 def test_every_schema_field_is_classified():
     fields = _schema_fields()
-    missing = sorted(f for f in fields if f not in lockfile.FIELD_POLICY)
-    assert not missing, f"classify these in lockfile.FIELD_POLICY (weakening, ranked, neutral, ...): {missing}"
-    allowed = {lockfile.WEAKENING, lockfile.RANKED, lockfile.MORE_IS_WEAKER, lockfile.PRESENCE, lockfile.ANALYSED,
-               lockfile.NEUTRAL, lockfile.PROSE, lockfile.COMPUTED, lockfile.PIN}
-    assert set(lockfile.FIELD_POLICY.values()) <= allowed
-    for loc, pol in lockfile.FIELD_POLICY.items():
-        if pol == lockfile.RANKED:
-            assert loc in lockfile.RANKS, loc
+    missing = sorted(f for f in fields if f not in lockmod.FIELD_POLICY)
+    assert not missing, f"classify these in lockmod.FIELD_POLICY (weakening, ranked, neutral, ...): {missing}"
+    allowed = {lockmod.WEAKENING, lockmod.RANKED, lockmod.MORE_IS_WEAKER, lockmod.PRESENCE, lockmod.ANALYSED,
+               lockmod.NEUTRAL, lockmod.PROSE, lockmod.COMPUTED, lockmod.PIN}
+    assert set(lockmod.FIELD_POLICY.values()) <= allowed
+    for loc, pol in lockmod.FIELD_POLICY.items():
+        if pol == lockmod.RANKED:
+            assert loc in lockmod.RANKS, loc
 
 
 def test_the_loader_field_sets_agree_with_the_classification():
@@ -63,18 +63,18 @@ def test_the_loader_field_sets_agree_with_the_classification():
                           ("provider", model.PROVIDER_FIELDS), ("file", model.FILE_FIELDS),
                           ("rule.mediation", model.MEDIATION_FIELDS)):
         for n in names:
-            assert f"{prefix}.{n}" in lockfile.FIELD_POLICY, f"{prefix}.{n}"
+            assert f"{prefix}.{n}" in lockmod.FIELD_POLICY, f"{prefix}.{n}"
 
 
 def test_an_unclassified_field_is_a_possible_weakening():
-    assert lockfile.policy("rule.something_new") == lockfile.WEAKENING
-    [c] = lockfile.changes({"rules": {"R": {"semantic": {"something_new": 1}}}},
+    assert lockmod.policy("rule.something_new") == lockmod.WEAKENING
+    [c] = lockmod.changes({"rules": {"R": {"semantic": {"something_new": 1}}}},
                            {"rules": {"R": {"semantic": {"something_new": 2}}}})
     assert c.weakened and "possible weakening" in c.note
 
 
 def _rule(sem_a, sem_b):
-    return lockfile.changes({"rules": {"R": {"semantic": sem_a}}}, {"rules": {"R": {"semantic": sem_b}}})
+    return lockmod.changes({"rules": {"R": {"semantic": sem_a}}}, {"rules": {"R": {"semantic": sem_b}}})
 
 
 @pytest.mark.parametrize("a,b,what", [
@@ -129,7 +129,7 @@ def test_strengthening_and_neutral_edits_are_not_weakened(a, b):
 @pytest.mark.parametrize("field,old,new", [("args", {"c": "args.conn"}, {"c": "args.other"}),
                                            ("from", "py:m.f", "py:m.g"), ("type", "int", "double")])
 def test_provider_fields_are_weakened(field, old, new):
-    got = lockfile.changes({"providers": {"p": {field: old}}}, {"providers": {"p": {field: new}}})
+    got = lockmod.changes({"providers": {"p": {field: old}}}, {"providers": {"p": {field: new}}})
     assert got and all(c.weakened for c in got), got
 
 
@@ -137,11 +137,11 @@ def test_written_out_model_policy_defaults_are_no_change():
     raw = {"id": "R", "status": "enforce", "bad": "x", "model_policy": {"schema": "S"}}
     full = {**raw, "model_policy": {"schema": "S", "format_retries": 2, "semantic_resamples": 1,
                                     "feedback": {"format": "parser_error", "semantic": "none"}}}
-    assert lockfile.rule_semantics(raw) == lockfile.rule_semantics(full)
-    held = lockfile.rule_semantics({**raw, "compares_to": "held_data"})
+    assert lockmod.rule_semantics(raw) == lockmod.rule_semantics(full)
+    held = lockmod.rule_semantics({**raw, "compares_to": "held_data"})
     assert held["model_policy"]["semantic_resamples"] == 0
-    got = lockfile.changes({"rules": {"R": {"semantic": held}}},
-                           {"rules": {"R": {"semantic": lockfile.rule_semantics(raw)}}})
+    got = lockmod.changes({"rules": {"R": {"semantic": held}}},
+                           {"rules": {"R": {"semantic": lockmod.rule_semantics(raw)}}})
     assert {c.what for c in got if c.weakened} == {"compares_to", "model_policy.semantic_resamples"}
 
 
@@ -251,7 +251,7 @@ def test_update_artifacts_needs_accept_weakening(pay):
     ("x > 10 || y < 2", "y < 2 || x > 20", "weaker"),    # commuted and loosened
 ])
 def test_compare_bad_on_canonical_trees(old, new, want):
-    assert lockfile.compare_bad(old, new, subset.parse) == want
+    assert lockmod.compare_bad(old, new, subset.parse) == want
 
 
 def test_splitting_a_disjunction_into_clauses_is_no_weakening():
@@ -283,8 +283,8 @@ def _types_of(tmp_path, monkeypatch, name, src):
     sys.modules.pop(name, None)
     importlib.invalidate_caches()
     mod = importlib.import_module(name)
-    pins = lockfile.Schemas()
-    return lockfile.signature_types(mod.f, pins), pins.table
+    pins = lockmod.Schemas()
+    return lockmod.signature_types(mod.f, pins), pins.table
 
 
 ALIAS = """
@@ -344,14 +344,14 @@ def test_type_alias_statement_is_expanded():
         exec("type Caps = list[int]", ns)
     except SyntaxError:                                  # Python < 3.12
         pytest.skip("no type statement")
-    assert lockfile._type_schema(ns["Caps"], {}, set()) == {"generic": "list", "args": ["int"]}
+    assert lockmod.pin_types._type_schema(ns["Caps"], {}, set()) == {"generic": "list", "args": ["int"]}
 
 
 def test_schema_nesting_is_bounded():
     t: typing.Any = int
     for _ in range(40):
         t = list[t]
-    got = json.dumps(lockfile._type_schema(t, {}, set()))
+    got = json.dumps(lockmod.pin_types._type_schema(t, {}, set()))
     assert "truncated" in got
 
 
@@ -362,7 +362,7 @@ class Node:
 
 
 def test_a_recursive_dataclass_terminates():
-    s = lockfile.resolved_schema(Node)
+    s = lockmod.resolved_schema(Node)
     assert s["fields"]["children"] == {"generic": "list", "args": [{"$ref": f"{__name__}.Node"}]}
 
 
@@ -416,22 +416,22 @@ def test_v3_layout_and_schema_table(app):
     for rule in lock["rules"].values():
         assert "status" not in rule["semantic"] and "applies_to" not in rule
     for digest, schema in lock["schemas"].items():
-        assert digest == lockfile._sha(lockfile.canonical(schema))          # content-addressed
+        assert digest == lockmod.contracts._sha(lockmod.canonical(schema))          # content-addressed
 
 
 def test_lock_text_is_deterministic_and_compact():
     lock = {"lock_version": 3, "rules": {"R": {"semantic": {"enforcers": [{"point": "decorator", "mode": "enforce"}]}}}}
-    text = lockfile.dumps(lock)
-    assert text == lockfile.dumps(json.loads(text)) and json.loads(text) == lock
+    text = lockmod.dumps(lock)
+    assert text == lockmod.dumps(json.loads(text)) and json.loads(text) == lock
     assert '{"mode": "enforce", "point": "decorator"}' in text
-    assert all(len(line) <= lockfile.DUMP_WIDTH for line in text.splitlines())
+    assert all(len(line) <= lockmod.DUMP_WIDTH for line in text.splitlines())
 
 
 def test_strip_prose_keeps_property_names():
     s = {"title": "M", "description": "d", "properties": {"title": {"type": "string", "title": "T"},
                                                           "n": {"type": "integer", "examples": [1]}},
          "enum": [{"title": "kept: data"}]}
-    assert lockfile.strip_prose(s) == {"properties": {"title": {"type": "string"}, "n": {"type": "integer"}},
+    assert lockmod.strip_prose(s) == {"properties": {"title": {"type": "string"}, "n": {"type": "integer"}},
                                        "enum": [{"title": "kept: data"}]}
 
 
@@ -447,8 +447,8 @@ def test_openapi_shared_schemas_go_to_the_table_once(tmp_path):
         "components": {"schemas": {"Err": {"title": "Err", "type": "object",
                                            "properties": {"detail": {"type": "string", "description": "why"}}}}}}
     (tmp_path / "api.json").write_text(json.dumps(spec))
-    pins = lockfile.Schemas()
-    pin = lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["a", "b"], pins)
+    pins = lockmod.Schemas()
+    pin = lockmod.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["a", "b"], pins)
     assert len(pins.table) == 1
     [(digest, body)] = pins.table.items()
     assert body == {"name": "api.json/components/schemas/Err",
@@ -465,14 +465,14 @@ class Reply(pydantic.BaseModel):
 
 def test_a_schema_change_is_reported_once_with_its_users():
     def lock(schema):
-        pins = lockfile.Schemas()
+        pins = lockmod.Schemas()
         ref = pins.add({"name": "m.Reply", **schema})
         return {"targets": {"py:m.f": {"reply_schema": ref}}, "contracts": {"r": {"schema": ref}},
                 "schemas": pins.table}
-    a = lock(lockfile.resolved_schema(Reply))
-    b_schema = lockfile.resolved_schema(Reply)
+    a = lock(lockmod.resolved_schema(Reply))
+    b_schema = lockmod.resolved_schema(Reply)
     b_schema["pydantic"]["properties"]["cause"]["enum"].append("C")
-    got = lockfile.changes(a, lock(b_schema))
+    got = lockmod.changes(a, lock(b_schema))
     assert len(got) == 1 and got[0].where == "schema m.Reply"
     assert "used by target py:m.f reply_schema, contract r schema" in got[0].note
 
@@ -481,7 +481,7 @@ def test_docstring_only_edit_keeps_the_pin():
     class R2(pydantic.BaseModel):
         """Other prose entirely."""
         cause: typing.Literal["A", "B"]
-    a, b = lockfile.resolved_schema(Reply), lockfile.resolved_schema(R2)
+    a, b = lockmod.resolved_schema(Reply), lockmod.resolved_schema(R2)
     assert a == b
 
 
@@ -518,11 +518,11 @@ def test_dict_changes_are_shown_per_key():
 
 
 def test_one_and_true_differ():
-    assert not lockfile.same(1, True) and not lockfile.same(1, 1.0) and lockfile.same({"a": [1]}, {"a": [1]})
+    assert not lockmod.same(1, True) and not lockmod.same(1, 1.0) and lockmod.same({"a": [1]}, {"a": [1]})
     got = _rule({"model_policy": {"abstain": {"field": "c", "value": 1}}},
                 {"model_policy": {"abstain": {"field": "c", "value": True}}})
     assert [c.what for c in got] == ["model_policy.abstain.value"] and got[0].weakened
-    assert lockfile._json_paths({"v": 1}, {"v": True}) == [("v", 1, True)]
+    assert lockmod.contracts._json_paths({"v": 1}, {"v": True}) == [("v", 1, True)]
 
 
 @pytest.mark.parametrize("lock,msg", [
@@ -537,8 +537,8 @@ def test_one_and_true_differ():
 def test_malformed_locks_are_a_lock_error_with_the_path(tmp_path, lock, msg):
     f = tmp_path / "invariants.lock"
     f.write_text(json.dumps(lock))
-    with pytest.raises(lockfile.LockError, match=msg) as e:
-        lockfile.read(f)
+    with pytest.raises(lockmod.LockError, match=msg) as e:
+        lockmod.read(f)
     assert str(f) in str(e.value)
 
 

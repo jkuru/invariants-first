@@ -15,7 +15,7 @@ import textwrap
 
 import pytest
 
-from invariants import lockfile, scan
+from invariants import lock, scan
 from cli_support import write_project
 
 REPO = """
@@ -79,7 +79,7 @@ def _doc(allow=None):
 def _scan(tmp_path, ops, allow=None):
     files = {"app/__init__.py": "", "app/repo.py": textwrap.dedent(REPO), "app/svc.py": textwrap.dedent(SVC),
              "app/ops.py": textwrap.dedent(ops)}
-    return scan.scan(_doc(allow), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    return scan.scan(_doc(allow), [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
 
 
 def _codes(rep):
@@ -147,7 +147,7 @@ def test_a_getattr_of_a_helper_on_a_typed_receiver_is_followed(tmp_path):
         """)}
     doc = _doc()
     doc["rules"][0]["mediation"]["door"] = "py:app.ops.door"
-    rep = scan.scan(doc, [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    rep = scan.scan(doc, [write_project(tmp_path, files)], lock.DEFAULT_SCAN_EXCLUDE)
     assert _codes(rep) == ["bypass"], rep.findings
     assert rep.findings[0].path == ["app.ops.handler", "app.ops.H.go", "app.repo.SinkRepo.save"]
 

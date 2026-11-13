@@ -12,7 +12,7 @@ import textwrap
 
 import pytest
 
-from invariants import cli, lockfile, scan
+from invariants import cli, lock as lockmod, scan
 from invariants import typecheck as tc
 from invariants.cel import subset
 from cli_support import run_inv, write_project
@@ -22,11 +22,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # --- R11-1: type-tagged literals -------------------------------------------------------------------------
 def test_literals_are_tagged_with_their_type():
-    canon = [lockfile.canon_tree(subset.parse(t)) for t in ("x == true", "x == 1", "x == 1.0")]
+    canon = [lockmod.canon_tree(subset.parse(t)) for t in ("x == true", "x == 1", "x == 1.0")]
     assert canon[0] != canon[1] != canon[2] != canon[0]
-    assert lockfile.canon_tree(subset.parse("x == false")) != lockfile.canon_tree(subset.parse("x == 0"))
-    assert lockfile.canon_tree(subset.parse("1.0 / x > -0.0")) != lockfile.canon_tree(subset.parse("1.0 / x > 0.0"))
-    assert lockfile.canon_tree(subset.parse("x > -0")) == lockfile.canon_tree(subset.parse("x > 0"))   # int -0 is 0
+    assert lockmod.canon_tree(subset.parse("x == false")) != lockmod.canon_tree(subset.parse("x == 0"))
+    assert lockmod.canon_tree(subset.parse("1.0 / x > -0.0")) != lockmod.canon_tree(subset.parse("1.0 / x > 0.0"))
+    assert lockmod.canon_tree(subset.parse("x > -0")) == lockmod.canon_tree(subset.parse("x > 0"))   # int -0 is 0
 
 
 @pytest.mark.parametrize("old,new", [
@@ -39,19 +39,19 @@ def test_literals_are_tagged_with_their_type():
     ("args.m.flags.exists(f, f == true)", "args.m.flags.exists(f, f == 1)"),
 ])
 def test_a_literal_of_another_type_is_not_equivalent(old, new):
-    assert lockfile.compare_bad(old, new, subset.parse) == "unknown"
-    [c] = lockfile._bad_changes("rule R", old, new)
+    assert lockmod.compare_bad(old, new, subset.parse) == "unknown"
+    [c] = lockmod.rule_diff._bad_changes("rule R", old, new)
     assert c.weakened and "equivalent" not in c.what
 
 
 def test_a_type_change_hidden_beside_a_stronger_edit_is_not_stronger():
-    assert lockfile.compare_bad("args.n > 5 && args.m.ok == false", "args.n > 4 && args.m.ok == 0",
+    assert lockmod.compare_bad("args.n > 5 && args.m.ok == false", "args.n > 4 && args.m.ok == 0",
                                 subset.parse) == "unknown"
 
 
 def test_a_threshold_of_another_numeric_type_has_no_direction():
-    assert lockfile.compare_bad("a > 5", "a > 6.0", subset.parse) == "unknown"
-    assert lockfile.compare_bad("a > 5", "a > 6", subset.parse) == "weaker"
+    assert lockmod.compare_bad("a > 5", "a > 6.0", subset.parse) == "unknown"
+    assert lockmod.compare_bad("a > 5", "a > 6", subset.parse) == "weaker"
 
 
 # --- R11-2: the sign of a factor ---------------------------------------------------------------------------
@@ -71,23 +71,23 @@ def test_a_threshold_of_another_numeric_type_has_no_direction():
     ("a - 1 > 5", "a - 2 > 5", "weaker"),
 ])
 def test_scaling_needs_a_provably_non_negative_factor(old, new, want):
-    assert lockfile.compare_bad(old, new, subset.parse) == want
+    assert lockmod.compare_bad(old, new, subset.parse) == want
 
 
 def test_a_uint_typed_field_is_non_negative():
-    typer = lockfile.make_typer([{"args": tc.T({"map"}, fields={"u": tc.UINT, "n": tc.INT})}])
-    u = lockfile.canon_tree(subset.parse("args.u"), typer)
-    n = lockfile.canon_tree(subset.parse("args.n"), typer)
-    assert lockfile._nonneg(u, typer) and not lockfile._nonneg(n, typer)
+    typer = lockmod.make_typer([{"args": tc.T({"map"}, fields={"u": tc.UINT, "n": tc.INT})}])
+    u = lockmod.canon_tree(subset.parse("args.u"), typer)
+    n = lockmod.canon_tree(subset.parse("args.n"), typer)
+    assert lockmod.cel_mono._nonneg(u, typer) and not lockmod.cel_mono._nonneg(n, typer)
     # the polarity is decided, but since R12-1 a larger factor can overflow, so it is not "stronger"
-    assert lockfile.compare_bad("args.u * 2 > 5", "args.u * 3 > 5", subset.parse, typer) == "unknown"
-    assert lockfile.compare_bad("args.n * 2 > 5", "args.n * 3 > 5", subset.parse, typer) == "unknown"
+    assert lockmod.compare_bad("args.u * 2 > 5", "args.u * 3 > 5", subset.parse, typer) == "unknown"
+    assert lockmod.compare_bad("args.n * 2 > 5", "args.n * 3 > 5", subset.parse, typer) == "unknown"
 
 
 # --- R11-3: equivalent rewrites ----------------------------------------------------------------------------
 ENV = {"args": tc.T({"map"}, fields={"n": tc.INT, "size": tc.INT, "x": tc.DOUBLE, "b": tc.BOOL,
                                      "xs": tc.T({"list"}, elem=tc.INT)})}
-TYPED = lockfile.make_typer([ENV])
+TYPED = lockmod.make_typer([ENV])
 
 
 @pytest.mark.parametrize("old,new", [
@@ -109,7 +109,7 @@ TYPED = lockfile.make_typer([ENV])
     ("x in [1, 2, 2]", "x in [2, 1]"),
 ])
 def test_rewrites_that_hold_for_every_value_are_the_same(old, new):
-    assert lockfile.compare_bad(old, new, subset.parse) == "same"
+    assert lockmod.compare_bad(old, new, subset.parse) == "same"
 
 
 # Declared `int` annotations are not trusted: Python does not enforce them, so 10000.5 can arrive.
@@ -121,7 +121,7 @@ def test_rewrites_that_hold_for_every_value_are_the_same(old, new):
     ("!(args.n < 3)", "args.n >= 3"),
 ])
 def test_integer_rewrites_on_declared_int_fields_are_not_trusted(old, new):
-    assert lockfile.compare_bad(old, new, subset.parse, TYPED) != "same"
+    assert lockmod.compare_bad(old, new, subset.parse, TYPED) != "same"
 
 
 @pytest.mark.parametrize("old,new", [
@@ -131,7 +131,7 @@ def test_integer_rewrites_on_declared_int_fields_are_not_trusted(old, new):
     ("args.xs.exists(v, size(args.xs) > 2 && v > 1)", "args.xs.exists(w, size(args.xs) >= 3 && w > 1)"),
 ])
 def test_integer_rewrites_need_provable_integers(old, new):
-    assert lockfile.compare_bad(old, new, subset.parse, TYPED) == "same"
+    assert lockmod.compare_bad(old, new, subset.parse, TYPED) == "same"
 
 
 @pytest.mark.parametrize("old,new", [
@@ -144,34 +144,34 @@ def test_integer_rewrites_need_provable_integers(old, new):
     ("args.n > 9223372036854775807", "args.n >= 9223372036854775808"),
 ])
 def test_rewrites_that_need_a_type_are_not_assumed(old, new):
-    assert lockfile.compare_bad(old, new, subset.parse, TYPED) != "same"
+    assert lockmod.compare_bad(old, new, subset.parse, TYPED) != "same"
 
 
 def test_without_declared_types_a_field_is_not_an_integer():
-    assert lockfile.compare_bad("args.size > 10000", "args.size >= 10001", subset.parse) == "unknown"
+    assert lockmod.compare_bad("args.size > 10000", "args.size >= 10001", subset.parse) == "unknown"
 
 
 def test_swapped_macro_variables_differ():
-    assert lockfile.compare_bad("xs.exists(a, xs.all(b, a >= b))", "xs.exists(a, xs.all(b, b >= a))",
+    assert lockmod.compare_bad("xs.exists(a, xs.all(b, a >= b))", "xs.exists(a, xs.all(b, b >= a))",
                                 subset.parse) == "unknown"
 
 
 def test_a_repeated_clause_removed_is_not_weakened():
-    got = lockfile._bad_changes("rule R", [{"when": "a > 1", "message": "m"}, {"when": "a > 1", "message": "n"}],
+    got = lockmod.rule_diff._bad_changes("rule R", [{"when": "a > 1", "message": "m"}, {"when": "a > 1", "message": "n"}],
                                 [{"when": "a > 1", "message": "m"}])
     assert got and not any(c.weakened for c in got), [str(c) for c in got]
     assert "repeated clause removed" in str(got[0]) and "fewer" not in str(got[0])
-    got = lockfile._bad_changes("rule R", ["a > 1 || a > 1"], ["a > 1"])
+    got = lockmod.rule_diff._bad_changes("rule R", ["a > 1 || a > 1"], ["a > 1"])
     assert [c.weakened for c in got] == [False] and "equivalent" in got[0].what
 
 
 def test_regrouped_arithmetic_is_not_the_same():
     # floating-point rounding and int overflow depend on the grouping
-    assert lockfile.compare_bad("x + 1.0 + 1.0 > 9007199254740992.0", "x + (1.0 + 1.0) > 9007199254740992.0",
+    assert lockmod.compare_bad("x + 1.0 + 1.0 > 9007199254740992.0", "x + (1.0 + 1.0) > 9007199254740992.0",
                                 subset.parse) == "unknown"
-    assert lockfile.compare_bad("n + 9223372036854775807 + -9223372036854775807 > 0",
+    assert lockmod.compare_bad("n + 9223372036854775807 + -9223372036854775807 > 0",
                                 "n + (9223372036854775807 + -9223372036854775807) > 0", subset.parse) == "unknown"
-    assert lockfile.compare_bad("x + 1.0 > 2.0", "1.0 + x > 2.0", subset.parse) == "same"
+    assert lockmod.compare_bad("x + 1.0 > 2.0", "1.0 + x > 2.0", subset.parse) == "same"
 
 
 MOD = """
@@ -371,7 +371,7 @@ def locked(tmp_path):
     proc = run_inv("lock", root / "invariants.yaml")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     lock = json.loads((root / "invariants.lock").read_text())
-    assert lock["schemas"] and lockfile.schema_problems(lock) == []
+    assert lock["schemas"] and lockmod.schema_problems(lock) == []
     return root
 
 
@@ -386,12 +386,12 @@ def _tamper(root, fn):
 @pytest.mark.parametrize("fn,msg", [
     (lambda d: next(iter(d["schemas"].values())).__setitem__("x", 1), "is not the sha256 of its body"),
     (lambda d: d["schemas"].pop(next(iter(d["schemas"]))), "names no entry in the schemas table"),
-    (lambda d: d["schemas"].__setitem__(lockfile._sha(lockfile.canonical({"type": "string"})), {"type": "string"}),
+    (lambda d: d["schemas"].__setitem__(lockmod.contracts._sha(lockmod.canonical({"type": "string"})), {"type": "string"}),
      "no entry refers to it"),
 ])
 def test_check_validates_the_schemas_table(locked, fn, msg):
     lock = _tamper(locked, fn)
-    assert any(msg in p for p in lockfile.schema_problems(lock))
+    assert any(msg in p for p in lockmod.schema_problems(lock))
     proc = run_inv("lock", "--check", locked / "invariants.yaml")
     assert proc.returncode == 1 and "schemas table is damaged" in proc.stderr and msg in proc.stderr, proc.stderr
     proc = run_inv("lock", locked / "invariants.yaml")                  # a plain lock rewrites it
@@ -400,15 +400,15 @@ def test_check_validates_the_schemas_table(locked, fn, msg):
 
 
 def test_older_locks_have_no_table_to_check():
-    assert lockfile.schema_problems({"lock_version": 2, "schemas": {"sha256:x": {}}}) == []
+    assert lockmod.schema_problems({"lock_version": 2, "schemas": {"sha256:x": {}}}) == []
 
 
 # --- R11-7: diff text and residual paths --------------------------------------------------------------------
 def test_a_replaced_list_member_prints_as_old_to_new():
-    got = [str(c) for c in lockfile.changes({"targets": {"t": {"types": {"return": {"args": ["int"]}}}}},
+    got = [str(c) for c in lockmod.changes({"targets": {"t": {"types": {"return": {"args": ["int"]}}}}},
                                             {"targets": {"t": {"types": {"return": {"args": ["float"]}}}}})]
     assert got == ['target t: types.return.args: ["int"] -> ["float"]']
-    got = [str(c) for c in lockfile.changes({"targets": {"t": {"types": {"a": ["int"]}}}},
+    got = [str(c) for c in lockmod.changes({"targets": {"t": {"types": {"a": ["int"]}}}},
                                             {"targets": {"t": {"types": {"a": ["int", "str"]}}}})]
     assert got == ['target t: types.a added: (none) -> ["str"]']
 
@@ -416,13 +416,13 @@ def test_a_replaced_list_member_prints_as_old_to_new():
 def test_removing_a_residual_path_is_weakened():
     def med(paths):
         return {"rules": {"R": {"semantic": {"mediation": {"sink": "py:s", "residual_paths": paths}}}}}
-    [c] = lockfile.changes(med(["a DBA with shell access"]), med([]))
+    [c] = lockmod.changes(med(["a DBA with shell access"]), med([]))
     assert c.weakened and "standing" in c.note
-    [c] = lockfile.changes(med([]), med(["a DBA with shell access"]))
+    [c] = lockmod.changes(med([]), med(["a DBA with shell access"]))
     assert not c.weakened
-    [c] = lockfile.changes(med(["a"]), med(["a", "b"]))
+    [c] = lockmod.changes(med(["a"]), med(["a", "b"]))
     assert not c.weakened
-    assert lockfile.policy("rule.mediation.residual_paths") == lockfile.ANALYSED
+    assert lockmod.policy("rule.mediation.residual_paths") == lockmod.ANALYSED
 
 
 def test_the_readme_has_no_development_history():

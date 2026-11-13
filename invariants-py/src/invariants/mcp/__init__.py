@@ -16,24 +16,16 @@ a module the agent edited between two calls is imported fresh each time. `scan`,
 `propose_rules` only parse source, so they run in this process. A person approves and locks rules:
 the server has no tool that does.
 """
-# The module is a package split by seam; every name the single mcp.py had is re-exported here:
+# The package is split by seam:
 # - confine.py: tool arguments and their confinement to --root (ToolError, _inside, _rule_file, ...)
 # - tools.py: scan, check, status and explain
 # - propose.py: propose_rules
 # - protocol.py: the tool table, the JSON-RPC Server, serve and main (`python -m invariants.mcp`: __main__.py)
 from __future__ import annotations
 
-from .confine import (RULE_FILES, ToolError, _inside, _opt_bool, _opt_str, _rel, _root, _rule_file,  # noqa: F401
-                      _settings_inside, _source_roots, _strs)
+from .confine import RULE_FILES, ToolError  # noqa: F401
 from .propose import tool_propose_rules  # noqa: F401
-from .protocol import (_PROJECT, _ROOTS, INSTRUCTIONS, INTERNAL_ERROR, INVALID_PARAMS,  # noqa: F401
-                       INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, PROTOCOL_VERSION, READ_ONLY, TOOLS, Server,
-                       Tool, _error, _result, main, serve, tools_list)
-from .tools import (CHILD_TIMEOUT, FIXES, MEANING, STEP, _inv, _rule_doc, _rule_summary, finding_id,  # noqa: F401
-                    run_scan, tool_check, tool_explain, tool_scan, tool_status)
-
-# Classes keep the module name they had before the split (pickles and reprs name it).
-for _obj in list(globals().values()):
-    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
-        _obj.__module__ = 'invariants.mcp'
-del _obj
+from .protocol import (INSTRUCTIONS, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,  # noqa: F401
+                       PARSE_ERROR, PROTOCOL_VERSION, READ_ONLY, TOOLS, Server, Tool, main, serve, tools_list)
+from .tools import (CHILD_TIMEOUT, FIXES, MEANING, STEP, finding_id, run_scan, tool_check, tool_explain,  # noqa: F401
+                    tool_scan, tool_status)

@@ -1,4 +1,4 @@
-"""The registry package: its re-exported namespace, actor-safe reads, durable reviews, the process
+"""The registry package: actor-safe reads, durable reviews, the process
 session after fork, per-worker decision traces under pytest-xdist, and share-nothing provider fan-out."""
 from __future__ import annotations
 
@@ -16,19 +16,9 @@ import round19 as r19
 from invariants import registry
 from invariants.model import Provider, Rule
 from invariants.providers import ProviderFailed, prefetch_many
-from invariants.registry import Handoff, JsonlReviews, MemoryReviews, reviews, session
+from invariants.registry import Handoff, JsonlReviews, MemoryReviews, session
 
 pytest_plugins = ["pytester"]
-
-
-# --- 1. the namespace ------------------------------------------------------------------------------
-def test_moved_names_are_the_same_objects_under_registry():
-    for name in ("Handoff", "ReviewStore", "MemoryReviews", "JsonlReviews", "_jsonable"):
-        assert getattr(registry, name) is getattr(reviews, name)
-    for name in ("pytest_session_started", "pytest_session_ended", "under_pytest", "note_decision",
-                 "note_ablation_reached", "is_decision", "ABLATE_ENV", "DECISION_TRACE_ENV", "_SESSION"):
-        assert getattr(registry, name) is getattr(session, name)
-    assert not hasattr(registry, "_pytest_sessions") and not hasattr(registry, "_warned_armed")
 
 
 # --- 2. actor-safe reads ---------------------------------------------------------------------------
@@ -130,7 +120,7 @@ def test_process_session_counts_and_warns_once_under_threads():
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
 def test_process_session_after_fork_keeps_its_values_with_a_fresh_lock():
-    s = registry._SESSION
+    s = registry.session._SESSION
     s._lock.acquire()                            # held at the fork, as by another parent thread
     try:
         with warnings.catch_warnings():

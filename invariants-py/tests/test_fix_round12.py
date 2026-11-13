@@ -13,7 +13,7 @@ import pydantic
 import pytest
 
 import invariants as inv
-from invariants import cli, lockfile, scan
+from invariants import cli, lock as lockmod, scan
 from invariants.cel import subset
 from cli_support import CLEAN, copy_app, run_inv, write_project
 
@@ -95,7 +95,7 @@ def test_enforcer_removed_is_weakened():
     old = {"rules": {"R": {"semantic": {"enforcers": [{"point": "decorator", "mode": "enforce"},
                                                       {"point": "storage", "mode": "enforce"}]}}}}
     new = {"rules": {"R": {"semantic": {"enforcers": [{"point": "decorator", "mode": "enforce"}]}}}}
-    [c] = lockfile.changes(old, new)
+    [c] = lockmod.changes(old, new)
     assert c.weakened and c.what == "enforcer storage removed"
 
 
@@ -112,7 +112,7 @@ def test_removed_rule_and_removed_clause_are_weakened():
     old = {"rules": {"R": {"semantic": {"bad": [{"when": "a > 1", "message": "m"}, {"when": "b", "message": "n"}]}},
                      "S": {}}}
     new = {"rules": {"R": {"semantic": {"bad": [{"when": "a > 1", "message": "m"}]}}}}
-    got = {str(c) for c in lockfile.changes(old, new)}
+    got = {str(c) for c in lockmod.changes(old, new)}
     assert "rule R: bad clause removed: 'b [n]' -> (none)  WEAKENED" in got
     assert "rule S: removed  WEAKENED (the rule no longer exists)" in got
 
@@ -129,7 +129,7 @@ def test_prose_edits_are_named_but_not_weakened(app):
 def test_an_old_lock_field_that_is_gone_is_a_possible_weakening():
     old = {"providers": {"p": {"consistency": "same_txn", "signature": "f(conn) -> int"}}}
     new = {"providers": {"p": {"signature": "f(conn) -> str"}}}
-    got = {str(c) for c in lockfile.changes(old, new)}
+    got = {str(c) for c in lockmod.changes(old, new)}
     assert any(g.startswith("provider p: consistency: 'same_txn' -> (none)  WEAKENED") for g in got), got
     assert "provider p: signature: 'f(conn) -> int' -> 'f(conn) -> str'" in got
 
@@ -154,11 +154,11 @@ def test_an_old_lock_field_that_is_gone_is_a_possible_weakening():
     ("a > 1 && b > 1", "a > 2 && b > 0", "unknown"),     # mixed
 ])
 def test_compare_bad(old, new, want):
-    assert lockfile.compare_bad(old, new, subset.parse) == want
+    assert lockmod.compare_bad(old, new, subset.parse) == want
 
 
 def test_unknown_direction_is_treated_as_a_possible_weakening():
-    [c] = lockfile.changes({"rules": {"R": {"semantic": {"bad": "a == 1"}}}},
+    [c] = lockmod.changes({"rules": {"R": {"semantic": {"bad": "a == 1"}}}},
                            {"rules": {"R": {"semantic": {"bad": "a == 2"}}}})
     assert c.weakened and "cannot be decided" in c.note
 
@@ -167,10 +167,10 @@ def test_explicit_door_equal_to_the_subject_is_not_a_change_of_doors():
     old = {"rules": {"R": {"semantic": {"subject": {"target": "py:a.d"}, "mediation": {"sink": "py:a.s"}}}}}
     new = {"rules": {"R": {"semantic": {"subject": {"target": "py:a.d"},
                                         "mediation": {"sink": "py:a.s", "door": "py:a.d"}}}}}
-    assert not any(c.weakened for c in lockfile.changes(old, new))
+    assert not any(c.weakened for c in lockmod.changes(old, new))
     more = {"rules": {"R": {"semantic": {"subject": {"target": "py:a.d"},
                                          "mediation": {"sink": "py:a.s", "door": ["py:a.d", "py:a.x"]}}}}}
-    assert any(c.weakened and c.what == "mediation.door" for c in lockfile.changes(old, more))
+    assert any(c.weakened and c.what == "mediation.door" for c in lockmod.changes(old, more))
 
 
 def test_accept_weakening_with_check_is_a_usage_error(app):
@@ -180,7 +180,7 @@ def test_accept_weakening_with_check_is_a_usage_error(app):
 # --- 3. lock version and migration --------------------------------------------------------------
 def _v1(app):
     doc = inv.read_document(app / "invariants.yaml")
-    rules = {r["id"]: {"hash": lockfile.rule_hash(r), "rev": r.get("rev"), "status": r.get("status")}
+    rules = {r["id"]: {"hash": lockmod.rule_hash(r), "rev": r.get("rev"), "status": r.get("status")}
              for r in doc["rules"]}
     (app / "invariants.lock").write_text(json.dumps({"lock_version": 1, "spec": doc["spec"], "rules": rules,
                                                      "targets": {}, "contracts": {}}))
@@ -196,7 +196,7 @@ def test_lock_migrates_an_unchanged_version_1_lock(app):
     _v1(app)
     proc = run_inv("lock", app / "invariants.yaml")
     assert proc.returncode == 0 and "migrating" in proc.stdout
-    assert json.loads((app / "invariants.lock").read_text())["lock_version"] == lockfile.LOCK_VERSION
+    assert json.loads((app / "invariants.lock").read_text())["lock_version"] == lockmod.LOCK_VERSION
     assert _check(app).returncode == 0
 
 
@@ -223,10 +223,10 @@ def _model(values):
 
 
 def test_pydantic_schema_pin_sees_a_literal_alias():
-    a = lockfile.resolved_schema(_model(("acquired", "ceo_of")))
-    b = lockfile.resolved_schema(_model(("acquired", "ceo_of", "founded_in")))
+    a = lockmod.resolved_schema(_model(("acquired", "ceo_of")))
+    b = lockmod.resolved_schema(_model(("acquired", "ceo_of", "founded_in")))
     assert a != b
-    diffs = lockfile._json_paths(a, b)
+    diffs = lockmod.contracts._json_paths(a, b)
     assert ("pydantic.properties.predicate.enum added", None, ["founded_in"]) in diffs
 
 
@@ -245,7 +245,7 @@ def test_pydantic_contract_pin_follows_the_alias(tmp_path, monkeypatch):
         import sys
         sys.modules.pop("models", None)
         importlib.invalidate_caches()
-        e = lockfile.contract_hash("r", {"type": "pydantic", "ref": "models:Reply"}, tmp_path)
+        e = lockmod.contract_hash("r", {"type": "pydantic", "ref": "models:Reply"}, tmp_path)
         assert e["schema"]["pydantic"]["properties"]["predicate"]["enum"] == list(vals)
         monkeypatch.syspath_prepend(str(tmp_path))     # keep the order deterministic
         sys.modules.pop("models", None)
@@ -267,12 +267,12 @@ class Outer:
 
 
 def test_dataclass_and_dict_schemas_use_resolved_annotations():
-    s = lockfile.resolved_schema(Outer)
+    s = lockmod.resolved_schema(Outer)
     assert s["fields"]["kind"] == {"literal": ["x", "y"]}
     assert s["fields"]["inner"] == {"$ref": f"{__name__}.Inner"} and s["$defs"][f"{__name__}.Inner"]["fields"] == \
         {"n": "int"}
     assert s["required"] == ["inner", "kind"]
-    d = lockfile.resolved_schema({"cause": typing.Literal["OOM", "TIMEOUT"], "n": int})
+    d = lockmod.resolved_schema({"cause": typing.Literal["OOM", "TIMEOUT"], "n": int})
     assert d == {"fields": {"cause": {"literal": ["OOM", "TIMEOUT"]}, "n": "int"}}
 
 
@@ -283,23 +283,23 @@ def test_openapi_contract_pins_only_the_operations_rules_name(tmp_path):
         "components": {"requestBodies": {"A": {"content": {"application/json": {"schema": {"type": "object"}}}}}}}
     f = tmp_path / "api.json"
     f.write_text(json.dumps(spec))
-    pin = lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"])
+    pin = lockmod.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"])
     assert set(pin["operations"]) == {"makeA"} and "hash" not in pin
     assert pin["operations"]["makeA"]["requestBody"]["content"]   # $ref resolved
     spec["paths"]["/c"] = {"get": {"operationId": "newOne"}}                    # P10: a new endpoint
     f.write_text(json.dumps(spec))
-    assert lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"]) == pin
+    assert lockmod.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"]) == pin
     spec["components"]["requestBodies"]["A"]["content"]["application/json"]["schema"]["type"] = "array"
     f.write_text(json.dumps(spec))
-    assert lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"]) != pin
+    assert lockmod.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["makeA"]) != pin
     with pytest.raises(inv.LoadError, match="no operation nope"):
-        lockfile.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["nope"])
+        lockmod.contract_hash("api", {"type": "openapi", "ref": "api.json"}, tmp_path, ["nope"])
 
 
 # --- 6. the lock file itself --------------------------------------------------------------------
 def test_lock_layout(app):                      # version 3 since fix round 13 (see test_fix_round13)
     lock = json.loads((app / "invariants.lock").read_text())
-    assert lock["lock_version"] == lockfile.LOCK_VERSION == 3
+    assert lock["lock_version"] == lockmod.LOCK_VERSION == 3
     assert set(lock) == {"lock_version", "spec", "rules", "targets", "providers", "contracts", "schemas", "scan"}
     l1 = lock["rules"]["L-1"]
     assert set(l1["doc"]) == {"statement", "owner", "class", "mediation.chokepoint"}

@@ -16,14 +16,12 @@ import invariants
 
 SRC = pathlib.Path(invariants.__file__).parent
 FORBIDDEN = {
-    "registry": ("invariants.guard", "invariants.cli", "invariants.scan", "invariants.lock", "invariants.lockfile",
+    "registry": ("invariants.guard", "invariants.cli", "invariants.scan", "invariants.lock",
                  "invariants.integrations", "invariants.mcp", "invariants.status_report"),
-    "guard": ("invariants.cli", "invariants.scan", "invariants.lock", "invariants.lockfile",
+    "guard": ("invariants.cli", "invariants.scan", "invariants.lock",
               "invariants.integrations", "invariants.mcp", "invariants.status_report"),
-    # the CLI reads the lock through invariants.lock, never the compatibility name
-    "cli": ("invariants.lockfile",),
     # the MCP server reads through the CLI and the scan; it never imports the runtime guards
-    "mcp": ("invariants.lockfile", "invariants.guard", "invariants.integrations", "invariants.pytest_plugin"),
+    "mcp": ("invariants.guard", "invariants.integrations", "invariants.pytest_plugin"),
 }
 # the modules of its own package each module may import (the package __init__ composes them all)
 STAGES = {

@@ -25,13 +25,13 @@ from typing import Any
 
 import pytest
 
-from invariants import lockfile
+from invariants import lock as lockmod
 from cli_support import CLEAN, copy_app, run_inv
 
 
 # --- 3. additionalProperties absent on a map ----------------------------------------------------------
 def _schema_diff(a, b, kind="pydantic"):
-    ch = lockfile._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", kind: a}},
+    ch = lockmod.schema_diff._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", kind: a}},
                                   {"B": {"name": "M", kind: b}})
     return any(c.weakened for c in ch), [str(c) for c in ch]
 
@@ -83,9 +83,9 @@ class MapAny:
 
 def test_a_stdlib_dataclass_dict_narrowed_to_dict_of_int_is_not_weakened():
     for old in (MapBare, MapAny):
-        got, cs = _schema_diff(lockfile.stdlib_json_schema(old), lockfile.stdlib_json_schema(MapInt), "jsonschema")
+        got, cs = _schema_diff(lockmod.stdlib_json_schema(old), lockmod.stdlib_json_schema(MapInt), "jsonschema")
         assert not got, cs
-    got, cs = _schema_diff(lockfile.stdlib_json_schema(MapInt), lockfile.stdlib_json_schema(MapBare), "jsonschema")
+    got, cs = _schema_diff(lockmod.stdlib_json_schema(MapInt), lockmod.stdlib_json_schema(MapBare), "jsonschema")
     assert got, cs
 
 
@@ -94,7 +94,7 @@ def test_an_openapi_free_form_object_given_a_value_schema_is_not_weakened():
         return {"type": "openapi", "app": "m:app", "operations": {"r": {"method": "POST", "path": "/r", "requestBody": {
             "required": True, "content": {"application/json": {"schema": {
                 "type": "object", "properties": {"meta": body}}}}}}}}
-    cs = lockfile.changes({"contracts": {"api": op({"type": "object"})}},
+    cs = lockmod.changes({"contracts": {"api": op({"type": "object"})}},
                           {"contracts": {"api": op({"type": "object", "additionalProperties": {"type": "string"}})}})
     assert cs and not any(c.weakened for c in cs), [str(c) for c in cs]
 
@@ -129,8 +129,8 @@ def _diff(mod, tmp_path, a_src, b_src, contracts=None, targets=None, providers=N
                "targets": {t.replace("MOD", name): {"effects": "external"} for t in (targets or [])},
                "providers": {k: {**v, "from": v["from"].replace("MOD", name)} for k, v in (providers or {}).items()},
                "rules": []}
-        locks.append(_norm(lockfile.build(doc, tmp_path), name))
-    return lockfile.changes(*locks)
+        locks.append(_norm(lockmod.build(doc, tmp_path), name))
+    return lockmod.changes(*locks)
 
 
 def _weak(cs):
@@ -201,7 +201,7 @@ def test_annotated_constraints_on_a_provider_are_judged(mod, tmp_path):
 def test_a_non_constraint_marker_is_not_a_param_schema(mod, tmp_path):
     name = mod("import typing\nclass Dep:\n    pass\ndef f(repo: typing.Annotated[int, Dep()], n: int) -> None:\n"
                "    pass\n")
-    lock = lockfile.build({"targets": {f"py:{name}.f": {"effects": "external"}}, "rules": []}, tmp_path)
+    lock = lockmod.build({"targets": {f"py:{name}.f": {"effects": "external"}}, "rules": []}, tmp_path)
     assert "param_schemas" not in lock["targets"][f"py:{name}.f"]
 
 
@@ -217,17 +217,17 @@ def test_a_whole_file_openapi_contract_is_judged_by_its_operations(tmp_path):
 
     def lock(text):
         (tmp_path / "api.json").write_text(text)
-        return lockfile.build({"contracts": c, "rules": []}, tmp_path)
+        return lockmod.build({"contracts": c, "rules": []}, tmp_path)
     base = lock(_openapi(5))
     assert "hash" in base["contracts"]["api"] and "r" in base["contracts"]["api"]["operations"]
-    cs = lockfile.changes(base, lock(_openapi(500)))
+    cs = lockmod.changes(base, lock(_openapi(500)))
     assert _weak(cs), [str(x) for x in cs]
-    cs = lockfile.changes(base, lock(_openapi(5, "edited")))
+    cs = lockmod.changes(base, lock(_openapi(5, "edited")))
     assert cs and not _weak(cs), [str(x) for x in cs]                # the digest still pins every edit
-    cs = lockfile.changes(base, lock(_openapi(3)))
+    cs = lockmod.changes(base, lock(_openapi(3)))
     assert cs and not _weak(cs), [str(x) for x in cs]
     (tmp_path / "api.json").write_text("{not json")
-    assert "operations" not in lockfile.build({"contracts": c, "rules": []}, tmp_path)["contracts"]["api"]
+    assert "operations" not in lockmod.build({"contracts": c, "rules": []}, tmp_path)["contracts"]["api"]
 
 
 # --- 5. prose never makes the lock stale; chokepoint and signatures are judged ------------------------
@@ -327,6 +327,6 @@ def test_a_changed_annotated_marker_is_stale(mod, tmp_path):
 
 
 def test_a_signature_compared_without_types_stays_stale():
-    cs = lockfile.changes({"targets": {"t": {"signature": "f(a: int) -> None"}}},
+    cs = lockmod.changes({"targets": {"t": {"signature": "f(a: int) -> None"}}},
                           {"targets": {"t": {"signature": "f(a: str) -> None"}}})
     assert [c.info for c in cs] == [False]

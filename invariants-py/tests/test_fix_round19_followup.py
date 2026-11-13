@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import invariants as inv
-from invariants import lockfile
+from invariants import lock
 
 sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
 import round19 as r19  # noqa: E402
@@ -63,17 +63,17 @@ def _pin(tmp_path, monkeypatch, name, ann):
     (tmp_path / f"{name}.py").write_text(textwrap.dedent(SRC % ann))
     monkeypatch.syspath_prepend(str(tmp_path))
     doc = {"contracts": {}, "targets": {f"py:{name}.f": {"effects": "external"}}, "providers": {}, "rules": []}
-    return json.loads(json.dumps(lockfile.build(doc, tmp_path)).replace(name, "MOD"))
+    return json.loads(json.dumps(lock.build(doc, tmp_path)).replace(name, "MOD"))
 
 
 def test_an_aliased_annotated_swap_is_stale(tmp_path, monkeypatch):
     old = _pin(tmp_path, monkeypatch, "sig_a", "AdminUser")
     new = _pin(tmp_path, monkeypatch, "sig_b", "AnyUser")
-    got = lockfile.changes(old, new)
+    got = lock.changes(old, new)
     assert got and not all(c.info for c in got)
 
 
 def test_a_quoted_annotation_is_still_the_same_signature(tmp_path, monkeypatch):
     old = _pin(tmp_path, monkeypatch, "sig_c", "AdminUser")
     new = _pin(tmp_path, monkeypatch, "sig_d", "'AdminUser'")
-    assert all(c.info for c in lockfile.changes(old, new))
+    assert all(c.info for c in lock.changes(old, new))

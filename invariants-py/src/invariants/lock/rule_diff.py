@@ -7,7 +7,8 @@ import ast
 import json
 from typing import Any
 
-from .cel_mono import Typer, _clause_key, _disjuncts, _unique, judge_bad
+from .cel_canon import Typer, _clause_key, _disjuncts, _unique
+from .cel_mono import judge_bad
 from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, LEGACY_SCAN_SKIP, MORE_IS_WEAKER,
                         NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, REMOVED_NOTE, Change, _json_paths,
                         policy, same)

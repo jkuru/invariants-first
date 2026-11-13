@@ -8,7 +8,7 @@ import textwrap
 
 import pytest
 
-from invariants import lockfile, scan
+from invariants import lock, scan
 from cli_support import write_project
 
 REPO = textwrap.dedent("""
@@ -48,7 +48,7 @@ def _doc():
         "mediation": {"sink": "py:app.repo.SinkRepo.save", "door": door}}]}
 
 
-def _scan(tmp_path, ops, extra=None, exclude=lockfile.DEFAULT_SCAN_EXCLUDE):
+def _scan(tmp_path, ops, extra=None, exclude=lock.DEFAULT_SCAN_EXCLUDE):
     files = {"app/__init__.py": "", "app/repo.py": REPO, "app/svc.py": SVC,
              "app/ops.py": textwrap.dedent(ops), **{k: textwrap.dedent(v) for k, v in (extra or {}).items()}}
     return scan.scan(_doc(), [write_project(tmp_path, files)], exclude)

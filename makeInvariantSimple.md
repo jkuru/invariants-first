@@ -737,7 +737,7 @@ You can refactor function bodies, add logging, write docstrings, or add new help
 
 ## 7.3 Inside the CEL Monotonicity Prover (`_walk`) and `FIELD_POLICY`
 
-When `invariants.lock` *does* change, `lockfile.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lock/](invariants-py/src/invariants/lock/)) and the **CEL Monotonicity Prover (`_walk` at [lock/](invariants-py/src/invariants/lock/))**:
+When `invariants.lock` *does* change, `invariants.lock.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lock/](invariants-py/src/invariants/lock/)) and the **CEL Monotonicity Prover (`_walk` at [lock/](invariants-py/src/invariants/lock/))**:
 
 ### How `_walk` Proves Whether a `bad` Edit Tightened or Weakened a Rule
 Remember that `bad` is true when a state is **prohibited**. Therefore:

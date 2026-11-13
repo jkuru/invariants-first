@@ -1,5 +1,4 @@
-"""The lock package's layering, its backwards-compatible `lockfile` name, and the pure functions the
-split out of lockfile.py extracted (tested directly, without mocks).
+"""The lock package's layering, and the pure functions of its stages (tested directly, without mocks).
 
 Layering: no module of invariants/lock/ imports the runtime (invariants.guard, invariants.registry) or
 the CLI (invariants.cli), lazily or not, and the stages import one another in one direction only:
@@ -17,10 +16,13 @@ import typing
 import pytest
 
 import invariants.lock as lock
-from invariants import lockfile
 from invariants.cel import subset
 from invariants.errors import LoadError
 from invariants.lock import cel_mono, contracts, pinning, rule_diff, schema_diff
+from invariants.lock import cel_canon
+from invariants.lock import cel_sites
+from invariants.lock import pin_contracts
+from invariants.lock import pin_types
 
 LOCK_DIR = pathlib.Path(lock.__file__).parent
 FORBIDDEN = ("invariants.guard", "invariants.registry", "invariants.cli")
@@ -30,7 +32,7 @@ STAGES = {"contracts": set(), "pin_types": {"contracts"}, "pin_jsonschema": {"co
           "pin_contracts": {"contracts", "pin_types", "pin_jsonschema", "pin_signatures"},
           "pinning": {"contracts", "pin_types", "pin_jsonschema", "pin_signatures", "pin_contracts"},
           "schema_diff": {"contracts"}, "cel_canon": set(), "cel_sites": {"cel_canon"},
-          "cel_mono": {"cel_canon", "cel_sites"}, "rule_diff": {"contracts", "cel_mono", "schema_diff"}}
+          "cel_mono": {"cel_canon", "cel_sites"}, "rule_diff": {"contracts", "cel_canon", "cel_mono", "schema_diff"}}
 
 
 def _imports(path: pathlib.Path) -> set[str]:
@@ -88,26 +90,9 @@ def test_the_import_reader_resolves_relative_imports(tmp_path: pathlib.Path) -> 
     assert {"invariants.guard", "invariants.registry", "invariants.cli", "invariants.lock.contracts"} <= _imports(bad)
 
 
-# --- the old name ---------------------------------------------------------------------------------
-def test_lockfile_reexports_the_same_objects() -> None:
-    assert lockfile.changes is lock.changes and lockfile.read is lock.read
-    assert lockfile.Change is contracts.Change and lockfile.LockError is lock.LockError
-    assert lockfile._walk is cel_mono._walk and lockfile._schema_changes is schema_diff._schema_changes
-    assert lockfile._bad_changes is rule_diff._bad_changes and lockfile._type_schema is pinning._type_schema
-    assert lockfile.FIELD_POLICY is contracts.FIELD_POLICY and lockfile.LOCK_VERSION == lock.LOCK_VERSION
-
-
-def test_lockfile_expand_applies_to_is_the_pinning_function() -> None:
-    # `inv validate` labels its problems from a table (cli.commands.VALIDATE_CHECKS), not from __module__
+def test_expand_applies_to() -> None:
     doc = {"targets": {"py:m.a": {}, "py:m.b": {}}, "rules": [{"id": "R-1", "applies_to": "py:m.*"}]}
-    assert lockfile.expand_applies_to is pinning.expand_applies_to is lock.expand_applies_to
-    assert lockfile.expand_applies_to(doc) == {"R-1": ["py:m.a", "py:m.b"]}
-
-
-def test_moved_classes_keep_their_module() -> None:
-    # a pinned signature and a pickle name a class by its module: the split moved none of them
-    for cls in (lock.Change, lock.Schemas, lock.LockError, lock.LockVersionError):
-        assert cls.__module__ == "invariants.lockfile", cls
+    assert lock.expand_applies_to(doc) == {"R-1": ["py:m.a", "py:m.b"]}
 
 
 # --- cel_mono ---------------------------------------------------------------------------------------
@@ -129,7 +114,7 @@ ONE, TWO, ZERO = ("lit", "int", 1), ("lit", "int", 2), ("lit", "int", 0)
     (("bin", "==", X, ONE), False),
 ])
 def test_can_raise(node: typing.Any, raises: bool) -> None:
-    assert cel_mono._can_raise(node) is raises
+    assert cel_sites._can_raise(node) is raises
 
 
 def _in(*items: typing.Any) -> tuple[typing.Any, ...]:
@@ -155,7 +140,7 @@ def test_walk_dispatch_undecidable_kinds() -> None:
 
 def test_canon_chain_flattens_and_drops_repeats() -> None:
     tree = cel_mono.canon_tree(subset.parse("a || (b || a)"))
-    assert tree == ("nary", "||", cel_mono._order([("id", "a"), ("id", "b")]))
+    assert tree == ("nary", "||", cel_canon._order([("id", "a"), ("id", "b")]))
     assert cel_mono.canon_tree(subset.parse("(x > 1) || (x > 1)")) == cel_mono.canon_tree(subset.parse("x > 1"))
 
 
@@ -283,8 +268,8 @@ def test_pin_changes_collects_schema_refs() -> None:
 
 def test_matched_and_edited_clauses() -> None:
     a, b = [("x > 1", ""), ("y", "")], [("x>1", "new message"), ("z", "")]
-    ka = [cel_mono._clause_key(w, subset.parse) for w, _ in a]
-    kb = [cel_mono._clause_key(w, subset.parse) for w, _ in b]
+    ka = [cel_canon._clause_key(w, subset.parse) for w, _ in a]
+    kb = [cel_canon._clause_key(w, subset.parse) for w, _ in b]
     a_left, b_left = [0, 1], [0, 1]
     (c,) = rule_diff._matched_clauses("rule R", a, b, ka, kb, a_left, b_left)
     assert c.what == "bad message of 'x>1'" and a_left == [1] and b_left == [1]
@@ -311,12 +296,12 @@ class _Point:
 
 
 def test_class_fields_and_generic_schema() -> None:
-    assert pinning._class_fields(_Point, {}, set()) == {"dataclass": "_Point", "fields": {"x": "int", "y": "int"},
+    assert pin_types._class_fields(_Point, {}, set()) == {"dataclass": "_Point", "fields": {"x": "int", "y": "int"},
                                                          "required": ["x"]}
-    assert pinning._type_schema(list[int], {}, set()) == {"generic": "list", "args": ["int"]}
-    assert pinning._type_schema(typing.Optional[int], {}, set()) == {"anyOf": ["int", "null"]}
+    assert pin_types._type_schema(list[int], {}, set()) == {"generic": "list", "args": ["int"]}
+    assert pin_types._type_schema(typing.Optional[int], {}, set()) == {"anyOf": ["int", "null"]}
     defs: dict[str, typing.Any] = {}
-    ref = pinning._schema_class_ref(_Point, defs, set(), None)
+    ref = pin_types._schema_class_ref(_Point, defs, set(), None)
     assert ref == {"$ref": pinning._class_ref(_Point)} and set(defs) == {pinning._class_ref(_Point)}
 
 
@@ -333,7 +318,7 @@ SPEC = {"paths": {"/r/{id}": {
 
 def test_openapi_doc_operation() -> None:
     pins = pinning.Schemas()
-    doc = pinning._OpenAPIDoc("api", "api.json", SPEC, pins)
+    doc = pin_contracts._OpenAPIDoc("api", "api.json", SPEC, pins)
     entry = doc.operation("/r/{id}", "post", SPEC["paths"]["/r/{id}"], SPEC["paths"]["/r/{id}"]["post"])
     assert entry["method"] == "POST" and entry["parameters"] == [{"name": "id", "in": "path",
                                                                   "schema": {"type": "string"}}]
@@ -344,13 +329,13 @@ def test_openapi_doc_operation() -> None:
     assert ref == {"$ref": next(iter(pins.table))}
     cyclic = {"components": {"x": {"$ref": "#/components/x"}}}
     with pytest.raises(LoadError, match="cycle"):
-        pinning._OpenAPIDoc("api", "api.json", cyclic, pins).deref({"$ref": "#/components/x"})
+        pin_contracts._OpenAPIDoc("api", "api.json", cyclic, pins).deref({"$ref": "#/components/x"})
 
 
 def test_python_contract_pin() -> None:
-    entry = pinning._python_contract_pin("c", "json", {"type": "python", "ref": "json"}, pinning.Schemas())
+    entry = pin_contracts._python_contract_pin("c", "json", {"type": "python", "ref": "json"}, pinning.Schemas())
     assert entry == {"type": "python", "ref": "json"}                         # a module: its targets pin it
-    entry = pinning._python_contract_pin("c", "json:dumps", {}, pinning.Schemas())
+    entry = pin_contracts._python_contract_pin("c", "json:dumps", {}, pinning.Schemas())
     assert entry["signature"].startswith("dumps(obj")
 
 
@@ -358,11 +343,11 @@ def test_pin_every_operation(tmp_path: pathlib.Path) -> None:
     f = tmp_path / "api.json"
     f.write_text(json.dumps(SPEC))
     pins, entry = pinning.Schemas(), {}
-    pinning._pin_every_operation("api", f, entry, pins)
+    pin_contracts._pin_every_operation("api", f, entry, pins)
     assert set(entry["operations"]) == {"createRefund"} and len(pins.table) == 1
     f.write_text(json.dumps({"paths": {"/x": {"get": {"operationId": "x", "parameters": [{"$ref": "#/nope"}]}}}}))
     pins, entry = pinning.Schemas(), {}
-    pinning._pin_every_operation("api", f, entry, pins)                       # unreadable: the digest pins it
+    pin_contracts._pin_every_operation("api", f, entry, pins)                       # unreadable: the digest pins it
     assert entry == {} and pins.table == {}
 
 

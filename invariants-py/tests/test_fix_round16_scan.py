@@ -447,7 +447,7 @@ def test_init_freezes_a_back_door_reached_from_many_entrypoints(tmp_path):
 # --- S-8: truthiness preconditions -----------------------------------------------------------------------
 def _guard(src: str):
     tree = ast.parse(textwrap.dedent(src))
-    return bootstrap._guards("m", tree)[0]
+    return bootstrap.finding._guards("m", tree)[0]
 
 
 @pytest.mark.parametrize("sig,cond,cel", [

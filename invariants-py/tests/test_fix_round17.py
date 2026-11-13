@@ -23,7 +23,7 @@ import invariants as inv
 import round16 as r16
 import round17 as r17
 from invariants import mcp
-from invariants import lockfile
+from invariants import lock
 
 pytest_plugins = ["pytester"]
 
@@ -283,10 +283,10 @@ def test_the_schema_takes_concurrent():
 
 def test_the_lock_pins_concurrent_as_a_change_that_is_not_a_weakening(tmp_path):
     doc = r16.guard_doc("G-AP", "apf", "slow1 > 100", providers=_prov("round16", ("slow1",)))
-    old = lockfile.build(doc, tmp_path)
+    old = lock.build(doc, tmp_path)
     doc["providers"]["slow1"]["concurrent"] = True
-    new = lockfile.build(doc, tmp_path)
-    changes = lockfile.changes(old, new)
+    new = lock.build(doc, tmp_path)
+    changes = lock.changes(old, new)
     hit = [c for c in changes if "concurrent" in c.what]
     assert hit and not any(c.weakened for c in hit), changes
     assert "concurrent" not in old["providers"]["slow1"]              # an existing lock does not churn

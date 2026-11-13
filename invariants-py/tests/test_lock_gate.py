@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Optional, TypedDict
 
 import pytest
 
-from invariants import lockfile
+from invariants import lock as lockmod
 from cli_support import run_inv, write_project
 
 MODELS = '''\
@@ -186,18 +186,18 @@ def test_a_pyproject_exclude_is_a_weakening_and_removing_one_is_not(tmp_path):
     ({"roots": [".", "src"], "exclude": []}, {"roots": ["src"], "exclude": []}, True),
     # an added root renames the files under it and widens the excludes (fix round 23)
     ({"roots": ["src"], "exclude": []}, {"roots": [".", "src"], "exclude": []}, True),
-    (None, {"roots": ["src"], "exclude": list(lockfile.DEFAULT_SCAN_EXCLUDE)}, False),
+    (None, {"roots": ["src"], "exclude": list(lockmod.DEFAULT_SCAN_EXCLUDE)}, False),
     (None, {"roots": ["src"], "exclude": ["x"]}, True),
 ])
 def test_scan_pin_changes(old, new, weak):
-    a = {"lock_version": lockfile.LOCK_VERSION, **({"scan": old} if old else {})}
-    cs = lockfile.changes(a, {"lock_version": lockfile.LOCK_VERSION, "scan": new})
+    a = {"lock_version": lockmod.LOCK_VERSION, **({"scan": old} if old else {})}
+    cs = lockmod.changes(a, {"lock_version": lockmod.LOCK_VERSION, "scan": new})
     assert cs and any(c.weakened for c in cs) is weak, [str(c) for c in cs]
 
 
 # --- 3. lock weakening holes -----------------------------------------------------------------------
 def _lock(contracts=None, rules=None, schemas=None):
-    return {"lock_version": lockfile.LOCK_VERSION, "rules": rules or {}, "targets": {}, "providers": {},
+    return {"lock_version": lockmod.LOCK_VERSION, "rules": rules or {}, "targets": {}, "providers": {},
             "contracts": contracts or {}, "schemas": schemas or {}}
 
 
@@ -207,7 +207,7 @@ def _lock(contracts=None, rules=None, schemas=None):
 ])
 def test_removing_a_contract_is_a_weakening(rules, note):
     old = _lock({"refund": {"type": "pydantic", "ref": "m:Refund"}}, rules)
-    cs = lockfile.changes(old, _lock(rules=rules))
+    cs = lockmod.changes(old, _lock(rules=rules))
     c = next(c for c in cs if c.where == "contract refund")
     assert c.weakened and note in c.note
 
@@ -215,10 +215,10 @@ def test_removing_a_contract_is_a_weakening(rules, note):
 def _schema_diff(a, b):
     """The changes between two versions of one pinned pydantic schema used by a contract."""
     ea, eb = {"name": "m.M", "pydantic": a}, {"name": "m.M", "pydantic": b}
-    ka, kb = lockfile._sha(lockfile.canonical(ea)), lockfile._sha(lockfile.canonical(eb))
+    ka, kb = lockmod.contracts._sha(lockmod.canonical(ea)), lockmod.contracts._sha(lockmod.canonical(eb))
     old = _lock({"c": {"type": "pydantic", "ref": "m:M", "schema": {"$ref": ka}}}, schemas={ka: ea})
     new = _lock({"c": {"type": "pydantic", "ref": "m:M", "schema": {"$ref": kb}}}, schemas={kb: eb})
-    return lockfile.changes(old, new)
+    return lockmod.changes(old, new)
 
 
 ITEM = {"type": "object", "properties": {"n": {"type": "integer", "maximum": 5}}}
@@ -258,15 +258,15 @@ def test_schema_reference_and_extra_property_changes(a, b, weak):
     ("operations.op.parameters[0].required", False, True, False),
 ])
 def test_constraint_weakening_without_neighbours(path, old, new, weak):
-    assert (lockfile.constraint_weakening(path, old, new) is not None) is weak
+    assert (lockmod.constraint_weakening(path, old, new) is not None) is weak
 
 
 def test_a_removed_def_that_was_referenced_is_a_weakening():
     old = {"pydantic": {"properties": {"i": {"$ref": "#/$defs/Item"}}, "$defs": {"Item": ITEM}}}
     unused = {"pydantic": {"properties": {}, "$defs": {"Item": ITEM}}}
     new = {"pydantic": {"properties": {"i": {"$ref": "#/$defs/Item"}}}}
-    assert lockfile.constraint_weakening("pydantic.$defs.Item", ITEM, None, old, new)
-    assert lockfile.constraint_weakening("pydantic.$defs.Item", ITEM, None, unused, {"pydantic": {}}) is None
+    assert lockmod.constraint_weakening("pydantic.$defs.Item", ITEM, None, old, new)
+    assert lockmod.constraint_weakening("pydantic.$defs.Item", ITEM, None, unused, {"pydantic": {}}) is None
 
 
 # --- 5. tightenings are not weakenings -------------------------------------------------------------
@@ -373,14 +373,14 @@ class TD(TypedDict, total=False):
 
 
 def test_stdlib_json_schema_without_pydantic():
-    s = lockfile.stdlib_json_schema(Outer)
+    s = lockmod.stdlib_json_schema(Outer)
     p = s["properties"]
     assert p["amount"] == {"type": "integer", "exclusiveMinimum": 0, "maximum": 10}
     assert p["tags"] == {"type": "array", "items": {"type": "string"}, "maxItems": 3}
     assert p["kind"] == {"enum": ["a"]} and p["mode"] == {"const": "x"}
     assert p["inner"] == {"anyOf": [{"$ref": "#/$defs/" + Inner.__qualname__}, {"type": "null"}]}
     assert s["required"] == ["amount", "kind", "mode", "tags"] and Inner.__qualname__ in s["$defs"]
-    td = lockfile.stdlib_json_schema(TD)
+    td = lockmod.stdlib_json_schema(TD)
     assert td == {"type": "object", "properties": {"a": {"type": "object", "additionalProperties": {"type": "number"}}},
                   "required": []}
 
@@ -434,7 +434,7 @@ def test_openapi_contract_from_a_live_app(tmp_path):
 def test_openapi_app_contract_mistakes(tmp_path, contract, msg):
     from invariants.errors import LoadError
     with pytest.raises(LoadError, match=msg):
-        lockfile.contract_hash("api", contract, tmp_path)
+        lockmod.contract_hash("api", contract, tmp_path)
 
 
 # --- 6. the pretool hook -----------------------------------------------------------------------------

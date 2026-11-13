@@ -368,7 +368,8 @@ def test_otel_exporter_emits_invariant_spans(iso):
 
 
 def test_schema_fields_are_cached():
-    from invariants.loader import _dataclass_fields, schema_fields
+    from invariants.loader import schema_fields
+    from invariants.loader.schemas import _dataclass_fields
     schema_fields(fx.Reply)
     before = _dataclass_fields.cache_info().hits
     inv.parse('{"v": 1, "cause": "x"}', fx.Reply)

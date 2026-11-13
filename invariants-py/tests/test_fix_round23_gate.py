@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from invariants import lockfile
+from invariants import lock
 from cli_support import run_inv, write_project
 
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -121,9 +121,9 @@ def test_relock_against_the_base_refuses_an_added_root(tmp_path):
     ([".", "src"], ["src", "."], False),               # the same set: a file's name does not depend on order
 ])
 def test_every_change_to_the_root_set_is_a_weakening(old, new, weak):
-    a = {"lock_version": lockfile.LOCK_VERSION, "scan": lockfile.scan_pin(old, [])}
-    b = {"lock_version": lockfile.LOCK_VERSION, "scan": lockfile.scan_pin(new, [])}
-    cs = lockfile.changes(a, b)
+    a = {"lock_version": lock.LOCK_VERSION, "scan": lock.scan_pin(old, [])}
+    b = {"lock_version": lock.LOCK_VERSION, "scan": lock.scan_pin(new, [])}
+    cs = lock.changes(a, b)
     assert any(c.weakened for c in cs) is weak, [str(c) for c in cs]
     assert bool(cs) is weak
 
@@ -172,45 +172,45 @@ def test_a_root_that_makes_an_exclude_match_more_is_a_weakening(tmp_path):
 # --- M1: the always-skipped directories are pinned ------------------------------------------------
 def test_the_skip_list_is_pinned_from_what_the_scan_skips():
     from invariants.scan import SKIP_DIRS
-    pin = lockfile.scan_pin(["."], [])
-    assert pin["skip"] == sorted({*SKIP_DIRS, ".*"}) == lockfile.scan_skip()
+    pin = lock.scan_pin(["."], [])
+    assert pin["skip"] == sorted({*SKIP_DIRS, ".*"}) == lock.scan_skip()
 
 
 def test_a_wider_skip_list_is_a_weakening_and_a_narrower_one_is_not():
-    base = {"lock_version": lockfile.LOCK_VERSION, "scan": lockfile.scan_pin(["."], [])}
-    wider = {"lock_version": lockfile.LOCK_VERSION, "scan": lockfile.scan_pin(["."], [], [*lockfile.scan_skip(), "lib"])}
-    cs = lockfile.changes(base, wider)
+    base = {"lock_version": lock.LOCK_VERSION, "scan": lock.scan_pin(["."], [])}
+    wider = {"lock_version": lock.LOCK_VERSION, "scan": lock.scan_pin(["."], [], [*lock.scan_skip(), "lib"])}
+    cs = lock.changes(base, wider)
     assert [str(c) for c in cs] == ["scan: skip added: (none) -> 'lib'  WEAKENED "
                                     "(the scan now always skips directories with this name)"]
-    cs = lockfile.changes(wider, base)
+    cs = lock.changes(wider, base)
     assert cs and not any(c.weakened for c in cs)
 
 
 def test_a_lock_without_the_skip_list_is_a_one_time_repin_not_a_weakening():
-    new = lockfile.scan_pin(["."], [])
+    new = lock.scan_pin(["."], [])
     old = {k: v for k, v in new.items() if k != "skip"}
-    cs = lockfile.changes({"lock_version": lockfile.LOCK_VERSION, "scan": old},
-                          {"lock_version": lockfile.LOCK_VERSION, "scan": new})
+    cs = lock.changes({"lock_version": lock.LOCK_VERSION, "scan": old},
+                          {"lock_version": lock.LOCK_VERSION, "scan": new})
     assert len(cs) == 1 and not cs[0].weakened and not cs[0].info, [str(c) for c in cs]
     assert cs[0].what == "skip pinned" and "one-time re-pin" in str(cs[0])
     # a skip list that grew since the old pin is still a weakening, not hidden by the first pin
-    grown = lockfile.scan_pin(["."], [], [*lockfile.scan_skip(), "lib"])
-    cs = lockfile.changes({"lock_version": lockfile.LOCK_VERSION, "scan": old},
-                          {"lock_version": lockfile.LOCK_VERSION, "scan": grown})
+    grown = lock.scan_pin(["."], [], [*lock.scan_skip(), "lib"])
+    cs = lock.changes({"lock_version": lock.LOCK_VERSION, "scan": old},
+                          {"lock_version": lock.LOCK_VERSION, "scan": grown})
     assert [c.what for c in cs if c.weakened] == ["skip added"]
 
 
 def test_two_pins_without_the_skip_list_report_no_skip_change():
-    a = {"lock_version": lockfile.LOCK_VERSION, "scan": {"roots": ["."], "exclude": []}}
-    b = {"lock_version": lockfile.LOCK_VERSION, "scan": {"roots": ["."], "exclude": ["x"]}}
-    assert [c.what for c in lockfile.changes(a, b)] == ["exclude added"]
+    a = {"lock_version": lock.LOCK_VERSION, "scan": {"roots": ["."], "exclude": []}}
+    b = {"lock_version": lock.LOCK_VERSION, "scan": {"roots": ["."], "exclude": ["x"]}}
+    assert [c.what for c in lock.changes(a, b)] == ["exclude added"]
 
 
 def test_a_scan_pin_with_a_malformed_skip_list_is_refused(tmp_path):
     p = tmp_path / "invariants.lock"
     p.write_text(json.dumps({"lock_version": 3, "scan": {"roots": ["."], "exclude": [], "skip": "build"}}))
-    with pytest.raises(lockfile.LockError, match="scan.skip"):
-        lockfile.read(p)
+    with pytest.raises(lock.LockError, match="scan.skip"):
+        lock.read(p)
 
 
 def test_lock_check_on_a_lock_pinned_before_the_skip_list(tmp_path):
@@ -218,7 +218,7 @@ def test_lock_check_on_a_lock_pinned_before_the_skip_list(tmp_path):
     lk = root / "invariants.lock"
     data = json.loads(lk.read_text())
     del data["scan"]["skip"]
-    lk.write_text(lockfile.dumps(data))
+    lk.write_text(lock.dumps(data))
     r = run_inv("lock", "--check", cwd=root)
     assert r.returncode == 1 and "skip pinned" in r.stderr and "WEAKENED" not in r.stderr, r.stderr
     r = run_inv("lock", cwd=root)

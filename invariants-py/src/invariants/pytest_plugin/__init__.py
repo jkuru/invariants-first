@@ -41,8 +41,7 @@ control re-run in this process, the rule's evaluations gave rule_error and never
 parse_error: the test passed because the rule could not be evaluated, not because it held.
 
 The package is split by seam; this module is the one pytest registers (entry point pytest11, or
-`-p invariants.pytest_plugin` with plugin autoload off), so it re-exports every hook and fixture,
-and keeps the namespace the single pytest_plugin.py had:
+`-p invariants.pytest_plugin` with plugin autoload off), so it re-exports every hook and fixture:
 - hooks.py: the --inv-* options, and pytest_configure / pytest_unconfigure registering an InvSession
 - state.py, ablation.py, report.py, session.py: InvSession, one layer per module (its state and rule
   file; the ablation protocol; the report and the pytest-xdist payload; the session-level hooks)
@@ -55,35 +54,11 @@ from __future__ import annotations
 from .fixtures import SCAN_ABLATED, ScanRun, inv_ablated, inv_events, inv_registry, inv_scan  # noqa: F401
 from .hooks import pytest_addoption, pytest_configure, pytest_unconfigure  # noqa: F401
 
-from .ablation import NEVER_FIRED, NO_VERDICT, _Ablation  # noqa: F401
-from .report import KINDS, _Report  # noqa: F401
-from .rerun import (_broad_fixtures, _carried, _decided, _env_ablated, _env_decisions, _lines,  # noqa: F401
-                    _matches, _outcome, _reached)
+from .ablation import NEVER_FIRED, NO_VERDICT  # noqa: F401
+from .report import KINDS  # noqa: F401
 from .session import STASH, InvSession  # noqa: F401
-from .state import _SessionState  # noqa: F401
 
-# names pytest_plugin.py imported, kept so invariants.pytest_plugin.<name> still resolves (and the
-# annotations of the classes below, whose module is this one, evaluate here)
-from typing import Any, Callable, Iterator, Sequence, cast  # noqa: F401
-import pytest  # noqa: F401
-from .. import registry  # noqa: F401
-from ..errors import CoverageError, LoadError  # noqa: F401
-from ..loader import load  # noqa: F401
-from ..registry import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, Registry,  # noqa: F401
-                        ablated_everywhere, capture, current, default_registry, isolated, observe)
-
-# `from invariants.pytest_plugin import *` exports exactly the public names pytest_plugin.py's star import
-# gave (it had no __all__), and no modules: without this list it would bind the submodules over a caller's
-# own names. The modules pytest_plugin.py leaked (contextlib, dataclasses, json, os, pathlib, pytest,
-# registry, subprocess, sys, tempfile) are not exported.
-__all__ = ["ABLATE_ARM_ENV", "ABLATE_ENV", "ABLATE_TRACE_ENV", "Any", "Callable", "CoverageError",
-           "DECISION_TRACE_ENV", "InvSession", "Iterator", "KINDS", "LoadError", "NEVER_FIRED", "NO_VERDICT",
-           "Registry", "SCAN_ABLATED", "STASH", "ScanRun", "Sequence", "ablated_everywhere", "annotations",
-           "capture", "cast", "current", "default_registry", "inv_ablated", "inv_events", "inv_registry",
-           "inv_scan", "isolated", "load", "observe", "pytest_addoption", "pytest_configure",
-           "pytest_unconfigure"]
-
-# Classes keep the module name they had before the split (reprs, pickles and pinned signatures name it).
-for _cls in (InvSession, ScanRun):
-    _cls.__module__ = "invariants.pytest_plugin"
-del _cls
+# `from invariants.pytest_plugin import *` exports these names and no submodules.
+__all__ = ["InvSession", "KINDS", "NEVER_FIRED", "NO_VERDICT", "SCAN_ABLATED", "STASH",
+           "ScanRun", "inv_ablated", "inv_events", "inv_registry", "inv_scan",
+           "pytest_addoption", "pytest_configure", "pytest_unconfigure"]

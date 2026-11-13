@@ -10,7 +10,7 @@ from __future__ import annotations
 import py_compile
 import textwrap
 
-from invariants import lockfile, scan
+from invariants import lock, scan
 from cli_support import write_project
 
 PAYMENTS = textwrap.dedent("""
@@ -210,7 +210,7 @@ def test_a_standalone_script_in_a_skipped_directory_that_imports_the_sink_is_rep
     for where in ("build", ".ops", "dist"):
         root = _top(tmp_path / where, {f"{where}/payout.py": SINKS + "g()\n",
                                        f"{where}/other.py": "import os\n"})
-        rep = scan.scan(_doc(), [root], lockfile.DEFAULT_SCAN_EXCLUDE)
+        rep = scan.scan(_doc(), [root], lock.DEFAULT_SCAN_EXCLUDE)
         assert _codes(rep) == ["unresolved/skipped-importer"], (where, rep.findings)
         assert rep.findings[0].file == f"{where}/payout.py" and rep.findings[0].line == 1
         assert rep.skipped == {where: 2}
