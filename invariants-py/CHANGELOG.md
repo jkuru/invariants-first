@@ -10,6 +10,13 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Refactor: guard/ package
+
+`invariants/guard.py` is now the package `invariants/guard/`: `checked.py` (inv.Checked,
+FrozenDict, FrozenList), `replies.py` (inv.parse and the closed-schema checks), `plan.py` (the
+call core the sync and async wrappers share) and `decorators.py` (@inv.guard, @inv.model_call,
+@inv.edge). `invariants.guard` re-exports the names guard.py had; no behaviour change.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed
