@@ -3,7 +3,9 @@ split out of lockfile.py extracted (tested directly, without mocks).
 
 Layering: no module of invariants/lock/ imports the runtime (invariants.guard, invariants.registry) or
 the CLI (invariants.cli), lazily or not, and the stages import one another in one direction only:
-contracts <- pinning, schema_diff, cel_mono <- rule_diff <- the package (the orchestrator)."""
+contracts <- pin_types <- pin_jsonschema <- pin_signatures <- pin_contracts <- pinning, and
+cel_canon <- cel_sites <- cel_mono; contracts <- schema_diff; schema_diff, cel_mono <- rule_diff <-
+the package (the orchestrator)."""
 from __future__ import annotations
 
 import ast
@@ -23,8 +25,12 @@ from invariants.lock import cel_mono, contracts, pinning, rule_diff, schema_diff
 LOCK_DIR = pathlib.Path(lock.__file__).parent
 FORBIDDEN = ("invariants.guard", "invariants.registry", "invariants.cli")
 # the lock modules each stage may import (the package __init__ composes them all)
-STAGES = {"contracts": set(), "pinning": {"contracts"}, "schema_diff": {"contracts"}, "cel_mono": set(),
-          "rule_diff": {"contracts", "cel_mono", "schema_diff"}}
+STAGES = {"contracts": set(), "pin_types": {"contracts"}, "pin_jsonschema": {"contracts", "pin_types"},
+          "pin_signatures": {"contracts", "pin_types", "pin_jsonschema"},
+          "pin_contracts": {"contracts", "pin_types", "pin_jsonschema", "pin_signatures"},
+          "pinning": {"contracts", "pin_types", "pin_jsonschema", "pin_signatures", "pin_contracts"},
+          "schema_diff": {"contracts"}, "cel_canon": set(), "cel_sites": {"cel_canon"},
+          "cel_mono": {"cel_canon", "cel_sites"}, "rule_diff": {"contracts", "cel_mono", "schema_diff"}}
 
 
 def _imports(path: pathlib.Path) -> set[str]:
@@ -64,8 +70,17 @@ def test_stages_import_in_one_direction(stage: str) -> None:
     assert "invariants.lock" not in mods, f"lock/{stage}.py imports the orchestrator"
 
 
+def test_every_stage_is_listed_and_the_order_has_no_cycle() -> None:
+    assert {f.stem for f in LOCK_DIR.glob("*.py")} - {"__init__"} == set(STAGES)
+    done: set[str] = set()
+    while len(done) < len(STAGES):                    # peel the stages whose imports are all peeled
+        ready = {s for s, deps in STAGES.items() if s not in done and deps <= done}
+        assert ready, f"a cycle among lock stages {sorted(set(STAGES) - done)}"
+        done |= ready
+
+
 def test_the_import_reader_resolves_relative_imports(tmp_path: pathlib.Path) -> None:
-    p = LOCK_DIR / "cel_mono.py"
+    p = LOCK_DIR / "cel_canon.py"
     assert {"invariants.typecheck", "invariants.loader._type_env", "invariants.cel.subset"} <= _imports(p)
     bad = tmp_path / "bad.py"
     bad.write_text("from ..guard import guard\ndef f():\n    from .. import registry\n    import invariants.cli\n"
