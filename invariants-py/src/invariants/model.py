@@ -12,6 +12,7 @@ PATH_ROOTS = DEFAULT_NAMES | {"provider"}
 FILE_FIELDS = frozenset({"spec", "contracts", "targets", "providers", "rules"})
 TARGET_FIELDS = frozenset({"effects"})
 PROVIDER_FIELDS = frozenset({"type", "from", "args"})
+PROVIDER_OPTIONAL = frozenset({"concurrent"})          # may run alongside other opted-in async providers
 RULE_FIELDS = frozenset({"id", "rev", "status", "class", "owner", "statement", "why", "subject", "scope", "bind",
                          "bad", "compensable", "enforcers", "mediation", "model_policy", "compares_to",
                          "falsified_by", "evidence", "applies_to"})
@@ -67,6 +68,15 @@ class Provider:
     def is_async(self) -> bool:
         """True for an async def provider (read only by async guards, model calls and edges)."""
         return inspect.iscoroutinefunction(self.fn)
+
+    @property
+    def concurrent(self) -> bool:
+        """True when this async provider may be awaited alongside other opted-in ones: the record says
+        `concurrent: true`, or it says nothing and @inv.provider(..., concurrent=True) registered it."""
+        declared = self.raw.get("concurrent")
+        if declared is not None:
+            return declared is True
+        return self.name in getattr(self.fn, "__inv_concurrent__", ())
 
     def accepts(self, v: Any) -> bool:
         """True if v matches the declared type."""

@@ -176,8 +176,12 @@ consistent (the store's own constraints, its transactions) is the implementation
 `bind:` or `view:` entry no clause reads never calls it). Every clause of an enforcer is evaluated,
 and CEL's `&&` and `||` are commutative over errors (both sides are evaluated), so which providers
 run is fixed by the rule, never by the data: there is no data-dependent short circuit. A sync
-provider called from an async guard runs on the event loop. Async providers are awaited together
-(`asyncio.gather`), each distinct call once, by async guards, model calls and edges. A rule whose
+provider called from an async guard runs on the event loop. Async providers are awaited by async
+guards, model calls and edges, each distinct call once, one at a time in the order the rule file
+declares them, so two providers that share a resource that is not safe for concurrent use (one
+SQLAlchemy `AsyncSession`) never overlap. A provider that is safe to overlap says so with
+`concurrent: true` in its record (or `@inv.provider("name", concurrent=True)`); consecutive calls of
+providers that all opted in are awaited together with `asyncio.gather`. A rule whose
 sync target reads an `async def` provider is a `LoadError`, since a sync wrapper cannot await it.
 
 **Clauses per enforcer are not supported.** A clause belongs to the rule, so it is evaluated at
@@ -348,9 +352,15 @@ Ablation turns a rule off to prove that its falsifiers then fail.
 - **What `--inv-ablate` counts as caught.** A falsifier that still passes with the rule off fails the
   session with "guard not load-bearing". An `enforce` rule with no caught falsifier (not collected,
   failing with the guard on, or inconclusive) also fails it. A failure counts as caught only when the
-  ablation caused it: the falsifier must pass on a control re-run without ablation, and the ablated
+  ablation caused it: the falsifier must pass on a control re-run without ablation, the ablated
   re-run must reach the rule (a guard, `inv.is_ablated` or `inv scan` acted on the ablation, in
-  process or in a subprocess through `INV_ABLATE_TRACE`). Otherwise it is `inconclusive`. It is also
+  process or in a subprocess through `INV_ABLATE_TRACE`), and it must pass again on a second control
+  re-run after the ablated one. Otherwise it is `inconclusive`. The re-runs share every fixture
+  broader than the function, so a module-scoped quota or seeded row the test spends can fail a
+  later re-run with or without the guard: a failing second control gives `inconclusive (state carried
+  between runs: ...)`, a failing first control `inconclusive (failed on a control re-run without
+  ablation; ...)`, and both name the session, package, module and class fixtures the test used. Neither
+  counts as caught, so an `enforce` rule with no other falsifier fails the session. It is also
   `inconclusive (rule_error, not violation)` when, on the control re-run, the rule's in-process
   evaluations gave `rule_error` and never `violation` or `parse_error`: the falsifier passed because
   the rule could not be evaluated, not because it caught the bad state.

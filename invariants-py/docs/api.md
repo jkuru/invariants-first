@@ -46,7 +46,7 @@ Key behaviours that the one-line docstrings leave out:
 | Name | Kind | Purpose |
 |---|---|---|
 | `guard(*keys: str, points: tuple[str, ...] = ('decorator',)) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.guard("R-1", ...) or @inv.guard("py:jobs.split_work"): pre- and post-effect checks. |
-| `provider(name: str, *more: str) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. |
+| `provider(name: str, *more: str, concurrent: bool = False) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. concurrent=True lets an async provider overlap other opted-in ones (the record's `concurrent:` overrides it). |
 | `Dependency(name: str) -> None` | class | A context-local value providers read: a store, a client, a tenant (contextvars underneath). |
 | `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept, with bounded retries. |
 | `edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async). |

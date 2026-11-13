@@ -65,5 +65,8 @@ The apps have changed since 2026-11-10 (the release that removed everything belo
 - fact-pipeline's `models.PREDICATES` is derived from the `Literal`, so F12's edit of that line no
   longer applies; `REBASED["F12"]` widens the `Literal` and K-4's list only. A re-run of P02, P04,
   P10 and F12 on 2026-11-12 matched the published results.
-- B1 drops 29 of the pool-service tests and 37 of the fact-pipeline tests on the current apps
-  (the published run dropped 31 and 43).
+- B1 drops 36 of the 73 pool-service tests and 48 of the 90 fact-pipeline tests on the current apps
+  (re-run of the deselect step on 2026-11-12; the published run dropped 31 of 72 and 43 of 86). The
+  count moves as the apps gain tests: it was 29 and 37 at the earlier re-run of P02, P04, P10 and
+  F12, and 34 and 46 before each app's `tests/test_replay.py` (the replayed model traces) added two
+  tests that also fail with every rule ablated.

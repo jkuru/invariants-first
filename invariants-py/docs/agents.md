@@ -60,6 +60,12 @@ and `status` import the app in a child process with bytecode writing off, so an 
 imported fresh on each call and the project tree is left as it was. The server never passes
 `--relock`, `--base`, `--allow-weakening` or `INV_ALLOW_WEAKENING` on.
 
+Every path a tool argument names (`root`, `rules`, `source_roots`, `graphify`) must resolve inside the
+server's `--root`, after following symlinks; anything else (an absolute path elsewhere, `..`, a
+symlink out) is a tool error (`isError: true`), since `check` and `status` import the code they find.
+A filesystem root (`/`) is never a project root. The server's own `--rules`, chosen by whoever starts
+it, may sit anywhere.
+
 `explain` is the tool an agent should reach for when `inv check` fails. For a bypass it names the
 door to call instead, and says that adding the caller to `allow` is a person's decision, not a fix:
 

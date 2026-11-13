@@ -10,6 +10,34 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 17: ablation, MCP, providers
+
+- **`--inv-ablate` no longer counts state carried between re-runs as caught.** The re-runs keep
+  session, package, module and class fixtures, so a falsifier that passes with or without the guard
+  but spends a module-scoped budget failed on its third run (the ablated one) and was reported
+  `caught`. A failing ablated re-run is now followed by a second control re-run with the rule on:
+  if that fails too, the falsifier is `inconclusive (state carried between runs: ...)`. A failing
+  first control is `inconclusive (failed on a control re-run without ablation; ...)`. Both name the
+  fixtures broader than the function the test used (`budget (module)`), and neither counts as caught,
+  so an `enforce` rule with no other falsifier fails the session. A caught falsifier now costs one
+  more re-run per rule.
+- **`inv-mcp` path arguments stay inside `--root`.** `root`, `rules`, `source_roots` and `graphify`
+  are resolved (symlinks followed) and must lie inside the server's `--root`; an absolute path
+  elsewhere, `..` or a symlink out is a tool error (`isError: true`). Before, `check` and `status`
+  imported, and so ran, code from any directory an argument named. A filesystem root (`/`) is never a
+  project root. The server's own `--rules` may still sit anywhere.
+- **Behaviour change: async providers run one at a time by default**, in the order the rule file
+  declares them, as before round 16. Round 16 awaited them all together with `asyncio.gather`, which
+  breaks providers that share a resource that is not safe for concurrent use (one SQLAlchemy
+  `AsyncSession`). Concurrency is opt-in: `concurrent: true` in the provider record, or
+  `@inv.provider("name", concurrent=True)` (the record's value wins when it has one); consecutive
+  calls of providers that all opted in are gathered, and one that did not is never overlapped. The
+  JSON Schema and the loader take the new boolean field. `inv lock` pins it when set, as a neutral
+  change (never a weakening), so existing locks stay fresh.
+- **The evaluation README's B1 counts are current**: B1 drops 36 of 73 pool-service tests and 48 of
+  90 fact-pipeline tests (each app's `tests/test_replay.py` added two since the 34 and 46 recorded
+  before it).
+
 ### A real-model path for model_call, with replay
 
 - **`invariants.integrations.anthropic`** (new `anthropic` extra, imported lazily; no core

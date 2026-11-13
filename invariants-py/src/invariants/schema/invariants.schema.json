@@ -31,7 +31,8 @@
       "properties": {
         "type": {"type": "string"},
         "from": {"type": "string", "pattern": "^py:"},
-        "args": {"type": "object", "additionalProperties": {"type": "string"}}
+        "args": {"type": "object", "additionalProperties": {"type": "string"}},
+        "concurrent": {"type": "boolean", "description": "an async provider that may be awaited alongside other opted-in ones (default false: one at a time, in order)"}
       }
     },
     "clause": {

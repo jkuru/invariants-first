@@ -326,6 +326,9 @@ This method applies to both runs.
      on, because they are plain SQL. Tests that already fail on the pristine apps in this mode are
      dropped, because they assert library behaviour. That drops 31 of 72 pool tests and 43 of 86
      fact tests, which leaves 41 and 43. A change counts as caught when any remaining test fails.
+     (On the current apps B1 drops 36 of 73 and 48 of 90, since tests were added after the
+     published run, among them each app's two replayed-trace tests in `tests/test_replay.py`; see
+     [evaluation/README.md](../evaluation/README.md#what-has-changed-since-the-published-run).)
      This understates plain tests, because some of the dropped tests (for example
      `test_worked_flow_7_6`) check business outcomes as well as rule ids.
    - **B2 (per-case reasoning, a plain-code counterfactual).** Imagine the same properties written

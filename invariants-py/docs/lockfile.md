@@ -41,7 +41,7 @@ rewrite is itself a possible weakening).
 |---|---|
 | `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`, `mediation.chokepoint`). |
 | `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, `effects`, and a model-call target's reply schema. |
-| `providers` | `type`, `from`, `args`, and the function's signature and resolved types. |
+| `providers` | `type`, `from`, `args`, `concurrent` (when set), and the function's signature and resolved types. |
 | `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations; a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
 | `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults and any `--root`/`--exclude`. |
@@ -64,8 +64,8 @@ what each rule's meaning depends on, entry by entry:
     `mediation.chokepoint`.
 - `targets.<key>`: `signature` (text), `types`, `effects` and, for a model-call
   target, `reply_schema`.
-- `providers.<name>`: `type`, `from`, `args`, and the `from` function's `signature`
-  and `types`.
+- `providers.<name>`: `type`, `from`, `args`, `concurrent` when the record sets it, and the
+  `from` function's `signature` and `types`.
 - `contracts.<name>`: `{type, ref}` (or `{type, app}`) plus, by type:
   - `schema` for a pydantic model (`{name, pydantic: <model_json_schema()>}`), a dataclass or
     TypedDict (`{name, jsonschema: ...}`: pydantic's `TypeAdapter(cls).json_schema()` when pydantic is
@@ -221,7 +221,7 @@ change unless `--accept-weakening` is given.
 | analysed | `mediation.allow` | an entry is added |
 | analysed | rule `targets`, `applies_to` | a target is no longer covered |
 | analysed | `mediation.residual_paths` | an entry is removed (it can raise the rule's standing to `held`) |
-| neutral | `rev`, `spec`, clause `message`, `falsified_by` | never (recorded as a change) |
+| neutral | `rev`, `spec`, clause `message`, `falsified_by`, provider `concurrent` | never (recorded as a change) |
 | prose | `statement`, `why`, `owner`, `class`, `mediation.chokepoint` | never (digest only) |
 | pin | signatures, `types`, schemas, OpenAPI operations, file digests | never (a code change, shown old -> new), except a pinned schema constraint that now accepts more input (above) |
 | computed | `evidence` | not pinned |

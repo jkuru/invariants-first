@@ -329,7 +329,8 @@ def test_provider_cache_keys_keep_the_type(iso):
 
 
 def test_async_providers_are_awaited_together(iso):
-    prov = {n: {"type": "int", "from": f"py:round16.{n}", "args": {"x": "args.x"}} for n in ("slow1", "slow2")}
+    prov = {n: {"type": "int", "from": f"py:round16.{n}", "args": {"x": "args.x"}, "concurrent": True}  # round 17: opt-in
+            for n in ("slow1", "slow2")}
     inv.load(r16.guard_doc("G-AP", "apf", "slow1 + slow2 > 100", providers=prov))
     asyncio.run(r16.apf(1))
     kinds = [k for k, _ in r16.PROVIDER_CALLS]

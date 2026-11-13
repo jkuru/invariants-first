@@ -22,9 +22,13 @@ During an ablation re-run INV_ABLATE also names the rule, so a falsifier that ru
 the app in a subprocess sees the rule turned off too.
 
 A falsifier counts as caught only when the ablation caused its failure: it must pass on a control
-re-run without ablation, and the ablated re-run must reach the rule (a guard, `inv.is_ablated` or
-a scan, in this process or a subprocess, acted on the ablation; INV_ABLATE_TRACE carries that).
-Otherwise it is inconclusive. It is also inconclusive ("rule_error, not violation") when, on the
+re-run without ablation, the ablated re-run must reach the rule (a guard, `inv.is_ablated` or a
+scan, in this process or a subprocess, acted on the ablation; INV_ABLATE_TRACE carries that), and
+it must pass again on a second control re-run after the ablated one. Otherwise it is inconclusive.
+A broader fixture lives across the re-runs, so state it carries (a module-scoped quota each run
+spends) can fail a re-run without the ablation: a second control that fails makes the falsifier
+"inconclusive (state carried between runs ...)", and a failing first control is inconclusive too;
+both name the fixtures broader than the function the test used. It is also inconclusive ("rule_error, not violation") when, on the
 control re-run in this process, the rule's evaluations gave rule_error and never a violation or
 parse_error: the test passed because the rule could not be evaluated, not because it held.
 """
@@ -92,6 +96,27 @@ def _outcome(reports: list[pytest.TestReport]) -> str:
     if any(r.skipped or hasattr(r, "wasxfail") for r in reports):
         return "skipped"
     return "passed"
+
+
+def _broad_fixtures(item: pytest.Item) -> list[str]:
+    """The fixtures broader than the function the item uses (pytest's own left out), as "name (scope)"."""
+    info = getattr(item, "_fixtureinfo", None)
+    out = []
+    for name in getattr(item, "fixturenames", ()):
+        defs = info.name2fixturedefs.get(name) if info is not None else None
+        if not defs:
+            continue
+        fd = defs[-1]
+        if fd.scope != "function" and not getattr(fd.func, "__module__", "").startswith(("_pytest", "pytest")):
+            out.append(f"{name} ({fd.scope})")
+    return out
+
+
+def _carried(item: pytest.Item) -> str:
+    """Why a re-run may differ from the first run: the broader fixtures that live across the re-runs."""
+    broad = _broad_fixtures(item)
+    return (f"fixtures broader than the function: {', '.join(broad)}" if broad else
+            "it uses no fixture broader than the function: other shared state, or a flaky test")
 
 
 def _matches(nodeid: str, falsifier: str) -> bool:
@@ -399,7 +424,8 @@ class InvSession:
                 control = _outcome(rerun(item, nextitem=keep, log=False))
             for rid in rule_ids:
                 if control != "passed":                 # it fails without the ablation: not evidence
-                    self._note([rid], item, f"inconclusive ({control} on a re-run without ablation)")
+                    self._note([rid], item, f"inconclusive ({control} on a control re-run without ablation; "
+                                            f"{_carried(item)})")
                     continue
                 kinds = {e.get("outcome") for e in events if e.get("rule") == rid}
                 self.no_verdict = []
@@ -416,8 +442,15 @@ class InvSession:
                     # with the guard on, the test passed because the rule errored (a typo, a missing
                     # key), not because it found the violation: a fail_closed error rejects too
                     result = "inconclusive (rule_error, not violation)"
+                elif out == "failed" and not reached:
+                    result = "inconclusive (rule not reached)"
                 elif out == "failed":
-                    result = "caught" if reached else "inconclusive (rule not reached)"
+                    # did the ablation fail it, or state a broader fixture carries from the earlier runs
+                    # (a quota, a seeded row)? A second control, with the rule on, tells them apart
+                    again = _outcome(rerun(item, nextitem=keep, log=False))
+                    result = "caught" if again == "passed" else (
+                        f"inconclusive (state carried between runs: {again} on a control re-run after the "
+                        f"ablated one; {_carried(item)})")
                 elif out == "skipped" and self.no_verdict:
                     result = NO_VERDICT
                 else:
