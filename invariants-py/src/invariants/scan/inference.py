@@ -30,6 +30,9 @@ class _Inference:
     def __init__(self, idx: _Index, mod: _Module) -> None:
         self.idx, self.mod = idx, mod
         self._local_types: dict[str, dict[str, str]] = {}
+        # the parameters of the nested functions and lambdas around the code being walked: their own
+        # values, which a binding of the same name in the owner does not type
+        self._shadow: frozenset[str] = frozenset()
 
     def _class_named(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None,
                      depth: int = 0) -> str | None:
@@ -155,9 +158,8 @@ class _Inference:
             m = self.idx.method(cls, "__aenter__" if is_async else "__enter__")
             fn = self.idx.funcs[m].node if m else None
             if m and isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None:
-                if isinstance(fn.returns, (ast.Name, ast.Attribute)) and \
-                        (_dotted(fn.returns) or "").rpartition(".")[2] == "Self":
-                    return cls
+                if self._names_self(m, fn.returns):
+                    return cls                                 # -> Self: the receiver's class
                 return self.return_type(m)
             return None
         if not isinstance(node, ast.Call):
@@ -171,6 +173,17 @@ class _Inference:
             return None
         got = {self._yielded(c, is_async) for c in cands}
         return next(iter(got)) if len(got) == 1 else None
+
+    def _names_self(self, fid: str, ann: ast.AST) -> bool:
+        """fid's return annotation ann is typing.Self (written as a name or a string), read where fid is."""
+        f = self.idx.funcs[fid]
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            try:
+                ann = ast.parse(ann.value, mode="eval").body
+            except SyntaxError:
+                return False
+        return bool(_dotted(ann)) and f.module in self.idx.modules and \
+            self._home(f.module)._resolve(ann, set(), None) in _SELF
 
     def _yielded(self, fid: str, is_async: bool) -> str | None:
         """The scanned class a @contextmanager (@asynccontextmanager) function fid yields, by its
@@ -196,7 +209,16 @@ class _Inference:
                   owner: str | None = None) -> dict[str, str]:
         """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments.
         With owner (fn's id), a `with recv.cm() as x` on a local receiver is typed from the other
-        bindings (to a fixed point, so nested with blocks chain)."""
+        bindings (to a fixed point, so nested with blocks chain). What fn binds, wherever it is asked: no
+        nested function's parameters shadow its names here (the result is cached)."""
+        shadow, self._shadow = self._shadow, frozenset()
+        try:
+            return self._bindings_in(fn, local, me, owner)
+        finally:
+            self._shadow = shadow
+
+    def _bindings_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None,
+                     owner: str | None) -> dict[str, str]:
         deferred: list[tuple[str, ast.expr, bool]] = []
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
         args = getattr(fn, "args", None)
@@ -235,6 +257,10 @@ class _Inference:
                 seen[node.id].add(None)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
                 seen[node.name].add(None)
+            elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+                seen[node.name].add(None)                      # except E as err, case Repo() as repo
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                seen[node.rest].add(None)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 for al in node.names:
                     seen[(al.asname or al.name).split(".")[0]].add(None)
@@ -328,6 +354,8 @@ class _Inference:
             return made, False
         fn = self.idx.funcs[owner].node if owner in self.idx.funcs else None
         if isinstance(node, ast.Name) and fn is not None and node.id in local:
+            if node.id in self._shadow:
+                return None
             if owner not in self._local_types:
                 self._local_types[owner] = self._types_in(fn, local, me, owner)
             got = self._local_types[owner].get(node.id)

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import ast
 
-from .astutil import _HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _locals
+from typing import Any, Callable
+
+from .astutil import _HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _locals, _params
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Module, _Site
 from .indexer import _Index
 from .inference import _Inference
@@ -77,7 +79,18 @@ class _Walker(_Inference):
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.AnnAssign) and child is node.annotation:
                 continue                                       # `h: Helper = x` names a type, runs nothing
-            self._node(child, owner, local, me)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.body:
+                self._shadowed(node.args, self._node, child, owner, local, me)
+            else:
+                self._node(child, owner, local, me)
+
+    def _shadowed(self, args: ast.arguments, walk: Callable[..., None], node: ast.AST, *rest: Any) -> None:
+        """Walk node, the body of a nested function or lambda, with its parameters shadowing the owner's names."""
+        shadow, self._shadow = self._shadow, self._shadow | set(_params(args))
+        try:
+            walk(node, *rest)
+        finally:
+            self._shadow = shadow
 
     def _unwrapped(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str:
         """The detail of a `x.__wrapped__` site: "x as written|the scanned function x is" (empty when the
@@ -111,11 +124,17 @@ class _Walker(_Inference):
                 if x is not None:
                     self._expr(x, owner, local, me)
 
+        inner: list[ast.AST] = []                              # obj in type(obj).__dict__: still walked
+
         def ns_dict(x: ast.AST) -> str | None:
             if isinstance(x, ast.Attribute) and x.attr == "__dict__":
                 v = x.value                                    # type(obj).__dict__, obj.__class__.__dict__
-                if isinstance(v, ast.Attribute) and v.attr == "__class__" or isinstance(v, ast.Call) and \
-                        len(v.args) == 1 and _dotted(v.func) and self._resolve(v.func, local, me) == "builtins.type":
+                if isinstance(v, ast.Attribute) and v.attr == "__class__":
+                    inner[:] = [v.value]
+                    return "type(...)"
+                if isinstance(v, ast.Call) and len(v.args) == 1 and _dotted(v.func) \
+                        and self._resolve(v.func, local, me) == "builtins.type":
+                    inner[:] = [v.args[0]]
                     return "type(...)"
                 return self._namespace(v, local, me)
             return None
@@ -128,7 +147,7 @@ class _Walker(_Inference):
 
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) and (ns := ns_dict(node.value)):
             self._lookup(owner, node, ns, node.slice, "__dict__[...]")
-            visit(node.slice)
+            visit(*inner, node.slice)
             return True
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             f = node.func
@@ -138,7 +157,7 @@ class _Walker(_Inference):
                     self._lookup(owner, node, ns, key, "__dict__.get(...)")
                 else:                                                   # .items(), .values(), ...
                     self._site("reflection", owner, node, f"{ns}.__dict__.{f.attr}()")
-                visit(*node.args, *[k.value for k in node.keywords])
+                visit(*inner, *node.args, *[k.value for k in node.keywords])
                 return True
             if f.attr == "__getattribute__":
                 ns = self._namespace(f.value, local, me)
@@ -161,6 +180,7 @@ class _Walker(_Inference):
                 return True
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and (ns := ns_dict(node)):
             self._site("reflection", owner, node, f"{ns}.__dict__")        # vars(m) by another name
+            visit(*inner)
             return True
         return False
 
@@ -221,6 +241,9 @@ class _Walker(_Inference):
                 return
         if isinstance(node, ast.Lambda):
             local = local | _locals(node)
+            self._expr(node.args, owner, local, me)            # its defaults, in the enclosing scope
+            self._shadowed(node.args, self._expr, node.body, owner, local, me)
+            return
         for child in ast.iter_child_nodes(node):
             if not (isinstance(node, ast.JoinedStr) and isinstance(child, ast.Constant)):
                 self._expr(child, owner, local, me)
@@ -230,7 +253,7 @@ class _Walker(_Inference):
         while isinstance(func, ast.Attribute) and func.attr == "__call__":    # f.__call__(x) calls f
             func = func.value
         fq = self._resolve(func, local, me) if _dotted(func) else None
-        if func is not node.func and not (fq and (fq in self.idx.funcs or fq in self.idx.classes)) and not (
+        if func is not node.func and not (fq and self._known_callee(fq)) and not (
                 isinstance(func, ast.Attribute) and self._typed(func, owner, local, me)[0]):
             func, fq = node.func, None                 # not a known function: an ordinary attribute call
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
@@ -264,6 +287,12 @@ class _Walker(_Inference):
                 self._site("attrcall", owner, func, func.attr)
                 for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
                     self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True))
+
+    def _known_callee(self, fq: str) -> bool:
+        """fq, called through `.__call__`, is still what a plain call to it is: a scanned function or class,
+        a name in an excluded module, or a reflective builtin or helper (`getattr.__call__(o, "save")`)."""
+        return fq in self.idx.funcs or fq in self.idx.classes or fq in _REFLECTIVE or fq == "builtins.hasattr" \
+            or fq.startswith("sys.modules.") or self.idx.excluded_module(fq) is not None
 
     def _attr_builtin(self, node: ast.Call, fq: str, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         """getattr/setattr/delattr/hasattr(obj, name, ...): a site; a getattr with a literal name is an edge too

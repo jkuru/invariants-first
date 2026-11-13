@@ -10,6 +10,26 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 20 (scan)
+
+- **Unwrapping a door inside an allowed back door is reported.** `getattr(door, "__wrapped__")` (or
+  `operator.attrgetter("__wrapped__")`) there was excused with the allowed function's other literal
+  getattr lookups; it is `forbidden/unwrap`, as `door.__wrapped__` already was.
+- **`.__call__` no longer hides what is called.** `ex.f.__call__(x)` on an excluded module is
+  `unresolved/excluded-callee`, as `ex.f(x)` is; `getattr.__call__(o, "save")` and
+  `operator.methodcaller.__call__("save")` are getattr lookups, and `eval.__call__(...)` and
+  `importlib.import_module.__call__(...)` are reflection. Each passed silently.
+- **Calls inside `type(...).__dict__` and `....__class__.__dict__` are walked:** in
+  `type(repo.save(x)).__dict__` the sink call was never seen.
+- **Names the scan cannot type are no longer typed by another binding of the same name:** a nested
+  function's or lambda's parameter (inside its body; the enclosing function's own uses keep their
+  type), `except E as name` and a match capture (`case Repo() as repo`). `repo = Other()` typed a
+  nested `def inner(repo): repo.save(x)` as `Other`, hiding the path to the sink when `inner` gets a
+  sink class; such a call is now name-matched (`unresolved`).
+- **An inherited `__enter__` annotated `-> "Self"` (a string) binds the receiver's class,** not the base
+  class that defines it, and `-> Self` counts only when it names `typing.Self`: a scanned class named
+  `Self` was taken for it, so `with Repo() as r: r.save()` resolved to the wrong class.
+
 ### Fixes after the layered refactor
 
 - **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose

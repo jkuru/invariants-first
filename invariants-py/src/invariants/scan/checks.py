@@ -137,15 +137,16 @@ def _idioms(idx: _Index, rid: str, edges: list[_Edge], sites: list[_Site], entri
 
     out: list[Finding] = []
     for s in sites:
-        if s.owner in allowed and (s.what in ("ref", "attrcall")
-                                   or s.what == "getattr" and s.detail.partition("|")[2]):
-            continue                                   # a getattr with a computed name is still reported
         if s.owner in trusted and s.what in ("ref", "attrcall"):
             continue
         if s.owner in dominated and s.what == "attrcall":
             continue                                   # reached only through a door or sink
         obj, _, lit = s.detail.partition("|")
-        if s.what == "getattr" and obj in ("?attrgetter", "?methodcaller"):
+        if s.owner in allowed and s.what == "getattr" and lit:
+            if "__wrapped__" not in _names(obj, lit):
+                continue                               # a computed name is still reported, and an unwrap:
+            lit = "__wrapped__"                        # inside allow, a lookup of __wrapped__ is one
+        elif s.what == "getattr" and obj in ("?attrgetter", "?methodcaller"):
             lit = _looked_up(obj, lit, sink_names, guarded_names)
         if s.what == "getattr" and lit in guarded_names:
             what = "sink" if lit in sink_names else "door"
@@ -206,10 +207,15 @@ def _idioms(idx: _Index, rid: str, edges: list[_Edge], sites: list[_Site], entri
 def _looked_up(obj: str, lit: str, sink_names: set[str], guarded_names: set[str]) -> str:
     """The name an attrgetter/methodcaller site stands for: every name an attrgetter looks up ("repo.save"
     looks up repo, then save), as one site; a sink name first, then a door name, then __wrapped__."""
-    parts = [p for x in lit.split("|") for p in (x.split(".") if obj == "?attrgetter" else [x])]
+    parts = _names(obj, lit)
     return next((p for p in parts if p in sink_names), None) or next(
         (p for p in parts if p in guarded_names), None) or (
         "__wrapped__" if "__wrapped__" in parts else parts[0] if lit else "")
+
+
+def _names(obj: str, lit: str) -> list[str]:
+    """Every name a getattr-style site looks up: its literal names, each dotted one split for attrgetter."""
+    return [p for x in lit.split("|") for p in (x.split(".") if obj == "?attrgetter" else [x])]
 
 
 def _excluded_finding(idx: _Index, rid: str, s: _Site) -> Finding:
