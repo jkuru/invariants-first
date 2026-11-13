@@ -108,8 +108,9 @@ def _type_schema(t: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | N
     d = depth + 1
     if t is type(None) or t is None:
         return "null"
-    if type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__"):    # PEP 695: type X = ...
-        return _type_schema(t.__value__, defs, seen, pins, d)
+    u = _unalias(t)                                        # PEP 695: type X = ..., X[int]
+    if u is not t:
+        return _type_schema(u, defs, seen, pins, d)
     origin = typing.get_origin(t)
     if origin is typing.Literal:
         return {"literal": sorted((_plain(a) for a in typing.get_args(t)), key=repr)}
@@ -137,8 +138,9 @@ def _type_schema(t: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | N
 def _generic_schema(t: Any, origin: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | None,
                     d: int) -> Any:
     """A parameterised annotation (list[int], X | None, an alias of a generic) with its arguments."""
-    if type(origin).__name__ == "TypeAliasType" and hasattr(origin, "__value__"):
-        return _type_schema(origin.__value__, defs, seen, pins, d)
+    if _is_alias(origin):                                  # X[...] its parameters do not take
+        return {"generic": origin.__name__, "args": [_type_schema(a, defs, seen, pins, d) for a in typing.get_args(t)],
+                "value": _type_schema(origin.__value__, defs, seen, pins, d)}
     name = getattr(origin, "__name__", None) or str(origin)
     if name in ("Union", "UnionType") or str(origin) in ("typing.Union", "<class 'types.UnionType'>"):
         opts = [_type_schema(a, defs, seen, pins, d) for a in typing.get_args(t)]
@@ -218,7 +220,35 @@ def _class_shape(cls: type) -> _ClassShape:
         return _ClassShape("dataclass", {f.name: hints[f.name] for f in fields},
                            sorted(f.name for f in fields
                                   if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING))
-    return _ClassShape("typeddict", hints, sorted(getattr(cls, "__required_keys__", ())))
+    # Required[], NotRequired[] and ReadOnly[] (typing's or typing_extensions') qualify the key, not its
+    # value: they are unwrapped, and Required / NotRequired decide the key's required-ness over the
+    # class's total= (typing.TypedDict before 3.13 does not see them inside typing_extensions' ReadOnly)
+    required = set(getattr(cls, "__required_keys__", ()))
+    keys: dict[str, Any] = {}
+    for n, t in hints.items():
+        keys[n], quals = _key_qualifiers(t)
+        if "Required" in quals:
+            required.add(n)
+        elif "NotRequired" in quals:
+            required.discard(n)
+    return _ClassShape("typeddict", keys, sorted(required))
+
+
+_KEY_QUALIFIERS = frozenset({"Required", "NotRequired", "ReadOnly"})
+
+
+def _key_qualifiers(t: Any) -> tuple[Any, set[str]]:
+    """A TypedDict key's annotation without its Required / NotRequired / ReadOnly wrappers (also inside
+    Annotated, whose metadata stays), and the names of the wrappers it had."""
+    origin = typing.get_origin(t)
+    if origin is typing.Annotated:
+        inner, quals = _key_qualifiers(typing.get_args(t)[0])
+        return (typing.Annotated[(inner, *t.__metadata__)] if quals else t), quals
+    name = getattr(origin, "_name", None)
+    if name in _KEY_QUALIFIERS and type(origin).__module__ in ("typing", "typing_extensions"):
+        inner, quals = _key_qualifiers(typing.get_args(t)[0])
+        return inner, {*quals, name}
+    return t, set()
 
 
 def _class_fields(schema: type, defs: dict[str, Any], seen: set[int]) -> dict[str, Any]:
@@ -254,11 +284,19 @@ _BOUND_ATTRS = {"gt": "exclusiveMinimum", "ge": "minimum", "lt": "exclusiveMaxim
 _LEN_ATTRS = {"min_length": ("minLength", "minItems"), "max_length": ("maxLength", "maxItems")}
 
 
+class _Defs(dict[str, Any]):
+    """The $defs of one stdlib JSON Schema, and the class each key was written for (`owners`)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.owners: dict[str, type] = {}
+
+
 def stdlib_json_schema(cls: type) -> dict[str, Any]:
     """A JSON Schema of a dataclass or TypedDict from its resolved annotations, without pydantic:
     types, Literal, Optional and unions, containers, enums, nested dataclasses ($defs), and the
     bounds an Annotated metadata object carries as gt/ge/lt/le/min_length/max_length attributes."""
-    defs: dict[str, Any] = {}
+    defs: dict[str, Any] = _Defs()
     top = _local_def(_json_type(cls, defs, 0), defs)
     return {**top, "$defs": defs} if defs else top
 
@@ -286,9 +324,11 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     d = depth + 1
     if t is Any:
         return {}
-    alias = t if _is_alias(t) else typing.get_origin(t)
-    if _is_alias(alias):                                       # PEP 695: type X = ..., and X[int]
-        return _json_type(alias.__value__, defs, d)
+    u = _unalias(t)
+    if u is not t:                                             # PEP 695: type X = ..., and X[int]
+        return _json_type(u, defs, d)
+    if _is_alias(typing.get_origin(t)):                        # X[...] its parameters do not take
+        return {**_json_type(typing.get_origin(t).__value__, defs, d), "x-python-type": repr(t)}
     if t in _JSON_TYPES:
         return {"type": _JSON_TYPES[t]}
     origin, args = typing.get_origin(t), typing.get_args(t)
@@ -317,7 +357,41 @@ def _is_alias(t: Any) -> bool:
     return type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__")
 
 
+def _unalias(t: Any) -> Any:
+    """t with a PEP 695 alias expanded: `X` of `type X = ...` to its value, `X[int]` of `type X[T] = ...`
+    to its value with the type parameters substituted (`list[T]` -> `list[int]`). t itself when it is
+    no alias, or when its arguments do not fit the parameters (a TypeVarTuple, a ParamSpec, a wrong
+    count): the callers then pin the arguments and the value side by side, so neither is dropped."""
+    for _ in range(MAX_DEPTH):
+        if _is_alias(t):
+            t = t.__value__
+            continue
+        origin = typing.get_origin(t)
+        if not _is_alias(origin):
+            return t
+        params, args = tuple(getattr(origin, "__type_params__", ())), typing.get_args(t)
+        if len(params) != len(args) or not all(isinstance(p, typing.TypeVar) for p in params):
+            return t
+        try:
+            t = _substitute(origin.__value__, dict(zip(params, args)))
+        except Exception:                                      # a value typing cannot re-parameterise
+            return t
+    return t
+
+
+def _substitute(value: Any, mapping: dict[Any, Any]) -> Any:
+    """value (an alias's) with its free type variables replaced: `T` itself, or `list[T]`, `T | None`,
+    `Annotated[T, Gt(0)]` re-parameterised through typing's own subscription."""
+    if isinstance(value, typing.TypeVar):
+        return mapping.get(value, value)
+    free = tuple(getattr(value, "__parameters__", ()) or ())
+    return value[tuple(mapping.get(p, p) for p in free)] if free else value
+
+
 def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
+    base = _unalias(base)                                      # an alias of a list is an array
+    while typing.get_origin(base) is typing.Annotated:
+        base = _unalias(typing.get_args(base)[0])
     array = typing.get_origin(base) in _ARRAYS or base in _ARRAYS
     out: dict[str, Any] = {}
     # pydantic's Field(le=...) keeps its bounds as annotated_types objects in .metadata, not as
@@ -338,15 +412,43 @@ def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
 
 def _json_object(cls: type, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     """A dataclass or TypedDict as {"$ref": "#/$defs/Name"}, its object schema in `defs`."""
-    name = cls.__qualname__
+    name = _def_key(cls, defs)
     ref = {"$ref": f"#/$defs/{name}"}
     if name in defs:
         return ref
+    if isinstance(defs, _Defs):
+        defs.owners[name] = cls
     defs[name] = {}                                            # placeholder: cuts recursion
     shape = _class_shape(cls)
     defs[name] = {"type": "object", "properties": {n: _json_type(t, defs, depth) for n, t in shape.fields.items()},
                   "required": shape.required}
     return ref
+
+
+def _def_key(cls: type, defs: dict[str, Any]) -> str:
+    """The $defs key of a class, as pydantic writes it: its name (`Inner`, not `Outer.Inner`: a key
+    holds no ".", which would split a diff path), or `module__Outer__Inner` when another class of the
+    same name is already there (two classes are never one definition). On such a clash pydantic
+    renames both classes and this renames only the later one, so there the two readings keep
+    separate paths; a pin compares a lock with one taken the same way, so that is no change."""
+    owners = defs.owners if isinstance(defs, _Defs) else {}
+    found = [k for k, c in owners.items() if c is cls]
+    if found:
+        return found[0]
+    key = _key_text(cls.__name__)
+    if key not in defs:
+        return key
+    key = base = _key_text(f"{cls.__module__}__{cls.__qualname__}")
+    n = 1
+    while key in defs:
+        n += 1
+        key = f"{base}__{n}"
+    return key
+
+
+def _key_text(text: str) -> str:
+    """A $defs key: letters, digits, _ and -; "." becomes "__" (pydantic's form), anything else "_"."""
+    return "".join(ch if ch.isalnum() or ch in "_-" else "__" if ch == "." else "_" for ch in text)
 
 
 # --- signatures ---------------------------------------------------------------------------------
@@ -419,8 +521,12 @@ def _has_constraints(t: Any, depth: int = 0) -> bool:
     """t is, or holds (in a union, a container, an alias), an Annotated type with a constraint."""
     if depth > MAX_DEPTH:
         return False
-    if type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__"):
-        return _has_constraints(t.__value__, depth + 1)
+    u = _unalias(t)
+    if u is not t:
+        return _has_constraints(u, depth + 1)
+    origin = typing.get_origin(t)
+    if _is_alias(origin) and _has_constraints(origin.__value__, depth + 1):
+        return True                                            # X[...] its parameters do not take
     args = typing.get_args(t)
     if typing.get_origin(t) is typing.Annotated:
         return any(_constrains(m) for m in args[1:]) or _has_constraints(args[0], depth + 1)
@@ -434,7 +540,7 @@ def _annotation_schema(t: Any) -> Any:
         import pydantic
         return _plain(strip_prose(pydantic.TypeAdapter(t).json_schema()))
     except Exception:
-        defs: dict[str, Any] = {}
+        defs: dict[str, Any] = _Defs()
         top = _json_type(t, defs, 0)
         return _plain(strip_prose({**top, "$defs": defs} if defs else top))
 
@@ -621,7 +727,10 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     if ctype == "openapi" and operations:
         entry["operations"] = _openapi_operations(name, f.name, _openapi_file(name, f), sorted(set(operations)), pins)
         return entry
-    entry["hash"] = _sha(f.read_bytes())
+    try:
+        entry["hash"] = _sha(f.read_bytes())
+    except OSError as e:
+        raise LoadError(f"contract {name}: {f.name} cannot be read ({type(e).__name__})") from e
     if ctype == "openapi":
         _pin_every_operation(name, f, entry, pins)
     return entry
