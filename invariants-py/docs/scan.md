@@ -26,7 +26,9 @@ mediation:
 
 `inv scan` looks for any call path from an entrypoint to the sink that avoids every door. An
 entrypoint is a function with no extracted caller, or a module body (and anything those cannot
-reach). A rule on an `effects: none` target needs no sink: the guard wraps the function itself, and
+reach). Each call site that reaches the sink this way (each `file:line:col`) is one finding, shown
+with the shortest path from the first entrypoint that reaches it: two calls of the sink in one
+function are two findings, and two entrypoints through the same helper call are one. A rule on an `effects: none` target needs no sink: the guard wraps the function itself, and
 the scan reports it as "not scanned (mediation declares no sink)".
 
 ```text
@@ -63,26 +65,57 @@ rather than trusting.
 
 A call to a scanned function annotated to return a scanned class types its result too:
 `get_repo().add(...)`, or `r = get_repo()` then `r.add(...)`, where `def get_repo() -> Repo`
-(also `Optional[Repo]`, `Repo | None` or a string annotation). That covers factories and FastAPI
-dependency helpers. The annotation is read in the module that defines the function, and the result
+(also `Optional[Repo]`, `Repo | None` or a string annotation), and `await get_repo()` on an
+`async def`. That covers factories and FastAPI dependency helpers: a parameter annotated
+`Annotated[Repo, Depends(get_repo)]` is a `Repo`, and so is one annotated with a module-level alias
+of it (`RepoDep = Annotated[Repo, Depends(get_repo)]`, bound once, imported or not). The annotation is read in the module that defines the function, and the result
 may be a subclass, so overrides are reached as for an annotated parameter. A function with no return
 annotation, or one naming more than one class, gives no type.
+
+`with X() as r` (and `async with`) types `r` by the scanned class's `__enter__` (`__aenter__`)
+return annotation (`-> Self` is the class itself), and `with session() as r` by a `@contextmanager`
+(`@asynccontextmanager`) factory annotated `-> Iterator[Repo]` (`Generator[Repo, ...]`,
+`AsyncIterator[Repo]`). A with target the scan cannot type stays unresolved.
+
+Generic classes resolve like plain ones: `class ConcreteRepo(BaseRepo[T])` is a subclass of
+`BaseRepo` (`Generic[T]` and `Protocol` bases are ignored), so a call through a `BaseRepo` (or
+`BaseRepo[int]`) receiver also reaches `ConcreteRepo.save`. `super().save(x)` (or
+`super(Cls, self)`) in a method is an extracted edge to the next `save` in the class's method
+resolution order through the scanned classes; when no scanned base has it, it stays unresolved.
 
 Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
 and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
 `billing: BillingService` at class level, as a dataclass does), the call is an extracted edge to
-`BillingService.refund`. An attribute is resolved in the module that defines the class. An
+`BillingService.refund`. A `@property` (or `functools.cached_property`) getter with a return
+annotation types `self.repo` the same way. An attribute is resolved in the module that defines the class. An
 attribute that any code sets from outside its object (`obj.x = ...` in a function that is not one
 of that object's methods, or `setattr(obj, "x", ...)`) is never typed: calls through it stay
 name-matched, so they are unresolved.
+
+A receiver known to be a builtin container (a dict, set or list literal or comprehension, `dict()`,
+`set()`, `list()`, or a parameter annotated `dict[...]`, `set[...]`, `list[...]`) calls the
+container's own method, so `d.update(x)` or `s.add(x)` is not `unresolved/unknown-receiver` when a
+sink happens to be called `update` or `add`. When a scanned class subclasses that builtin and
+overrides the method, a call through an annotation (which may hold the subclass) stays unresolved.
+
+A sink taken as a value through a typed receiver (`cb = repo.save`, `add_task(self.repo.save)`,
+`functools.partial(repo.save, x)`) is `unresolved/sink-escapes`, as for a sink named directly;
+calling it (`repo.save(x)`) is an edge.
 
 A call such as `store.sink.__call__(c)` (or `getattr(store.sink, "__call__")(c)`) is a call of the
 sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 `store.__dict__["sink"]`, `store.__dict__.get("sink")`, `store.__getattribute__("sink")` and
 `object.__getattribute__(store, "sink")` are `forbidden/getattr-sink`, and any other use of
 `store.__dict__` (a computed key, `.items()`, the dict as a value) or `inspect.getmembers(store)` is
-`unresolved/reflection`, like `vars(store)`. A function's `__dict__` is its metadata and stays
-harmless. When a method call cannot be resolved, the scan reports it as unresolved, never as a bypass.
+`unresolved/reflection`, like `vars(store)`. `type(obj).__dict__` and `obj.__class__.__dict__` are
+a class namespace too. A function's `__dict__` is its metadata and stays harmless. Reflective
+builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
+`importlib.import_module`, `operator.methodcaller`) are `unresolved/reflection`, and an import alias
+(`from builtins import getattr as g`) is checked as `getattr` itself. Any use of `sys.modules`
+(`sys.modules[name].Repo`, `sys.modules.get(name)`, assigning into it) is `unresolved/reflection`;
+`name in sys.modules` only asks and stays harmless. Rebinding a scanned module or class that holds a
+sink or door from outside (`pkg.repo.Repo = Fake`, `pkg.repo = fake`, `setattr(pkg.repo, "Repo",
+Fake)`) is `forbidden/monkeypatch`, like assigning over the sink itself (`Repo.save = other`). When a method call cannot be resolved, the scan reports it as unresolved, never as a bypass.
 The exit code is 1 on any bypass, forbidden or missing finding, and 3 when nothing failed but some
 calls are unresolved (not a pass). It is 4 when the scan skipped an `enforce` rule because it is
 ablated (`INV_ABLATE`), which is not a pass either.
@@ -101,7 +134,10 @@ Inside an allowed function, the ways it reaches the sink are excused with it: a 
 and `unresolved/reflection` in it are still reported.
 
 `inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
-`goodwill_refund` it calls, say), re-scanning up to five rounds until nothing new is found. An
+`goodwill_refund` it calls, say), from every entrypoint that reaches it (not only the path a finding
+shows), re-scanning up to five rounds until nothing new is found. When the scan still fails, the rule
+is written commented out with the reason, including when every finding is inside a door or sink
+(which `allow` cannot freeze). An
 entry that no longer reaches the sink without a door is `missing/allow-unused` and fails the check
 until it is deleted. Deleting it is a tightening; adding one is a weakening the lock reports.
 

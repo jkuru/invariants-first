@@ -111,7 +111,9 @@ is the one support script that calls the gateway directly. `inv init` finds both
 
 It proposes one rule per repository, runs the real scan on it, and freezes what it finds. A back
 door is frozen with its whole call chain: if `admin_goodwill` calls `goodwill_refund`, which calls
-the gateway, both go in `allow`. This is
+the gateway, both go in `allow`. A rule that still fails with its back doors frozen (for example,
+when the finding is inside the door itself, which `allow` cannot freeze) is written commented out,
+with the reason. This is
 real output from an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with
 no SQL anywhere:
 
@@ -152,9 +154,13 @@ $ inv check   # after an agent adds scripts/refund_tool.py, which calls the gate
 
 The check fails when new code calls a sink without passing a door, whichever way it is written:
 directly, through an alias or a module object, a constructor (`Repo(session).add(...)`), a local
-variable, an annotated parameter, `self.repo` (set in `__init__`, also by tuple assignment), or a
-subclass of the repository. It also fails on a call hidden with `getattr(repo, "save")`, on code that
-assigns over a sink, and on `__wrapped__`. A call on a receiver the scan can't be sure of (an
+variable, an annotated parameter (also `Annotated[Repo, Depends(get_repo)]` and an alias of it),
+`await get_repo()`, `with Session() as repo`, `self.repo` (set in `__init__`, also by tuple
+assignment, or a `@property` annotated `-> Repo`), `super().save()`, or a subclass of the repository
+(a generic one, `class SqlRepo(BaseRepo[T])`, too). It also fails on a call hidden with
+`getattr(repo, "save")`, on the sink passed as a value (`add_task(repo.save)`), on code that assigns
+over a sink or the class or module that holds it, on `sys.modules` lookups, and on `__wrapped__`.
+Each call site is its own finding, so two direct calls in one script are two lines. A call on a receiver the scan can't be sure of (an
 unannotated parameter, say) is reported as unresolved, which also fails: the scan never guesses that
 a path is safe. Reads through the repository and unit tests that call it directly are not back doors.
 The scan skips `tests/`, `test_*.py`, `*_test.py`, `conftest.py` and migrations (`migrations/`,
@@ -329,7 +335,12 @@ That is the whole short form:
 - Deleting `tests:`, removing the decorator or loosening `bad` all fail `inv check`.
 
 Only conditions over the function's parameters are translated: comparisons, `and`, `or`, `not`,
-arithmetic, `len`, `is None`, and `in` over a literal list. Anything else, such as division (Python
+arithmetic, `len`, `is None`, and `in` over a literal list. A parameter tested for truth is
+translated by its annotation, because CEL has no truthiness: with `name: str` (or bytes, a list, a
+dict or a set), `if not name: raise` becomes `size(args.name) == 0`; with `ok: bool` it is
+`!args.ok`; with `name: Optional[str]` (or a `None` default) it is
+`args.name == null || size(args.name) == 0`. A truth test on anything else (an unannotated or `int`
+parameter, a call) is not translated. Anything else, such as division (Python
 and CEL divide differently) or a helper call, is listed as not translated rather than guessed. A
 module-level constant is inlined: with `MAX_REFUND = 10_000`, `if amount > MAX_REFUND: raise`
 becomes `args.amount > 10000`, and with `CURRENCIES = ("usd", "eur")`,

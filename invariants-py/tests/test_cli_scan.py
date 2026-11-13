@@ -194,10 +194,13 @@ def test_name_matched_path_is_unresolved_not_bypass(tmp_path):
             """,
     }
     r = _scan(tmp_path, files)
+    # one finding per call site: main reaches the sink through the same call as Worker.run, which is an
+    # entrypoint (it has only an inferred caller) and a bypass
+    assert [(f.code, f.path[0]) for f in r.findings if f.path] == [("bypass", "app.worker.Worker.run")]
+    r = _scan(tmp_path, files, _doc(allow=["py:app.worker.Worker.run"]))   # run frozen: main's path is left
     by_start = {f.path[0]: f for f in r.findings if f.path}
     assert by_start["app.worker.main"].kind == "unresolved"
     assert by_start["app.worker.main"].code == "unresolved/inferred-path"
-    assert by_start["app.worker.Worker.run"].kind == "bypass"   # only an inferred caller: still an entrypoint
 
 
 def test_unknown_receiver_with_sink_name_is_unresolved(tmp_path):

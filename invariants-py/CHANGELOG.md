@@ -228,6 +228,57 @@ Known limitations are listed in the README and in each reference page.
 The entries below record each review and certification round before the first release, newest
 first. They are kept for reviewers and for anyone tracing why a behaviour is the way it is.
 
+### Fix round 16: the scan review
+
+From a review of `inv scan` and `inv init`. Regression tests: `tests/test_fix_round16_scan.py`. The
+three example apps' CI passes unchanged; the lock format did not change.
+
+Behaviour changes:
+
+- **A sink taken as a value through a typed receiver escapes (S-1).** `cb = repo.save`,
+  `add_task(self.repo.save)` and `functools.partial(repo.save, x)`, where the receiver's class is
+  known (an annotated parameter, a constructor, `self.x`), recorded nothing, so a call through the
+  value was invisible. They are now `unresolved/sink-escapes`; calls (`repo.save(x)`) stay edges.
+- **Generic bases and `super()` (S-2).** `class ConcreteRepo(BaseRepo[T])` was not seen as a
+  subclass of `BaseRepo`, so a call through a `BaseRepo` receiver skipped the `ConcreteRepo.save`
+  override. A subscripted base is now its class (`Generic[T]` and `Protocol` are ignored), and a
+  `BaseRepo[int]` annotation types a receiver. `super().m()` (and `super(Cls, self).m()`) is an edge
+  to the next `m` in the method resolution order through the scanned classes; it was a name-matched
+  call.
+- **Receiver typing on FastAPI-style code (S-3).** These were unresolved and are now typed:
+  `await get_repo()` on an `async def ... -> Repo`; `with X() as r` and `async with` by the scanned
+  class's `__enter__`/`__aenter__` return annotation (`-> Self` too) or a `@contextmanager` /
+  `@asynccontextmanager` factory's `-> Iterator[Repo]` / `AsyncIterator[Repo]`;
+  `Annotated[Repo, Depends(...)]` parameters and module-level aliases of it; and `@property` getters
+  annotated `-> Repo` (`self.repo.save()`). A call through a property or method attribute of a scanned
+  class (`self.repo.save()` with an untyped property) was dropped silently; it is now unresolved.
+- **Builtin containers are not unknown receivers (S-4).** With a sink named `update` or `add`,
+  `d.update()` and `s.add()` on a dict, set or list literal, comprehension, `dict()`/`set()`/`list()`
+  or a parameter annotated `dict[...]`/`set[...]` were `unresolved/unknown-receiver`. They are the
+  container's own methods now, unless a scanned subclass of that builtin overrides the method.
+- **Reflection gaps (S-5).** Reflective builtins taken as a value (`g = getattr`, `setattr`, `eval`,
+  `vars`, `importlib.import_module`, `operator.methodcaller` ...) and any use of `sys.modules` other
+  than `name in sys.modules` are `unresolved/reflection`; `type(obj).__dict__` and
+  `obj.__class__.__dict__` are class-namespace lookups (`forbidden/getattr-sink` for a literal sink
+  name). Rebinding a scanned module or class that holds a sink, door or allowed function from outside
+  (`pkg.repo.Repo = Fake`, `pkg.repo = fake`, `setattr(pkg.repo, "Repo", Fake)`) is
+  `forbidden/monkeypatch`.
+- **One finding per call site (S-6).** The scan reported one path per entrypoint, so a function with
+  two direct sink calls showed one finding, and two entrypoints through one helper call showed two at
+  the same place. Each call site that reaches the sink without a door is now one finding (shortest
+  path from the first entrypoint that reaches it), in the same output format; rule results are
+  unchanged. `Report.on_paths` keeps every function on any such path, which `inv init` freezes and
+  `missing/allow-unused` reads, so a back door reached from several entrypoints is frozen whole.
+- **`inv init` no longer writes a rule it cannot freeze (S-7).** When every finding was inside a door
+  or sink, `allow` stayed empty and the rule was written active, then failed `inv check`. It is now
+  written commented out with the reason.
+- **Truth tests translate by type (S-8).** `if not name: raise` became `!args.name`, invalid CEL for
+  a string or list. A parameter tested for truth is translated by its annotation: str, bytes, list,
+  dict, set to `size(args.x) == 0`, bool to `!args.x`, and with `Optional[...]` (or a `None` default)
+  `args.x == null || ...` first. Anything else tested for truth is listed as not translated.
+  `bootstrap.to_cel` takes the parameter kinds as an optional argument; without it, it behaves as
+  before.
+
 ### Fix round 15 (certification round 12 findings)
 
 From certification round 12 (no blockers or majors; four minors and a group of nits). Regression
