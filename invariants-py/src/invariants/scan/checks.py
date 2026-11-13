@@ -140,9 +140,9 @@ class _Idioms:
         return [f for s in sites if (f := self._at(s)) is not None]
 
     def _at(self, s: _Site) -> Finding | None:
-        if s.owner in self.trusted and s.what in ("ref", "attrcall"):
+        if s.owner in self.trusted and s.what in ("ref", "attrcall", "attrref"):
             return None
-        if s.owner in self.dominated and s.what == "attrcall":
+        if s.owner in self.dominated and s.what in ("attrcall", "attrref"):
             return None                                # reached only through a door or sink
         if s.what in ("getattr", "setattr", "delattr", "hasattr"):
             return self._named(s)
@@ -214,6 +214,10 @@ class _Idioms:
         if s.what == "ref" and s.detail in self.t.sinks:
             return self._found("unresolved", "unresolved/sink-escapes",
                                f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
+        if s.what == "attrref" and s.detail in self.sink_names:
+            return self._found("unresolved", "unresolved/sink-escapes",
+                               f".{s.detail} on a receiver the scan cannot resolve is used as a value and may be "
+                               f"the sink, so calls through it cannot be traced", s)
         if s.what == "attrcall" and s.detail in self.sink_names:
             return self._found("unresolved", "unresolved/unknown-receiver",
                                f".{s.detail}() on a receiver the scan cannot resolve may be the sink", s)
