@@ -10,7 +10,12 @@ import pathlib
 import threading
 import time
 import uuid
+import weakref
 from typing import Any, Protocol
+
+# Every review store with a lock, for the fork reset: JsonlReviews holds its lock across the write
+# and fsync, so a fork meanwhile would leave the child's copy locked for good.
+_LOCKED: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 @dataclasses.dataclass
@@ -44,6 +49,7 @@ class MemoryReviews:
         self._items: collections.deque[dict[str, Any]] = collections.deque(maxlen=maxlen)
         self._n = 0
         self._lock = threading.Lock()
+        _LOCKED.add(self)
 
     @property
     def items(self) -> tuple[dict[str, Any], ...]:
@@ -99,6 +105,7 @@ class JsonlReviews:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = pathlib.Path(path)
         self._lock = threading.Lock()
+        _LOCKED.add(self)
 
     def open(self, handoff: Handoff) -> str:
         """Append the hand-off and return its id (jsonl-<uuid>)."""
@@ -121,3 +128,13 @@ class JsonlReviews:
         """open() in a worker thread (asyncio.to_thread), so the write and fsync never block the event
         loop. Async guards, model calls and edges use it (Registry.ahand_off); the file is the same."""
         return await asyncio.to_thread(self.open, handoff)
+
+
+def _after_fork_in_child() -> None:
+    """A fresh lock for every review store in a forked child (the reviews held stay the parent's)."""
+    for store in list(_LOCKED):
+        store._lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)

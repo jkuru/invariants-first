@@ -36,6 +36,24 @@ byte-identical before and after, and `lockfile.changes()` reports the same chang
   for its parameter constraints); a `bad` edit the polarity walk cannot decide reuses the parsed
   trees for its error-site check (`judge_bad`) instead of parsing and walking both again.
 
+### Fix round 20 (registry, exporter)
+
+- **`BufferedExporter.start()` after a `close(timeout)` that timed out keeps the exporter running.**
+  The flusher still exporting its last batch used to see the stop and exit after it, leaving an
+  exporter that `start()` had reported as started but that nothing flushed. `start()` now cancels
+  that stop and the same flusher goes on; while a `close()` is still waiting for the flusher,
+  `start()` leaves the stop alone so that close ends. `close(timeout)` gives its final `drain()` the
+  time left of `timeout` instead of no limit.
+- **A forked child gets fresh locks for every registry, `_GLOBAL_LOCK`, the guarded-callable set,
+  `MemoryReviews` and `JsonlReviews`.** A lock another parent thread held at the fork (JsonlReviews
+  holds its lock across the write and fsync) was never released in the child, so the child's next
+  `record()`, `ablated_everywhere()`, guard decoration or review hand-off deadlocked.
+- **Searching a registry's event sink (`e in reg.sink`, `count`, `index`) works on a snapshot**, like
+  iterating it: a concurrent `record()` made them raise "deque mutated during iteration".
+- **`verify()` reads the guarded-callable set and the integrations' verifiers under a lock.** On
+  Python < 3.13 a guard decorated in another thread during `verify()` made it raise "Set changed
+  size during iteration".
+
 ### Fixes after the layered refactor
 
 - **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose
