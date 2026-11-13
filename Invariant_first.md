@@ -1012,13 +1012,13 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | Module | Does |
 |---|---|
 | `loader.py`, `typecheck.py`, `schema/` | reads the rule file, expands the short forms, refuses what cannot hold, type-checks every clause |
-| `registry.py` | loaded rules, modes, ablation, reviews, standing, `verify` |
-| `guard.py`, `providers.py`, `evaluate.py` | the decorators, provider binding, the evaluator and the actions |
+| `registry/` | loaded rules, modes, ablation, standing and `verify` (`registry`), review stores (`reviews`), the process session (`session`), coverage checks (`coverage`) |
+| `guard/`, `providers.py`, `evaluate.py` | the decorators (`guard.decorators`), the per-call core shared by sync and async (`guard.plan`), reply parsing and checked values (`guard.replies`, `guard.checked`), provider binding, the evaluator and the actions |
 | `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime); `INV_CEL_BACKEND` picks one |
-| `scan.py` | the call graph and the path-law check |
-| `lockfile.py` | the pins, the semantic diff and the weakening gate |
+| `scan/` | the call graph (`indexer`, `inference`, `walker`) and the path-law check (`reachability`, `checks`), with SARIF and text output |
+| `lock/` (`lockfile.py` is its old name) | the pins (`pinning`), the semantic diff and the weakening gate (`schema_diff`, `cel_mono`, `rule_diff`, composed in `lock`), over the shared tables in `contracts` |
 | `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
-| `cli.py` | the `inv` command |
+| `cli/` | the `inv` command: parser and exit codes (`cli`), commands (`commands`), the `--base` gate (`git_base`), the coding-agent hooks (`hooks`) |
 | `mcp.py` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`) |
 | `pytest_plugin.py` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-report` |
 | `integrations/` | FastAPI and ASGI (`application/problem+json`), pydantic (closed schemas, contracts), OpenTelemetry (one span per evaluation), Anthropic (`integrations.anthropic`: Claude, trace replay and recording for a model-call body; `docs/models.md`) |

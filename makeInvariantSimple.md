@@ -18,7 +18,7 @@
   - 2.4 Combining Graphify Topology with Deterministic AST Verification (`graphify.py`)
 - **[Chapter 3: Path Laws & Static Call-Graph Verification (`inv scan` Deep Dive)](#chapter-3-path-laws--static-call-graph-verification-inv-scan-deep-dive)**
   - 3.1 Why Unit Tests Never Catch Back Doors
-  - 3.2 Inside `scan.py`: Building a Call Graph Without Importing Your Code
+  - 3.2 Inside `scan/`: Building a Call Graph Without Importing Your Code
   - 3.3 Conservative Receiver Type Resolution (`_Walker._receiver`)
   - 3.4 How `allow:` Blocks Transit Bypasses and Monkeypatching
   - 3.5 The Four Finding Kinds (`bypass`, `forbidden`, `unresolved`, `missing`)
@@ -241,8 +241,8 @@ Instead, `doors._freeze()` ([doors.py](invariants-py/src/invariants/doors.py)) r
 This creates a **one-way ratchet** (just like ArchUnit’s violation store):
 1. **Today’s code passes `inv check` immediately.**
 2. **Any new back door fails CI.**
-3. **Adding a new function to `allow:` is a weakening** ([lockfile.py](invariants-py/src/invariants/lockfile.py)) that `inv check` and `inv check --relock` refuse.
-4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan.py](invariants-py/src/invariants/scan.py)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
+3. **Adding a new function to `allow:` is a weakening** ([lock/](invariants-py/src/invariants/lock/)) that `inv check` and `inv check --relock` refuse.
+4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan/](invariants-py/src/invariants/scan/)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
 
 ---
 
@@ -254,14 +254,14 @@ In [`graphify.py`](invariants-py/src/invariants/graphify.py), `inv init` integra
 ```mermaid
 flowchart LR
     G["graphify-out/graph.json<br/>(tree-sitter + communities)"] -->|"3-community bridges &<br/>EXTRACTED calls"| D["doors.py<br/>(Candidate Door Rules)"]
-    D -->|"Every rule verified by"| S["scan.py (_freeze)<br/>(Deterministic Python AST)"]
+    D -->|"Every rule verified by"| S["scan/ (_freeze)<br/>(Deterministic Python AST)"]
     S -->|"Only verified rules"| Y["invariants.yaml"]
 ```
 
 Running real Graphify (`graphifyy` 0.9.107) across `support-agent`, `pool-service`, `fact-pipeline`, and the FastAPI template shaped four design rules in [`graphify.py`](invariants-py/src/invariants/graphify.py) and [`doors.py`](invariants-py/src/invariants/doors.py):
 
 1. **Matches by File + Line Span (`_Locator` at [graphify.py](invariants-py/src/invariants/graphify.py)):** Maps Graphify nodes to Python AST functions by `(source_file, source_location)` line numbers, so changes in Graphify’s node ID scheme never break matching.
-2. **Why Communities Are What Graphify Adds ([graphify.py](invariants-py/src/invariants/graphify.py)):** Graphify tags plain function calls as `EXTRACTED` (`relation: "calls"`), whereas method calls on objects (`self.repo.save()`, `ctx.billing.refund()`) are tagged `INFERRED` by tree-sitter, and `relation: "uses"` represents parameter type annotations rather than calls (`CALL_RELATIONS = frozenset({"calls"})`). Because `scan.py` already resolves both plain function calls and typed method chains, the only thing Graphify could add to `inv init` is its **community clustering**. Measured, it adds no door rule the naming heuristics miss: on all five codebases tried (the three apps, the FastAPI template, and a small `api.py → checkout.py → ledger.py` shop with unconventional names, pinned in `tests/fixtures/graphify/shop/`), Graphify's communities follow call chains (one per feature), not layers, so no function sits between three communities (on `fact-pipeline` it adds one more door, `Pipeline.resolve_review`, to a rule that stays commented out because back doors remain). The bridge rule below is kept, strict and safe, for codebases where communities do line up with layers.
+2. **Why Communities Are What Graphify Adds ([graphify.py](invariants-py/src/invariants/graphify.py)):** Graphify tags plain function calls as `EXTRACTED` (`relation: "calls"`), whereas method calls on objects (`self.repo.save()`, `ctx.billing.refund()`) are tagged `INFERRED` by tree-sitter, and `relation: "uses"` represents parameter type annotations rather than calls (`CALL_RELATIONS = frozenset({"calls"})`). Because `scan/` already resolves both plain function calls and typed method chains, the only thing Graphify could add to `inv init` is its **community clustering**. Measured, it adds no door rule the naming heuristics miss: on all five codebases tried (the three apps, the FastAPI template, and a small `api.py → checkout.py → ledger.py` shop with unconventional names, pinned in `tests/fixtures/graphify/shop/`), Graphify's communities follow call chains (one per feature), not layers, so no function sits between three communities (on `fact-pipeline` it adds one more door, `Pipeline.resolve_review`, to a rule that stays commented out because back doors remain). The bridge rule below is kept, strict and safe, for codebases where communities do line up with layers.
 3. **The Strict 3-Community Bridge Rule (`layer(c)` at [doors.py](invariants-py/src/invariants/doors.py)):**
    When Graphify was first run on `fact-pipeline`, `cli.main` (which writes directly to the store as a back door) lived in a different community from `Store`. A naive 2-community check (`comm[caller] != comm[writer]`) promoted `cli.main` from a reported back door into an accepted door—hiding the violation!
    To prevent entrypoints from being mistaken for service layers, `_doors_for()` requires a **three-community sandwich**:
@@ -292,18 +292,18 @@ Because **no existing unit test calls `vip_refund_tool` with an over-refund!** U
 
 ---
 
-## 3.2 Inside `scan.py`: Building a Call Graph Without Importing Your Code
+## 3.2 Inside `scan/`: Building a Call Graph Without Importing Your Code
 
-When `inv scan` (or `inv check`) runs, [`scan.py`](invariants-py/src/invariants/scan.py) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
+When `inv scan` (or `inv check`) runs, [`scan/`](invariants-py/src/invariants/scan/) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
 
-1. **Pass 1 (`_Index.add_module` at [scan.py](invariants-py/src/invariants/scan.py)):**
+1. **Pass 1 (`_Index.add_module` at [scan/](invariants-py/src/invariants/scan/)):**
    - Parses each file into an `ast.Module`.
    - Records every `import` and `from ... import ...` alias (including relative imports and `from mod import *`).
    - Registers every function, async function, class, method, and return-type annotation in `idx.funcs` and `idx.classes`.
-   - Follows re-exports and class inheritance in `_Index.canon()` ([scan.py](invariants-py/src/invariants/scan.py)) so calling an inherited method on a subclass resolves to the canonical method definition.
-2. **Pass 2 (`_Walker` at [scan.py](invariants-py/src/invariants/scan.py)):**
+   - Follows re-exports and class inheritance in `_Index.canon()` ([scan/](invariants-py/src/invariants/scan/)) so calling an inherited method on a subclass resolves to the canonical method definition.
+2. **Pass 2 (`_Walker` at [scan/](invariants-py/src/invariants/scan/)):**
    - Walks every statement and expression inside each function (attributing nested lambdas, comprehensions, and closures to their enclosing top-level function or method `owner`).
-   - Emits two kinds of call edges (`_Edge` at [scan.py](invariants-py/src/invariants/scan.py)):
+   - Emits two kinds of call edges (`_Edge` at [scan/](invariants-py/src/invariants/scan/)):
      - **Proven (`inferred=False`):** The scanner knows the exact target function or receiver class.
      - **Name-matched (`inferred=True`):** A method call `.refund()` on a variable whose type the scanner cannot prove, when `.refund` matches the name of a known method.
 
@@ -311,21 +311,21 @@ When `inv scan` (or `inv check`) runs, [`scan.py`](invariants-py/src/invariants/
 
 ## 3.3 Conservative Receiver Type Resolution (`_Walker._receiver`)
 
-In object-oriented Python, sinks and doors are almost always methods on objects (`self.stripe.refund(...)`, `ctx.billing.refund(...)`, `Repo(session).add(...)`). How does `scan.py` know which class `.refund()` belongs to without running the program?
+In object-oriented Python, sinks and doors are almost always methods on objects (`self.stripe.refund(...)`, `ctx.billing.refund(...)`, `Repo(session).add(...)`). How does `scan/` know which class `.refund()` belongs to without running the program?
 
-Look at `_Walker._receiver()` ([scan.py](invariants-py/src/invariants/scan.py)). It resolves a receiver to a proven class in **six exact cases**:
+Look at `_Walker._receiver()` ([scan/](invariants-py/src/invariants/scan/)). It resolves a receiver to a proven class in **six exact cases**:
 
-| # | Python Code Pattern | How `scan.py` Resolves It | Exact or Subclass? |
+| # | Python Code Pattern | How `scan/` Resolves It | Exact or Subclass? |
 | :--- | :--- | :--- | :--- |
-| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan.py](invariants-py/src/invariants/scan.py)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
-| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan.py](invariants-py/src/invariants/scan.py)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
-| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan.py](invariants-py/src/invariants/scan.py)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
-| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan.py](invariants-py/src/invariants/scan.py)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
-| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan.py](invariants-py/src/invariants/scan.py)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
-| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan.py](invariants-py/src/invariants/scan.py)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
+| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan/](invariants-py/src/invariants/scan/)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
+| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan/](invariants-py/src/invariants/scan/)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
+| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan/](invariants-py/src/invariants/scan/)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
+| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan/](invariants-py/src/invariants/scan/)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
+| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan/](invariants-py/src/invariants/scan/)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
+| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan/](invariants-py/src/invariants/scan/)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
 
 > [!TIP]
-> **Why `_foreign_attrs()` ([scan.py](invariants-py/src/invariants/scan.py)) Is Such a Clever Safety Check:**
+> **Why `_foreign_attrs()` ([scan/](invariants-py/src/invariants/scan/)) Is Such a Clever Safety Check:**
 > What if some function outside `AgentContext` overwrites `ctx.billing = FakeBilling()` or calls `setattr(ctx, "billing", ...)`?
 > `_foreign_attrs()` scans the entire codebase for any attribute `.x` assigned from *outside* `self.x` (`obj.x = ...` or `setattr(obj, "x", ...)`). Any attribute modified from outside its owning class is added to `idx.foreign` and **never trusted** as a typed receiver!
 
@@ -333,7 +333,7 @@ Look at `_Walker._receiver()` ([scan.py](invariants-py/src/invariants/scan.py)).
 
 ## 3.4 How `allow:` Blocks Transit Bypasses and Monkeypatching
 
-Let’s look at how `_check_rule()` and `_shortest()` ([scan.py](invariants-py/src/invariants/scan.py)) verify a door rule with `allow:`:
+Let’s look at how `_check_rule()` and `_shortest()` ([scan/](invariants-py/src/invariants/scan/)) verify a door rule with `allow:`:
 
 ```yaml
   - id: STRIPE-GATEWAY-DOOR
@@ -346,8 +346,8 @@ Let’s look at how `_check_rule()` and `_shortest()` ([scan.py](invariants-py/s
 
 Suppose an AI coding agent tries to be sneaky. It sees that `goodwill_refund` is in `allow:`, so instead of calling `StripeGateway.refund` directly, the agent writes a new tool `sneaky_tool` that calls `goodwill_refund()`!
 
-Here is how `_shortest()` ([scan.py](invariants-py/src/invariants/scan.py)) catches it:
-1. First, `scan.py` removes only `doors` (`BillingService.refund`) from the graph—**it does NOT remove `allowed` functions**.
+Here is how `_shortest()` ([scan/](invariants-py/src/invariants/scan/)) catches it:
+1. First, `scan/` removes only `doors` (`BillingService.refund`) from the graph—**it does NOT remove `allowed` functions**.
 2. Next, `_shortest()` runs a breadth-first search (BFS) from every entrypoint (`start`) to the `sink`, tracking a 2-tuple state:
    ```python
    State = tuple[str, bool]  # (current_function, has_the_path_ever_left_allowed?)
@@ -359,7 +359,7 @@ Here is how `_shortest()` ([scan.py](invariants-py/src/invariants/scan.py)) catc
    ```
 
 And what if the agent edits `goodwill_refund` itself to monkeypatch `BillingService.refund` (`setattr(BillingService, "refund", ...)`) or unwrap its `@inv.guard` decorator (`BillingService.refund.__wrapped__`)?
-Look at [scan.py](invariants-py/src/invariants/scan.py):
+Look at [scan/](invariants-py/src/invariants/scan/):
 ```python
     for s in sites:
         if s.owner in allowed and s.what in ("ref", "attrcall", "getattr"):
@@ -439,7 +439,7 @@ class BillingService:
 When `loader.expand_short_forms()` ([loader.py](invariants-py/src/invariants/loader.py)) loads `BILL-2`, it expands those 4 lines into the canonical internal rule record:
 - `guard: "py:..."` $\rightarrow$ `subject: {target: "py:..."}` and `enforcers: [{point: "decorator", timing: "pre_effect", mode: "enforce", on_violation: "reject", on_error: "fail_closed"}]`.
 - `tests: [...]` $\rightarrow$ `falsified_by: [...]` and `status: "enforce"`. (If you omit `tests:` while trying out a new rule, it automatically sets `status: "detect"` so it logs violations without blocking traffic!)
-- Notice that `lockfile.py` pins the **expanded** form, so switching a rule between short form and full form causes zero lock churn.
+- Notice that `lock/` pins the **expanded** form, so switching a rule between short form and full form causes zero lock churn.
 
 ---
 
@@ -514,7 +514,7 @@ def order(ledger: LedgerRepo, order_id: str) -> Order | None:
 How providers work at load time and run time ([`providers.py`](invariants-py/src/invariants/providers.py)):
 1. **Verified at Load Time:** The loader checks that `@inv.provider("order")` exists, that its parameter names match `args: {ledger: ..., order_id: ...}` exactly, and that its Python return annotation matches `type: "py:support_agent.models.Order | null"`.
 2. **Cached Per Call:** Within a single guarded call, if multiple clauses read `order`, the provider function is called only once per `(provider_name, bound_args)`.
-3. **Async-Aware:** If both the guarded function and the provider are `async def`, `guard.py` awaits `prefetch_async()` before evaluating the CEL clauses.
+3. **Async-Aware:** If both the guarded function and the provider are `async def`, `guard/` awaits `prefetch_async()` before evaluating the CEL clauses.
 4. **Never Confused with a Violation:** If the database is down and `order()` raises `sqlite3.OperationalError`, the evaluator produces `Outcome("rule_error")`, **never** `Outcome("violation")`.
 
 ---
@@ -553,7 +553,7 @@ When your code calls an LLM (`plan_action`, `propose_cause`, `propose_fact`, `co
 
 ## 5.2 Inside `@inv.model_call`: The Four-Stage Loop Harness
 
-Let’s trace what happens inside `_ModelRun` ([`guard.py`](invariants-py/src/invariants/guard.py)) when `@inv.model_call("PLAN-1", schema=Plan)` runs in [`apps/support-agent/src/support_agent/planner.py`](apps/support-agent/src/support_agent/planner.py):
+Let’s trace what happens inside `_ModelRun` ([`guard/`](invariants-py/src/invariants/guard/)) when `@inv.model_call("PLAN-1", schema=Plan)` runs in [`apps/support-agent/src/support_agent/planner.py`](apps/support-agent/src/support_agent/planner.py):
 
 ```mermaid
 flowchart TD
@@ -572,19 +572,19 @@ flowchart TD
 
 Look closely at each of the four stages:
 
-1. **Stage 1 — Closed-Schema Parsing (`inv.parse` at [guard.py](invariants-py/src/invariants/guard.py)):**
+1. **Stage 1 — Closed-Schema Parsing (`inv.parse` at [guard/](invariants-py/src/invariants/guard/)):**
    - Rejects payloads over `1,000,000` characters (`max_reply_size`).
    - Rejects non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) that Python’s `json.loads` normally accepts!
    - Enforces a **closed schema** (`extra="forbid"`): if the model invents an extra key (like trying to inject `"id"` into `FactReply` in `fact-pipeline`), `inv.parse` raises `ParseError`.
    - If `format_retries` remain (default `2`), it passes the parser error string into the function’s `inv_feedback` parameter and retries.
-2. **Stage 2 — First-Class Abstention (`abstain` at [guard.py](invariants-py/src/invariants/guard.py)):**
+2. **Stage 2 — First-Class Abstention (`abstain` at [guard/](invariants-py/src/invariants/guard/)):**
    - If you force an LLM to always pick a tool, it will guess when a ticket is ambiguous.
    - By declaring `abstain: {field: action, value: ESCALATE_TO_HUMAN}` (in `PLAN-1`), `abstain: {field: cause, value: CANNOT_COMPLY}` (in `R-7`), or `abstain: {field: status, value: CANNOT_ANSWER}` (in `K-19`), the model has a schema-valid way to say *"I need a human."*
    - When `@inv.model_call` sees the abstain value, it **does not retry**—it immediately records `outcome: "abstain"`, opens a ticket in `ReviewStore`, and raises `inv.Escalation`.
-3. **Stage 3 — Held-Data Evaluation (`bad` at [guard.py](invariants-py/src/invariants/guard.py)):**
+3. **Stage 3 — Held-Data Evaluation (`bad` at [guard/](invariants-py/src/invariants/guard/)):**
    - Now `reply` is bound alongside `args` and any providers (notice how `planned_order` in `support-agent` binds `args: {ledger: args.ctx.ledger, order_id: reply.order_id}`—it uses the `order_id` **from the model’s own reply** to fetch that order from SQLite!).
    - Then `bad` checks whether the model’s proposed plan contradicts held reality.
-4. **Stage 4 — Blind Semantic Resampling ([guard.py](invariants-py/src/invariants/guard.py)):**
+4. **Stage 4 — Blind Semantic Resampling ([guard/](invariants-py/src/invariants/guard/)):**
    - If `bad` fires and `semantic_resamples > 0`, `@inv.model_call` resamples **with `self.feedback = None`**.
 
 ---
@@ -610,7 +610,7 @@ What could go wrong between those two nodes?
 2. **Cross-Customer Replay:** A cached `CheckedPlan` that was approved for `cust_bob` is passed to `execute_plan` for `cust_alice`.
 3. **Mid-Flight State Mutation / Time-of-Check to Time-of-Use (TOCTOU):** Between `planner_node` and `tool_executor_node`, code mutates `state.plan.value.amount_cents = 500_000`, or another request refunds the order so `remaining_cents` is now `0`!
 
-Look at how `@inv.edge("PLAN-1")` ([`guard.py`](invariants-py/src/invariants/guard.py)) on `execute_plan(ctx, plan: CheckedPlan, customer_id: str)` stops **all three**:
+Look at how `@inv.edge("PLAN-1")` ([`guard/`](invariants-py/src/invariants/guard/)) on `execute_plan(ctx, plan: CheckedPlan, customer_id: str)` stops **all three**:
 
 ```python
 @inv.edge("PLAN-1")
@@ -620,13 +620,13 @@ def execute_plan(ctx: AgentContext, plan: CheckedPlan, customer_id: str) -> str:
     return tool(ctx, model(**args))
 ```
 
-When `execute_plan` is called, `@inv.edge("PLAN-1")` runs `prepare()` and `judge()` ([guard.py](invariants-py/src/invariants/guard.py)):
+When `execute_plan` is called, `@inv.edge("PLAN-1")` runs `prepare()` and `judge()` ([guard/](invariants-py/src/invariants/guard/)):
 1. **Type & Verdict Check:** Verifies `isinstance(plan, CheckedPlan)` and `plan.verdict == "ok"`. If someone forged `object.__new__(CheckedPlan)` (which has no `verdict`), it fails immediately with `rule_error`.
-2. **Fresh Closed-Schema Re-Validation (`recheck` at [guard.py](invariants-py/src/invariants/guard.py)):** Re-parses `plan.value` through `inv.parse(reply, Plan)` to build a **brand-new, isolated copy** of the `Plan` model.
+2. **Fresh Closed-Schema Re-Validation (`recheck` at [guard/](invariants-py/src/invariants/guard/)):** Re-parses `plan.value` through `inv.parse(reply, Plan)` to build a **brand-new, isolated copy** of the `Plan` model.
 3. **Fresh Held-Data & CEL Re-Evaluation:** Re-fetches `planned_order` and `planned_tier` from SQLite *right now* and re-evaluates all 5 clauses of `PLAN-1` against `execute_plan`'s own `args.customer_id`!
    - If the plan was approved for Bob (`reply.customer_id == "cust_bob"`) but passed to `execute_plan` for Alice (`args.customer_id == "cust_alice"`), clause 1 (`reply.customer_id != args.customer_id`) fires and rejects it!
    - If the ledger balance moved since `planner_node` ran, clause 4 (`reply.amount_cents > planned_order.remaining_cents`) fires and rejects it!
-4. **Hands Only the Fresh Copy to the Consumer ([guard.py](invariants-py/src/invariants/guard.py)):** `execute_plan` receives the freshly re-validated copy, so no external reference can mutate it after the check.
+4. **Hands Only the Fresh Copy to the Consumer ([guard/](invariants-py/src/invariants/guard/)):** `execute_plan` receives the freshly re-validated copy, so no external reference can mutate it after the check.
 
 ---
 
@@ -689,7 +689,7 @@ When an enforcer in `mode: enforce` sees a `violation`, it executes the rule’s
 What happens on a `rule_error` (e.g., a provider query fails)?
 - **`on_error: fail_closed` (Default):** Blocks the call using the enforcer's `on_violation` action. High-stakes rules (`BILL-1`, `R-21`, `PLAN-1`) always fail closed.
 - **`on_error: fail_open_and_page`:** Logs an error event, calls the configured pager (`inv.configure(pager=...)`; by default an ERROR log), and lets the call proceed so a broken non-critical provider doesn't take down checkout.
-- **Optional Error-Spike Circuit Breaker (`ErrorSpike` in [`registry.py`](invariants-py/src/invariants/registry.py)):** With `inv.configure(error_spike=inv.ErrorSpike(errors=20, window=60.0))`, a rule that produces that many `rule_error`s within the window is demoted from `enforce` to `detect` and the pager is called, until `Registry.restore(rule_id)`. It is **off by default** on purpose: if a client could trigger rule errors with bad input, automatic demotion would let them switch the rule off.
+- **Optional Error-Spike Circuit Breaker (`ErrorSpike` in [`registry/`](invariants-py/src/invariants/registry/)):** With `inv.configure(error_spike=inv.ErrorSpike(errors=20, window=60.0))`, a rule that produces that many `rule_error`s within the window is demoted from `enforce` to `detect` and the pager is called, until `Registry.restore(rule_id)`. It is **off by default** on purpose: if a client could trigger rule errors with bad input, automatic demotion would let them switch the rule off.
 
 ---
 
@@ -698,7 +698,7 @@ What happens on a `rule_error` (e.g., a provider query fails)?
 Suppose an LLM reply or customer request contains sensitive PII (`"ssn": "123-45-6789"`), and `inv.parse` or `@inv.guard` fails.
 If the exception message or OpenTelemetry span included the raw field value (`"field ssn: '123-45-6789' is invalid"`), your logs and HTTP error responses would leak customer data!
 
-Look at how `_err(safe, full)` in [`guard.py`](invariants-py/src/invariants/guard.py) prevents this:
+Look at how `_err(safe, full)` in [`guard/`](invariants-py/src/invariants/guard/) prevents this:
 - Every `ParseError` carries **two** strings:
   1. `str(e)` (`safe`): Value-free path and type kind only (e.g., `"field action: string is not one of the allowed values"`), with any user-supplied dictionary keys replaced by `.*`.
   2. `e.feedback` (`full`): The detailed error sent *only* back to `inv_feedback` inside `@inv.model_call` (or shown when `reg.debug = True` in local tests).
@@ -716,7 +716,7 @@ In the very first version of `invariants` ([`docs/evaluation.md`](invariants-py/
 1. **75% False-Positive Churn:** Editing a comment or helper function inside `service.py` changed the module’s SHA-256 hash, turning CI red on 18 out of 24 changes.
 2. **Reflex Re-Pinning Erased the Only Catch:** Because developers had to run `inv lock` after almost every edit, running `inv lock` became an automatic reflex—which silently accepted weakened rules (`P04: 4 * old_self -> 10 * old_self`)!
 
-**Lock Version 3 ([`lockfile.py`](invariants-py/src/invariants/lockfile.py)) fixed both problems completely**, dropping lock failures from **18 of 24 changes to 2** (both real weakenings) and whole-module failures from 16 to **0**, while refusing every weakening unless a human passes `--accept-weakening`.
+**Lock Version 3 ([`lock/`](invariants-py/src/invariants/lock/)) fixed both problems completely**, dropping lock failures from **18 of 24 changes to 2** (both real weakenings) and whole-module failures from 16 to **0**, while refusing every weakening unless a human passes `--accept-weakening`.
 
 ---
 
@@ -728,7 +728,7 @@ In the very first version of `invariants` ([`docs/evaluation.md`](invariants-py/
 2. **`targets`:** Each target function’s unwrapped signature (`inspect.signature` unwrapped through decorators), its resolved parameter and return types, its `effects` rank, and any `@inv.model_call` reply schema.
 3. **`providers`:** Each provider’s declared type, `args` map, and function signature.
 4. **`contracts`:** Resolved schemas for `pydantic`, `dataclass`, `schema`, and named `openapi` operations.
-5. **`schemas`:** A **content-addressed table (`sha256:...` $\rightarrow$ JSON Schema)** shared across all targets and contracts, with all prose (`title`, `description`, `examples`, docstrings) stripped by `strip_prose()` ([lockfile.py](invariants-py/src/invariants/lockfile.py)).
+5. **`schemas`:** A **content-addressed table (`sha256:...` $\rightarrow$ JSON Schema)** shared across all targets and contracts, with all prose (`title`, `description`, `examples`, docstrings) stripped by `strip_prose()` ([lock/](invariants-py/src/invariants/lock/)).
 
 **Why stripping prose and bodies matters:**
 You can refactor function bodies, add logging, write docstrings, or add new helper functions all day long—**`invariants.lock` does not change by a single byte!**
@@ -737,14 +737,14 @@ You can refactor function bodies, add logging, write docstrings, or add new help
 
 ## 7.3 Inside the CEL Monotonicity Prover (`_walk`) and `FIELD_POLICY`
 
-When `invariants.lock` *does* change, `lockfile.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lockfile.py](invariants-py/src/invariants/lockfile.py)) and the **CEL Monotonicity Prover (`_walk` at [lockfile.py](invariants-py/src/invariants/lockfile.py))**:
+When `invariants.lock` *does* change, `lockfile.changes(old, new)` compares every changed field against `FIELD_POLICY` ([lock/](invariants-py/src/invariants/lock/)) and the **CEL Monotonicity Prover (`_walk` at [lock/](invariants-py/src/invariants/lock/))**:
 
 ### How `_walk` Proves Whether a `bad` Edit Tightened or Weakened a Rule
 Remember that `bad` is true when a state is **prohibited**. Therefore:
 - A `bad` expression that returns `true` on **more** inputs is **stronger (a tightening)**.
 - A `bad` expression that returns `true` on **fewer** inputs is **weaker (`WEAKENED`)**.
 
-`lockfile.py` parses both the old and new CEL `bad` expressions into canonical AST trees (normalizing whitespace, commuting `a && b` / `a || b`, and pushing negations) and walks them with polarity `pol`:
+`lock/` parses both the old and new CEL `bad` expressions into canonical AST trees (normalizing whitespace, commuting `a && b` / `a || b`, and pushing negations) and walks them with polarity `pol`:
 
 | Old `bad` Expression | New `bad` Expression | How `_walk` Judges It | Verdict |
 | :--- | :--- | :--- | :--- |
@@ -756,7 +756,7 @@ Remember that `bad` is true when a state is **prohibited**. Therefore:
 | `!(x in ["A", "B"])` | `!(x in ["A", "B", "C"])` | Inside `!`, the allowed list grew (`"C"` added), so fewer values trigger `bad`. (This caught change `F12` in `fact-pipeline`!) | **`WEAKENED` (Refused!)** |
 
 > [!IMPORTANT]
-> **The `new_error_sites()` Check Under `fail_open_and_page` ([lockfile.py](invariants-py/src/invariants/lockfile.py)):**
+> **The `new_error_sites()` Check Under `fail_open_and_page` ([lock/](invariants-py/src/invariants/lock/)):**
 > What if a rule has `on_error: fail_open_and_page`, and an edit changes `bad` in a way that looks stricter on paper, but introduces a division `args.total / args.count` or a new attribute read that can raise a `rule_error` at run time?
 > Under `fail_open_and_page`, a `rule_error` lets the call through! So `new_error_sites()` checks whether the new `bad` tree introduces any new error-capable sites not absorbed by an existing `||`/`&&` operand—and if so, marks the change as a possible weakening!
 
@@ -764,7 +764,7 @@ Remember that `bad` is true when a state is **prohibited**. Therefore:
 
 ## 7.4 Why Raising LLM Retries Is Flagged as `WEAKENED` (`MORE_IS_WEAKER`)
 
-Look at `FIELD_POLICY` in [`lockfile.py`](invariants-py/src/invariants/lockfile.py):
+Look at `FIELD_POLICY` in [`lock/`](invariants-py/src/invariants/lock/):
 ```python
 "modelPolicy.format_retries": MORE_IS_WEAKER,
 "modelPolicy.semantic_resamples": MORE_IS_WEAKER,
@@ -797,7 +797,7 @@ flowchart LR
 
 Look at the difference between `R-20` and `R-21` in [`apps/pool-service/invariants.yaml`](apps/pool-service/invariants.yaml):
 - **`R-21` (Approved Resize):** Enforced `pre_effect` on `ResizeService.resize_door`, `sink: "py:pool_service.store.set_size"` passes `inv scan`, `inv verify` passes, and `residual_paths: []` is empty $\rightarrow$ Standing is **`held`**.
-- **`R-20` (Leases $\le$ Pool Size):** Enforced `pre_effect` on `lease_slots`, `inv scan` passes, **but** `residual_paths` honestly notes: `["two concurrent leases can both pass the check; the store's own triggers refuse the second"]`. Because `residual_paths` is non-empty, `inv status` withholds `held` and reports **`enforce(known-callers)`**! (And in `lockfile.py`, deleting an entry from `residual_paths` is flagged as `WEAKENED` so an agent cannot delete a documented race condition to fake `held` standing!)
+- **`R-20` (Leases $\le$ Pool Size):** Enforced `pre_effect` on `lease_slots`, `inv scan` passes, **but** `residual_paths` honestly notes: `["two concurrent leases can both pass the check; the store's own triggers refuse the second"]`. Because `residual_paths` is non-empty, `inv status` withholds `held` and reports **`enforce(known-callers)`**! (And in `lock/`, deleting an entry from `residual_paths` is flagged as `WEAKENED` so an agent cannot delete a documented race condition to fake `held` standing!)
 
 ---
 
@@ -805,7 +805,7 @@ Look at the difference between `R-20` and `R-21` in [`apps/pool-service/invarian
 
 What if an AI coding agent makes a failing test pass by deleting `@inv.guard("BILL-1")` from `BillingService.refund` in `service.py` (Defect #11 in `support-agent`)?
 
-`inv verify` (which runs automatically inside `inv check` and `pytest --inv-verify`) imports your target modules and checks **bidirectional coverage** ([`registry.py`](invariants-py/src/invariants/registry.py)):
+`inv verify` (which runs automatically inside `inv check` and `pytest --inv-verify`) imports your target modules and checks **bidirectional coverage** ([`registry/`](invariants-py/src/invariants/registry/)):
 1. Every function named as a rule’s `target` or `edge` in `invariants.yaml` must carry the matching `@inv.guard`, `@inv.model_call`, or `@inv.edge` decorator for that rule ID.
 2. Every `@inv.guard`, `@inv.model_call`, and `@inv.edge` decorator in Python must name a real, loaded rule ID in `invariants.yaml`.
 
