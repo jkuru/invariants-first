@@ -357,7 +357,9 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
     limit = args.get("max_doors", 5)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         raise ToolError("max_doors must be a non-negative integer")
-    target = root / RULE_FILES[0]                        # where `inv init` would write; never written here
+    # where `inv init` would write; never written here. Resolved inside --root: its pyproject.toml settings
+    # (source_dirs, exclude) are read beside it, so a symlink to a rule file outside never leads there.
+    target = _inside(server_root, root, RULE_FILES[0], "rule file")
     given = _source_roots(server_root, root, args)
     graph_arg = _opt_str(args, "graphify")
     graph_path = str(_inside(server_root, root, graph_arg, "graphify")) if graph_arg else None

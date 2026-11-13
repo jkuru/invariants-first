@@ -42,8 +42,9 @@ Key behaviours that the one-line docstrings leave out:
   `state["plan"]` or `state.plan` annotated `CheckedPlan` (or `CheckedPlan | None`). With one such field
   in the parameters' state types the edge finds it; with several, name it with
   `@inv.edge("R-7", at="state.plan")` (a dotted path from a parameter through annotated fields).
-  None, several without `at=`, or an `at=` path that does not lead to a `Checked` annotation is a
-  `TypeError` when the decorator runs. The checks are the direct case's: the value is read once,
+  The same holds for parameters annotated with a `Checked` subclass directly: one is the edge's, and
+  with several `at="plan"` names it. None, several without `at=`, or an `at=` path that does not lead
+  to a `Checked` annotation is a `TypeError` when the decorator runs. The checks are the direct case's: the value is read once,
   re-validated and re-checked, and the consumer gets a shallow copy of the state whose field holds
   the new `Checked` over the judged copy (the caller's state object is never changed).
 - The value of a `Checked` over a `{field: type}` schema is a frozen dict (`guard.FrozenDict`, its

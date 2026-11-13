@@ -27,6 +27,7 @@ from ..errors import CoverageError, InvariantError
 from ..guard import guard as _core_guard
 from ..loader import read_document
 from ..registry import Registry, current
+from ..model import Rule
 from .asgi import PROBLEM_JSON, StatusMap, problem
 
 HTTP_METHODS = frozenset({"GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"})
@@ -96,11 +97,11 @@ def register(app: _fastapi.FastAPI, reg: Registry | None = None) -> None:
 
     def check(registry: Registry) -> None:
         live = ref()
-        if live is not None:
-            verify_routes(live, {"contracts": registry.contracts}, registry)
+        if live is not None:                         # one loaded generation: its rules with its contracts
+            view = registry._view()
+            _verify_routes(live, view.contracts, view.rules)
     check.__inv_app__ = ref  # type: ignore[attr-defined]
-    if not any(getattr(c, "__inv_app__", None) == ref for c in r.verifiers):
-        r.verifiers.append(check)
+    r.add_verifier(check, key=("fastapi", ref))
 
 
 # --- openapi contracts --------------------------------------------------------------------------
@@ -161,9 +162,12 @@ def verify_routes(app: _fastapi.FastAPI, source: str | pathlib.Path | dict[str, 
     bound rules; raises CoverageError listing every problem.
     """
     doc = source if isinstance(source, dict) else read_document(source)
-    contracts = doc.get("contracts") or {}
+    return _verify_routes(app, doc.get("contracts") or {}, (reg or current())._view().rules)
+
+
+def _verify_routes(app: _fastapi.FastAPI, contracts: dict[str, Any], rules: dict[str, Rule]) -> int:
     problems, bound = [], 0
-    for rule in (reg or current()).rules.values():
+    for rule in rules.values():
         op = operation_of(rule.raw, contracts)
         if op is None or rule.status == "retired":
             continue

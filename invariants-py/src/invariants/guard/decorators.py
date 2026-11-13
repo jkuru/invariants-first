@@ -253,15 +253,15 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
                who: str) -> tuple[tuple[str, ...], Any]:
     """(parameter, field, ...) leading to the Checked value an edge receives, and its Checked subclass.
 
-    at=None: a parameter annotated with a Checked subclass (X or X | None), else the one field
+    at=None: the one parameter annotated with a Checked subclass (X or X | None), else the one field
     annotated with one in the state types (TypedDict, dataclass, pydantic model) the parameters are
-    annotated with; none, or more than one, is a TypeError. at="state.plan": that parameter and field path, whose
-    annotations must lead to a Checked subclass."""
+    annotated with; none, or more than one, is a TypeError. at="plan": that parameter; at="state.plan":
+    that parameter and field path, whose annotations must lead to a Checked subclass."""
     if at is not None:
         parts = tuple(at.split(".")) if isinstance(at, str) else ()
-        if len(parts) < 2 or not all(parts) or parts[0] not in sig.parameters:
-            raise TypeError(f"{who}: at={at!r} must be '<parameter>.<field>[.<field>...]' naming one of "
-                            f"its parameters ({', '.join(sig.parameters)})")
+        if not parts or not all(parts) or parts[0] not in sig.parameters:
+            raise TypeError(f"{who}: at={at!r} must be '<parameter>.<field>[.<field>...]' or '<parameter>' "
+                            f"naming one of its parameters ({', '.join(sig.parameters)})")
         t = hints.get(parts[0])
         for f in parts[1:]:
             fields = _state_fields(t, who)
@@ -275,8 +275,11 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
         return parts, refined
     # X or X | None, as a state field: a None received there is the TypeError of any non-X value
     direct = [(n, c) for n in sig.parameters if (c := _checked_type(hints.get(n))) is not None]
-    if direct:
+    if len(direct) == 1:
         return (direct[0][0],), direct[0][1]
+    if direct:
+        raise TypeError(f"{who}: more than one parameter annotated with an inv.Checked subclass "
+                        f"({', '.join(n for n, _ in direct)}); name the one this edge receives with at='<parameter>'")
     found = [((n, f), c) for n in sig.parameters for f, ft in _state_fields(hints.get(n), who).items()
              if (c := _checked_type(ft)) is not None]
     if len(found) == 1:
@@ -293,8 +296,8 @@ def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], C
 
     The value arrives in a parameter annotated with the Checked subclass (X or X | None), or in a
     field of a state parameter (a TypedDict, dataclass or pydantic model, as agent graphs pass): the
-    one field annotated with a Checked subclass (X or X | None), or the one at="state.plan" names. Several
-    candidates without at= is a TypeError when the decorator runs. For a state, the consumer gets
+    one field annotated with a Checked subclass (X or X | None), or the one at="state.plan" names
+    (at="plan" names a parameter). Several candidates without at= is a TypeError when the decorator runs. For a state, the consumer gets
     a shallow copy of it whose field holds the new Checked (the caller's state is unchanged).
 
     The type gate stops honest mistakes; then the verdict must be ok, the value is re-validated

@@ -122,9 +122,15 @@ def outside_roots(rule_file: pathlib.Path, doc: dict[str, Any], extra: Sequence[
 def _contract_modules(doc: dict[str, Any]) -> list[str]:
     mods = []
     for c in (doc.get("contracts") or {}).values():
-        if isinstance(c, dict) and c.get("type") in lock.PY_CONTRACTS and isinstance(c.get("ref"), str):
-            mods.append(c["ref"].partition(":")[0])
-        elif isinstance(c, dict) and c.get("type") == "openapi" and isinstance(c.get("app"), str):
+        if not isinstance(c, dict):
+            continue
+        ref = c.get("ref")
+        # a python contract, or a schema contract naming a class (module:Class) as `inv lock` pins it;
+        # a schema contract's other refs are files
+        if isinstance(ref, str) and (c.get("type") in lock.PY_CONTRACTS
+                                     or (c.get("type") in lock.SCHEMA_CONTRACTS and ":" in ref)):
+            mods.append(ref.partition(":")[0])
+        elif c.get("type") == "openapi" and isinstance(c.get("app"), str):
             mods.append(c["app"].partition(":")[0])
     return mods
 

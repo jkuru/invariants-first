@@ -234,6 +234,18 @@ class Registry:
         with self._lock:
             return _View(self.rules, self.targets, self.contracts)
 
+    def add_verifier(self, check: Callable[[Registry], Any], key: Any = None) -> bool:
+        """Have verify() run check(registry) too (it raises CoverageError for what it finds); under the
+        registry's lock, as verify() copies the list. With a key, a check already added under an equal
+        key is kept and this one is not added. True when check was added."""
+        with self._lock:
+            if key is not None and any(getattr(c, "__inv_verifier_key__", None) == key for c in self.verifiers):
+                return False
+            if key is not None:
+                check.__inv_verifier_key__ = key  # type: ignore[attr-defined]
+            self.verifiers.append(check)
+            return True
+
     @property
     def reviews(self) -> list[dict[str, Any]]:
         """Reviews held by the default in-memory store (empty for another store)."""
