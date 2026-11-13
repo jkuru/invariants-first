@@ -1,4 +1,9 @@
-"""The registry of loaded rules, its reach counters, and which registry is current."""
+"""The registry of loaded rules, its reach counters, and which registry is current.
+
+The package splits by owner: reviews.py holds the hand-off and the review stores, session.py the
+process-wide state (pytest sessions, warn-once flags, trace files), coverage.py what verify() and
+standing() check beyond the registry. Every name they held as registry.<name> is re-exported here.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,26 +11,25 @@ import collections
 import contextlib
 import contextvars
 import dataclasses
-import json
 import logging
 import os
-import pathlib
-import re
 import sys
 import threading
 import time
-import uuid
+import typing
 import weakref
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 
-from .errors import CoverageError, LoadError, ReviewNotOpened
-from .model import GUARD_POINTS, Provider, Rule
-from .resolve import resolve
+from ..errors import CoverageError, LoadError, ReviewNotOpened
+from ..model import GUARD_POINTS, Provider, Rule
+from ..resolve import resolve
+from .coverage import (_ablation_problems, _chokepoint_problems, _edge_problem, _function_names, _resolves,
+                       _targetless_problems, _wraps)
+from .reviews import Handoff, JsonlReviews, MemoryReviews, ReviewStore, _jsonable
+from .session import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, _SESSION, _trace,
+                      is_decision, note_ablation_reached, note_decision, pytest_session_ended,
+                      pytest_session_started, under_pytest)
 
-ABLATE_ENV = "INV_ABLATE"
-ABLATE_ARM_ENV = "INV_ABLATE_TESTING"     # INV_ABLATE is honoured only while this is "1" (the pytest plugin)
-ABLATE_TRACE_ENV = "INV_ABLATE_TRACE"     # file the plugin reads: rule ids whose ablation was reached
-DECISION_TRACE_ENV = "INV_DECISION_TRACE"  # file the plugin reads: rule ids whose enforcement decided something
 SINK_ENV = "INV_SINK_SIZE"
 DEBUG_ENV = "INV_DEBUG"
 REPLY_SIZE_ENV = "INV_MAX_REPLY_SIZE"
@@ -42,34 +46,6 @@ def _env_int(name: str, default: int) -> int:
         return max(0, int(os.environ.get(name, default)))
     except ValueError:
         return default
-
-
-_warned_unarmed = False
-_warned_armed: set[str] = set()
-
-
-_pytest_sessions = 0       # pytest sessions configured in this process (the plugin counts them)
-
-
-def pytest_session_started() -> None:
-    """Called by the pytest plugin's pytest_configure: this process is running a test session."""
-    global _pytest_sessions
-    _pytest_sessions += 1
-
-
-def pytest_session_ended() -> None:
-    """Called by the pytest plugin's pytest_unconfigure."""
-    global _pytest_sessions
-    _pytest_sessions = max(0, _pytest_sessions - 1)
-
-
-def under_pytest() -> bool:
-    """True while this process runs a pytest session with the invariants plugin configured.
-
-    Neither `import pytest` (a dependency may do it in production) nor PYTEST_CURRENT_TEST
-    (inherited or settable) is proof: only the plugin's pytest_configure counts.
-    """
-    return _pytest_sessions > 0
 
 
 def _has_real_handler(lg: logging.Logger) -> bool:
@@ -93,78 +69,51 @@ def env_ablated() -> set[str]:
     Honoured outside pytest (an `inv scan` or app subprocess of a falsifier), it logs at ERROR once
     per rule set: in production it means those rules' in-process guards are off.
     """
-    global _warned_unarmed
     names = set(filter(None, (x.strip() for x in os.environ.get(ABLATE_ENV, "").split(","))))
     if not names:
         return set()
     if os.environ.get(ABLATE_ARM_ENV) != "1":
-        if not _warned_unarmed:
-            _warned_unarmed = True
+        if _SESSION.first_unarmed():
             log.warning("invariants: %s=%s is ignored: ablation through the environment needs %s=1 "
                         "(set by the pytest plugin)", ABLATE_ENV, ",".join(sorted(names)), ABLATE_ARM_ENV)
         return set()
     key = ",".join(sorted(names))
-    if not under_pytest() and key not in _warned_armed:
-        _warned_armed.add(key)
-        log.error("invariants: %s=%s with %s=1: the in-process guards of these rules are OFF in this "
-                  "process (pid %d). This is for test runs only; unset both outside tests.",
-                  ABLATE_ENV, key, ABLATE_ARM_ENV, os.getpid())
-        if not _has_real_handler(log) or not log.isEnabledFor(logging.ERROR):
-            try:                                 # the app set no logging: say it on stderr anyway
-                sys.stderr.write(f"invariants: ERROR: {ABLATE_ENV}={key} with {ABLATE_ARM_ENV}=1: the "
-                                 f"in-process guards of these rules are OFF in this process "
-                                 f"(pid {os.getpid()}). Unset both outside tests.\n")
-            except Exception:
-                pass
+    if not under_pytest() and _SESSION.first_armed(key):
+        _warn_guards_off(key)
     return names
 
 
-_noted: set[tuple[str, str]] = set()
-
-
-def _trace(env: str, line: str) -> None:
-    """Append line to the file named by env (once per file and line); nothing when env is unset."""
-    path = os.environ.get(env)
-    if not path or (path, line) in _noted:
-        return
-    try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        _noted.add((path, line))
-    except OSError:
-        pass
-
-
-def note_ablation_reached(rule_id: str, via: str = "enforcer") -> None:
-    """Note in the INV_ABLATE_TRACE file that an enforcement point skipped rule_id because it is ablated.
-
-    via is "enforcer" (a guard, an edge, a model call, a monitor) or "scan" (`inv scan` skipped it).
-    The pytest plugin sets INV_ABLATE_TRACE for each ablated re-run, so it can tell a falsifier that
-    failed because the rule was off from one that failed for an unrelated reason. Subprocesses
-    inherit the variable, so an app or `inv scan` they start reports reach too. Asking
-    `inv.is_ablated()` is not reaching the rule: only the library's own enforcement points note it.
-    """
-    _trace(ABLATE_TRACE_ENV, f"{rule_id} {via}")
-
-
-def note_decision(rule_id: str) -> None:
-    """Note in the INV_DECISION_TRACE file that rule_id's enforcement decided something.
-
-    A decision is a violation, a parse_error the enforcer acted on (a retry or a rejection, not a
-    detect-mode proceed), or a model call's abstain. The pytest plugin sets INV_DECISION_TRACE for a
-    falsifier's control re-run: a falsifier whose rule never decided anything there passes whether
-    or not the rule holds, so its failure under ablation proves nothing.
-    """
-    _trace(DECISION_TRACE_ENV, rule_id)
-
-
-def is_decision(kind: str, event: dict[str, Any]) -> bool:
-    """True for an event that is a decision of its rule (see note_decision)."""
-    return kind == "violation" or (kind == "parse_error" and event.get("action") not in (None, "proceed"))
+def _warn_guards_off(key: str) -> None:
+    """Say, at ERROR (and on stderr when the app set no logging), that key's guards are off here."""
+    log.error("invariants: %s=%s with %s=1: the in-process guards of these rules are OFF in this "
+              "process (pid %d). This is for test runs only; unset both outside tests.",
+              ABLATE_ENV, key, ABLATE_ARM_ENV, os.getpid())
+    if not _has_real_handler(log) or not log.isEnabledFor(logging.ERROR):
+        try:                                 # the app set no logging: say it on stderr anyway
+            sys.stderr.write(f"invariants: ERROR: {ABLATE_ENV}={key} with {ABLATE_ARM_ENV}=1: the "
+                             f"in-process guards of these rules are OFF in this process "
+                             f"(pid {os.getpid()}). Unset both outside tests.\n")
+        except Exception:
+            pass
 
 
 class EventSink(collections.deque[dict[str, Any]]):
-    """The recent events of one registry: a ring buffer (oldest dropped). Slices give lists."""
+    """The recent events of one registry: a ring buffer (oldest dropped). Slices give lists.
+
+    Iterating it (list(reg.sink), `for e in reg.sink`) walks a snapshot taken under the registry's
+    lock, so another thread recording meanwhile never breaks the iteration.
+    """
+
+    _lock: Any = None                     # the owning registry's lock (set by Registry)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        if self._lock is None:
+            return super().__iter__()
+        with self._lock:
+            return iter(tuple(super().__iter__()))
+
+    def __reversed__(self) -> Iterator[dict[str, Any]]:
+        return reversed(tuple(self))
 
     def __getitem__(self, i: Any) -> Any:
         if isinstance(i, slice):
@@ -177,111 +126,6 @@ class EventSink(collections.deque[dict[str, Any]]):
         return super().__eq__(other)
 
     __hash__ = None
-
-
-@dataclasses.dataclass
-class Handoff:
-    """What route, escalate and page hand to the review store or the pager."""
-
-    rule: str
-    action: str                                   # route | escalate | page
-    outcome: Any = None                           # the Outcome, when there is one
-    bound: dict[str, Any] = dataclasses.field(default_factory=dict)   # the names bad read, as bound
-    attempts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
-    event: dict[str, Any] = dataclasses.field(default_factory=dict)
-    reason: str = ""
-
-
-class ReviewStore(Protocol):
-    """Where route and escalate open a review. open() returns the review id.
-
-    A store may also define `async def aopen(handoff) -> str`: async guards, model calls and edges
-    await it (Registry.ahand_off). A store without one has its open() run in a worker thread
-    (asyncio.to_thread), so a blocking write never runs on the event loop.
-    """
-
-    def open(self, handoff: Handoff) -> str: ...
-
-
-class MemoryReviews:
-    """The default review store: in memory and bounded (the oldest are dropped). Not durable."""
-
-    def __init__(self, maxlen: int = 1000) -> None:
-        self.items: collections.deque[dict[str, Any]] = collections.deque(maxlen=maxlen)
-        self._n = 0
-        self._lock = threading.Lock()
-
-    def open(self, handoff: Handoff) -> str:
-        """Record the hand-off and return review-N."""
-        with self._lock:
-            self._n += 1
-            rid = f"review-{self._n}"
-            self.items.append({"id": rid, "rule": handoff.rule, "action": handoff.action,
-                               "outcome": handoff.outcome, "bound": handoff.bound})
-            return rid
-
-    async def aopen(self, handoff: Handoff) -> str:
-        """open() for async callers: in memory, so it runs on the loop (no thread hop)."""
-        return self.open(handoff)
-
-    def snapshot(self) -> list[dict[str, Any]]:
-        """The reviews held now, copied under the lock (open() may run in another thread)."""
-        with self._lock:
-            return list(self.items)
-
-
-def _jsonable(v: Any, depth: int = 0) -> Any:
-    """v as JSON data: plain values as they are, containers walked, anything else its repr (never raises)."""
-    try:
-        if v is None or type(v) in (bool, int, float, str):
-            return v
-        if depth > 16:
-            return "<nested too deeply>"
-        if isinstance(v, dict):
-            return {str(k): _jsonable(x, depth + 1) for k, x in v.items()}
-        if isinstance(v, (list, tuple)):
-            return [_jsonable(x, depth + 1) for x in v]
-        if dataclasses.is_dataclass(v) and not isinstance(v, type):
-            return {f.name: _jsonable(getattr(v, f.name), depth + 1) for f in dataclasses.fields(v)}
-        return repr(v)
-    except Exception:
-        return f"<unserialisable {type(v).__name__}>"
-
-
-class JsonlReviews:
-    """A durable review store: each hand-off is appended as one JSON line to path and fsynced.
-
-    Use it as the review store, or as the review_fallback that catches hand-offs when the main
-    store fails (inv.configure(review_fallback=JsonlReviews("reviews-fallback.jsonl"))). Values
-    that are not JSON data are written as their repr. The file holds the bound names (arguments,
-    replies), so give it the protection the review store has.
-    """
-
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        self.path = pathlib.Path(path)
-        self._lock = threading.Lock()
-
-    def open(self, handoff: Handoff) -> str:
-        """Append the hand-off and return its id (jsonl-<uuid>)."""
-        rid = f"jsonl-{uuid.uuid4().hex}"
-        out = handoff.outcome
-        line = json.dumps({"id": rid, "time": time.time(), "rule": handoff.rule, "action": handoff.action,
-                           "reason": handoff.reason,
-                           "outcome": None if out is None else {"kind": getattr(out, "kind", None),
-                                                                "messages": _jsonable(getattr(out, "messages", [])),
-                                                                "error": _jsonable(getattr(out, "error", ""))},
-                           "bound": _jsonable(handoff.bound), "attempts": _jsonable(handoff.attempts),
-                           "event": _jsonable(handoff.event)}, sort_keys=True)
-        with self._lock, open(self.path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        return rid
-
-    async def aopen(self, handoff: Handoff) -> str:
-        """open() in a worker thread (asyncio.to_thread), so the write and fsync never block the event
-        loop. Async guards, model calls and edges use it (Registry.ahand_off); the file is the same."""
-        return await asyncio.to_thread(self.open, handoff)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -301,16 +145,26 @@ _CTX_ABLATED: contextvars.ContextVar[tuple[tuple[Registry, str], ...]] = context
 _GLOBAL_LOCK = threading.Lock()
 
 
+class _View(typing.NamedTuple):
+    """The rules, targets and contracts of one loaded generation (install() swaps them together)."""
+
+    rules: dict[str, Rule]
+    targets: dict[str, dict[str, Any]]
+    contracts: dict[str, Any]
+
+
 class Registry:
     """Loaded rules, providers and targets, plus the event sink, reviews and reach counters."""
 
     def __init__(self, sink_size: int | None = None) -> None:
+        self._lock = threading.Lock()
         self.rules: dict[str, Rule] = {}
         self.providers: dict[str, Provider] = {}
         self.targets: dict[str, dict[str, Any]] = {}
         self.notes: list[str] = []
         size = _env_int(SINK_ENV, DEFAULT_SINK_SIZE) if sink_size is None else sink_size
         self.sink: EventSink = EventSink(maxlen=size)
+        self.sink._lock = self._lock
         self.review_store: ReviewStore = MemoryReviews()
         self.review_fallback: ReviewStore | None = None   # tried when review_store fails (e.g. JsonlReviews)
         self.max_reply_size = _env_int(REPLY_SIZE_ENV, DEFAULT_REPLY_SIZE)   # 0: no limit
@@ -333,7 +187,6 @@ class Registry:
         # extra checks verify() runs, each raising CoverageError: integrations add them (the FastAPI
         # route check of an app given to integrations.fastapi.install)
         self.verifiers: list[Callable[[Registry], Any]] = []
-        self._lock = threading.Lock()
 
     def install(self, other: Registry) -> Registry:
         """Take the rules, providers, targets and notes of another loaded registry.
@@ -351,6 +204,10 @@ class Registry:
             self.notes, self.backend_name = other.notes, other.backend_name
             self.contracts = other.contracts
         return self
+
+    def _view(self) -> _View:
+        with self._lock:
+            return _View(self.rules, self.targets, self.contracts)
 
     @property
     def reviews(self) -> list[dict[str, Any]]:
@@ -573,71 +430,24 @@ class Registry:
 
     def scope(self) -> set[str]:
         """Top-level packages of the loaded targets, edge targets and python contracts."""
-        out: set[str] = set()
-        keys: list[Any] = list(self.targets)
-        for rule in self.rules.values():
-            keys.append(rule.target_key)
-            keys.extend(e.get("target") for e in rule.enforcers)
-        for key in keys:
-            if isinstance(key, str) and key.startswith("py:"):
-                out.add(key[3:].split(".")[0])
-        for c in self.contracts.values():
-            if isinstance(c, dict) and c.get("type") == "python" and isinstance(c.get("ref"), str):
-                out.add(c["ref"].split(":")[0].split(".")[0])
-        return out
+        return _scope(self._view())
 
     def verify(self, modules: Iterable[str] | None = None) -> int:
         """Every rule's target carries its guard, and every guard names a rule in the file.
 
         The second check covers guards in `modules` (module names or package prefixes);
-        by default, the packages of the loaded targets (see scope()).
+        by default, the packages of the loaded targets (see scope()). It reads one loaded
+        generation: a reload meanwhile does not mix two rule files.
         """
-        problems = []
-        prefixes = tuple(self.scope() if modules is None else modules)
-        for rule in self.rules.values():
-            if rule.status == "retired" or rule.target is None:
-                continue
-            points = {e["point"] for e in rule.enforcers} & GUARD_POINTS
-            if rule.policy or points:
-                keys = getattr(rule.target, "__inv_rules__", ())
-                kind = getattr(rule.target, "__inv_kind__", "")
-                if rule.id not in keys and rule.target_key not in keys:
-                    problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
-                elif not rule.policy and kind != "guard":
-                    problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
-                                    f"@inv.guard: its decorator/middleware enforcers are never evaluated")
-                elif not rule.policy and points - set(getattr(rule.target, "__inv_points__", ("decorator",))):
-                    missing = sorted(points - set(getattr(rule.target, "__inv_points__", ("decorator",))))
-                    problems.append(f"{rule.id}: the guard on {rule.target_key} does not evaluate point "
-                                    f"{', '.join(missing)}")
-                elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
-                    problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
-                elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
-                    problems.append(f"{rule.id}: decorator schema differs from model_policy.schema")
-            for e in rule.enforcers:
-                if e["point"] == "edge":
-                    t = resolve(e["target"])
-                    if getattr(t, "__inv_kind__", "") != "edge" or rule.id not in getattr(t, "__inv_rules__", ()):
-                        problems.append(f"{rule.id}: edge target {e['target']} is not wrapped by @inv.edge({rule.id!r})")
+        return self._verify(self._view(), modules)
+
+    def _verify(self, view: _View, modules: Iterable[str] | None) -> int:
+        prefixes = tuple(_scope(view) if modules is None else modules)
+        problems = [p for rule in view.rules.values() for p in _target_problems(rule)]
         for w in list(WRAPPED):
             mod = getattr(w, "__module__", "") or ""
-            if not any(mod == p or mod.startswith(p + ".") for p in prefixes):
-                continue
-            for k in getattr(w, "__inv_rules__", ()):
-                if k.startswith("py:"):
-                    why = self._py_key_problem(k, w)
-                    if why:
-                        problems.append(f"{w.__qualname__}: guards {k}, {why}")
-                elif k not in self.rules:
-                    problems.append(f"{w.__qualname__}: guards {k}, which is not in the rule file")
-                elif getattr(w, "__inv_kind__", "") == "edge":
-                    why = _edge_problem(self.rules[k], w)
-                    if why:
-                        problems.append(f"{w.__qualname__}: {why}")
-                elif self.rules[k].target is not None and not _wraps(self.rules[k].target, w):
-                    problems.append(f"{w.__qualname__}: guards {k}, whose target is {self.rules[k].target_key}")
-                elif self.rules[k].target is None and self.rules[k].status != "retired":
-                    problems.extend(f"{w.__qualname__}: {why}" for why in _targetless_problems(self, self.rules[k], w))
+            if any(mod == p or mod.startswith(p + ".") for p in prefixes):
+                problems.extend(self._guard_problems(w, view.rules))
         for check in list(self.verifiers):
             try:
                 check(self)
@@ -645,7 +455,27 @@ class Registry:
                 problems.extend(str(e).split("; "))
         if problems:
             raise CoverageError("; ".join(problems))
-        return sum(1 for r in self.rules.values() if r.target is not None)
+        return sum(1 for r in view.rules.values() if r.target is not None)
+
+    def _guard_problems(self, w: Any, rules: dict[str, Rule]) -> list[str]:
+        """Why one guarded callable is miswired against rules: a key no rule names, or another target."""
+        problems = []
+        for k in getattr(w, "__inv_rules__", ()):
+            if k.startswith("py:"):
+                why = self._py_key_problem(k, w)
+                if why:
+                    problems.append(f"{w.__qualname__}: guards {k}, {why}")
+            elif k not in rules:
+                problems.append(f"{w.__qualname__}: guards {k}, which is not in the rule file")
+            elif getattr(w, "__inv_kind__", "") == "edge":
+                why = _edge_problem(rules[k], w)
+                if why:
+                    problems.append(f"{w.__qualname__}: {why}")
+            elif rules[k].target is not None and not _wraps(rules[k].target, w):
+                problems.append(f"{w.__qualname__}: guards {k}, whose target is {rules[k].target_key}")
+            elif rules[k].target is None and rules[k].status != "retired":
+                problems.extend(f"{w.__qualname__}: {why}" for why in _targetless_problems(self, rules[k], w))
+        return problems
 
     def _py_key_problem(self, key: str, w: Any) -> str | None:
         """Why a guard keyed by a 'py:' target is miswired (the key resolves to another function than
@@ -668,9 +498,11 @@ class Registry:
         rule's functions, or a py: path that does not resolve), lists residual paths, keeps live
         mediation.allow back doors that residual_paths does not declare, verify fails, the scan has
         not run, or (given ablation: the pytest plugin's --inv-report-json data, or its "ablation"
-        part) no falsifier of the rule was caught by the ablation.
+        part) no falsifier of the rule was caught by the ablation. The rule and verify are read
+        from one loaded generation.
         """
-        rule = self.rules[rule_id]
+        view = self._view()
+        rule = view.rules[rule_id]
         if rule.status == "retired":
             return "retired", []
         modes = [self.mode(rule, e) for e in rule.enforcers]
@@ -681,24 +513,11 @@ class Registry:
         why = []
         if self.is_ablated(rule_id):
             why.append("ablated: its in-process guards are off (INV_ABLATE or inv.ablated)")
-        med = rule.raw.get("mediation") or {}
-        if not med.get("chokepoint"):
-            why.append("mediation names no chokepoint")
-        else:
-            why.extend(_chokepoint_problems(rule, str(med["chokepoint"])))
-        residual = med.get("residual_paths") or []
-        if residual:
-            why.append(f"residual paths: {residual}")
-        allow = med.get("allow") or []
-        live = [a for a in ([allow] if isinstance(allow, str) else allow)
-                if isinstance(a, str) and a not in residual and _resolves(a)]
-        if live:
-            why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
-                       f"(remove them, or declare each in mediation.residual_paths)")
+        why.extend(_mediation_problems(rule))
         if ablation is not None:
             why.extend(_ablation_problems(rule, ablation))
         try:
-            self.verify()
+            self._verify(view, None)
         except CoverageError as e:
             why.append(f"verify fails: {e}")
         if not scan:
@@ -706,99 +525,70 @@ class Registry:
         return ("held" if not why else "enforce(known-callers)"), why
 
 
-def _edge_problem(rule: Rule, w: Any) -> str | None:
-    """Why an @inv.edge(rule.id) wrapper w is misplaced: no edge enforcer of the rule targets it (at
-    run time it would borrow the rule's only edge enforcer, which names another function)."""
-    targets = [e.get("target") for e in rule.enforcers if e.get("point") == "edge"]
-    for t in targets:
-        try:
-            if _wraps(resolve(str(t)), w):
-                return None
-        except Exception:
-            continue
-    if not targets:
-        return f"@inv.edge({rule.id!r}), but {rule.id} has no edge enforcer"
-    return f"@inv.edge({rule.id!r}), but no edge enforcer of {rule.id} targets it (they target {', '.join(map(str, targets))})"
-
-
-def _targetless_problems(reg: Registry, rule: Rule, w: Any) -> list[str]:
-    """A guard on a rule without subject.target: the load-time binding checks, against the function
-    the guard wraps (the only target there is)."""
-    from .loader import binding_problem
-    points = set(getattr(w, "__inv_points__", ("decorator",)))
-    out = []
-    for i, e in enumerate(rule.enforcers):
-        if e.get("point") in points:
-            try:
-                why = binding_problem(rule, reg, i, w, w.__qualname__)
-            except Exception as ex:
-                why = f"{rule.id}: its bindings could not be checked against {w.__qualname__} ({type(ex).__name__})"
-            if why:
-                out.append(why)
+def _scope(view: _View) -> set[str]:
+    """Top-level packages of one generation's targets, edge targets and python contracts."""
+    out: set[str] = set()
+    keys: list[Any] = list(view.targets)
+    for rule in view.rules.values():
+        keys.append(rule.target_key)
+        keys.extend(e.get("target") for e in rule.enforcers)
+    for key in keys:
+        if isinstance(key, str) and key.startswith("py:"):
+            out.add(key[3:].split(".")[0])
+    for c in view.contracts.values():
+        if isinstance(c, dict) and c.get("type") == "python" and isinstance(c.get("ref"), str):
+            out.add(c["ref"].split(":")[0].split(".")[0])
     return out
 
 
-def _resolves(key: str) -> bool:
-    try:
-        resolve(key)
-    except Exception:
-        return False
-    return True
+def _target_problems(rule: Rule) -> list[str]:
+    """Why a rule's target or edge targets do not carry its guard (verify's first check)."""
+    problems: list[str] = []
+    if rule.status == "retired" or rule.target is None:
+        return problems
+    points = {e["point"] for e in rule.enforcers} & GUARD_POINTS
+    if rule.policy or points:
+        keys = getattr(rule.target, "__inv_rules__", ())
+        kind = getattr(rule.target, "__inv_kind__", "")
+        if rule.id not in keys and rule.target_key not in keys:
+            problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
+        elif not rule.policy and kind != "guard":
+            problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
+                            f"@inv.guard: its decorator/middleware enforcers are never evaluated")
+        elif not rule.policy and points - set(getattr(rule.target, "__inv_points__", ("decorator",))):
+            missing = sorted(points - set(getattr(rule.target, "__inv_points__", ("decorator",))))
+            problems.append(f"{rule.id}: the guard on {rule.target_key} does not evaluate point "
+                            f"{', '.join(missing)}")
+        elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
+            problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
+        elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
+            problems.append(f"{rule.id}: decorator schema differs from model_policy.schema")
+    for e in rule.enforcers:
+        if e["point"] == "edge":
+            t = resolve(e["target"])
+            if getattr(t, "__inv_kind__", "") != "edge" or rule.id not in getattr(t, "__inv_rules__", ()):
+                problems.append(f"{rule.id}: edge target {e['target']} is not wrapped by @inv.edge({rule.id!r})")
+    return problems
 
 
-def _function_names(rule: Rule) -> set[str]:
-    """The short names of the functions a rule names: its target, edge targets, door and sink."""
+def _mediation_problems(rule: Rule) -> list[str]:
+    """Why a rule's mediation keeps it from held: no chokepoint, residual paths, live back doors."""
+    why: list[str] = []
     med = rule.raw.get("mediation") or {}
-    keys: list[Any] = [rule.target_key, *(e.get("target") for e in rule.enforcers)]
-    for k in ("door", "sink"):
-        v = med.get(k)
-        keys.extend([v] if isinstance(v, str) else v if isinstance(v, list) else [])
-    return {k[3:].split(".")[-1] for k in keys if isinstance(k, str) and k.startswith("py:")}
-
-
-_PY_PATH = re.compile(r"py:[A-Za-z_][\w.]*\w")
-_WORD = re.compile(r"[A-Za-z_][\w.]*")
-
-
-def _chokepoint_problems(rule: Rule, text: str) -> list[str]:
-    """mediation.chokepoint is prose, checked where it can be: every py: path in it resolves, and it
-    names at least one function the rule names (its target, an edge target, the door or the sink)."""
-    out = [f"mediation.chokepoint names {p}, which does not resolve"
-           for p in _PY_PATH.findall(text) if not _resolves(p)]
-    known = _function_names(rule)
-    words = {w for tok in _WORD.findall(text) for w in tok.split(".")}
-    if known and not out and not words & known:
-        out.append(f"mediation.chokepoint names none of the rule's functions ({', '.join(sorted(known))}): "
-                   f"say which function every path crosses")
-    return out
-
-
-def _ablation_problems(rule: Rule, data: Mapping[str, Any]) -> list[str]:
-    """Why ablation does not back the rule, from the pytest plugin's report (--inv-report-json)."""
-    abl = data.get("ablation", data)
-    if not isinstance(abl, Mapping):
-        return ["ablation: the report holds no ablation results"]
-    if rule.id in (abl.get("not_load_bearing") or []):
-        return ["ablation: guard not load-bearing (a falsifier still passes with the rule off)"]
-    rows = (abl.get("rules") or {}).get(rule.id)
-    if not rows:
-        return ["ablation: no falsifier of this rule ran under pytest --inv-ablate"]
-    if not any(isinstance(r, Mapping) and r.get("result") == "caught" for r in rows):
-        return ["ablation: no falsifier caught the ablation ("
-                + ", ".join(str(r.get("result")) for r in rows if isinstance(r, Mapping)) + ")"]
-    return []
-
-
-def _wraps(target: Any, w: Any) -> bool:
-    """True if w is target, or is reached from it through __wrapped__ / __func__ (stacked decorators)."""
-    obj, seen = target, 0
-    while obj is not None and seen < 32:
-        if obj is w:
-            return True
-        # __func__ first: a bound method forwards __wrapped__ to the inner function, skipping w
-        obj = getattr(obj, "__func__", None) or getattr(obj, "__wrapped__", None)
-        seen += 1
-    return False
+    if not med.get("chokepoint"):
+        why.append("mediation names no chokepoint")
+    else:
+        why.extend(_chokepoint_problems(rule, str(med["chokepoint"])))
+    residual = med.get("residual_paths") or []
+    if residual:
+        why.append(f"residual paths: {residual}")
+    allow = med.get("allow") or []
+    live = [a for a in ([allow] if isinstance(allow, str) else allow)
+            if isinstance(a, str) and a not in residual and _resolves(a)]
+    if live:
+        why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
+                   f"(remove them, or declare each in mediation.residual_paths)")
+    return why
 
 
 # Every guarded callable in the process, for verify. Weak, so guards defined in a
@@ -924,8 +714,10 @@ def configure(reg: Registry | None = None, *, sink_size: int | None = _UNSET, re
     r = reg or current()
     with r._lock:
         if sink_size is not _UNSET:
-            r.sink = EventSink(r.sink, maxlen=_env_int(SINK_ENV, DEFAULT_SINK_SIZE) if sink_size is None
+            kept = collections.deque.__iter__(r.sink)    # the lock is held: not the snapshotting __iter__
+            r.sink = EventSink(kept, maxlen=_env_int(SINK_ENV, DEFAULT_SINK_SIZE) if sink_size is None
                                else sink_size)
+            r.sink._lock = r._lock
         if review_store is not _UNSET:
             r.review_store = review_store or MemoryReviews()
         if pager is not _UNSET:
@@ -964,3 +756,4 @@ def standing(rule_id: str, reg: Registry | None = None, scan: bool = False,
              ablation: Mapping[str, Any] | None = None) -> tuple[str, list[str]]:
     """Computed standing of one rule, with the reasons it is not held (see Registry.standing)."""
     return (reg or current()).standing(rule_id, scan=scan, ablation=ablation)
+

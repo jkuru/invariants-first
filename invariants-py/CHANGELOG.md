@@ -35,6 +35,26 @@ dispatches and re-exports every name the module had. No behaviour change: `inv`,
 registry: it reads ablation through `invariants._scan_hooks`, which `invariants/__init__.py` wires.
 `tests/test_layering_scan.py` checks that `scan/` never imports `guard`, `registry` or `cli`.
 
+### Refactor: registry/ package
+
+- **Refactor: registry/ package.** `registry.py` is now `invariants/registry/`: `__init__.py`
+  (the Registry, verify, standing, using, isolated, ablated), `reviews.py` (Handoff, the review
+  stores), `session.py` (process-wide state), `coverage.py` (verify and standing helpers). Every
+  `invariants.registry.<name>` still imports. The module globals `_pytest_sessions`,
+  `_warned_unarmed`, `_warned_armed` and `_noted` are now attributes of one locked
+  `registry._SESSION` (a `ProcessSession`, with a fresh lock in a forked child).
+- `MemoryReviews.items` is a snapshot (a tuple taken under the store's lock), and iterating
+  `Registry.sink` walks a snapshot taken under the registry's lock, so recording from another
+  thread never breaks a reader. `verify()` and `standing()` read one loaded generation.
+
+### Added: integrations.exporters.BufferedExporter
+
+- **Added: integrations.exporters.BufferedExporter.** Wraps an exporter: recording queues the event
+  (bounded; `on_full` drop_oldest by default, drop_new or block; drops counted in `.dropped`) and
+  a flusher thread the host starts and closes (`start()`/`with`, `drain()`, `close()`;
+  `exporters.lifespan()` for ASGI) calls the wrapped exporter. Off the guarded call, never started
+  by the library, stopped in a forked child.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed

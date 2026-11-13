@@ -6,7 +6,7 @@ of each docstring), so they match the code. The integrations' public surface is 
 `__all__`.
 
 - [`invariants`](#invariants)
-- [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel), [Anthropic](#invariantsintegrationsanthropic)
+- [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel), [Buffered exporters](#invariantsintegrationsexporters), [Anthropic](#invariantsintegrationsanthropic)
 - [`invariants.testing`](#invariantstesting)
 - [The pytest plugin](#the-pytest-plugin)
 - [The CLI](#the-cli)
@@ -252,6 +252,37 @@ inv.configure(exporter=otel.exporter())
 |---|---|---|
 | `exporter(tracer: Any = None) -> Exporter` | function | An exporter for inv.configure(exporter=...). tracer: an OpenTelemetry tracer (default: the global one). |
 | `attributes(event: dict[str, Any]) -> dict[str, Any]` | function | The span attributes for one event (None values left out). |
+
+### `invariants.integrations.exporters`
+
+A registry calls its exporters inline, on the thread of the guarded call. `BufferedExporter` wraps
+any exporter (`otel.exporter()`, your own) so that recording only appends the event to a bounded
+queue; a background thread calls the wrapped exporter. The host owns that thread: it exists only
+between `start()` (or `with`) and `close()`, and the library never starts it. Events recorded while
+it is stopped wait in the queue until `start()`, `drain()` or `close()`. A full queue drops the
+oldest event by default (`on_full="drop_oldest"`: the guarded call never waits, and the newest
+events are kept, as in `Registry.sink`); `"drop_new"` drops the new one; `"block"` makes the
+guarded call wait for room while the flusher runs. Drops are counted in `.dropped`, events the
+wrapped exporter raised on in `.failed` (the first failure is logged, and the flusher goes on).
+After `os.fork` the child's exporter is stopped with an empty queue; start it again there. Review
+stores never go through it: a hand-off is durable on its own path.
+
+```python
+from invariants.integrations import exporters, otel
+buffered = exporters.BufferedExporter(otel.exporter(), maxsize=10_000)
+inv.configure(exporter=buffered)
+with buffered:                       # or app = FastAPI(lifespan=exporters.lifespan(buffered))
+    serve()
+```
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `BufferedExporter(target: Exporter, *, maxsize: int = 10000, on_full: str = 'drop_oldest') -> None` | class | An exporter that queues events (bounded) for a host-started thread to pass to target. |
+| `BufferedExporter.start() -> BufferedExporter` | method | Start the flusher thread (a no-op while it runs). Also `with exporter:`. |
+| `BufferedExporter.drain(timeout: float \| None = None) -> bool` | method | Export everything queued now; True when nothing is left. Without a flusher it exports in the calling thread. |
+| `BufferedExporter.close(timeout: float \| None = None) -> bool` | method | Flush the queue, then stop the flusher; idempotent. True when it stopped within timeout. |
+| `BufferedExporter.dropped`, `.failed`, `.exported`, `.pending`, `.running` | attributes | Counts of dropped, failed and exported events; events queued now; whether the flusher runs. |
+| `lifespan(*exporters: BufferedExporter) -> Callable[[Any], AbstractAsyncContextManager[None]]` | function | An ASGI lifespan that runs the exporters' flushers while the app runs (close in a worker thread). |
 
 ### `invariants.integrations.anthropic`
 
