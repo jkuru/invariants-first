@@ -128,8 +128,6 @@ def _locale_is_latin1() -> bool:
 
 
 @pytest.mark.skipif(not _locale_is_latin1(), reason="no ISO-8859-1 locale on this machine")
-@pytest.mark.xfail(strict=False, reason="the rule file read (loader.read_document) and the lock read "
-                   "(lock.read) are fixed in other branches of this round; drop this mark once merged")
 def test_lock_round_trip_under_a_latin1_locale(tmp_path):
     doc = {"rules": [{"id": "R-1", "status": "candidate", "bad": "'über 100 €' == 'x'",
                       "statement": "Erstattungen über 100 € brauchen eine Freigabe – immer."}]}
@@ -145,3 +143,17 @@ def test_lock_round_trip_under_a_latin1_locale(tmp_path):
         runs[name] = (d / "invariants.lock").read_bytes()
     assert "über 100 €".encode() in runs["utf8"]          # the clause is pinned as raw UTF-8
     assert runs["latin1"] == runs["utf8"]
+
+
+def test_status_verifies_the_same_modules_as_verify(tmp_path):
+    """inv status checks guards in each --import's package, as inv verify does: a guard on a rule the
+    file does not define fails both."""
+    root = write_project(tmp_path / "proj", {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0"\n',
+        "app/__init__.py": "", "app/svc.py": "import invariants as inv\n\n@inv.guard('NOPE')\ndef f(x):\n    return x\n",
+        "invariants.yaml": "rules:\n  - id: R-1\n    status: candidate\n    bad: 'false'\n"})
+    v = run_inv("verify", "--import", "app.svc", cwd=root)
+    s = run_inv("status", "--import", "app.svc", "--json", cwd=root)
+    assert v.returncode != 0 and "NOPE" in v.stdout + v.stderr
+    data = json.loads(s.stdout)
+    assert data["verify"]["passed"] is False and any("NOPE" in p for p in data["verify"]["problems"])

@@ -70,7 +70,7 @@ def read_document(source: str | pathlib.Path) -> dict[str, Any]:
     """Read a rule file from disk: YAML for .yaml/.yml, JSON otherwise."""
     path = pathlib.Path(source)
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise LoadError(f"{source}: {e}") from e
     if path.suffix.lower() in YAML_SUFFIXES:

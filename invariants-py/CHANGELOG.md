@@ -10,6 +10,15 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 20 (follow-up)
+
+- **Every remaining text read and write is UTF-8:** the rule file read (`loader`), `inv init`'s source
+  read (`bootstrap`), the ablation report read (`status_report`) and the pytest report write
+  (`--inv-report-json`), so the round trip `inv lock` / `inv lock --check` is byte-identical under a
+  non-UTF-8 locale.
+- **`inv status` verifies the same modules as `inv verify`:** the rule file's scope plus each
+  `--import`'s package, so the two no longer disagree on a guard in an imported package.
+
 ### Fix round 20 (lock)
 
 From a review of the lock. Regression tests: `tests/test_fix_round20_lock.py`; each failed before its

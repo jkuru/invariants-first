@@ -370,7 +370,7 @@ class InvSession:
         if self.json_path:
             path = pathlib.Path(self.config.invocation_params.dir, self.json_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self.report_data(), indent=2, sort_keys=True) + "\n")
+            path.write_text(json.dumps(self.report_data(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if self.failed and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .errors import CoverageError
 from .registry import Registry
@@ -16,10 +16,11 @@ NO_ABLATION = ("held is unproven: no ablation results were given, so nothing sho
 UNPROVEN = "held (unproven: no --ablation)"
 
 
-def verify_result(reg: Registry) -> tuple[bool, list[str]]:
-    """(passed, problems) of `inv verify` on a loaded registry."""
+def verify_result(reg: Registry, imports: Iterable[str] = ()) -> tuple[bool, list[str]]:
+    """(passed, problems) of `inv verify` on a loaded registry, over the same modules `inv verify`
+    checks: the rule file's scope plus the top-level package of each --import."""
     try:
-        reg.verify()
+        reg.verify(sorted(reg.scope() | {m.split(".")[0] for m in imports}))
     except CoverageError as e:
         return False, str(e).split("; ")
     return True, []
@@ -62,15 +63,16 @@ def rule_status(reg: Registry, report: Report, rule_id: str,
 
 def load_ablation(path: str | pathlib.Path) -> dict[str, Any]:
     """The ablation results in a pytest --inv-report-json file (run with --inv-ablate)."""
-    data = json.loads(pathlib.Path(path).read_text())
+    data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("ablation"), dict):
         raise ValueError(f"{path}: no ablation results (run pytest --inv-ablate --inv-report-json {path})")
     return data
 
 
-def build(reg: Registry, report: Report, ablation: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def build(reg: Registry, report: Report, ablation: Mapping[str, Any] | None = None,
+          imports: Iterable[str] = ()) -> dict[str, Any]:
     """The whole status report (verify runs the registry's verifiers too: installed FastAPI apps)."""
-    ok, problems = verify_result(reg)
+    ok, problems = verify_result(reg, imports)
     rows = [rule_status(reg, report, rid, ablation) for rid in reg.rules]
     return {"verify": {"passed": ok, "problems": problems}, "rules": rows}
 

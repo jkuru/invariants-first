@@ -314,7 +314,7 @@ def cmd_status(a: argparse.Namespace) -> int:
     with _import_path(path, a.path), isolated() as reg:
         _load_app(path, a.imports)
         report = scanner.scan(read_document(path), roots, _exclude(a, path))
-        data = status_report.build(reg, report, ablation)
+        data = status_report.build(reg, report, ablation, a.imports)
     _out(json.dumps(data, indent=2) if a.json else status_report.to_text(data))
     return OK
 

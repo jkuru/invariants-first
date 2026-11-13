@@ -437,7 +437,7 @@ def discover(project: pathlib.Path, roots: list[pathlib.Path], exclude: Iterable
     trees: list[tuple[str, ast.Module, pathlib.Path]] = []
     for _, f, mod in iter_sources(roots, exclude):
         try:
-            trees.append((mod, ast.parse(f.read_text(), str(f)), f))
+            trees.append((mod, ast.parse(f.read_text(encoding="utf-8"), str(f)), f))
         except (SyntaxError, UnicodeDecodeError, ValueError):
             continue
     known = set(MODEL_ROOTS)
