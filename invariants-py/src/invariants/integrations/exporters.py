@@ -69,6 +69,7 @@ class BufferedExporter:
         self._busy = 0                    # events taken by a flush and not yet exported
         self._thread: threading.Thread | None = None
         self._stopping = False
+        self._closing = 0                 # close() calls waiting for the flusher to stop now
 
     @property
     def running(self) -> bool:
@@ -106,9 +107,16 @@ class BufferedExporter:
         return len(self._queue) < self.maxsize
 
     def start(self) -> BufferedExporter:
-        """Start the flusher thread (a no-op while it runs). Returns self."""
+        """Start the flusher thread (a no-op while it runs). Returns self.
+
+        After a close(timeout) that timed out (the flusher still exporting its last batch), start()
+        cancels that stop: the same flusher thread keeps running and exports what comes next. While
+        a close() is still waiting for the flusher, start() leaves the stop alone (that close ends).
+        """
         with self._lock:
             if self._thread is not None:
+                if not self._closing:
+                    self._stopping = False
                 return self
             self._stopping = False
             self._thread = threading.Thread(target=self._run, name="invariants-exporter", daemon=True)
@@ -184,21 +192,31 @@ class BufferedExporter:
     def close(self, timeout: float | None = None) -> bool:
         """Flush the queue, then stop the flusher thread; True when it stopped within timeout.
 
-        Idempotent: closing a stopped exporter only exports what is queued (in this thread).
+        Idempotent: closing a stopped exporter only exports what is queued (in this thread). The final
+        drain gets what is left of timeout (a start() from another thread meanwhile runs a flusher it
+        then waits for).
         """
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
             thread = self._thread
             self._stopping = True
+            if thread is not None:
+                self._closing += 1
             self._changed.notify_all()
         if thread is not None:
-            thread.join(timeout)
+            try:
+                thread.join(timeout)
+            finally:
+                with self._lock:
+                    self._closing -= 1
             with self._lock:
                 if thread.is_alive():
                     return False
                 if self._thread is thread:
                     self._thread, self._stopping = None, False
                 self._changed.notify_all()        # a "block" caller waiting for room stops waiting
-        self.drain()                              # what was queued after the flusher's last batch
+        # what was queued after the flusher's last batch
+        self.drain(None if deadline is None else max(0.0, deadline - time.monotonic()))
         return True
 
     def __enter__(self) -> BufferedExporter:

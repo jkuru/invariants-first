@@ -101,7 +101,9 @@ class EventSink(collections.deque[dict[str, Any]]):
     """The recent events of one registry: a ring buffer (oldest dropped). Slices give lists.
 
     Iterating it (list(reg.sink), `for e in reg.sink`) walks a snapshot taken under the registry's
-    lock, so another thread recording meanwhile never breaks the iteration.
+    lock, so another thread recording meanwhile never breaks the iteration; so do the searches
+    (`e in reg.sink`, count, index), which deque runs as an iteration that a concurrent append
+    breaks ("deque mutated during iteration"). One-step reads (len, reg.sink[i]) need no snapshot.
     """
 
     _lock: Any = None                     # the owning registry's lock (set by Registry)
@@ -119,6 +121,15 @@ class EventSink(collections.deque[dict[str, Any]]):
         if isinstance(i, slice):
             return list(self)[i]
         return super().__getitem__(i)
+
+    def __contains__(self, x: object) -> bool:
+        return x in tuple(self)
+
+    def count(self, x: Any) -> int:
+        return tuple(self).count(x)
+
+    def index(self, x: Any, *args: Any) -> int:
+        return collections.deque(self).index(x, *args)   # deque's bounds and message, on a snapshot
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, list):
@@ -146,6 +157,7 @@ GLOBAL_ABLATED: collections.Counter[str] = collections.Counter()   # rules ablat
 _CTX_ABLATED: contextvars.ContextVar[tuple[tuple[Registry, str], ...]] = contextvars.ContextVar(
     "inv_ctx_ablated", default=())
 _GLOBAL_LOCK = threading.Lock()
+_REGISTRIES: weakref.WeakSet[Registry] = weakref.WeakSet()   # every registry, for the fork reset
 
 
 class _View(typing.NamedTuple):
@@ -190,6 +202,16 @@ class Registry:
         # extra checks verify() runs, each raising CoverageError: integrations add them (the FastAPI
         # route check of an app given to integrations.fastapi.install)
         self.verifiers: list[Callable[[Registry], Any]] = []
+        try:
+            _REGISTRIES.add(self)
+        except TypeError:                          # a subclass made itself unhashable: no fork reset
+            pass
+
+    def _after_fork_in_child(self) -> None:
+        """A fresh lock (shared with the sink, as always): one another parent thread held at the fork
+        would never be released in the child."""
+        self._lock = threading.Lock()
+        self.sink._lock = self._lock
 
     def install(self, other: Registry) -> Registry:
         """Take the rules, providers, targets and notes of another loaded registry.
@@ -447,11 +469,13 @@ class Registry:
     def _verify(self, view: _View, modules: Iterable[str] | None) -> int:
         prefixes = tuple(_scope(view) if modules is None else modules)
         problems = [p for rule in view.rules.values() for p in _target_problems(rule)]
-        for w in list(WRAPPED):
+        for w in WRAPPED.snapshot():
             mod = getattr(w, "__module__", "") or ""
             if any(mod == p or mod.startswith(p + ".") for p in prefixes):
                 problems.extend(self._guard_problems(w, view.rules))
-        for check in list(self.verifiers):
+        with self._lock:                           # integrations append to it from other threads
+            checks = list(self.verifiers)
+        for check in checks:
             try:
                 check(self)
             except CoverageError as e:
@@ -597,12 +621,55 @@ def _mediation_problems(rule: Rule) -> list[str]:
     return why
 
 
+class _Wrapped(weakref.WeakSet[Callable[..., Any]]):
+    """A WeakSet whose adds and iteration take one lock: verify() iterating it while another thread
+    decorates a function would otherwise raise "Set changed size during iteration" (Python < 3.13)."""
+
+    def __init__(self, data: Iterable[Callable[..., Any]] | None = None) -> None:
+        self._lock = threading.Lock()
+        super().__init__(data)
+
+    def add(self, item: Callable[..., Any]) -> None:
+        with self._lock:
+            super().add(item)
+
+    def discard(self, item: Callable[..., Any]) -> None:
+        with self._lock:
+            super().discard(item)
+
+    def snapshot(self) -> list[Callable[..., Any]]:
+        """The live members now, copied under the lock."""
+        with self._lock:
+            return list(super().__iter__())
+
+    def __iter__(self) -> Iterator[Callable[..., Any]]:
+        return iter(self.snapshot())
+
+    def _after_fork_in_child(self) -> None:
+        self._lock = threading.Lock()
+
+
 # Every guarded callable in the process, for verify. Weak, so guards defined in a
 # function (tests) drop out once they are garbage.
-WRAPPED: weakref.WeakSet[Callable[..., Any]] = weakref.WeakSet()
+WRAPPED: _Wrapped = _Wrapped()
 
 _DEFAULT = Registry()
 _CURRENT: contextvars.ContextVar[Registry | None] = contextvars.ContextVar("inv_registry", default=None)
+
+
+def _after_fork_in_child() -> None:
+    """Fresh locks in a forked child: a lock another parent thread held at the fork is never released
+    there. The values stay the parent's (ProcessSession, BufferedExporter and the review stores do
+    the same for theirs)."""
+    global _GLOBAL_LOCK
+    _GLOBAL_LOCK = threading.Lock()
+    WRAPPED._after_fork_in_child()
+    for reg in list(_REGISTRIES):
+        reg._after_fork_in_child()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def default_registry() -> Registry:
