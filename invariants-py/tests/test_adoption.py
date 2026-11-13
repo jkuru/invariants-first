@@ -331,7 +331,7 @@ def test_check_base_sees_a_weakening_the_change_re_pinned(tmp_path):
     r = run_inv("check", "--base", "main", "--allow-weakening", cwd=root)
     assert r.returncode == 0 and "allowed by a reviewer" in r.stdout
     r = run_inv("check", "--base", "no-such-ref", cwd=root)
-    assert r.returncode == 0 and "nothing to compare" in r.stdout
+    assert r.returncode == 1 and "base ref no-such-ref not found" in r.stdout   # never fails open
 
 
 def _hook(event: str, payload: dict, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -386,7 +386,7 @@ def test_shipped_hook_configs_name_real_commands():
         pytest.skip("action.yml and .pre-commit-hooks.yaml live at the monorepo root, not in the sdist")
     import yaml
     hooks = yaml.safe_load((root / ".pre-commit-hooks.yaml").read_text())
-    assert hooks[0]["id"] == "inv-check" and hooks[0]["entry"] == "inv check --relock"
+    assert hooks[0]["id"] == "inv-check" and hooks[0]["entry"] == "inv check --relock --fail-on-repin"
     assert hooks[0]["language"] == "system" and hooks[0]["pass_filenames"] is False
     action = yaml.safe_load((root / "action.yml").read_text())
     run = action["runs"]["steps"][0]["run"]

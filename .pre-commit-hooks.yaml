@@ -2,8 +2,8 @@
 # in your project's environment, because `inv check` imports your app to pin its models and functions.
 - id: inv-check
   name: invariants check
-  description: Fail a commit that weakens a rule; re-pin invariants.lock when no change weakens one.
-  entry: inv check --relock
+  description: Fail a commit that weakens a rule. When no change weakens one, re-pin invariants.lock and fail once, so the new lock is reviewed and staged.
+  entry: inv check --relock --fail-on-repin
   language: system
   pass_filenames: false
   always_run: true

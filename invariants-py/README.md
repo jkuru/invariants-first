@@ -64,10 +64,11 @@ An agent's new script that calls the gateway directly fails the same check:
         bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:4:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
 ```
 
-To make the check hard to skip, copy one snippet per layer: a pre-commit hook (`inv check --relock`),
+To make the check hard to skip, copy one snippet per layer: a pre-commit hook (`inv check --relock --fail-on-repin`),
 a GitHub Action (`inv check --base`, which a reviewer's label can override) and Claude Code hooks.
 The `inv hook pretool` hook stops the agent from accepting a weakening, and `inv hook stop` keeps it
-from finishing while the check fails. [docs/start.md](docs/start.md) has all three snippets, plus the
+from finishing while the check fails. The agent hooks are an early warning; the CI check against the
+base branch is the gate. [docs/start.md](docs/start.md) has all three snippets, plus the
 next step: a two-line `guard` rule on the service method that moves the money.
 
 ## Before and after
@@ -349,8 +350,8 @@ Details: [docs/api.md](docs/api.md#integrations).
 | Command | What it does |
 |---|---|
 | `inv init [--graph GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
-| `inv check [--relock] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens; `--base` also fails on a weakening since REF. |
-| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening and any direct edit of `invariants.lock`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
+| `inv check [--relock [--fail-on-repin]] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base` also fails on a weakening since REF, and fails closed when REF or its lock cannot be compared. |
+| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening, any direct edit of `invariants.lock` and an edit of `[tool.invariants]`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
 | `inv lock [--check] [--accept-weakening]` | Pins what each rule's meaning depends on; refuses a weakening unless accepted. [More](docs/lockfile.md) |
 | `inv verify --import MOD` | Every target carries its guard, and every guard names a rule. |

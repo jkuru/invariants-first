@@ -34,7 +34,14 @@ runs:
         args=()
         if [ -n "$INV_RULE_FILE" ]; then args+=("$INV_RULE_FILE"); fi
         if [ -n "$INV_BASE" ]; then
-          git fetch --no-tags --depth=1 origin "${INV_BASE#origin/}" >/dev/null 2>&1 || true
+          if [ "${INV_BASE#origin/}" != "$INV_BASE" ]; then
+            branch="${INV_BASE#origin/}"
+            git fetch --no-tags --depth=1 origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+          fi
+          if ! git rev-parse --verify --quiet "${INV_BASE}^{commit}" >/dev/null; then
+            echo "::error::invariants: base ref ${INV_BASE} not found after fetching it; the weakening check cannot run"
+            exit 1
+          fi
           args+=(--base "$INV_BASE")
         fi
         inv check "${args[@]}"

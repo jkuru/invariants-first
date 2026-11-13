@@ -42,8 +42,9 @@ rewrite is itself a possible weakening).
 | `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`, `mediation.chokepoint`). |
 | `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, `effects`, and a model-call target's reply schema. |
 | `providers` | `type`, `from`, `args`, and the function's signature and resolved types. |
-| `contracts` | A pydantic, dataclass, TypedDict or `{field: type}` schema; an `openapi` file as the parameters, request body and response schemas of the operations rules name; a `python` module by reference only (its targets carry the pins); any other file by digest. |
+| `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations; a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
+| `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults and any `--root`/`--exclude`. |
 
 In detail:
 
@@ -65,17 +66,33 @@ what each rule's meaning depends on, entry by entry:
   target, `reply_schema`.
 - `providers.<name>`: `type`, `from`, `args`, and the `from` function's `signature`
   and `types`.
-- `contracts.<name>`: `{type, ref}` plus, by type:
-  - `schema` for a pydantic model, a dataclass, a TypedDict or a `{field: type}` mapping;
+- `contracts.<name>`: `{type, ref}` (or `{type, app}`) plus, by type:
+  - `schema` for a pydantic model (`{name, pydantic: <model_json_schema()>}`), a dataclass or
+    TypedDict (`{name, jsonschema: ...}`: pydantic's `TypeAdapter(cls).json_schema()` when pydantic is
+    installed, else a JSON Schema built from the resolved annotations, with the bounds an
+    `Annotated` metadata object carries as `gt`/`ge`/`lt`/`le`/`min_length`/`max_length`), or a
+    `{field: type}` mapping;
   - `signature` and `types` for a function;
   - `operations` for an `openapi` file: each operation a rule names through `subject.operation`,
     as its method, path, `parameters`, `requestBody` and `responses` schemas (a file no rule names
     an operation of is pinned by digest);
+  - `operations` for an `openapi` contract read from a live app, `{type: openapi, app:
+    "myapi.main:app"}`: `inv lock` imports the app and calls `app.openapi()` (a FastAPI app has
+    it). The operations rules (or the contract's `operation`) name are pinned, or every operation
+    when none is named, since a generated document has no file to digest. Give `ref` or `app`, not
+    both; a changed `app` is a possible weakening;
   - nothing more for a `python` module, whose targets and providers carry the pins;
   - `hash` for any other file.
 - `schemas.<sha256>`: each schema the entries above reference as `{"$ref": "sha256:..."}`, keyed
   by the digest of its canonical JSON. The same model, or a shared OpenAPI component, is stored
   once.
+- `scan`: `{roots, exclude}`, present when a rule declares a sink. `inv check` builds the same
+  pin from the roots and excludes it is about to scan with, so a `[tool.invariants.scan]` edit or
+  an `inv check --exclude` shows up as a lock change. An added exclude or a removed root is
+  **WEAKENED** (the scan reads less code); a removed exclude or an added root is a change only. A
+  lock taken before the scan was pinned is compared with the default excludes, so the first pin is
+  not a way to slip one in. To scan with an extra `--root` or `--exclude`, pin it with
+  `inv lock --root DIR --exclude GLOB`; prefer `[tool.invariants.scan]` in `pyproject.toml`.
 
 `types` maps each annotated parameter, and `return`, to its resolved type (`typing.get_type_hints`).
 Aliases (`Caps = list[int]`, `type Caps = ...`), `Literal`, unions, `Annotated` and `NewType` are
@@ -120,31 +137,55 @@ These changes are marked **WEAKENED**:
 - a removed `mediation.residual_paths` entry (while one is listed `inv status` withholds `held`,
   so removing it can raise the rule's standing);
 - a `bad` that now matches fewer cases;
-- a pinned pydantic schema that now accepts more input (see below);
+- a pinned schema (pydantic, dataclass, TypedDict or OpenAPI) that now accepts more input (see
+  below);
+- a removed contract: a rule may name it, and a contract no rule names (the pydantic models
+  `inv init` pins) is itself the pin of its constraints;
+- an added scan exclude or a removed scan root;
 - a pin for a feature this release removed (see
   [Upgrading](#upgrading-from-a-release-with-rules-below-the-api)).
 
 **Constraints the code already has.** A `pydantic` contract (or a pydantic model in a target's
-signature) is pinned as its JSON Schema, so its constraints are pinned too.
-`lockfile.constraint_weakening` marks a change **WEAKENED** when the model may now accept more input.
-That covers:
+signature) is pinned as its JSON Schema, so its constraints are pinned too; so is a dataclass or
+TypedDict contract, and the schemas of an OpenAPI contract's operations.
+`lockfile.constraint_weakening` marks a change **WEAKENED** when the schema may now accept more
+input. That covers:
 
 - `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems` or `maxProperties` raised or removed;
 - the matching minimums lowered or removed;
 - an `enum` value added, or the enum removed;
-- a field that is no longer `required`, or a property removed;
-- `pattern`, `format`, `multipleOf`, `const`, `type` or `anyOf`/`oneOf` changed or removed;
-- `additionalProperties` relaxed.
+- a field that is no longer `required` (or an OpenAPI parameter or request body no longer
+  `required: true`), or a property removed;
+- `pattern`, `format`, `multipleOf`, `const` or `anyOf`/`oneOf` changed or removed, and a `type`
+  widened or removed;
+- a `$ref` removed (the value is now `{}`, Any) or pointed at a schema with a different body, and a
+  `$defs` entry removed while the old schema referred to it;
+- `additionalProperties` relaxed: `false` to absent or `true`, or absent to `true` (or to a
+  schema), so extra properties now pass.
 
-Adding a constraint or tightening one is not a weakening. Other schema changes, such as a default
-value or a new optional field, are reported as pin changes. Changing `le` to `lt` with the same
-bound shows as a removed `maximum` and is treated as a weakening; the check is conservative.
+Adding a constraint or tightening one is not a weakening. These count as tightenings, judged with
+the neighbouring keywords:
+
+- a bound replaced by its exclusive or inclusive twin at least as tight: `le=10` to `lt=10`, and
+  on an integer `ge=1` to `gt=0` or `le=9` to `lt=10` (for an integer `gt=k` is `ge=k+1`);
+- an `enum` replaced by a `const` that was one of its values (`Literal["a", "b"]` to `Literal["a"]`);
+- a `type` narrowed: `number` to `integer`, or a type dropped from a list;
+- a `pattern` given `^` or `$` anchors it did not have, with the rest unchanged (a pattern with a
+  top-level `|` is not judged this way). Any other pattern change is still a possible weakening.
+
+Other schema changes, such as a default value or a new optional field, are reported as pin changes.
+A `$ref` pointed at a renamed but identical schema is a change only.
 
 **Comparing with a base branch.** `inv lock --check` compares with the lock in the working tree, which
 the change itself may have re-pinned with `--accept-weakening`. `inv check --base REF` compares the
 rule file with the lock committed at `REF` instead, and fails on any weakening since then. It passes
 only when `--allow-weakening` is given or `INV_ALLOW_WEAKENING=1` is set, which a reviewer sets (for
-example from a pull-request label), not the change's author.
+example from a pull-request label), not the change's author. It fails closed: a `REF` that does not
+exist, a checkout that is not a git repository, and a lock at `REF` that cannot be read or compared
+(damaged, or a lock version other than this invariants writes) all fail. A reviewer may accept the
+last kind with the same switch; a missing ref cannot be accepted. Only a `REF` with no
+`invariants.lock` at all passes, reported as a first adoption, since the whole lock is then new and
+reviewed in that change.
 
 Any change to a field that changes what `bad` reads, or how a check runs, is a possible
 weakening: `bind`, an enforcer's `view`, `artifact`, `conformance_test` or `generated`, a
@@ -162,7 +203,7 @@ change unless `--accept-weakening` is given.
 
 | Class | Fields | Marked `WEAKENED` when |
 |---|---|---|
-| possible weakening | `bind`; `subject` (`contract`, `operation`, `target`); `scope`; enforcer `view`, `artifact`, `conformance_test`, `generated`; provider `type`, `from`, `args`; `model_policy.schema`, `feedback`, `abstain`; contract `type`, `ref` | any change. These change what `bad` reads or how a check runs. This covers an `artifact` digest rewritten by `--update-artifacts`. |
+| possible weakening | `bind`; `subject` (`contract`, `operation`, `target`); `scope`; enforcer `view`, `artifact`, `conformance_test`, `generated`; provider `type`, `from`, `args`; `model_policy.schema`, `feedback`, `abstain`; contract `type`, `ref`, `app` | any change. These change what `bad` reads or how a check runs. This covers an `artifact` digest rewritten by `--update-artifacts`. |
 | ranked | `status` | it moves down `enforce > detect > candidate/contested > retired` |
 | ranked | enforcer `mode` | it moves down `enforce > detect > off` |
 | ranked | enforcer `on_violation` | it moves from `reject`/`halt` to `escalate`/`route` |
@@ -173,7 +214,8 @@ change unless `--accept-weakening` is given.
 | more is weaker | `model_policy.format_retries`, `semantic_resamples` | it goes up |
 | presence | `compares_to` | it is removed |
 | analysed | `bad` (`when`) | it now matches fewer cases, or the direction cannot be decided |
-| analysed | enforcer `point`, `target` (identity), a `bad` clause, a rule (`id`) | it is removed |
+| analysed | enforcer `point`, `target` (identity), a `bad` clause, a rule (`id`), a contract | it is removed |
+| analysed | `scan` (`roots`, `exclude`) | an exclude is added or a root removed |
 | analysed | `mediation.sink` | a sink is removed |
 | analysed | `mediation.door` | a door is added to a rule that already had a sink |
 | analysed | `mediation.allow` | an entry is added |
@@ -181,7 +223,7 @@ change unless `--accept-weakening` is given.
 | analysed | `mediation.residual_paths` | an entry is removed (it can raise the rule's standing to `held`) |
 | neutral | `rev`, `spec`, clause `message`, `falsified_by` | never (recorded as a change) |
 | prose | `statement`, `why`, `owner`, `class`, `mediation.chokepoint` | never (digest only) |
-| pin | signatures, `types`, schemas, OpenAPI operations, file digests | never (a code change, shown old -> new) |
+| pin | signatures, `types`, schemas, OpenAPI operations, file digests | never (a code change, shown old -> new), except a pinned schema constraint that now accepts more input (above) |
 | computed | `evidence` | not pinned |
 
 ## How `bad` is compared
