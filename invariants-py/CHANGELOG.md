@@ -45,6 +45,17 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
   inside `oneOf` (a tightened branch can accept more); `prefixItems` extended past its old length
   over an `items` schema that checked those positions; and OpenAPI `nullable` (or `x-nullable`)
   turned on.
+- **A property added to a closed schema is a weakening**: with `additionalProperties` (or
+  `unevaluatedProperties`) `false` or a schema, an input carrying the new property was rejected and
+  now passes, so an optional field added to a pydantic `extra="forbid"` model is **WEAKENED**. A new
+  property that is also `required`, with a schema that constrains its value, is not. Existing locks
+  are unaffected: only new edits are judged.
+- **`RecordingModel` never loses a paid call to the trace.** A request it could not serialise (bytes
+  in an image block) made the API call and then crashed writing the trace. The request is now
+  serialised before the call: bytes are recorded as `{"$bytes_base64": "..."}`, and any other value
+  JSON cannot hold raises `TypeError` before anything is sent.
+- **docs/start.md names the whole-tree commands the hook does not catch** (`git checkout -- .`,
+  `git restore`, `git stash`, `tar x`, `cp -r dir/. .`); CI is the gate for them.
 
 ### Fix round 17: ablation, MCP, providers
 

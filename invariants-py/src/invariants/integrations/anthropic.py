@@ -33,6 +33,7 @@ request; ReplayModel and RecordingModel over a stub need nothing beyond the libr
 """
 from __future__ import annotations
 
+import base64
 import contextvars
 import copy
 import difflib
@@ -222,10 +223,23 @@ def _dump(obj: Any) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True)
 
 
+BYTES_MARKER = "$bytes_base64"
+
+
+def _encode(obj: Any) -> Any:
+    """bytes as {"$bytes_base64": "..."} (deterministic, so a replay of the same bytes matches); any
+    other value JSON cannot hold is a TypeError."""
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return {BYTES_MARKER: base64.b64encode(bytes(obj)).decode("ascii")}
+    raise TypeError(f"a request holds a {type(obj).__name__}, which a JSON trace cannot record; pass JSON "
+                    f"values (strings, numbers, lists, dicts) or bytes")
+
+
 def _request_shape(model: str, max_tokens: int, params: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-    """Everything the adapter sends but the wire form of assistant turns, as JSON would read it back."""
+    """Everything the adapter sends but the wire form of assistant turns, as JSON would read it back.
+    TypeError when it does not serialise, so a recording fails before the API call, not after."""
     shape = {"model": model, "max_tokens": max_tokens, **params, **request}
-    out: dict[str, Any] = json.loads(json.dumps(shape, ensure_ascii=False, default=repr))
+    out: dict[str, Any] = json.loads(json.dumps(shape, ensure_ascii=False, default=_encode))
     return out
 
 
@@ -327,13 +341,15 @@ class RecordingModel(ChatModel):
             os.replace(tmp, self.path)
 
     def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+        shape = self.inner.shape(request)               # serialised first: a paid call is never lost
         text, back = self.inner._send(request, wire)
-        self._record(self.inner.shape(request), text)
+        self._record(shape, text)
         return text, back
 
     async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+        shape = self.inner.shape(request)
         text, back = await self.inner._asend(request, wire)
-        self._record(self.inner.shape(request), text)
+        self._record(shape, text)
         return text, back
 
 

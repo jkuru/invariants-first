@@ -77,6 +77,9 @@ not the directory it is in.
 - `RecordingModel(inner, path)` sends through an `AnthropicModel` and rewrites `path` after each call,
   marked `"fixture": "recorded"`. Each request records everything the adapter sent but the wire
   form of assistant turns: `model`, `max_tokens`, the params, `system` when set, and the messages.
+  Bytes in a request are recorded as `{"$bytes_base64": "..."}` (a replay of the same bytes
+  matches); any other value JSON cannot hold raises `TypeError` before the API call, so a paid call
+  is never lost to a trace that cannot be written.
 - `model_for(mode, trace, system=..., model=..., **kw)` returns the model for a mode name: `replay`,
   `record`, `anthropic`, or `fake` (`None`: the caller keeps its own fake). `kw` goes to the
   `AnthropicModel` and to the `ReplayModel` alike, so a replay compares what the live model would

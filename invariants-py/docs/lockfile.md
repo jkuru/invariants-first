@@ -172,6 +172,11 @@ input. That covers:
   `dependentRequired` entry dropped, and any change inside `not`, `if` or `oneOf`, where a tighter
   subschema can let more input through (a value that failed a `oneOf` because it matched two
   branches passes once one of them is tightened);
+- a property added while `additionalProperties` (or `unevaluatedProperties`) was `false` or a
+  schema, so an input carrying it, rejected before, now passes: an optional field added to a
+  pydantic model with `extra="forbid"` is **WEAKENED**. It is not when the new property is also
+  `required` and its schema constrains its value (no old input had it, so none passes now), or when
+  extra properties were allowed anyway;
 - `patternProperties` added, or a pattern added to it, while `additionalProperties` (or
   `unevaluatedProperties`) was `false` or a schema: a property matching the pattern is no longer
   checked by it. With extra properties allowed anyway (absent or `true`) it is a tightening;

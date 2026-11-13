@@ -2048,6 +2048,8 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
     if parent in _NAME_SEGMENTS:                                 # a field (or model) entry itself
         if parent == "patternProperties" and old is None and new is not None:
             return _opens_closed(_node(old_root, segs[:-2]), f"patternProperties {key!r} added")
+        if parent == "properties" and old is None and new is not None:
+            return _property_opens(_node(old_root, segs[:-2]), _node(new_root, segs[:-2]), key, new)
         if new is None and parent == "properties":
             return f"field {key} removed: its constraints no longer apply"
         if new is None and parent in ("$defs", "definitions"):
@@ -2122,6 +2124,28 @@ def _opens_closed(node: Any, what: str) -> str | None:
         v = node.get(k)
         if v is not None and v is not True and not same(v, {}):
             return f"{what} while {k} is {_short(v)}: properties matching it now pass without that check"
+    return None
+
+
+def _property_opens(old_node: Any, new_node: Any, key: str, schema: Any) -> str | None:
+    """A property added to an object schema whose additionalProperties (or unevaluatedProperties)
+    was false or a schema: the property was rejected (or checked by that schema) and now passes by
+    its own schema. Not a weakening when other properties were allowed anyway, when the old schema
+    for extras was the same, or, for a closed schema, when the new property is required and its
+    schema constrains its value (every old instance lacked it, so none of them passes now)."""
+    if not isinstance(old_node, dict):
+        return None
+    for k in ("additionalProperties", "unevaluatedProperties"):
+        v = old_node.get(k)
+        if v is None or v is True or same(v, {}) or same(v, schema):
+            continue
+        required = isinstance(new_node, dict) and isinstance(new_node.get("required"), list) \
+            and key in new_node["required"]
+        constrained = isinstance(schema, dict) and bool(schema) and schema is not True
+        if v is False and required and constrained:
+            continue
+        return (f"field {key} added while {k} is {_short(v)}: inputs with {key} "
+                f"{'were rejected' if v is False else 'were checked by that schema'} and now pass")
     return None
 
 

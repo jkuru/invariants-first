@@ -339,7 +339,10 @@ Both commands read Claude Code's hook JSON on stdin, and both block by exiting w
 
 The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
 command can always be talked past (a script file that writes the lock, a name read from a file),
-and an agent may run without hooks. The gate is `inv check --base` in CI, with the rule files owned by a
+and an agent may run without hooks. Commands that overwrite the whole tree without naming a file
+are not caught at all: `git checkout <ref> -- .`, `git restore --source=<ref> :/`, `git stash`
+followed by `git stash pop`, `tar x` of an archive and `cp -r dir/. .` can each put back an old
+`invariants.lock` or `pyproject.toml`. CI is the gate for them. The gate is `inv check --base` in CI, with the rule files owned by a
 person: it compares with the lock on the base branch, whatever happened on the way.
 
 For other agents, put this in `AGENTS.md`, and rely on pre-commit and CI to enforce it:

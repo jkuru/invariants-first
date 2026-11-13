@@ -281,3 +281,58 @@ def test_schema_weakenings_round18(old, new, weak):
 ])
 def test_openapi_nullable_turned_on_is_a_weakening(path, old, new, weak):
     assert (lockfile.constraint_weakening(path, old, new) is not None) is weak
+
+
+# --- follow-up: a property added to a closed schema --------------------------------------------------
+@pytest.mark.parametrize("old,new,weak", [
+    (CLOSED, {**CLOSED, "properties": {**CLOSED["properties"], "is_admin": {"type": "boolean"}}}, True),
+    (CLOSED, {**CLOSED, "properties": {**CLOSED["properties"], "x": {}}, "required": ["x"]}, True),
+    (CLOSED, {**CLOSED, "properties": {**CLOSED["properties"], "x": {"type": "string"}}, "required": ["x"]}, False),
+    ({**CLOSED, "additionalProperties": {"type": "integer"}},
+     {**CLOSED, "additionalProperties": {"type": "integer"}, "properties": {**CLOSED["properties"], "x": {}}}, True),
+    ({"type": "object", "properties": {"a": {}}, "unevaluatedProperties": False},
+     {"type": "object", "properties": {"a": {}, "b": {"type": "string"}}, "unevaluatedProperties": False}, True),
+    ({"type": "object", "properties": {"a": {}}},
+     {"type": "object", "properties": {"a": {}, "b": {"type": "string"}}}, False),
+])
+def test_property_added_to_a_closed_schema(old, new, weak):
+    assert bool(_weak(old, new)) is weak, _weak(old, new)
+
+
+def test_pydantic_extra_forbid_optional_field_is_a_weakening():
+    import pydantic
+
+    class Old(pydantic.BaseModel):
+        model_config = pydantic.ConfigDict(extra="forbid")
+        amount: int
+
+    class New(pydantic.BaseModel):
+        model_config = pydantic.ConfigDict(extra="forbid")
+        amount: int
+        is_admin: bool = False
+
+    a, b = {"pydantic": Old.model_json_schema()}, {"pydantic": New.model_json_schema()}
+    assert a["pydantic"]["additionalProperties"] is False
+    whys = [why for p, x, y in lockfile._json_paths(a, b, "", [])
+            if (why := lockfile.constraint_weakening(p, x, y, a, b))]
+    assert any("is_admin" in w for w in whys), whys
+
+
+# --- follow-up: a recording never loses a paid call -------------------------------------------------
+def test_recording_refuses_unserialisable_content_before_the_call(tmp_path):
+    stub = _Stub()
+    rec = inv_an.RecordingModel(inv_an.AnthropicModel(client=stub), tmp_path / "t.json")
+    with pytest.raises(TypeError, match="JSON"):
+        rec.complete([{"role": "user", "content": [{"type": "text", "text": object()}]}])
+    assert stub.calls == []                                  # no API call was made
+
+
+def test_recording_encodes_bytes_and_replays_them(tmp_path):
+    stub = _Stub()
+    image = [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                                       "data": b"\x89PNG"}}]}]
+    inv_an.RecordingModel(inv_an.AnthropicModel(client=stub), tmp_path / "t.json").complete(image)
+    assert len(stub.calls) == 1
+    data = json.loads((tmp_path / "t.json").read_text())["calls"][0]["request"]["messages"][0]["content"][0]
+    assert data["source"]["data"] == {"$bytes_base64": "iVBORw=="}
+    assert inv_an.ReplayModel(tmp_path / "t.json").complete(image) == "ok"
