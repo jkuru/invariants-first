@@ -456,5 +456,11 @@ def summary(found: DoorsFound) -> list[str]:
             out.append(f"  found {len(d.back_doors)} back door(s) in {', '.join(files)}"
                        + ("; frozen in allow, so check passes and a new one fails" if d.active else ""))
     if not found.doors:
-        out.append("found no door (no function that two or more callers go through to a write)")
+        # the rule _doors_for applies: a service-layer caller, a layer between two others in the graph,
+        # a caller only route handlers call, else one at least MIN_CALLERS callers go through
+        out.append("found no door (no write is called from a service function (a *Service, *Manager or similar class, "
+                   "or a services module), "
+                   + ("from a function between two layers of the Graphify graph, " if found.graph else "")
+                   + f"from a function only route handlers call, or from a function {MIN_CALLERS} or more "
+                     f"callers go through)")
     return out

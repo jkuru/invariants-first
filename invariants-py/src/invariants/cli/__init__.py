@@ -29,7 +29,7 @@ from .commands import (_against_stored, _check_result, _fresh_lock, _init_doors,
                        _migration, _report_updated_artifacts, _schema_errors, _stale_form, _write_lock, cmd_check,
                        cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify, update_artifacts)
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, USAGE, Usage, _captured,
-                     _compare, _err, _out, _print_changes, _rule_file)
+                     _compare, _describe, _err, _importing, _out, _print_changes, _rule_file)
 from .git_base import (BaseUnavailable, _base_lock, _base_scan_default, _base_step, _git, _ls_tree, _repo_root,
                        _symlinked, base_changes)
 from .hooks import (_BRACE_LIMIT, _GLOB, GREP_COMMANDS, OPAQUE, PROTECTED, READ_COMMANDS, READ_GIT, READ_INV, SUSPECT,
@@ -50,6 +50,8 @@ def parser() -> argparse.ArgumentParser:
                                 allow_abbrev=False,
                                 epilog="exit codes: 0 ok, 1 check failed, 2 usage error, 3 scan unresolved, "
                                 "4 scan skipped an ablated enforce rule")
+    from .. import __version__
+    p.add_argument("-V", "--version", action="version", version=f"inv (invariants) {__version__}")
     sub = p.add_subparsers(dest="command", metavar="command")
 
     def add(name: str, fn: Callable[[argparse.Namespace], int], help: str, imports: bool = True) -> Any:
@@ -57,9 +59,10 @@ def parser() -> argparse.ArgumentParser:
         sp.add_argument("rulefile", nargs="?", help="rule file (default: ./invariants.yaml|yml|json)")
         if imports:
             sp.add_argument("--path", action="append", default=[], metavar="DIR",
-                            help="import the app from DIR first (repeatable; this checkout's src/, "
-                                 "packages.find where and scan roots, the rule file's directory and the "
-                                 "project root are always added ahead of site-packages)")
+                            help="also import your app from DIR (repeatable); your project's src/, its "
+                                 "[tool.setuptools.packages.find] where and scan roots, the rule file's "
+                                 "directory and the project root are on the import path already, ahead "
+                                 "of site-packages")
         sp.set_defaults(fn=fn)
         return sp
 
@@ -137,18 +140,43 @@ def _check_options(ck: argparse.ArgumentParser) -> None:
                     help="scan this source root (repeatable; as `inv scan --root`, also [tool.invariants.scan] roots)")
     ck.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                     help="scan: skip files matching GLOB (as `inv scan --exclude`)")
-    ck.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE")
+    ck.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE",
+                    help="guards: also import MODULE and check its guards (repeatable; as `inv verify "
+                         "--import`); a module nothing imports is not checked")
+
+
+HOOK_EVENTS = ("pretool", "stop")
+
+
+class _HookEvent(argparse.Action):
+    """`inv hook`'s event, before or after the rule file: `inv hook stop invariants.yaml` and
+    `inv hook invariants.yaml stop` are the same call (argparse fills the optional rule file first)."""
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: Any,
+                 option_string: str | None = None) -> None:
+        first = getattr(namespace, "rulefile", None)
+        if values not in HOOK_EVENTS and first in HOOK_EVENTS:
+            namespace.rulefile, values = values, first
+        if values not in HOOK_EVENTS:
+            raise argparse.ArgumentError(self, f"invalid choice: {values!r} (choose from "
+                                               f"{', '.join(map(repr, HOOK_EVENTS))})")
+        setattr(namespace, self.dest, values)
 
 
 def _hook_options(hk: argparse.ArgumentParser) -> None:
-    hk.add_argument("event", choices=("pretool", "stop"))
+    hk.add_argument("event", action=_HookEvent, metavar="{pretool,stop}",
+                    help="pretool (before a tool call) or stop (before the agent finishes); before or "
+                         "after the rule file")
 
 
 def _status_options(st: argparse.ArgumentParser) -> None:
-    st.add_argument("--root", action="append", default=[], metavar="DIR")
-    st.add_argument("--exclude", action="append", default=[], metavar="GLOB")
-    st.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE")
-    st.add_argument("--json", action="store_true")
+    st.add_argument("--root", action="append", default=[], metavar="DIR",
+                    help="scan this source root (repeatable; as `inv scan --root`, also [tool.invariants.scan] roots)")
+    st.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                    help="scan: skip files matching GLOB (as `inv scan --exclude`)")
+    st.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE",
+                    help="also import MODULE, so its guards count (repeatable; as `inv verify --import`)")
+    st.add_argument("--json", action="store_true", help="print the report as JSON")
     st.add_argument("--ablation", metavar="JSON",
                     help="the pytest --inv-ablate --inv-report-json file; without it no rule is reported held")
 
@@ -185,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(e.code or 0)
     if not getattr(a, "fn", None):
         p.print_usage(sys.stderr)
-        _err("inv: choose a command: init, check, validate, lock, verify, scan, status")
+        _err(f"inv: choose a command: {', '.join(c[0] for c in _COMMANDS)}")
         return USAGE
     try:
         return a.fn(a)
@@ -193,10 +221,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _err(f"inv {a.command}: {e}")
         return USAGE
     except (LoadError, scanner.ScanConfigError) as e:
-        _err(f"inv {a.command}: {e}")
+        _err(f"inv {a.command}: {_describe(e)}")
         return FAILED
     except Exception as e:          # an app module failing at import, for example
-        _err(f"inv {a.command}: {type(e).__name__}: {e}")
+        _err(f"inv {a.command}: {_describe(e, typed=True)}")
         return FAILED
 
 # Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names

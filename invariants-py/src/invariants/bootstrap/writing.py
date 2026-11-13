@@ -73,9 +73,13 @@ def _suggested_lines(rules: list[Guard]) -> list[str]:
     return lines
 
 
-def render(found: Found) -> str:
-    """The rule file text: contracts active, suggested rules commented out."""
-    lines = ["# invariants.yaml, drafted by `inv init`. Review it, then run `inv lock` and commit both files.",
+def render(found: Found, locked: bool = False) -> str:
+    """The rule file text: contracts active, suggested rules commented out. locked: `inv init` pins it
+    in invariants.lock right after writing it (without --no-lock), and the header says so."""
+    header = ("# invariants.yaml, drafted by `inv init` and pinned in invariants.lock. Review both, then commit "
+              "them." if locked else
+              "# invariants.yaml, drafted by `inv init`. Review it, then run `inv lock` and commit both files.")
+    lines = [header,
              "#",
              "# The contracts below pin rules your code already has. From now on `inv check` fails when a",
              "# change lets a model accept more than it does today (a raised limit, a removed",

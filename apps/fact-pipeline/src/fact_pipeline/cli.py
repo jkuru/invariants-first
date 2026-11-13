@@ -14,7 +14,7 @@ import invariants as inv
 
 from . import llm, monitor, rules_path
 from .fake_model import FAULTS, FakeModel, ModelClient
-from .pipeline import Pipeline
+from .pipeline import NoSuchReview, Pipeline
 from .store import Store
 
 
@@ -108,6 +108,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print(store.reviews())
         elif a.command == "resolve-review":
             _print(pipe.resolve_review(a.review_id, a.entity_id).__dict__)
+    except NoSuchReview as e:
+        print(f"fact-pipeline: resolve-review: {e}", file=sys.stderr)
+        return 2
     except inv.InvariantError as e:
         print(f"fact-pipeline: {e.rule}: {e}", file=sys.stderr)
         return 1

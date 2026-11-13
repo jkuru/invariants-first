@@ -16,6 +16,10 @@ from .fake_model import ModelClient
 from .models import ABSTAIN, NO_MORE, ChunkInfo, EvidenceSpan, Proposal, RetractionReport, SourceInfo
 from .store import Store, fact_id
 
+
+class NoSuchReview(LookupError):
+    """resolve_review on an id that names no open entity review."""
+
 MAX_FACTS_PER_CHUNK = 10
 
 
@@ -185,7 +189,13 @@ class Pipeline:
 
     def resolve_review(self, review_id: int, entity: str) -> Report:
         """A person rules an ambiguous mention means `entity`; every waiting item with that mention goes on."""
-        review = next(r for r in self.store.reviews("entity") if r["id"] == review_id)
+        review = next((r for r in self.store.reviews("entity") if r["id"] == review_id), None)
+        if review is None:
+            open_ids = [r["id"] for r in self.store.reviews("entity")]
+            raise NoSuchReview(f"no open entity review {review_id}; "
+                               + (f"open ones: {', '.join(map(str, open_ids))}" if open_ids else
+                                  "none is open (a mention opens one only when it matches two or more entities)")
+                               + "; `reviews` lists them")
         mention = review["payload"]["mention"]
         self.store.pin_alias(mention, entity)
         rep = Report()

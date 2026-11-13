@@ -36,6 +36,45 @@ def _rule_file(arg: str | None) -> pathlib.Path:
     raise Usage(f"no rule file given and none of {', '.join(DEFAULT_FILES)} in the current directory")
 
 
+def _importing(e: BaseException) -> tuple[str, bool] | None:
+    """The app module whose import raised e (or what e was raised from), innermost first, and whether
+    that module's own top-level code called inv.load(); None when e did not come from importing one."""
+    seen: set[int] = set()
+    exc: BaseException | None = e
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        tb, found = exc.__traceback__, None
+        while tb is not None:
+            f = tb.tb_frame
+            name = f.f_globals.get("__name__") or ""
+            if (f.f_code.co_name == "<module>" and name not in ("__main__", "")
+                    and name != "invariants" and not name.startswith("invariants.")):
+                callee = tb.tb_next.tb_frame if tb.tb_next is not None else None
+                found = (name, callee is not None and callee.f_code.co_name == "load"
+                         and str(callee.f_globals.get("__name__", "")).startswith("invariants."))
+            tb = tb.tb_next
+        if found:
+            return found
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _describe(e: BaseException, typed: bool = False) -> str:
+    """An error's message (with its type when typed), and, when it was raised while importing an app
+    module, which one: an error in the app's own import is otherwise read as one in the rule file."""
+    text = f"{type(e).__name__}: {e}" if typed else str(e)
+    where = _importing(e)
+    if where is None or f"import {where[0]}:" in text:
+        return text
+    mod, loads = where
+    text += f" (raised while importing {mod}"
+    if loads:
+        text += (f": its inv.load() runs as `inv` imports it, and a relative path is read from the current "
+                 f"directory; give an absolute one, e.g. "
+                 f'inv.load(pathlib.Path(__file__).parent / "invariants.yaml")')
+    return text + ")"
+
+
 def _captured(fn: Callable[[argparse.Namespace], int], ns: argparse.Namespace) -> tuple[int, str]:
     """Run a subcommand with its output captured; LoadError and the like become exit 1 with the message."""
     import io
@@ -47,10 +86,10 @@ def _captured(fn: Callable[[argparse.Namespace], int], ns: argparse.Namespace) -
             print(e)
             code = USAGE
         except (LoadError, scanner.ScanConfigError) as e:
-            print(e)
+            print(_describe(e))
             code = FAILED
         except Exception as e:                       # an app module failing at import, for example
-            print(f"{type(e).__name__}: {e}")
+            print(_describe(e, typed=True))
             code = FAILED
     return code, buf.getvalue().strip()
 

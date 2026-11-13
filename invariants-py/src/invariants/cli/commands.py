@@ -12,13 +12,16 @@ from ..errors import CoverageError, LoadError
 from ..loader import load, read_document, schema_path
 from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
-                     _err, _out, _print_changes, _rule_file)
+                     _describe, _err, _out, _print_changes, _rule_file)
 from .git_base import _base_step
 from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
                       source_dirs)
 
 if TYPE_CHECKING:
     from ..doors import DoorsFound
+
+
+NO_JSONSCHEMA = "jsonschema is not installed; schema check skipped (the loader checks still run)"
 
 
 def _schema_errors(doc: Any) -> list[str] | None:
@@ -51,7 +54,7 @@ def cmd_validate(a: argparse.Namespace) -> int:
         return FAILED
     schema = _schema_errors(doc)
     if schema is None:
-        _err("note: jsonschema is not installed; schema check skipped (the loader checks still run)")
+        _err(f"note: {NO_JSONSCHEMA}")
     else:
         problems += schema
     for label, check in VALIDATE_CHECKS:
@@ -67,7 +70,7 @@ def cmd_validate(a: argparse.Namespace) -> int:
             reg = load(path)
             notes = list(reg.notes)
         except LoadError as e:
-            problems.append(f"load: {e}")
+            problems.append(f"load: {_describe(e)}")
     if problems:
         _err(f"invalid: {path}")
         for p in problems:
@@ -266,17 +269,33 @@ def cmd_verify(a: argparse.Namespace) -> int:
         except CoverageError as e:
             ok, problems = False, str(e).split("; ")
         n = sum(1 for r in reg.rules.values() if r.target is not None)
+        checked = _imported_in(modules)
         for w in outside_roots(path, read_document(path), a.path):
             _err(w)
     if a.json:
         _out(json.dumps({"passed": ok, "problems": problems, "targeted_rules": n}, indent=2))
     elif ok:
-        _out(f"verify: pass ({n} targeted rule(s) guarded, every guard names a rule)")
+        _out(f"verify: pass ({n} targeted rule(s) guarded; {_checked_text(checked)})")
     else:
         _err("verify: FAIL")
         for p in problems:
             _err(f"  {p}")
     return OK if ok else FAILED
+
+
+def _imported_in(packages: set[str]) -> list[str]:
+    """The modules of these packages that are imported: verify checks the guards in these only."""
+    import sys
+    return sorted(m for m in list(sys.modules) if any(m == p or m.startswith(p + ".") for p in packages))
+
+
+def _checked_text(checked: list[str]) -> str:
+    """What verify's guard check covered: the imported modules, never a module nothing imported."""
+    if not checked:
+        return ("no guard module was imported, so no guard was checked; to check one, name a guarded "
+                "function as a rule's target or pass --import MODULE")
+    return (f"checked the guards in {len(checked)} imported module(s), each names a rule; a module nothing "
+            f"imports is not checked: add it with --import MODULE")
 
 
 def cmd_scan(a: argparse.Namespace) -> int:
@@ -326,23 +345,41 @@ def cmd_init(a: argparse.Namespace) -> int:
     path = pathlib.Path(a.rulefile or DEFAULT_FILES[0])
     existing = [p for p in ([path] if a.rulefile else [pathlib.Path(n) for n in DEFAULT_FILES]) if p.exists()]
     if existing:
-        raise Usage(f"{existing[0]} already exists; inv init never overwrites a rule file")
+        raise Usage(_already_exists(existing[0]))
     project = path.resolve().parent
     roots = [pathlib.Path(r) for r in a.root] or source_dirs(path) or [project]
     for r in roots:
         if not r.exists():
             raise Usage(f"source root {r} does not exist")
     found = bootstrap.discover(project, roots, a.exclude)
+    if not found.files:
+        # nothing to draft from: almost always the wrong directory or --root, and a rule file written
+        # anyway would make the rerun from the right place fail with "already exists"
+        raise Usage(f"found no Python source file to read under {', '.join(str(r) for r in roots)}; nothing "
+                    f"was written. Run `inv init` in your project's directory, or pass --root DIR (the "
+                    f"directory that holds your package)")
     if not a.no_doors:
         found.doors = _init_doors(a, path, project)
-    path.write_text(bootstrap.render(found), encoding="utf-8")
+    path.write_text(bootstrap.render(found, locked=not a.no_lock), encoding="utf-8")
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
         _out(f"  {line}")
     if a.no_lock:
         _out("next: review it, run `inv lock`, and commit both files")
         return OK
-    return _init_lock(a, path)
+    code = _init_lock(a, path)
+    if code != OK:                  # nothing was pinned: the header says to run `inv lock`
+        path.write_text(bootstrap.render(found), encoding="utf-8")
+    return code
+
+
+def _already_exists(path: pathlib.Path) -> str:
+    """`inv init` on an existing rule file: it never overwrites one; without a lock, the next step is `inv lock`."""
+    text = f"{path} already exists; inv init never overwrites a rule file"
+    if not path.with_name(lock.LOCK_NAME).exists():
+        text += (f". It has no {lock.LOCK_NAME} yet (an earlier `inv init` may have stopped at its lock step): "
+                 f"review it, then run `inv lock {path}`; or delete {path} to draft it again")
+    return text
 
 
 def _init_doors(a: argparse.Namespace, path: pathlib.Path, project: pathlib.Path) -> DoorsFound:
@@ -362,14 +399,23 @@ def _init_doors(a: argparse.Namespace, path: pathlib.Path, project: pathlib.Path
 def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
     """`inv init`'s last step: `inv lock` on the rule file it wrote, and what to do next."""
     _out("running `inv lock` to pin them ...")
-    code = cmd_lock(argparse.Namespace(rulefile=str(path), check=False, update_artifacts=False, lock=None,
-                                       accept_weakening=False, path=a.path, root=[], exclude=[]))
+    try:
+        code = cmd_lock(argparse.Namespace(rulefile=str(path), check=False, update_artifacts=False, lock=None,
+                                           accept_weakening=False, path=a.path, root=[], exclude=[]))
+    except (LoadError, scanner.ScanConfigError) as e:
+        _err(f"inv init: {_describe(e)}")
+        code = FAILED
+    except Exception as e:          # a model module failing at import, for example
+        _err(f"inv init: {_describe(e, typed=True)}")
+        code = FAILED
     if code == OK:
         _out("next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit "
              "(see docs/start.md)")
     else:
-        _err(f"`inv lock` failed; fix what it reports (often a contract ref that does not import), then run "
-             f"`inv lock`. {path} is kept.")
+        _err(f"`inv lock` failed, so no lock was written; {path} is kept. Next: fix what it reports above "
+             f"(often a model module that imports a package not installed in this environment), then run "
+             f"`inv lock {path}`. Do not rerun `inv init`: it never overwrites {path} (to draft it again, "
+             f"delete it and run `inv init`, or `inv init --no-lock` to skip the lock step).")
     return code
 
 
@@ -397,6 +443,8 @@ def cmd_check(a: argparse.Namespace) -> int:
 
     code, text = _captured(cmd_validate, argparse.Namespace(rulefile=str(path), path=a.path))
     step("rules", code, text, f"{len(raw_rules)} rule(s), {len(doc.get('contracts') or {})} contract(s) load")
+    if code == OK and NO_JSONSCHEMA in text:      # on a failure it is among the lines printed already
+        _out(f"  note  rules: {NO_JSONSCHEMA}")
     if code != OK:
         _out("fail")
         return FAILED

@@ -10,6 +10,36 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 23 (first run)
+
+- **`inv --version` (and `-V`)** prints `inv (invariants) <version>`.
+- **Bare `inv` lists every command**, hook and mcp included, from the command table.
+- **Help text for every option a first run reaches for:** `inv check --import`, `inv status --root`,
+  `--exclude`, `--import` and `--json`, and `inv hook`'s event. `--path` now describes the user's
+  project (its `src/`, `[tool.setuptools.packages.find] where` and scan roots), not "this checkout".
+- **`inv hook stop invariants.yaml` works**: the event may come before or after the rule file
+  (`inv hook invariants.yaml stop` still works).
+- **The GitHub Action runs on bash older than 4.4** (macOS `/bin/bash` 3.2): with `set -u`, an empty
+  argument array (a push with no `rule-file` and no `base`) was an "unbound variable".
+- **A passing `inv verify` (and the guards step of `inv check`) says what it checked**: "checked the
+  guards in N imported module(s)", and that a module nothing imports is not checked (add it with
+  `--import MODULE`); with no module imported, it says no guard was checked. It no longer claims
+  that every guard names a rule. The `--json` form is unchanged.
+- **`inv init` recovery:** when its lock step fails (a model module importing a package that is not
+  installed), it says to fix the import and run `inv lock`, not to rerun `inv init`, and the rule
+  file's header is the one for an unlocked file. `inv init` on an existing rule file without a lock
+  says to run `inv lock`. In a directory with no Python source it writes nothing and exits 2 (a file
+  drafted from nothing would make the rerun from the right directory fail). The header says whether
+  init pinned the file (`--no-lock` keeps the old "run `inv lock`" header).
+- **The "found no door" summary states the rule doors.py applies** (a service function, a function
+  only route handlers call, or one two or more callers go through), not only the last of these.
+- **An error raised while `inv` imports the app says so**: "(raised while importing app.svc ...)",
+  and when it came from the app's own `inv.load()`, that a relative path is read from the current
+  directory, with the absolute form to use instead.
+- **`inv check` shows the "jsonschema is not installed" note on a pass**, once, not only on a failure.
+- **fact-pipeline: `resolve-review` on a review that is not open** is a clean error (exit 2) instead
+  of an uncaught `StopIteration`.
+
 ### Fix round 22
 
 - **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).

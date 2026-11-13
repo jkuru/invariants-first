@@ -390,6 +390,6 @@ def test_shipped_hook_configs_name_real_commands():
     assert hooks[0]["language"] == "system" and hooks[0]["pass_filenames"] is False
     action = yaml.safe_load((root / "action.yml").read_text())
     run = action["runs"]["steps"][0]["run"]
-    assert 'inv check "${args[@]}"' in run and "--base" in run
+    assert 'inv check ${args[@]+"${args[@]}"}' in run and "--base" in run
     assert "INV_ALLOW_WEAKENING" in action["runs"]["steps"][0]["env"]
     assert textwrap.dedent(run)

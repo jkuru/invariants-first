@@ -44,4 +44,5 @@ runs:
           fi
           args+=(--base "$INV_BASE")
         fi
-        inv check "${args[@]}"
+        # ${args[@]+...}: with set -u, bash before 4.4 (macOS /bin/bash 3.2) calls an empty "${args[@]}" unbound
+        inv check ${args[@]+"${args[@]}"}

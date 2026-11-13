@@ -75,3 +75,16 @@ def test_cli_bad_rule_file_exits_2(tmp_path: pathlib.Path, capsys: pytest.Captur
     bad = tmp_path / "rules.yaml"
     bad.write_text("spec: invariant/v0.1\nrules: [{id: X}]\n")
     assert main(["--rules", str(bad), "--db", str(tmp_path / "f.db"), "promote"]) == 2
+
+
+def test_cli_resolve_review_with_no_such_review_is_a_clean_error(tmp_path: pathlib.Path,
+                                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    # one "Beta Ltd" alias: the mention resolves, no review opens, and review 1 does not exist
+    db = str(tmp_path / "f.db")
+    (tmp_path / "s1.txt").write_text(S1)
+    _, uk = run(capsys, "--db", db, "add-entity", "Beta Ltd (UK)", "--alias", "Beta Ltd")
+    run(capsys, "--db", db, "ingest", str(tmp_path / "s1.txt"), "--publisher", "newswire-a")
+    assert json.loads(run(capsys, "--db", db, "reviews")[1]) == []
+    code = main(["--db", db, "resolve-review", "1", uk.strip()])
+    err = capsys.readouterr().err
+    assert code == 2 and "no open entity review 1" in err and "none is open" in err, err
