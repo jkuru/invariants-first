@@ -175,22 +175,40 @@ class BufferedExporter:
     def drain(self, timeout: float | None = None) -> bool:
         """Export everything queued now; True when nothing is left (within timeout; None: no limit).
 
-        With the flusher running it waits for it; without one it exports in the calling thread.
+        With the flusher running it waits for it; without one it exports in the calling thread, one
+        event at a time: once the deadline passes it stops between two events and returns False, the
+        rest still queued. Either way it waits (within timeout) for events another caller is exporting.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        with self._lock:
-            while self._thread is not None and (self._queue or self._busy):
+        budget: int | None = None             # events queued when this drain began exporting them
+        lock, changed = self._lock, self._changed
+        with lock:
+            while True:
+                if self._thread is None and self._queue and (budget is None or budget > 0):
+                    if deadline is not None and deadline - time.monotonic() <= 0:
+                        return False
+                    if budget is None:
+                        budget = len(self._queue)
+                    budget -= 1
+                    item = self._queue.popleft()
+                    self._busy += 1
+                    changed.notify_all()
+                    lock.release()
+                    try:
+                        self._export([item])
+                    finally:
+                        lock.acquire()
+                    continue
+                if not self._busy and (self._thread is None or not self._queue):
+                    return not self._queue
                 left = None if deadline is None else deadline - time.monotonic()
                 if left is not None and left <= 0:
                     return False
-                self._changed.wait(left)
-            batch = self._take() if self._thread is None else []
-        if batch:
-            self._export(batch)
-        return self.pending == 0
+                changed.wait(left)
 
     def close(self, timeout: float | None = None) -> bool:
-        """Flush the queue, then stop the flusher thread; True when it stopped within timeout.
+        """Flush the queue, then stop the flusher thread; True when it stopped and the queue drained
+        within timeout (False: the flusher still runs, or events are still queued or being exported).
 
         Idempotent: closing a stopped exporter only exports what is queued (in this thread). The final
         drain gets what is left of timeout (a start() from another thread meanwhile runs a flusher it
@@ -216,8 +234,7 @@ class BufferedExporter:
                     self._thread, self._stopping = None, False
                 self._changed.notify_all()        # a "block" caller waiting for room stops waiting
         # what was queued after the flusher's last batch
-        self.drain(None if deadline is None else max(0.0, deadline - time.monotonic()))
-        return True
+        return self.drain(None if deadline is None else max(0.0, deadline - time.monotonic()))
 
     def __enter__(self) -> BufferedExporter:
         return self.start()

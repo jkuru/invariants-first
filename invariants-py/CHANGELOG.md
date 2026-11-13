@@ -10,6 +10,39 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 21
+
+From a review of the MCP server, the FastAPI and exporter integrations, the registry, the CLI and the
+edge decorator. Regression tests: `tests/test_fix_round21.py`; each marked "failed before" failed
+before its fix (checked by reverting the fixes).
+
+- **`propose_rules` (MCP) resolves the rule file it would write inside `--root`.** An `invariants.yaml`
+  that is a symlink to a file outside had its outside `pyproject.toml` read for the scan roots and
+  excludes; the tool now refuses it, as `scan` and `check` refuse a rule file outside `--root`.
+- **The FastAPI route check registers and reads under the registry's lock.** `register()` adds its
+  verifier with the new `Registry.add_verifier(check, key=...)` (locked, deduplicated by key) instead
+  of appending to `verifiers` unlocked, and the check and `verify_routes` read the rules and contracts
+  of one loaded generation, so a reload meanwhile never mixes two rule files. Behaviour is otherwise
+  unchanged.
+- **`BufferedExporter.drain(timeout)` keeps its timeout without a flusher.** It exports in the calling
+  thread one event at a time and, once the deadline passes, stops between two events and returns
+  False with the rest still queued (it exported everything past the deadline). It now waits, within
+  the timeout, for events another caller is exporting instead of returning False at once.
+  `close(timeout)` returns its final drain's result (it returned True with events still queued).
+- **`inv check` and `inv verify` import the modules of `dataclass` and `schema` contracts** whose ref
+  names a class (`module:Class`, as `inv lock` pins them), not only those of `python`, `pydantic` and
+  `openapi` app contracts.
+- **`inv validate` reports a malformed document as a problem** (for example `targets:` a list, which
+  the applies_to check read with `.keys()`): an `AttributeError` or `ValueError` from a check is listed
+  under its label instead of a traceback, also when jsonschema is not installed.
+- **`@inv.edge` with several parameters annotated with a `Checked` subclass needs `at=`.** It used the
+  first one silently; now it is a `TypeError` when the decorator runs, as several `Checked` state fields
+  are, and `at="plan"` (a bare parameter name) selects one.
+- **The event sink's inherited deque operations were already safe** (review claim refuted): `repr`,
+  `copy()`, `copy.copy` and `==` against a deque walk the sink through its locked `__iter__`; a hammer
+  test on Python 3.14 and 3.11 pins that they never raise "deque mutated during iteration" under
+  concurrent `record()` (a plain deque in the same probe does).
+
 ### Fix round 20 (follow-up)
 
 - **Every remaining text read and write is UTF-8:** the rule file read (`loader`), `inv init`'s source

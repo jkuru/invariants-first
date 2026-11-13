@@ -57,7 +57,9 @@ def cmd_validate(a: argparse.Namespace) -> int:
     for label, check in VALIDATE_CHECKS:
         try:
             check(doc)
-        except (LoadError, scanner.ScanConfigError, KeyError, TypeError) as e:
+        # a malformed document (targets: a list, a rule that is not a mapping) is a problem to report,
+        # whether or not the schema check ran before it to explain why
+        except (LoadError, scanner.ScanConfigError, KeyError, TypeError, AttributeError, ValueError) as e:
             problems.append(f"{label}: {e}")
     notes: list[str] = []
     with _import_path(path, a.path), isolated():
@@ -426,9 +428,9 @@ def cmd_check(a: argparse.Namespace) -> int:
 
 def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:
     """What `inv verify` imports from this rule file, in order: the targets, rule targets and edge
-    targets it resolves, the python and openapi-app contract modules, and the --import modules. Verify
-    checks guards and registry verifiers (an installed FastAPI app) only in what is imported, so with
-    none of these it can find nothing."""
+    targets it resolves, the python, schema-class (dataclass, pydantic or schema `module:Class`) and
+    openapi-app contract modules, and the --import modules. Verify checks guards and registry verifiers
+    (an installed FastAPI app) only in what is imported, so with none of these it can find nothing."""
     targets = doc.get("targets")
     keys: list[Any] = list(targets) if isinstance(targets, dict) else []
     for r in doc.get("rules") or []:
