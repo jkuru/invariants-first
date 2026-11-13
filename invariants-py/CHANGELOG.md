@@ -10,6 +10,33 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 21 (lock)
+
+Regression tests: `tests/test_fix_round21_lock.py`; each failed on the code before this round, except
+two guards (a loosened bound in a nested class; one class used twice is one definition).
+
+- **Parameterised PEP 695 aliases are pinned with their arguments:** `Box[int]` of `type Box[T] =
+  list[T]` is `list[int]` in the signature types and the stdlib JSON Schema (it was `list[~T]`), and a
+  parameter typed `PosBox[int]` of `type PosBox[T] = Annotated[T, Gt(0)]` gets its `param_schemas`
+  pin (it had none, so loosening `Gt(0)` was no lock change beyond the alias's own text). An alias
+  is unwrapped before Annotated bounds are classified, so `Annotated[Box[int], MaxLen(3)]` is
+  `maxItems`, not `maxLength`. Arguments that do not fit the parameters (a TypeVarTuple, a ParamSpec)
+  are pinned beside the alias value, so neither is dropped. Re-pins locks whose signatures or
+  schemas use a parameterised alias.
+- **An unreadable contract file is a LoadError:** a `jsonschema`, `openapi` or other file contract
+  that cannot be read (a permission error) says `contract X: F cannot be read (PermissionError)`
+  instead of raising the OSError.
+- **TypedDict `Required[]`, `NotRequired[]` and `ReadOnly[]`** (typing's and typing_extensions') are
+  unwrapped in the stdlib JSON Schema and the resolved schema (the field was an `x-python-type`, and
+  the constraints inside it were lost), and `Required` / `NotRequired` decide required-ness over the
+  class's `total=` (typing.TypedDict on 3.11 and 3.12 misses them inside typing_extensions'
+  `ReadOnly`). Re-pins locks of TypedDicts that use them.
+- **Stdlib `$defs` keys follow pydantic's:** a nested class is `Inner`, not `Outer.Inner` (a diff path
+  splits on ".", so a `le=5` to `lt=5` swap inside it was judged a weakening), and a second class of
+  the same name is `module__Name`: it shared the first one's definition, so its own constraints were
+  never pinned and loosening them showed no change. Re-pins locks of stdlib schemas with nested or
+  function-local classes or two classes of one name; the re-pin of a nested key is no weakening.
+
 ### Fix round 20 (follow-up)
 
 - **Every remaining text read and write is UTF-8:** the rule file read (`loader`), `inv init`'s source
