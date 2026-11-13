@@ -46,22 +46,38 @@ class ToolError(Exception):
 
 
 # --- the project --------------------------------------------------------------------------------
+# Every path a tool argument names (root, rules, source_roots, graphify) resolves inside the server's
+# --root, after following symlinks: `check` and `status` import the code they find, so a path outside
+# would run code the person who started the server never pointed it at.
+def _inside(server_root: pathlib.Path, base: pathlib.Path, given: str, what: str) -> pathlib.Path:
+    """base / given, resolved (symlinks followed); ToolError unless it is inside server_root."""
+    path = (base / given).resolve()
+    if not path.is_relative_to(server_root):
+        raise ToolError(f"{what} {given!r} resolves to {path}, outside the server's --root {server_root}; "
+                        f"a tool reads only inside it (start inv-mcp with a wider --root to reach it)")
+    return path
+
+
 def _root(server_root: pathlib.Path, args: dict[str, Any]) -> pathlib.Path:
     given = args.get("root")
-    root = (server_root / given).resolve() if isinstance(given, str) and given else server_root
+    root = _inside(server_root, server_root, given, "root") if isinstance(given, str) and given else server_root
+    if root == pathlib.Path(root.anchor):
+        raise ToolError(f"project root {root} is the filesystem root; start inv-mcp with --root at a project")
     if not root.is_dir():
         raise ToolError(f"project root {root} is not a directory")
     return root
 
 
-def _rule_file(root: pathlib.Path, args: dict[str, Any], default: pathlib.Path | None = None) -> pathlib.Path:
+def _rule_file(root: pathlib.Path, args: dict[str, Any], default: pathlib.Path | None,
+               server_root: pathlib.Path) -> pathlib.Path:
     given = args.get("rules")
     if isinstance(given, str) and given:
-        path = (root / given).resolve()
+        path = _inside(server_root, root, given, "rules")
     elif default is not None and not args.get("root"):
-        path = default
+        path = default                                  # the server's own --rules: its operator chose it
     else:
-        path = next((root / n for n in RULE_FILES if (root / n).is_file()), root / RULE_FILES[0])
+        found = next((root / n for n in RULE_FILES if (root / n).is_file()), root / RULE_FILES[0])
+        path = _inside(server_root, root, found.name, "rule file")
     if not path.is_file():
         raise ToolError(f"no rule file at {path}; run propose_rules to draft one (a person writes it)")
     return path
@@ -74,6 +90,11 @@ def _strs(args: dict[str, Any], key: str) -> list[str]:
     if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
         raise ToolError(f"{key} must be a list of strings")
     return list(v)
+
+
+def _source_roots(server_root: pathlib.Path, root: pathlib.Path, args: dict[str, Any]) -> list[str]:
+    """The source_roots argument, each resolved inside the server's --root."""
+    return [str(_inside(server_root, root, r, "source root")) for r in _strs(args, "source_roots")]
 
 
 def _rel(path: str | None, root: pathlib.Path) -> str | None:
@@ -122,7 +143,8 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
 
 def tool_scan(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
-    return run_scan(root, _rule_file(root, args, default_rules), _strs(args, "source_roots"), _strs(args, "exclude"))
+    return run_scan(root, _rule_file(root, args, default_rules, server_root), _source_roots(server_root, root, args),
+                    _strs(args, "exclude"))
 
 
 # --- check and status (child processes: they import the app) ------------------------------------
@@ -143,10 +165,10 @@ STEP = re.compile(r"^  (ok|FAIL|skip)\s+([^:]+?)(?::\s*(.*))?$")
 
 def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
-    rule_file = _rule_file(root, args, default_rules)
+    rule_file = _rule_file(root, args, default_rules, server_root)
     argv = ["check", str(rule_file)]
-    for r in _strs(args, "source_roots"):
-        argv += ["--root", str((root / r).resolve())]
+    for r in _source_roots(server_root, root, args):
+        argv += ["--root", r]
     for g in _strs(args, "exclude"):
         argv += ["--exclude", g]
     code, out, err = _inv(root, *argv)                 # never --relock, --base or --allow-weakening
@@ -163,7 +185,7 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
 
 def tool_status(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
-    rule_file = _rule_file(root, args, default_rules)
+    rule_file = _rule_file(root, args, default_rules, server_root)
     code, out, err = _inv(root, "status", str(rule_file), "--json")
     if code != 0:
         raise ToolError(f"inv status exited {code}: {(err or out).strip()}")
@@ -217,7 +239,7 @@ def _rule_summary(raw: dict[str, Any]) -> dict[str, Any]:
 
 def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
-    rule_file = _rule_file(root, args, default_rules)
+    rule_file = _rule_file(root, args, default_rules, server_root)
     ident = args.get("id")
     if not isinstance(ident, str) or not ident:
         raise ToolError("explain needs an id: a rule id (R-1) or a finding id from scan (R-1:bypass:app/x.py:12)")
@@ -235,7 +257,7 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
                               "If the rule itself is wrong, a person edits it; a relaxed condition is a weakening "
                               "the lock refuses without --accept-weakening."]
         return out
-    scan = run_scan(root, rule_file, _strs(args, "source_roots"), _strs(args, "exclude"))
+    scan = run_scan(root, rule_file, _source_roots(server_root, root, args), _strs(args, "exclude"))
     findings = [f for f in scan["findings"] if f["rule"] == rule_id]
     out["scan_result"] = scan["rules"].get(rule_id, {}).get("result", "not_scanned")
     out["not_scanned"] = scan["not_scanned"].get(rule_id)
@@ -276,7 +298,10 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         raise ToolError("max_doors must be a non-negative integer")
     target = root / RULE_FILES[0]                        # where `inv init` would write; never written here
-    given = [str((root / r).resolve()) for r in _strs(args, "source_roots")]
+    given = _source_roots(server_root, root, args)
+    graph_arg = args.get("graphify")
+    graph_path = (str(_inside(server_root, root, graph_arg, "graphify")) if isinstance(graph_arg, str) and graph_arg
+                  else None)
     exclude = _strs(args, "exclude")
     try:
         roots = [pathlib.Path(r) for r in given] or cli.source_dirs(target) or [root]
@@ -284,7 +309,7 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
             if not r.exists():
                 raise ToolError(f"source root {r} does not exist")
         found = bootstrap.discover(root, roots, exclude)
-        graph = None if args.get("no_graphify") else graphify.find(root, args.get("graphify") or None)
+        graph = None if args.get("no_graphify") else graphify.find(root, graph_path)
         scan_roots = cli._roots(argparse.Namespace(root=given), target)
         scan_exclude = cli._exclude(argparse.Namespace(exclude=exclude), target)
         found.doors = doors.discover(scan_roots, scan_exclude, limit=limit, graph=graph, project=root)

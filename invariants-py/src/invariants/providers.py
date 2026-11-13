@@ -15,21 +15,30 @@ F = TypeVar("F", bound=Callable[..., Any])
 T = TypeVar("T")
 
 
-def provider(name: str, *more: str) -> Callable[[F], F]:
+def provider(name: str, *more: str, concurrent: bool = False) -> Callable[[F], F]:
     """@inv.provider("approval"): register a read-only provider; the loader checks name, args and return type.
 
     One function may serve several provider names (@inv.provider("subject_known", "object_known"),
     or stacked decorators): each name is declared under providers: with its own args.
+
+    concurrent=True: this async provider may be awaited alongside other async providers that opted
+    in too (asyncio.gather). The default runs async providers one at a time, in the order the rule
+    reads them, so providers that share a resource that is not safe for concurrent use (one
+    SQLAlchemy AsyncSession, one connection) never overlap. The record's `concurrent:` overrides it.
     """
     names = (name, *more)
     if not all(isinstance(n, str) and n for n in names):
         raise TypeError(f"@inv.provider names must be non-empty strings, got {list(names)!r}")
+    if not isinstance(concurrent, bool):
+        raise TypeError(f"@inv.provider concurrent must be True or False, got {concurrent!r}")
 
     def deco(fn: F) -> F:
         had: tuple[str, ...] = tuple(getattr(fn, "__inv_providers__", ()))
         every = tuple(dict.fromkeys((*had, *names)))
         fn.__inv_providers__ = every  # type: ignore[attr-defined]
         fn.__inv_provider__ = every[0]  # type: ignore[attr-defined]
+        if concurrent:
+            fn.__inv_concurrent__ = frozenset(getattr(fn, "__inv_concurrent__", ())) | set(names)  # type: ignore[attr-defined]
         return fn
     return deco
 
@@ -234,7 +243,7 @@ def fetch_providers(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str
 
 async def prefetch_async(reg: Registry, rule: Rule, m: dict[str, str], base: dict[str, Any],
                          cache: dict[Any, Any], providers: dict[str, Provider] | None = None) -> str | None:
-    """Fill cache for one names map, awaiting async providers (together). Sync providers run inline.
+    """Fill cache for one names map, awaiting async providers (see prefetch_many). Sync providers run inline.
 
     Never raises (a provider's own exception is cached as a ProviderFailed); returns why, when the
     prefetch itself failed, so the caller can turn that rule's evaluation into a rule_error.
@@ -245,7 +254,12 @@ async def prefetch_async(reg: Registry, rule: Rule, m: dict[str, str], base: dic
 async def prefetch_many(reg: Registry, items: list[tuple[Rule, dict[str, str], dict[str, Any]]],
                         cache: dict[Any, Any], providers: dict[str, Provider] | None = None) -> list[str | None]:
     """prefetch_async for several (rule, names map, base) at once: every async provider call they
-    need (each distinct one once) is awaited concurrently with asyncio.gather. One `why` per item."""
+    need, each distinct one once, in the order the rule file declares the providers. One `why` per item.
+
+    A provider that did not opt in to concurrency is awaited alone; consecutive calls of providers
+    that all opted in (`concurrent: true`, or @inv.provider(..., concurrent=True)) are awaited
+    together with asyncio.gather. So two providers sharing one AsyncSession never overlap unless
+    both say they may."""
     pending: Pending = []
     whys: list[str | None] = []
     for rule, m, base in items:
@@ -258,14 +272,27 @@ async def prefetch_many(reg: Registry, items: list[tuple[Rule, dict[str, str], d
     for key, prov, args in pending:
         if key not in cache and key not in todo:
             todo[key] = (prov, args)
+    declared = {n: i for i, n in enumerate(reg.providers if providers is None else providers)}
+    todo = dict(sorted(todo.items(), key=lambda kv: declared.get(kv[1][0].name, len(declared))))  # file order
 
     async def one(prov: Provider, args: dict[str, Any]) -> Any:
         try:
             return _typed(prov, await prov.fn(**args))
         except Exception as e:
             return _raised(reg, prov.name, e)
-    if todo:
-        got = await asyncio.gather(*(one(p, a) for p, a in todo.values()))
-        for key, v in zip(todo, got):
-            cache[key] = v
+    batch: list[Any] = []                  # consecutive opted-in calls, awaited together
+
+    async def flush() -> None:
+        if batch:
+            got = await asyncio.gather(*(one(*todo[k]) for k in batch))
+            for k, v in zip(batch, got):
+                cache[k] = v
+            batch.clear()
+    for key, (prov, args) in todo.items():
+        if prov.concurrent:
+            batch.append(key)
+            continue
+        await flush()
+        cache[key] = await one(prov, args)
+    await flush()
     return whys

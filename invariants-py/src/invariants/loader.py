@@ -19,7 +19,7 @@ from . import cel
 from .errors import LoadError
 from .model import (DEFAULT_NAMES, ENFORCER_FIELDS, ENUMS, EVALUATED, VIEW_POINTS, FILE_FIELDS, MEDIATION_FIELDS, PATH_ROOTS,
                     POLICY_FIELDS,
-                    PROVIDER_FIELDS, RULE_FIELDS, STATUS_RANK, TARGET_FIELDS, Provider, Rule)
+                    PROVIDER_FIELDS, PROVIDER_OPTIONAL, RULE_FIELDS, STATUS_RANK, TARGET_FIELDS, Provider, Rule)
 from .providers import provider_names
 from .registry import ABLATE_ENV, Registry, ablation_level, current, env_ablated
 from .resolve import resolve
@@ -349,9 +349,11 @@ def load(source: str | pathlib.Path | dict[str, Any], install: bool = True,
 
 
 def _load_provider(name: str, p: Any) -> Provider:
-    _check_fields(p, PROVIDER_FIELDS, f"provider {name}")
+    _check_fields(p, PROVIDER_FIELDS | PROVIDER_OPTIONAL, f"provider {name}")
     if PROVIDER_FIELDS - set(p):
         raise LoadError(f"provider {name}: needs {sorted(PROVIDER_FIELDS - set(p))}")
+    if "concurrent" in p and not isinstance(p["concurrent"], bool):
+        raise LoadError(f"provider {name}: concurrent must be true or false, got {p['concurrent']!r}")
     if not isinstance(p["args"], dict):
         raise LoadError(f"provider {name}: args must be a mapping")
     fn = resolve(p["from"])

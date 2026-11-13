@@ -102,6 +102,7 @@ FIELD_POLICY: dict[str, str] = {
     "target.signature": PIN, "target.types": PIN, "target.reply_schema": PIN,
     "provider.type": WEAKENING, "provider.from": WEAKENING, "provider.args": WEAKENING,
     "provider.signature": PIN, "provider.types": PIN,
+    "provider.concurrent": NEUTRAL,     # how async providers are awaited, never what bad reads
     # rules
     # the short form (guard, tests) is expanded by loader.expand_short_forms before the lock reads the file:
     # the lock judges the subject.target, enforcer and falsified_by it becomes
@@ -732,6 +733,8 @@ def _doc_digests(raw: dict[str, Any]) -> dict[str, str]:
 
 def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]:
     entry = {k: p.get(k) for k in ("type", "from", "args")}
+    if "concurrent" in p:                               # pinned only when set: older locks stay fresh
+        entry["concurrent"] = p["concurrent"]
     src = p.get("from")
     if isinstance(src, str) and src.startswith("py:"):
         try:

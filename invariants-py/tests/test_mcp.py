@@ -247,8 +247,12 @@ def test_rules_and_root_arguments(tmp_path, bank):
     other.mkdir()
     c = Client(other, "--rules", str(bank / "invariants.yaml"))
     assert c.call("scan")["structuredContent"]["rules"]["LEDGER"]["result"] == "pass"
-    assert c.call("scan", root=str(bank))["structuredContent"]["passed"] is True
+    outside = c.call("scan", root=str(bank))             # round 17: a root outside --root is refused
+    assert outside["isError"] is True and "outside the server's --root" in outside["content"][0]["text"]
     assert c.call("scan", root="missing")["isError"] is True
+    c.close()
+    c = Client(tmp_path)                                  # a --root above the project reaches it
+    assert c.call("scan", root="bank")["structuredContent"]["passed"] is True
     c.close()
 
 

@@ -132,9 +132,10 @@ def test_session_and_module_fixtures_are_set_up_once(lifetimes):
     assert log.count("session-setup") == 1 and log.count("session-teardown") == 1, log
     assert log.count("module-setup") == 2 and log.count("module-teardown") == 2, log     # one per module
     assert log[0] == "session-setup" and log[-1] == "session-teardown"
-    # test_r1_falsifier: its own run, the control re-run and one ablated re-run per rule (R-1, R-2);
-    # test_r2_falsifier: its run, the control and R-2's ablated run; 3 other tests run once
-    assert log.count("function-setup") == 4 + 3 + 3 == log.count("function-teardown")
+    # test_r1_falsifier: its own run, the control re-run, and per rule (R-1, R-2) one ablated re-run
+    # and a second control after it (round 17); test_r2_falsifier: its run, the control, R-2's
+    # ablated run and the second control; 3 other tests run once
+    assert log.count("function-setup") == 6 + 4 + 3 == log.count("function-teardown")
     assert rep["ablation"]["rules"] == {
         "R-1": [{"falsifier": "test_a.py::test_r1_falsifier", "result": "caught"}],
         "R-2": [{"falsifier": "test_b.py::test_r2_falsifier", "result": "caught"},
@@ -146,7 +147,7 @@ def test_module_fixture_teardown_waits_for_the_next_module(lifetimes):
     _run(lifetimes)
     log = _log(lifetimes)
     first_teardown = log.index("module-teardown")
-    a_tests = 1 + 4 + 1                       # test_before, the falsifier's 4 runs, test_after
+    a_tests = 1 + 6 + 1                       # test_before, the falsifier's 6 runs, test_after
     assert log[:first_teardown].count("function-setup") == a_tests, log
 
 

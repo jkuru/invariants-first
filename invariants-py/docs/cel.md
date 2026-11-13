@@ -250,7 +250,7 @@ length).
 - Each clause costs a few microseconds on `subset` and `cel-expr`. Keep the clause count low on tight
   loops. At HTTP scale (milliseconds per request) the overhead is noise.
 - Providers add their own cost on top: every provider bound to a name a clause reads is called on
-  every call (async ones concurrently).
+  every call (async ones one at a time, or together when they all declare `concurrent: true`).
 - There is no sampled mode in v0.1.
 - The table's rules do no arithmetic. A clause that does arithmetic pays for the non-finite check
   once per arithmetic expression (plus once per divisor that is itself arithmetic, and per
