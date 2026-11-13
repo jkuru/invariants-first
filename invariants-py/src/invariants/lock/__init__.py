@@ -31,8 +31,9 @@ rule-file field is judged. A field it does not classify, and any edit to a field
 weakening. Lock versions 1 and 2 are migrated by `inv lock` and refused by `inv lock --check`.
 
 The package is staged: contracts (the shared tables, canonical JSON, Change), pinning (taking the
-pins: build), schema_diff (is a schema change a weakening?), cel_mono (is a `bad` edit stronger or
-weaker?), rule_diff (one entry's changes) and this module, which composes them (changes, diff), reads,
+pins: build, over pin_types, pin_jsonschema, pin_signatures and pin_contracts), schema_diff (is a
+schema change a weakening?), cel_mono (is a `bad` edit stronger or weaker? over cel_canon and
+cel_sites), rule_diff (one entry's changes) and this module, which composes them (changes, diff), reads,
 validates and writes the lock file, and migrates versions 1 and 2. `invariants.lockfile` re-exports
 all of it under its old name.
 """

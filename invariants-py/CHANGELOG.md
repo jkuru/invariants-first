@@ -10,6 +10,19 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Refactor: lock/pinning and lock/cel_mono split
+
+`lock/pinning.py` is split into stages: `pin_types` (resolved annotation types, PEP 695 aliases,
+schema classes, the schema table `Schemas`, `strip_prose`), `pin_jsonschema` (the JSON Schema of a
+dataclass or TypedDict, with or without pydantic), `pin_signatures` (signature text, resolved types,
+`param_schemas`) and `pin_contracts` (`contract_hash`, OpenAPI files and live apps); `pinning` keeps
+`build` and the rule pins. `lock/cel_mono.py` is split into `cel_canon` (canonical trees and the
+typer) and `cel_sites` (`new_error_sites`); `cel_mono` keeps the direction judgement (`compare_bad`,
+the polarity walk). `lock.pinning`, `lock.cel_mono` and `invariants.lockfile` re-export every name
+they had (the same objects), apart from the stdlib modules pinning and cel_mono imported; classes
+keep their `__module__`. `tests/test_layering_lock.py` lists the new stages in its one-way order and
+checks that order has no cycle. No behaviour change.
+
 ### Fix round 21 (lock)
 
 Regression tests: `tests/test_fix_round21_lock.py`; each failed on the code before this round, except
