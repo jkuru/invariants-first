@@ -29,6 +29,9 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 - **An inherited `__enter__` annotated `-> "Self"` (a string) binds the receiver's class,** not the base
   class that defines it, and `-> Self` counts only when it names `typing.Self`: a scanned class named
   `Self` was taken for it, so `with Repo() as r: r.save()` resolved to the wrong class.
+- Internal, no behaviour change: the scan's longest functions (the idiom checks, the bypass search,
+  local type inference, the foreign-attribute index, namespace reflection and the expression walk)
+  are split into smaller ones.
 
 ### Fixes after the layered refactor
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import itertools
 import pathlib
 
 from .contracts import SKIP_DIRS, Finding, Mediation, _Edge, _Site
@@ -56,7 +57,7 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     t = _Targets(_declared(idx, rid, med.sinks, "sink", out), _declared(idx, rid, med.doors, "door", out),
                  _declared(idx, rid, med.allow, "allow", out))
     out += _bypasses(idx, rid, edges, entries, t, on_paths)
-    out += _idioms(idx, rid, edges, sites, entries, t)
+    out += _Idioms(idx, rid, edges, sites, entries, t).findings(sites)
     if t.allowed:
         out += _unused_allows(idx, med, edges, sites, entries, t)
     return out
@@ -80,128 +81,148 @@ def _bypasses(idx: _Index, rid: str, edges: list[_Edge], entries: list[str], t: 
     only a path made of allowed functions alone (the call chains frozen when allow was written) is let
     through; a path that passes any other function (a new caller, or new code an allowed one calls) is
     a bypass, even when it reaches the sink through an allowed function."""
-    sinks, doors, allowed = t.sinks, t.doors, t.allowed
-    door_txt = ", ".join(sorted(doors)) or "(no door found)"
+    live = t.sinks - t.doors
+    if not live:
+        return []
+    door_txt = ", ".join(sorted(t.doors)) or "(no door found)"
+    succ = _door_free(edges, t)
     out: list[Finding] = []
-    live = sinks - doors
-    if live:
-        succ: dict[str, list[_Edge]] = collections.defaultdict(list)
-        for e in edges:
-            # a getattr of the sink name is reported at its site (forbidden/getattr-sink), except inside an
-            # allowed function, where the site is excused: there the edge stays, so a path into the allowed
-            # function from anything outside allow is a bypass, like a direct call
-            if e.caller not in doors and e.callee not in doors and not (
-                    e.via_getattr and e.callee in sinks and e.caller not in allowed):
-                succ[e.caller].append(e)
-        # one finding per call site that reaches the sink (file:line:col), with the shortest path from the
-        # first entrypoint that reaches it; a site reached only through a name-matched call is unresolved
-        reported: set[tuple[str, int, int]] = set()
-        for inferred_ok in (False, True):
-            for start in entries:
-                if start in sinks or start in doors:
-                    continue
-                for names, last in _paths(start, live, succ, inferred_ok, allowed):
-                    if on_paths is not None:
-                        on_paths.update(names)
-                    site = (last.caller, last.line, last.col)
-                    if site in reported:
-                        continue
-                    reported.add(site)
-                    kind = "unresolved" if inferred_ok else "bypass"
-                    via = " (through a name-matched call on an unknown receiver)" if inferred_ok else ""
-                    out.append(_finding(idx, rid, kind, "unresolved/inferred-path" if inferred_ok else "bypass",
-                                        f"{' -> '.join(names)} reaches the sink without passing {door_txt}{via}",
-                                        last.caller, last.line, last.col, names))
+    # one finding per call site that reaches the sink (file:line:col), with the shortest path from the
+    # first entrypoint that reaches it; a site reached only through a name-matched call is unresolved
+    reported: set[tuple[str, int, int]] = set()
+    for inferred_ok, start in itertools.product((False, True), entries):
+        if start in t.sinks or start in t.doors:
+            continue
+        for names, last in _paths(start, live, succ, inferred_ok, t.allowed):
+            if on_paths is not None:
+                on_paths.update(names)
+            site = (last.caller, last.line, last.col)
+            if site in reported:
+                continue
+            reported.add(site)
+            kind = "unresolved" if inferred_ok else "bypass"
+            via = " (through a name-matched call on an unknown receiver)" if inferred_ok else ""
+            out.append(_finding(idx, rid, kind, "unresolved/inferred-path" if inferred_ok else "bypass",
+                                f"{' -> '.join(names)} reaches the sink without passing {door_txt}{via}",
+                                last.caller, last.line, last.col, names))
     return out
 
 
-def _idioms(idx: _Index, rid: str, edges: list[_Edge], sites: list[_Site], entries: list[str],
-            t: _Targets) -> list[Finding]:
-    """2. idioms, per site. Inside an allowed back door, the ways it reaches the sink are frozen with it;
-    unwrapping a guard, monkeypatching and reflection are still reported there."""
+def _door_free(edges: list[_Edge], t: _Targets) -> dict[str, list[_Edge]]:
+    """The call graph with the doors removed, as each caller's edges."""
     sinks, doors, allowed = t.sinks, t.doors, t.allowed
-    trusted = sinks | doors | allowed
-    dominated = door_only(idx, edges, sites, entries, trusted)
-    sink_names = {s.rsplit(".", 1)[1] for s in sinks}
-    guarded_names = sink_names | {d.rsplit(".", 1)[1] for d in doors}
-    unwraps: dict[str, bool] = {}
+    succ: dict[str, list[_Edge]] = collections.defaultdict(list)
+    for e in edges:
+        # a getattr of the sink name is reported at its site (forbidden/getattr-sink), except inside an
+        # allowed function, where the site is excused: there the edge stays, so a path into the allowed
+        # function from anything outside allow is a bypass, like a direct call
+        if e.caller not in doors and e.callee not in doors and not (
+                e.via_getattr and e.callee in sinks and e.caller not in allowed):
+            succ[e.caller].append(e)
+    return succ
 
-    def unwraps_here(fn: str) -> bool:
+
+class _Idioms:
+    """2. idioms, per site. Inside an allowed back door, the ways it reaches the sink are frozen with it;
+    unwrapping a guard, monkeypatching and reflection are still reported there. Each site gets the first
+    idiom it matches; the idioms of different site kinds are tried in their own order."""
+
+    def __init__(self, idx: _Index, rid: str, edges: list[_Edge], sites: list[_Site], entries: list[str],
+                 t: _Targets) -> None:
+        self.idx, self.rid, self.edges, self.t = idx, rid, edges, t
+        self.trusted = t.sinks | t.doors | t.allowed
+        self.dominated = door_only(idx, edges, sites, entries, self.trusted)
+        self.sink_names = {s.rsplit(".", 1)[1] for s in t.sinks}
+        self.guarded_names = self.sink_names | {d.rsplit(".", 1)[1] for d in t.doors}
+        self._unwraps: dict[str, bool] = {}
+
+    def findings(self, sites: list[_Site]) -> list[Finding]:
+        return [f for s in sites if (f := self._at(s)) is not None]
+
+    def _at(self, s: _Site) -> Finding | None:
+        if s.owner in self.trusted and s.what in ("ref", "attrcall"):
+            return None
+        if s.owner in self.dominated and s.what == "attrcall":
+            return None                                # reached only through a door or sink
+        if s.what in ("getattr", "setattr", "delattr", "hasattr"):
+            return self._named(s)
+        if s.what == "patch":
+            return self._patch(s)
+        return self._other(s)
+
+    def _unwraps_here(self, fn: str) -> bool:
         """An unwrap of fn bears on this rule: fn is unknown, is a sink, door or allowed function, or reaches
         a sink without passing a door (its own guard may be what stands between them)."""
-        if fn not in idx.funcs or fn in trusted:
+        if fn not in self.idx.funcs or fn in self.trusted:
             return True
-        if fn not in unwraps:
-            unwraps[fn] = bool(_reach([fn], edges, doors) & sinks)
-        return unwraps[fn]
+        if fn not in self._unwraps:
+            self._unwraps[fn] = bool(_reach([fn], self.edges, self.t.doors) & self.t.sinks)
+        return self._unwraps[fn]
 
-    out: list[Finding] = []
-    for s in sites:
-        if s.owner in trusted and s.what in ("ref", "attrcall"):
-            continue
-        if s.owner in dominated and s.what == "attrcall":
-            continue                                   # reached only through a door or sink
+    def _found(self, kind: str, code: str, msg: str, s: _Site) -> Finding:
+        return _finding(self.idx, self.rid, kind, code, msg, s.owner, s.line, s.col)
+
+    def _named(self, s: _Site) -> Finding | None:
+        """getattr/setattr/delattr/hasattr and the getattr-style lookups (attrgetter, ns.__dict__[k], ...)."""
         obj, _, lit = s.detail.partition("|")
-        if s.owner in allowed and s.what == "getattr" and lit:
+        if s.owner in self.t.allowed and s.what == "getattr" and lit:
             if "__wrapped__" not in _names(obj, lit):
-                continue                               # a computed name is still reported, and an unwrap:
+                return None                            # a computed name is still reported, and an unwrap:
             lit = "__wrapped__"                        # inside allow, a lookup of __wrapped__ is one
         elif s.what == "getattr" and obj in ("?attrgetter", "?methodcaller"):
-            lit = _looked_up(obj, lit, sink_names, guarded_names)
-        if s.what == "getattr" and lit in guarded_names:
-            what = "sink" if lit in sink_names else "door"
-            out.append(_finding(idx, rid, "forbidden", f"forbidden/getattr-{what}",
-                                f"getattr-style lookup of the {what} name {lit!r} hides the call from the scan",
-                                s.owner, s.line, s.col))
-        elif s.what in ("getattr", "setattr", "delattr", "hasattr") and lit == "__wrapped__":
-            if not unwraps_here(obj):
-                continue
-            out.append(_finding(idx, rid, "forbidden", "forbidden/unwrap",
-                                "reaches __wrapped__, which calls a guarded function without its guard",
-                                s.owner, s.line, s.col))
-        elif s.what in ("setattr", "delattr") and lit in guarded_names:
-            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
-                                f"{s.what} on {lit!r} replaces the sink or door at run time", s.owner, s.line, s.col))
-        elif s.what in ("getattr", "setattr", "delattr") and not lit and s.what != "hasattr":
+            lit = _looked_up(obj, lit, self.sink_names, self.guarded_names)
+        if s.what == "getattr" and lit in self.guarded_names:
+            what = "sink" if lit in self.sink_names else "door"
+            return self._found("forbidden", f"forbidden/getattr-{what}",
+                               f"getattr-style lookup of the {what} name {lit!r} hides the call from the scan", s)
+        if lit == "__wrapped__":
+            return self._found("forbidden", "forbidden/unwrap",
+                               "reaches __wrapped__, which calls a guarded function without its guard",
+                               s) if self._unwraps_here(obj) else None
+        if s.what in ("setattr", "delattr") and lit in self.guarded_names:
+            return self._found("forbidden", "forbidden/monkeypatch",
+                               f"{s.what} on {lit!r} replaces the sink or door at run time", s)
+        if not lit and s.what != "hasattr":
             how = f"operator.{obj[1:]}" if obj in ("?attrgetter", "?methodcaller") else s.what
             recv = "" if obj in ("?attrgetter", "?methodcaller") else f" on {obj}"
-            out.append(_finding(idx, rid, "unresolved", "unresolved/computed-attribute",
-                                f"{how} with a computed name{recv}: the scan cannot tell whether it reaches "
-                                f"the sink", s.owner, s.line, s.col))
-        elif s.what == "patch" and s.detail in trusted:
-            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
-                                f"assigns over {s.detail}, replacing the sink or door at run time",
-                                s.owner, s.line, s.col))
-        elif s.what == "patch" and _holds(idx, s.detail, trusted):
-            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
-                                f"assigns over {s.detail}, which holds the sink or door, replacing it at run time",
-                                s.owner, s.line, s.col))
-        elif s.what in ("setattr", "delattr") and lit and obj and not obj.startswith(("self:", "?")) \
-                and _holds(idx, idx.canon(f"{obj}.{lit}"), trusted):
-            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
-                                f"{s.what} on {lit!r} replaces {idx.canon(f'{obj}.{lit}')}, which holds the sink "
-                                f"or door, at run time", s.owner, s.line, s.col))
-        elif s.what == "wrapped":
+            return self._found("unresolved", "unresolved/computed-attribute",
+                               f"{how} with a computed name{recv}: the scan cannot tell whether it reaches "
+                               f"the sink", s)
+        if s.what in ("setattr", "delattr") and lit and obj and not obj.startswith(("self:", "?")) \
+                and _holds(self.idx, self.idx.canon(f"{obj}.{lit}"), self.trusted):
+            return self._found("forbidden", "forbidden/monkeypatch",
+                               f"{s.what} on {lit!r} replaces {self.idx.canon(f'{obj}.{lit}')}, which holds the "
+                               f"sink or door, at run time", s)
+        return None
+
+    def _patch(self, s: _Site) -> Finding | None:
+        """An assignment over a scanned name (`pkg.repo.save = fake`)."""
+        if s.detail in self.trusted:
+            return self._found("forbidden", "forbidden/monkeypatch",
+                               f"assigns over {s.detail}, replacing the sink or door at run time", s)
+        if _holds(self.idx, s.detail, self.trusted):
+            return self._found("forbidden", "forbidden/monkeypatch",
+                               f"assigns over {s.detail}, which holds the sink or door, replacing it at run time", s)
+        return None
+
+    def _other(self, s: _Site) -> Finding | None:
+        if s.what == "wrapped":
             shown, _, fn = s.detail.partition("|")
-            if not unwraps_here(fn):
-                continue
-            out.append(_finding(idx, rid, "forbidden", "forbidden/unwrap",
-                                f"{shown or 'an object'}.__wrapped__ calls a guarded function without its guard",
-                                s.owner, s.line, s.col))
-        elif s.what == "ref" and s.detail in sinks:
-            out.append(_finding(idx, rid, "unresolved", "unresolved/sink-escapes",
-                                f"the sink {s.detail} is used as a value, so calls through it cannot be traced",
-                                s.owner, s.line, s.col))
-        elif s.what == "attrcall" and s.detail in sink_names:
-            out.append(_finding(idx, rid, "unresolved", "unresolved/unknown-receiver",
-                                f".{s.detail}() on a receiver the scan cannot resolve may be the sink",
-                                s.owner, s.line, s.col))
-        elif s.what == "excluded" and s.owner not in trusted and s.owner not in dominated:
-            out.append(_excluded_finding(idx, rid, s))
-        elif s.what in ("reflection", "dynimport"):
-            out.append(_finding(idx, rid, "unresolved", "unresolved/reflection",
-                                f"{s.detail} runs or looks up code the scan cannot follow", s.owner, s.line, s.col))
-    return out
+            return self._found("forbidden", "forbidden/unwrap",
+                               f"{shown or 'an object'}.__wrapped__ calls a guarded function without its guard",
+                               s) if self._unwraps_here(fn) else None
+        if s.what == "ref" and s.detail in self.t.sinks:
+            return self._found("unresolved", "unresolved/sink-escapes",
+                               f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
+        if s.what == "attrcall" and s.detail in self.sink_names:
+            return self._found("unresolved", "unresolved/unknown-receiver",
+                               f".{s.detail}() on a receiver the scan cannot resolve may be the sink", s)
+        if s.what == "excluded" and s.owner not in self.trusted and s.owner not in self.dominated:
+            return _excluded_finding(self.idx, self.rid, s)
+        if s.what in ("reflection", "dynimport"):
+            return self._found("unresolved", "unresolved/reflection",
+                               f"{s.detail} runs or looks up code the scan cannot follow", s)
+        return None
 
 
 def _looked_up(obj: str, lit: str, sink_names: set[str], guarded_names: set[str]) -> str:

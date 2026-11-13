@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import dataclasses
 
 from .astutil import _dotted, _own_nodes, _pairs, _single_types
 from .contracts import _Module
@@ -213,82 +214,81 @@ class _Inference:
         nested function's parameters shadow its names here (the result is cached)."""
         shadow, self._shadow = self._shadow, frozenset()
         try:
-            return self._bindings_in(fn, local, me, owner)
+            b = _Bound()
+            self._param_types(fn, local, me, b)
+            self._assigned(fn, local, me, owner, b)
+            _unknown_bindings(fn, b)
+            if b.deferred and owner is not None:
+                self._entered_late(owner, local, me, b)
+            return _single_types(b.seen)
         finally:
             self._shadow = shadow
 
-    def _bindings_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None,
-                     owner: str | None) -> dict[str, str]:
-        deferred: list[tuple[str, ast.expr, bool]] = []
-        seen: dict[str, set[str | None]] = collections.defaultdict(set)
+    def _param_types(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None, b: _Bound) -> None:
+        """fn's parameters: an annotated one is its class, *args and **kwargs are unknown."""
         args = getattr(fn, "args", None)
-        if isinstance(args, ast.arguments):
-            for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
-                if me and a.arg == me[0]:
-                    continue
-                seen[a.arg].add(self._class_named(a.annotation, local, me) if a.annotation else None)
-            for va in (args.vararg, args.kwarg):
-                if va is not None:
-                    seen[va.arg].add(None)
-        handled: set[int] = set()                              # Name nodes bound by a plain assignment
+        if not isinstance(args, ast.arguments):
+            return
+        for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+            if me and a.arg == me[0]:
+                continue
+            b.seen[a.arg].add(self._class_named(a.annotation, local, me) if a.annotation else None)
+        for va in (args.vararg, args.kwarg):
+            if va is not None:
+                b.seen[va.arg].add(None)
+
+    def _assigned(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None, owner: str | None,
+                  b: _Bound) -> None:
+        """The plain bindings in fn: `x = Cls(...)`, `x: Cls = ...`, `with Session() as x`."""
         for node in ast.walk(fn):
             if isinstance(node, ast.Assign):
                 for t, v in _pairs(node):
                     if isinstance(t, ast.Name):
-                        seen[t.id].add(self._made(v, local, me))
-                        handled.add(id(t))
+                        b.seen[t.id].add(self._made(v, local, me))
+                        b.handled.add(id(t))
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                seen[node.target.id].add(self._made(node.value, local, me) if node.value is not None
-                                         else self._class_named(node.annotation, local, me))
-                handled.add(id(node.target))
-            elif isinstance(node, (ast.With, ast.AsyncWith)):     # with Session() as repo
+                b.seen[node.target.id].add(self._made(node.value, local, me) if node.value is not None
+                                           else self._class_named(node.annotation, local, me))
+                b.handled.add(id(node.target))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if isinstance(item.optional_vars, ast.Name):
-                        is_async = isinstance(node, ast.AsyncWith)
-                        got = self._entered(item.context_expr, is_async, local, me)
-                        if got is None and owner is not None and isinstance(item.context_expr, ast.Call) \
-                                and isinstance(item.context_expr.func, ast.Attribute):
-                            deferred.append((item.optional_vars.id, item.context_expr, is_async))
-                        else:
-                            seen[item.optional_vars.id].add(got)
-                        handled.add(id(item.optional_vars))
-        for node in ast.walk(fn):                              # any other binding: for, with, walrus, unpacking
-            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in handled:
-                seen[node.id].add(None)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
-                seen[node.name].add(None)
-            elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
-                seen[node.name].add(None)                      # except E as err, case Repo() as repo
-            elif isinstance(node, ast.MatchMapping) and node.rest:
-                seen[node.rest].add(None)
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for al in node.names:
-                    seen[(al.asname or al.name).split(".")[0]].add(None)
-            elif isinstance(node, (ast.Global, ast.Nonlocal)):
-                for n in node.names:
-                    seen[n].add(None)
-        if deferred and owner is not None:
-            saved = self._local_types.pop(owner, None)
-            pending = deferred
-            while pending:
-                waiting = {name for name, _, _ in pending}
-                self._local_types[owner] = {k: v for k, v in _single_types(seen).items() if k not in waiting}
-                left = []
-                for name, ctx, is_async in pending:
-                    got = self._entered(ctx, is_async, local, me, owner)
-                    if got is None:
-                        left.append((name, ctx, is_async))
-                    else:
-                        seen[name].add(got)
-                if len(left) == len(pending):                  # no progress: the rest stay unknown
-                    for name, _, _ in left:
-                        seen[name].add(None)
-                    break
-                pending = left
-            del self._local_types[owner]
-            if saved is not None:
-                self._local_types[owner] = saved
-        return _single_types(seen)
+                        self._with_bound(item.optional_vars, item.context_expr, isinstance(node, ast.AsyncWith),
+                                         local, me, owner, b)
+
+    def _with_bound(self, name: ast.Name, ctx: ast.expr, is_async: bool, local: set[str],
+                    me: tuple[str, str] | None, owner: str | None, b: _Bound) -> None:
+        """`with ctx as name`: the class it enters, or (`with recv.cm()` on a receiver typed by fn's other
+        bindings) left for the fixed point."""
+        got = self._entered(ctx, is_async, local, me)
+        if got is None and owner is not None and isinstance(ctx, ast.Call) and isinstance(ctx.func, ast.Attribute):
+            b.deferred.append((name.id, ctx, is_async))
+        else:
+            b.seen[name.id].add(got)
+        b.handled.add(id(name))
+
+    def _entered_late(self, owner: str, local: set[str], me: tuple[str, str] | None, b: _Bound) -> None:
+        """The deferred `with recv.cm() as x`, typed from the other bindings to a fixed point."""
+        saved = self._local_types.pop(owner, None)
+        pending = b.deferred
+        while pending:
+            waiting = {name for name, _, _ in pending}
+            self._local_types[owner] = {k: v for k, v in _single_types(b.seen).items() if k not in waiting}
+            left = []
+            for name, ctx, is_async in pending:
+                got = self._entered(ctx, is_async, local, me, owner)
+                if got is None:
+                    left.append((name, ctx, is_async))
+                else:
+                    b.seen[name].add(got)
+            if len(left) == len(pending):                      # no progress: the rest stay unknown
+                for name, _, _ in left:
+                    b.seen[name].add(None)
+                break
+            pending = left
+        del self._local_types[owner]
+        if saved is not None:
+            self._local_types[owner] = saved
 
     def _attr_types(self, cls: str) -> dict[str, str]:
         """self.<attr> types for a class: every `self.attr = ...` in the methods of the class and of its
@@ -375,31 +375,7 @@ class _Inference:
         """Attribute names some code sets from outside the object (`obj.x = ...`, `setattr(obj, "x", ...)`):
         such an attribute can hold anything, so it is never given a type."""
         if self.idx.foreign is None:
-            out: set[str] = set()
-            for mod in self.idx.modules.values():
-                methods = {id(m) for c in ast.walk(mod.tree) if isinstance(c, ast.ClassDef) for m in c.body
-                           if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
-                for fn in ast.walk(mod.tree):
-                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
-                        continue
-                    # only a method's first parameter is the object itself (self); in a plain function,
-                    # `ctx.repo = other` sets another object's attribute
-                    first = (fn.args.args[0].arg if not isinstance(fn, ast.Module) and id(fn) in methods
-                             and fn.args.args else None)
-                    for node in _own_nodes(fn):
-                        targets = node.targets if isinstance(node, ast.Assign) else \
-                            [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
-                        for t in targets:
-                            for x in ast.walk(t):
-                                if isinstance(x, ast.Attribute) and isinstance(x.ctx, ast.Store) and not (
-                                        isinstance(x.value, ast.Name) and x.value.id == first):
-                                    out.add(x.attr)
-                        if isinstance(node, ast.Call) and _dotted(node.func) in ("setattr", "builtins.setattr") \
-                                and len(node.args) >= 2:
-                            name = node.args[1]
-                            if isinstance(name, ast.Constant) and isinstance(name.value, str):
-                                out.add(name.value)
-            self.idx.foreign = out
+            self.idx.foreign = set().union(*(_set_from_outside(mod.tree) for mod in self.idx.modules.values()))
         return self.idx.foreign
 
     def _super_methods(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> list[str] | None:
@@ -508,3 +484,64 @@ class _Inference:
             return None
         fq = self._resolve(node, local, me)
         return fq if fq and (fq in self.idx.modules or fq in self.idx.classes) else None
+
+
+@dataclasses.dataclass
+class _Bound:
+    """What _types_in collects in one function: every class each name is bound to (None: unknown), the
+    Name nodes a plain binding typed, and the `with recv.cm() as x` left for the fixed point."""
+
+    seen: dict[str, set[str | None]] = dataclasses.field(default_factory=lambda: collections.defaultdict(set))
+    handled: set[int] = dataclasses.field(default_factory=set)
+    deferred: list[tuple[str, ast.expr, bool]] = dataclasses.field(default_factory=list)
+
+
+def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
+    """Any other binding in fn is unknown: for, walrus, unpacking, a nested def or class, an import,
+    `except E as x`, a match capture, global and nonlocal."""
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in b.handled:
+            b.seen[node.id].add(None)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
+            b.seen[node.name].add(None)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            b.seen[node.name].add(None)                          # except E as err, case Repo() as repo
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            b.seen[node.rest].add(None)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for al in node.names:
+                b.seen[(al.asname or al.name).split(".")[0]].add(None)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for n in node.names:
+                b.seen[n].add(None)
+
+
+def _set_from_outside(tree: ast.Module) -> set[str]:
+    """The attribute names code in one module sets on an object other than a method's own self."""
+    methods = {id(m) for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for m in c.body
+               if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    out: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            continue
+        # only a method's first parameter is the object itself (self); in a plain function,
+        # `ctx.repo = other` sets another object's attribute
+        first = (fn.args.args[0].arg if not isinstance(fn, ast.Module) and id(fn) in methods
+                 and fn.args.args else None)
+        for node in _own_nodes(fn):
+            out |= _attrs_set(node, first)
+    return out
+
+
+def _attrs_set(node: ast.AST, first: str | None) -> set[str]:
+    """The attribute names one statement or call sets on an object other than `first` (the method's self):
+    `obj.x = ...`, `obj.x += ...`, `setattr(obj, "x", ...)`."""
+    targets = node.targets if isinstance(node, ast.Assign) else \
+        [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+    out = {x.attr for t in targets for x in ast.walk(t) if isinstance(x, ast.Attribute)
+           and isinstance(x.ctx, ast.Store) and not (isinstance(x.value, ast.Name) and x.value.id == first)}
+    if isinstance(node, ast.Call) and _dotted(node.func) in ("setattr", "builtins.setattr") and len(node.args) >= 2:
+        name = node.args[1]
+        if isinstance(name, ast.Constant) and isinstance(name.value, str):
+            out.add(name.value)
+    return out
