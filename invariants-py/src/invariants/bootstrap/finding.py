@@ -1,0 +1,175 @@
+"""Finding the laws a codebase already has, by reading its source: preconditions at the top of functions
+(guards) and pydantic models with constraints."""
+from __future__ import annotations
+
+import ast
+import dataclasses
+import pathlib
+from typing import Any, Iterable
+
+from ..scan import anywhere, iter_sources
+from .translate import Unsupported, _base_name, module_constants, negate, to_cel, truth_kind
+
+EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py", "examples", "docs",
+                   "scripts", "migrations", "alembic", "benchmarks", "bench", "noxfile.py", "setup.py")
+FIELD_CONSTRAINTS = frozenset({"gt", "ge", "lt", "le", "min_length", "max_length", "pattern", "multiple_of",
+                               "max_digits", "decimal_places", "min_items", "max_items", "strict",
+                               "allow_inf_nan", "union_mode"})
+CON_TYPES = frozenset({"conint", "confloat", "constr", "conlist", "conset", "condecimal", "conbytes", "condate"})
+MODEL_ROOTS = ("BaseModel", "RootModel", "SQLModel")   # pydantic models; SQLModel subclasses BaseModel
+
+
+@dataclasses.dataclass
+class Guard:
+    module: str
+    qualname: str
+    clauses: list[tuple[str, str]]          # (CEL, message)
+    skipped: list[str]                      # preconditions that could not be translated, with why
+    line: int
+
+
+@dataclasses.dataclass
+class Model:
+    module: str
+    name: str
+    constraints: list[str]
+    validators: int
+
+
+@dataclasses.dataclass
+class Found:
+    guards: list[Guard]
+    models: list[Model]
+    files: int
+    doors: Any = None                       # doors.DoorsFound, when door discovery ran
+
+
+# --- preconditions -------------------------------------------------------------------------------
+def _message(exc: ast.expr | None, fallback: str) -> str:
+    call = exc if isinstance(exc, ast.Call) else None
+    if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    return fallback
+
+
+def _preconditions(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterable[tuple[ast.expr, str, ast.stmt]]:
+    """(bad condition, message, statement) for the leading `if c: raise` / `assert c` statements."""
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    for st in body:
+        if isinstance(st, ast.If) and not st.orelse and len(st.body) == 1 and isinstance(st.body[0], ast.Raise):
+            yield st.test, _message(st.body[0].exc, ast.unparse(st.test)), st
+        elif isinstance(st, ast.Assert):
+            msg = st.msg.value if isinstance(st.msg, ast.Constant) and isinstance(st.msg.value, str) \
+                else f"assert {ast.unparse(st.test)}"
+            yield negate(st.test), msg, st
+        else:
+            return
+
+
+def _params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    a = fn.args
+    return {x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs]} - {"self", "cls"}
+
+
+def _kinds(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str | None]:
+    """truth_kind of each parameter, from its annotation and a None default."""
+    a = fn.args
+    positional = [*a.posonlyargs, *a.args]
+    defaults: dict[str, ast.expr | None] = dict(zip([x.arg for x in positional][len(positional) - len(a.defaults):],
+                                                    a.defaults))
+    defaults.update(zip([x.arg for x in a.kwonlyargs], a.kw_defaults))
+    return {x.arg: truth_kind(x.annotation, defaults.get(x.arg)) for x in [*positional, *a.kwonlyargs]}
+
+
+def _guard(module: str, n: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str,
+           consts: dict[str, Any]) -> Guard | None:
+    """One function's preconditions as CEL clauses (and the ones that do not translate), or None."""
+    params, kinds = _params(n), _kinds(n)
+    clauses, skipped = [], []
+    for cond, msg, st in _preconditions(n):
+        try:
+            clauses.append((to_cel(cond, params, consts, kinds), msg))
+        except Unsupported as e:
+            skipped.append(f"line {st.lineno}: {ast.unparse(st).splitlines()[0]} ({e})")
+    return Guard(module, qualname, clauses, skipped, n.lineno) if clauses or skipped else None
+
+
+def _guards(module: str, tree: ast.Module) -> list[Guard]:
+    out: list[Guard] = []
+    consts = module_constants(tree)
+
+    def visit(body: list[ast.stmt], prefix: str, in_class: bool) -> None:
+        for n in body:
+            if isinstance(n, ast.ClassDef) and not prefix:
+                visit(n.body, f"{n.name}.", True)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("__"):
+                if any(isinstance(d, ast.Name) and d.id in ("staticmethod", "classmethod", "property")
+                       for d in n.decorator_list) and in_class:
+                    continue
+                g = _guard(module, n, prefix + n.name, consts)
+                if g is not None:
+                    out.append(g)
+
+    visit(tree.body, "", False)
+    return out
+
+
+# --- pydantic models -----------------------------------------------------------------------------
+def _constraint_terms(node: ast.AST) -> list[str]:
+    """Constraint keywords and constrained types inside an annotation or a field default."""
+    found: list[str] = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            name = _base_name(n.func)
+            if name == "Field":
+                found += [f"{k.arg}={ast.unparse(k.value)}" for k in n.keywords if k.arg in FIELD_CONSTRAINTS]
+            elif name in CON_TYPES:
+                found.append(ast.unparse(n))
+        elif isinstance(n, ast.Subscript) and _base_name(n.value) == "Literal":
+            found.append(ast.unparse(n))
+    return found
+
+
+def _models(module: str, tree: ast.Module, known: set[str]) -> list[Model]:
+    out = []
+    for n in tree.body:
+        if not isinstance(n, ast.ClassDef) or not any(_base_name(b) in known for b in n.bases):
+            continue
+        terms, validators = [], 0
+        for st in n.body:
+            if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+                for t in _constraint_terms(st.annotation) + (_constraint_terms(st.value) if st.value else []):
+                    terms.append(f"{st.target.id}: {t}")
+            elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    _base_name(d.func if isinstance(d, ast.Call) else d) in
+                    ("field_validator", "model_validator", "validator", "root_validator") for d in st.decorator_list):
+                validators += 1
+        out.append(Model(module, n.name, terms, validators))
+    return out
+
+
+def discover(project: pathlib.Path, roots: list[pathlib.Path], exclude: Iterable[str] = ()) -> Found:
+    """Read every source file under the roots (not importing anything)."""
+    exclude = [*EXCLUDE, *exclude]
+    trees: list[tuple[str, ast.Module, pathlib.Path]] = []
+    for _, f, mod in iter_sources(roots, exclude):
+        try:
+            trees.append((mod, ast.parse(f.read_text(encoding="utf-8"), str(f)), f))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+    known = set(MODEL_ROOTS)
+    while True:                                   # subclasses of models are models (by class name)
+        more = {n.name for _, t, _ in trees for n in t.body if isinstance(n, ast.ClassDef)
+                and any(_base_name(b) in known for b in n.bases)} - known
+        if not more:
+            break
+        known |= more
+    guards: list[Guard] = []
+    models: list[Model] = []
+    for mod, tree, _ in trees:
+        guards += _guards(mod, tree)
+        models += _models(mod, tree, known)
+    return Found(guards, models, len(trees))

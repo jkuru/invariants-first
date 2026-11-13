@@ -125,6 +125,30 @@ before its fix (checked by reverting the fixes).
   value, exception type, message and remaining budget). One exception, only at the recursion
   limit: a tree about 500 levels deep can hit `RecursionError` one level sooner or later than before.
 
+### Refactor: loader, bootstrap, pytest_plugin packages
+
+Internal change, no behaviour change: three modules are now packages of the same name, and each
+`__init__.py` re-exports every name the module had (an `__all__` keeps `from ... import *` to the
+module's old public names, without the stdlib modules it leaked); moved classes keep their old
+`__module__`.
+
+- `invariants/loader/`: `reading` (the file from disk, the bundled schema's path), `short_forms`
+  (guard/tests, door/sink/allow into the full form), `shapes` (known, removed and enum fields; root
+  paths; mediation), `schemas` (provider types, annotations, closed schemas), `loading` (`load()`
+  over contracts, targets, providers and rules), `rules` (one rule: clauses, enforcers, names, target,
+  bindings, the status its evidence allows), `paths` (what each enforcer reads, scopes, old_self
+  copies, `binding_problem`), `policy` (model_policy) and `typebind` (the load-time type check).
+  Every `LoadError` message and the order the checks run in are unchanged.
+- `invariants/bootstrap/`: `translate` (Python to CEL), `finding` (preconditions and constrained
+  pydantic models, `discover()`) and `writing` (`render()`, `summary()`).
+- `invariants/pytest_plugin/`: `hooks` (the `--inv-*` options, `pytest_configure`), `fixtures`
+  (`inv_scan` and `ScanRun`, `inv_registry`, `inv_events`, `inv_ablated`), `rerun` (helpers of one
+  falsifier's re-runs) and `InvSession` in layers: `state` (options, rule file), `ablation` (the
+  ablation protocol), `report` (counts, JSON, the pytest-xdist payload) and `session` (session hooks).
+  The pytest11 entry point (or `-p invariants.pytest_plugin` with autoload off) loads the package,
+  whose namespace carries every hook and fixture. `tests/test_split_loader_bootstrap_plugin.py`
+  checks the namespaces.
+
 ### Fix round 20 (follow-up)
 
 - **Every remaining text read and write is UTF-8:** the rule file read (`loader`), `inv init`'s source
