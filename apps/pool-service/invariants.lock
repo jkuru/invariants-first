@@ -396,7 +396,8 @@
       "testing",
       "tests"
     ],
-    "roots": [".", "src"]
+    "roots": [".", "src"],
+    "skip": [".*", "__pycache__", "build", "dist", "node_modules", "site-packages", "venv"]
   },
   "schemas": {
     "sha256:28ae06b3a0ce2102b446ce2709f4f5e81c1d6acbaa54da63b34e5b13690510c5": {

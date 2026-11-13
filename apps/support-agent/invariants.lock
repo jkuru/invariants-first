@@ -227,7 +227,8 @@
       "testing",
       "tests"
     ],
-    "roots": ["src"]
+    "roots": ["src"],
+    "skip": [".*", "__pycache__", "build", "dist", "node_modules", "site-packages", "venv"]
   },
   "schemas": {
     "sha256:14b55b896df9a783a4766363096ff2a28ee2b2038c6ea7ce718ccc2bf012c174": {

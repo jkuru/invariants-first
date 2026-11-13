@@ -38,8 +38,8 @@ from .hooks import (_BRACE_LIMIT, _GLOB, GREP_COMMANDS, OPAQUE, PROTECTED, READ_
                     _names, _pretool, _reads_only, _segments, _shell_writes, _stop, _tokens,
                     _touches_invariants_table, _weakening_switch, _writes_redirect, cmd_hook)
 from .project import (DEFAULT_SCAN_EXCLUDE, _app_modules, _contract_modules, _exclude, _import_path, _load_app,
-                      _pyproject, _roots, _str_list, import_roots, outside_roots, project_root, scan_config,
-                      scan_settings, source_dirs)
+                      _pyproject, _roots, _setuptools_where, _str_list, import_roots, outside_roots, project_root,
+                      scan_config, scan_inputs, scan_settings, source_dirs)
 
 _Subparser = Callable[[argparse.ArgumentParser], None]
 

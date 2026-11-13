@@ -18,8 +18,11 @@ understand ──> propose ──> verify ──> human approval ──> lock
 - **The agent never edits `mediation.allow` or `invariants.lock`.** `allow` is a list of frozen back
   doors, and adding to it is a weakening. The lock is written only by `inv lock` and
   `inv check --relock`, which refuse a weakening unless a person passes `--accept-weakening`.
-  `inv hook pretool` blocks the agent's direct edits of the lock and any command that accepts a
-  weakening ([start.md](start.md#4-make-the-check-unskippable-5-minutes)).
+  `inv hook pretool` blocks the agent's direct edits of the lock, any command that accepts a
+  weakening, and an edit of the `pyproject.toml` settings the scan roots come from
+  (`[tool.invariants]` and `[tool.setuptools.packages]`, whose `find.where` is a default root)
+  ([start.md](start.md#4-make-the-check-unskippable-5-minutes)). A changed root set is a weakening
+  in the lock either way.
 - **`inv check` never reads the graph or calls a model.** The graph and the agent only suggest. What
   CI enforces is decided by the rule file, the lock and the source, read the same way on every run.
 
@@ -66,7 +69,12 @@ symlink out) is a tool error (`isError: true`), since `check` and `status` impor
 A filesystem root (`/`) is never a project root. The same holds for the directories the project's
 `pyproject.toml` names for scanning or importing, `[tool.invariants.scan] roots` and
 `[tool.setuptools.packages.find] where`: one outside `--root` is a tool error naming the setting.
-The server's own `--rules`, chosen by whoever starts it, may sit anywhere (with its settings).
+The files a rule file inside `--root` names are confined too: `check` and `status` run `inv` with
+`INV_CONFINE_ROOT` set to the server's `--root`, and a contract `ref` or an enforcer `artifact` that
+resolves outside it (`ref: ../outside_api.json`, or a symlink out) is refused before it is read, so
+its contents never reach a lock diff or an error in the tool's output. Plain `inv check` does not
+set it and reads a ref wherever the rule file points.
+The server's own `--rules`, chosen by whoever starts it, may sit anywhere (with its settings and refs).
 
 `explain` is the tool an agent should reach for when `inv check` fails. For a bypass it names the
 door to call instead, and says that adding the caller to `allow` is a person's decision, not a fix:

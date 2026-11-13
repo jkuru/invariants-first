@@ -15,6 +15,7 @@ from typing import Any
 
 from ..errors import LoadError
 from ..resolve import resolve
+from ..scan import SKIP_DIRS
 from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MAX_DEFS, MAX_DEPTH,
                         MEDIATION_DOC, PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha, canonical)
 from .pin_contracts import (_PARAM_KEYS, _SHARED_SCHEMAS, _OpenAPIDoc, _openapi_app, _openapi_app_pin,
@@ -112,9 +113,19 @@ def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]
     return _plain(entry)
 
 
-def scan_pin(roots: list[str], exclude: list[str]) -> dict[str, list[str]]:
-    """The scan configuration a lock pins: source roots relative to the rule file, and exclude globs."""
-    return {"roots": sorted(set(roots)), "exclude": sorted(set(exclude))}
+def scan_skip() -> list[str]:
+    """The directories the scan always skips, as the lock pins them: each name in SKIP_DIRS, and `.*`
+    for every dot-directory. The one place the pin reads the scan's built-in skip list from, so a
+    library upgrade or change that skips more shows up in the lock (an added entry is WEAKENED)."""
+    return sorted({*SKIP_DIRS, ".*"})
+
+
+def scan_pin(roots: list[str], exclude: list[str], skip: list[str] | None = None) -> dict[str, list[str]]:
+    """The scan configuration a lock pins: source roots relative to the rule file, exclude globs, and
+    the directories the scan always skips (scan_skip() unless given). Roots are pinned as a set: the
+    scan names a file from the deepest root that holds it, whatever the order the roots come in."""
+    return {"roots": sorted(set(roots)), "exclude": sorted(set(exclude)),
+            "skip": sorted(set(scan_skip() if skip is None else skip))}
 
 
 def mediated(doc: dict[str, Any]) -> bool:
@@ -141,7 +152,7 @@ def build(doc: dict[str, Any], base_dir: pathlib.Path, scan: dict[str, list[str]
     lock = {"lock_version": LOCK_VERSION, "spec": doc.get("spec"), "rules": rules, "targets": targets,
             "providers": providers, "contracts": contracts, "schemas": pins.table}
     if scan is not None and mediated(doc):
-        lock["scan"] = scan_pin(scan["roots"], scan["exclude"])
+        lock["scan"] = scan_pin(scan["roots"], scan["exclude"], scan.get("skip"))
     return _plain(lock)
 
 

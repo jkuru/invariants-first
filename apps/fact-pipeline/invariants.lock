@@ -433,7 +433,8 @@
       "testing",
       "tests"
     ],
-    "roots": ["src"]
+    "roots": ["src"],
+    "skip": [".*", "__pycache__", "build", "dist", "node_modules", "site-packages", "venv"]
   },
   "schemas": {
     "sha256:00424e2364da02fe4533fb48236c67bd7c78bc4d44b2c864fc677c57a06330cd": {

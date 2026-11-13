@@ -8,6 +8,7 @@ import pathlib
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .. import lock, scan as scanner, status_report
+from ..confinement import confined
 from ..errors import CoverageError, LoadError
 from ..loader import load, read_document, schema_path
 from ..registry import isolated
@@ -93,7 +94,7 @@ def update_artifacts(path: pathlib.Path) -> list[str]:
             if not isinstance(art, str) or "#sha256:" not in art:
                 continue
             rel, _, old = art.partition("#sha256:")
-            f = path.resolve().parent / rel
+            f = confined(path.resolve().parent / rel, f"{raw.get('id')}: artifact {rel}")
             if not f.is_file():
                 raise LoadError(f"{raw.get('id')}: artifact {rel} missing")
             new = hashlib.sha256(f.read_bytes()).hexdigest()

@@ -13,6 +13,7 @@ from typing import Any
 from .. import lock
 from .commands import cmd_check
 from .common import ALLOW_WEAKENING_ENV, DEFAULT_FILES, OK, _captured, _err
+from .project import scan_inputs
 
 
 WEAKENING_FLAGS = ("--accept-weakening", "--allow-weakening")
@@ -296,13 +297,19 @@ def _weakening_switch(command: str) -> str | None:
     return None
 
 
+# words in a pyproject.toml text, or an edit of it, that may name a table the scan settings come from
+_SCAN_WORDS = ("invariants", "setuptools")
+
+
 def _invariants_table(text: str) -> Any:
-    """[tool.invariants] of a pyproject.toml text; the text itself when it does not parse."""
+    """What the scan settings of a pyproject.toml text are derived from (project.scan_inputs: all of
+    [tool.invariants] and [tool.setuptools.packages]); the text itself when it does not parse and
+    could name one of them."""
     import tomllib
     try:
-        return (tomllib.loads(text).get("tool") or {}).get("invariants")
+        return scan_inputs(tomllib.loads(text))
     except tomllib.TOMLDecodeError:
-        return text if "invariants" in text else None
+        return text if any(w in text for w in _SCAN_WORDS) else None
 
 
 def _edited_text(tool_input: dict[str, Any], before: str) -> str | None:
@@ -321,7 +328,9 @@ def _edited_text(tool_input: dict[str, Any], before: str) -> str | None:
 
 
 def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) -> bool:
-    """An edit of pyproject.toml that changes its [tool.invariants] tables (the scan roots and excludes).
+    """An edit of pyproject.toml that changes what the scan settings are derived from: its
+    [tool.invariants] tables (the scan roots and excludes) or [tool.setuptools.packages] (find.where,
+    the default source roots when no [tool.invariants.scan] roots are set).
 
     The file is read under the name given or, when no file has that exact name, under one that matches
     it ignoring case: on a case-insensitive filesystem `PyProject.toml` is pyproject.toml, and judging
@@ -337,7 +346,7 @@ def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) ->
             pass
     after = _edited_text(tool_input, before)
     if after is None:
-        return "invariants" in json.dumps(tool_input)
+        return any(w in json.dumps(tool_input) for w in _SCAN_WORDS)
     return not lock.same(_invariants_table(before), _invariants_table(after))
 
 
@@ -356,9 +365,10 @@ def _pretool(event: dict[str, Any]) -> int:
              f"code, then run one of them.")
         return 2
     if written or any(f.name.casefold() == pyproject and _touches_invariants_table(f, tool_input) for f in files):
-        _err("invariants: blocked an edit of the [tool.invariants] settings in pyproject.toml (or a shell "
-             "command that writes pyproject.toml). The scan roots and excludes decide which code is checked "
-             "for back doors; tell the user what you want to change and let them make the edit.")
+        _err("invariants: blocked an edit of the scan settings in pyproject.toml ([tool.invariants], or "
+             "[tool.setuptools.packages] whose find.where gives the default scan roots), or a shell command "
+             "that writes pyproject.toml. The scan roots and excludes decide which code is checked for back "
+             "doors; tell the user what you want to change and let them make the edit.")
         return 2
     hit = _weakening_switch(command)
     if hit:
@@ -377,7 +387,8 @@ def cmd_hook(a: argparse.Namespace) -> int:
              shell command naming it, quoted or as a glob, that is not clearly read-only, and one the
              hook cannot read that mentions it): only `inv lock` and `inv check --relock` write the
              lock, and they refuse a weakening; and an edit of pyproject.toml's [tool.invariants]
-             tables, or a shell command that writes pyproject.toml.
+             or [tool.setuptools.packages] tables (the scan settings are derived from them), or a
+             shell command that writes pyproject.toml.
     stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop).
 
     The hooks are an early warning against an agent's shortcuts, not the gate: a determined command

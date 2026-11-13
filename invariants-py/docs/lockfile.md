@@ -44,7 +44,7 @@ rewrite is itself a possible weakening).
 | `providers` | `type`, `from`, `args`, `concurrent` (when set), and the function's signature, resolved types and `param_schemas`. |
 | `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an Enum's values; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations (a file no rule names an operation of: its digest and every operation); a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
-| `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults and any `--root`/`--exclude`. |
+| `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults (src/, setuptools `packages.find.where`) and any `--root`/`--exclude`, and the directories the scan always `skip`s (`build`, `dist`, `venv`, dot-directories, ...). |
 
 In detail:
 
@@ -90,10 +90,20 @@ what each rule's meaning depends on, entry by entry:
 - `schemas.<sha256>`: each schema the entries above reference as `{"$ref": "sha256:..."}`, keyed
   by the digest of its canonical JSON. The same model, or a shared OpenAPI component, is stored
   once.
-- `scan`: `{roots, exclude}`, present when a rule declares a sink. `inv check` builds the same
-  pin from the roots and excludes it is about to scan with, so a `[tool.invariants.scan]` edit or
-  an `inv check --exclude` shows up as a lock change. An added exclude or a removed root is
-  **WEAKENED** (the scan reads less code); a removed exclude or an added root is a change only. A
+- `scan`: `{roots, exclude, skip}`, present when a rule declares a sink. `inv check` builds the
+  same pin from the roots and excludes it is about to scan with, so a `[tool.invariants.scan]` or
+  `[tool.setuptools.packages.find] where` edit, a new `src/`, or an `inv check --root/--exclude`
+  shows up as a lock change. **Any change to the set of roots is WEAKENED**, added as well as
+  removed: the scan names a file from the deepest root that holds it and matches excludes against
+  root-relative paths, so a new root renames the files under it (a relative import, a sink or door
+  name may stop resolving, hiding a path) and makes an existing exclude glob match more files. The
+  order of the roots does not matter and is not pinned. An added exclude is **WEAKENED**; a removed
+  one is a change only. `skip` is the scan's built-in list of directories it never reads (each name
+  in `invariants.scan.SKIP_DIRS`, and `.*` for dot-directories), pinned so that a library upgrade
+  or change that skips more is **WEAKENED** (an entry added) rather than silent. A lock pinned
+  before `skip` was (invariants up to fix round 22) is compared with the list those versions used:
+  the first `inv lock --check` after upgrading reports `scan: skip pinned` as a one-time re-pin,
+  stale but not weakened, and `inv lock` (or `inv check --relock`) writes it. A
   lock taken before the scan was pinned is compared with what that configuration scanned by
   default: `inv lock` reads `[tool.invariants.scan]` (else src/ and the rule file's directory) from
   the working tree, and `inv check --base REF` reads them from `REF`. So the first pin is not a way
@@ -172,7 +182,7 @@ These changes are marked **WEAKENED**:
   only);
 - a removed contract: a rule may name it, and a contract no rule names (the pydantic models
   `inv init` pins) is itself the pin of its constraints;
-- an added scan exclude or a removed scan root;
+- an added scan exclude, an added always-skipped directory, or any added or removed scan root;
 - a pin for a feature this release removed (see
   [Upgrading](#upgrading-from-a-release-with-rules-below-the-api)).
 
@@ -277,7 +287,7 @@ change unless `--accept-weakening` is given.
 | presence | `compares_to` | it is removed |
 | analysed | `bad` (`when`) | it now matches fewer cases, or the direction cannot be decided |
 | analysed | enforcer `point`, `target` (identity), a `bad` clause, a rule (`id`), a contract | it is removed |
-| analysed | `scan` (`roots`, `exclude`) | an exclude is added or a root removed |
+| analysed | `scan` (`roots`, `exclude`, `skip`) | a root is added or removed, an exclude or a skipped directory is added |
 | analysed | `mediation.sink` | a sink is removed |
 | analysed | `mediation.door` | a door is added to a rule that already had a sink |
 | analysed | `mediation.allow` | an entry is added |
