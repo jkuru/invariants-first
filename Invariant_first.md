@@ -772,13 +772,16 @@ change is named, explained and stopped.
 - each rule's meaningful fields: `bad`, the enforcers with their modes and actions, the door and
   sink, `allow`, the model policy;
 - each guarded function's signature and resolved types (with the fields of every model a signature
-  names);
+  names, and the constraints an `Annotated[int, Field(gt=0)]` parameter carries);
 - each provider's declaration and signature;
-- each contract's resolved schema.
+- each contract's resolved schema;
+- the `mediation.chokepoint` argument, which decides whether a rule can be held, so it is not prose.
 
 It deliberately ignores what does not change meaning: a function body (refactor freely), comments,
-docstrings, the prose fields of a rule (`statement`, `why`), whitespace and order. A body-only
-refactor never makes the lock stale.
+docstrings, the prose fields of a rule (`statement`, `why`, `owner`, `class`), how an annotation is
+spelled (`'str'` for `str`), whitespace and order. A body-only refactor never makes the lock stale,
+and neither does a prose edit: `inv lock --check` lists it as not stale, and the next `inv lock`
+records it.
 
 ### 7.3 How a change is judged
 

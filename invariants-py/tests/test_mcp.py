@@ -192,7 +192,7 @@ def test_check_and_status(client, bank):
 
 
 def test_check_never_relocks_a_stale_lock(client, bank):
-    (bank / "invariants.yaml").write_text(json.dumps({"rules": [dict(DOOR, statement="Changed.")]}))
+    (bank / "invariants.yaml").write_text(json.dumps({"rules": [dict(DOOR, rev=2)]}))   # not prose: stale
     before = (bank / "invariants.lock").read_text()
     data = client.call("check")["structuredContent"]
     assert data["passed"] is False and {s["step"]: s["result"] for s in data["steps"]}["lock"] == "fail"

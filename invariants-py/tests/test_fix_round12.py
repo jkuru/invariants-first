@@ -121,7 +121,9 @@ def test_prose_edits_are_named_but_not_weakened(app):
     _edit(app / "invariants.yaml", "A withdrawal is never for a non-positive amount.",
           "Withdrawals are positive.")
     proc = _check(app)
-    assert proc.returncode == 1 and "rule L-1: statement text edited" in proc.stderr and "WEAKENED" not in proc.stderr
+    # fix round 19: prose never makes the lock stale; the edit is reported for information
+    assert proc.returncode == 0 and "rule L-1: statement text edited" in proc.stdout
+    assert "WEAKENED" not in proc.stdout + proc.stderr and "not stale" in proc.stdout
 
 
 def test_an_old_lock_field_that_is_gone_is_a_possible_weakening():
