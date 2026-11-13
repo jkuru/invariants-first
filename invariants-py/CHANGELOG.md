@@ -246,6 +246,12 @@ byte-identical before and after, and `lockfile.changes()` reports the same chang
   `functools.partial(repo.save)`, `repo.save.__get__(o)`) was silent, while the same read on a typed
   receiver was reported; the name is matched against the sinks' names, as for a call on an unknown
   receiver. `repo.save.__call__(x)` on such a receiver is name-matched like `repo.save(x)`.
+- **Assigning or deleting a sink's name on an object is reported.** On a receiver the scan cannot type
+  (`repo.save = print`, `del repo.save`, `repo.save += 1`, an unpacking or `for` target) it is
+  `unresolved/unknown-receiver`, matched by the sinks' names; on a typed one (`repo = Repo()`,
+  `repo: Repo`, or `self.save = ...` in a base class whose subclass's `save` is the sink) it is
+  `forbidden/monkeypatch`. `del pkg.mod.fn` and an unpacking or `for` target on a scanned name are
+  monkeypatches as an assignment was. Each was silent.
 - Internal, no behaviour change: the scan's longest functions (the idiom checks, the bypass search,
   local type inference, the foreign-attribute index, namespace reflection and the expression walk)
   are split into smaller ones.

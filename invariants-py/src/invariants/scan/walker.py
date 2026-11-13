@@ -69,13 +69,6 @@ class _Walker(_Inference):
                    if self.idx.excluded_module(p) == p and self.idx.import_effects(p)]
             if run:
                 self._site("excluded", owner, node, f"{run[0]}|{run[0]}|import")
-        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for t in targets:
-                if isinstance(t, ast.Attribute):
-                    fq = self._resolve(t, local, me)
-                    if fq:
-                        self._site("patch", owner, t, fq)
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.AnnAssign) and child is node.annotation:
                 continue                                       # `h: Helper = x` names a type, runs nothing
@@ -208,6 +201,8 @@ class _Walker(_Inference):
             self._site("sql", owner, node, text)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and self._folded(node, owner, local, me):
             return
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._rebound(node, owner, local, me)
         if isinstance(node, ast.Lambda):
             local = local | _locals(node)
             self._expr(node.args, owner, local, me)            # its defaults, in the enclosing scope
@@ -249,6 +244,29 @@ class _Walker(_Inference):
             self._escapes(node, owner, local, me, node)
         if isinstance(node, ast.Attribute) and not _dotted(node):
             self._expr(node.value, owner, local, me)
+
+    def _rebound(self, node: ast.Attribute, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        """`x.m = ...`, `x.m += ...`, `del x.m`, `for x.m in ...`: a scanned name x.m is patched ("patch"); on
+        an instance whose class the scan knows, the methods x.m may be are; on a receiver the scan cannot
+        type, with m the name of a scanned function, it may be one ("attrpatch")."""
+        fq = self._resolve(node, local, me)
+        if fq:
+            self._site("patch", owner, node, fq)
+            return
+        if node.attr not in self.idx.short_names():
+            return
+        if isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
+            rcv: tuple[str, bool] | None = (me[1], False)     # self.m with no m on self's class
+        else:
+            rcv = self._receiver(node.value, owner, local, me)
+        if rcv is None:
+            self._site("attrpatch", owner, node, node.attr)
+            return
+        if rcv[0] not in self.idx.classes:                     # a builtin container's attribute
+            return
+        hit = self.idx.method(rcv[0], node.attr)
+        for m in [*([hit] if hit else []), *([] if rcv[1] else self._subclasses_overriding(rcv[0], node.attr))]:
+            self._site("patch", owner, node, m)                # repo.save = fake on a Repo instance
 
     def _escapes(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None,
                  at: ast.AST) -> None:
