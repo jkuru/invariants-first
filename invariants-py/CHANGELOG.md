@@ -55,6 +55,21 @@ registry: it reads ablation through `invariants._scan_hooks`, which `invariants/
   `exporters.lifespan()` for ASGI) calls the wrapped exporter. Off the guarded call, never started
   by the library, stopped in a forked child.
 
+### Refactor: lock/ package
+
+Internal change, no behaviour change: `lockfile.py` is split into the `invariants.lock` package, one
+module per stage. `lock.contracts` holds what the stages share (the lock's name and version,
+FIELD_POLICY, RANKS, NOTES, canonical JSON and digests, `Change` and the leaf JSON diff);
+`lock.pinning` takes the pins (`build`, signatures, `param_schemas`, resolved and JSON schemas,
+OpenAPI operations); `lock.schema_diff` judges a schema change (`constraint_weakening`,
+`pin_json_schema`); `lock.cel_mono` compares `bad` conditions as canonical CEL trees (`canon_tree`,
+`compare_bad`, `new_error_sites`); `lock.rule_diff` explains the changes inside one rule, target,
+provider or contract entry and the pinned scan; `invariants.lock` composes them (`changes`, `diff`),
+reads, validates and writes the lock file and migrates versions 1 and 2. `invariants.lockfile` stays
+as a compatibility module that re-exports every name it defined (public and private) from its new
+home. No stage imports the runtime (`guard`, `registry`) or the CLI; `tests/test_layering_lock.py`
+checks that, and the direction the stages import one another, over the source.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed
