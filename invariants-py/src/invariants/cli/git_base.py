@@ -7,7 +7,7 @@ import os
 import pathlib
 from typing import Any, Sequence
 
-from .. import lockfile
+from .. import lock
 from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import isolated
@@ -18,7 +18,8 @@ from .project import DEFAULT_SCAN_EXCLUDE, _import_path, _str_list
 def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
     import subprocess
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
     return p.returncode, p.stdout if p.returncode == 0 else p.stderr.strip()
@@ -82,7 +83,7 @@ def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None
     entry = next((e for e in _ls_tree(root, ref, paths=[rel]) if e[2] == rel), None)
     if entry is None:
         gone = [n for _, kind, n in _ls_tree(root, ref, ["-r"])
-                if n.rsplit("/", 1)[-1] == lockfile.LOCK_NAME and kind == "blob"
+                if n.rsplit("/", 1)[-1] == lock.LOCK_NAME and kind == "blob"
                 and (_symlinked(root / n, root) is not None or not (root / n).is_file())]
         if gone:
             raise BaseUnavailable(f"{ref} has {', '.join(gone)}, which this change moved or removed: not a "
@@ -97,19 +98,19 @@ def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None
         stored = json.loads(text)
         if not isinstance(stored, dict):
             raise ValueError("not a JSON object")
-        version = lockfile.check_version(stored, name)
-        lockfile.validate(stored, name)
+        version = lock.check_version(stored, name)
+        lock.validate(stored, name)
     except (ValueError, LoadError) as e:
         raise BaseUnavailable(f"{name} is not a lock this invariants reads ({e})", acceptable=True) from e
-    if version != lockfile.LOCK_VERSION:
+    if version != lock.LOCK_VERSION:
         raise BaseUnavailable(f"{name} is lock version {version}; this invariants compares version "
-                              f"{lockfile.LOCK_VERSION} only, so weakenings since {ref} cannot be shown "
+                              f"{lock.LOCK_VERSION} only, so weakenings since {ref} cannot be shown "
                               f"(migrate the lock on {ref} first)", acceptable=True)
     return stored, name
 
 
 def base_changes(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str],
-                 scan: dict[str, Any] | None = None) -> tuple[list[lockfile.Change] | None, str]:
+                 scan: dict[str, Any] | None = None) -> tuple[list[lock.Change] | None, str]:
     """The changes between the lock committed at git `ref` and the rule file as it is now, or (None, why)
     when `ref` has no lock (a first adoption, reviewed as a whole). BaseUnavailable when there is no
     git checkout, no such ref, a symlinked lock, a lock the change moved or removed, or a lock at
@@ -120,10 +121,10 @@ def base_changes(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: S
     doc = read_document(path)
     with _import_path(path, extra), isolated() as reg:
         load(path)
-        fresh = lockfile.build(doc, path.resolve().parent, scan)
-        types = lockfile.clause_types(reg)
+        fresh = lock.build(doc, path.resolve().parent, scan)
+        types = lock.clause_types(reg)
     default = _base_scan_default(path, ref) if "scan" not in stored and "scan" in fresh else None
-    return _compare(lambda: lockfile.changes(stored, fresh, types, default), lock_path), ""
+    return _compare(lambda: lock.changes(stored, fresh, types, default), lock_path), ""
 
 
 def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
@@ -153,7 +154,7 @@ def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
         dirs = [posixpath.normpath(d) for d in [*_str_list(found), "src"]] if has_py else []
         roots = [*(d for d in dirs if d != "." and tree.get(posixpath.normpath(pre + d)) == "tree"), "."]
     exclude = _str_list(cfg["exclude"]) if isinstance(cfg.get("exclude"), list) else list(DEFAULT_SCAN_EXCLUDE)
-    return lockfile.scan_pin(roots, exclude)
+    return lock.scan_pin(roots, exclude)
 
 
 def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool,

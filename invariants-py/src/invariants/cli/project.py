@@ -9,7 +9,7 @@ import pathlib
 import sys
 from typing import Any, Iterator, Sequence
 
-from .. import lockfile
+from .. import lock
 from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import Registry
@@ -29,7 +29,7 @@ def _pyproject(root: pathlib.Path) -> dict[str, Any]:
         return {}
     import tomllib
     try:
-        return tomllib.loads(py.read_text())
+        return tomllib.loads(py.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
         raise Usage(f"{py}: {e}") from e
 
@@ -122,7 +122,7 @@ def outside_roots(rule_file: pathlib.Path, doc: dict[str, Any], extra: Sequence[
 def _contract_modules(doc: dict[str, Any]) -> list[str]:
     mods = []
     for c in (doc.get("contracts") or {}).values():
-        if isinstance(c, dict) and c.get("type") in lockfile.PY_CONTRACTS and isinstance(c.get("ref"), str):
+        if isinstance(c, dict) and c.get("type") in lock.PY_CONTRACTS and isinstance(c.get("ref"), str):
             mods.append(c["ref"].partition(":")[0])
         elif isinstance(c, dict) and c.get("type") == "openapi" and isinstance(c.get("app"), str):
             mods.append(c["app"].partition(":")[0])
@@ -147,7 +147,7 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
         return {}
     import tomllib
     try:
-        cfg = tomllib.loads(py.read_text()).get("tool", {}).get("invariants", {}).get("scan", {})
+        cfg = tomllib.loads(py.read_text(encoding="utf-8")).get("tool", {}).get("invariants", {}).get("scan", {})
     except tomllib.TOMLDecodeError as e:
         raise Usage(f"{py}: {e}") from e
     for k in ("roots", "exclude"):
@@ -156,7 +156,7 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
     return cfg
 
 
-DEFAULT_SCAN_EXCLUDE = lockfile.DEFAULT_SCAN_EXCLUDE
+DEFAULT_SCAN_EXCLUDE = lock.DEFAULT_SCAN_EXCLUDE
 
 
 def _exclude(a: argparse.Namespace, path: pathlib.Path) -> list[str]:
@@ -180,4 +180,4 @@ def scan_settings(a: argparse.Namespace, path: pathlib.Path) -> dict[str, list[s
     """The roots (relative to the rule file) and excludes `inv check` scans with, as the lock pins them."""
     base = path.resolve().parent
     roots = [pathlib.Path(os.path.relpath(r.resolve(), base)).as_posix() for r in _roots(a, path)]
-    return lockfile.scan_pin(roots, _exclude(a, path))
+    return lock.scan_pin(roots, _exclude(a, path))

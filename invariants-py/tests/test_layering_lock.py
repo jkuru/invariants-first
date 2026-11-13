@@ -82,10 +82,17 @@ def test_lockfile_reexports_the_same_objects() -> None:
     assert lockfile.FIELD_POLICY is contracts.FIELD_POLICY and lockfile.LOCK_VERSION == lock.LOCK_VERSION
 
 
-def test_lockfile_expand_applies_to_keeps_its_module_label() -> None:
+def test_lockfile_expand_applies_to_is_the_pinning_function() -> None:
+    # `inv validate` labels its problems from a table (cli.commands.VALIDATE_CHECKS), not from __module__
     doc = {"targets": {"py:m.a": {}, "py:m.b": {}}, "rules": [{"id": "R-1", "applies_to": "py:m.*"}]}
-    assert lockfile.expand_applies_to.__module__ == "invariants.lockfile"     # `inv validate` prints it
-    assert lockfile.expand_applies_to(doc) == pinning.expand_applies_to(doc) == {"R-1": ["py:m.a", "py:m.b"]}
+    assert lockfile.expand_applies_to is pinning.expand_applies_to is lock.expand_applies_to
+    assert lockfile.expand_applies_to(doc) == {"R-1": ["py:m.a", "py:m.b"]}
+
+
+def test_moved_classes_keep_their_module() -> None:
+    # a pinned signature and a pickle name a class by its module: the split moved none of them
+    for cls in (lock.Change, lock.Schemas, lock.LockError, lock.LockVersionError):
+        assert cls.__module__ == "invariants.lockfile", cls
 
 
 # --- cel_mono ---------------------------------------------------------------------------------------

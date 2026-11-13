@@ -21,7 +21,7 @@ import re
 import sys
 from typing import Any, Callable, Iterator, Sequence
 
-from .. import lockfile, scan as scanner, status_report
+from .. import lock, scan as scanner, status_report
 from ..errors import LoadError
 from ..loader import load, read_document, schema_path
 from ..registry import Registry, isolated
