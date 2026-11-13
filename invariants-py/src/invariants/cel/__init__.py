@@ -19,6 +19,7 @@ from . import subset
 from ._engine import ENGINE_FUNCTIONS
 from .errors import CelError, CelSyntaxError
 from .subset import SubsetBackend
+from .values import set_string_limit, string_limit
 
 ENV_VAR = "INV_CEL_BACKEND"
 DEFAULT = "subset"
@@ -67,6 +68,17 @@ def _cel_expr() -> Backend:
 _FACTORIES: dict[str, Callable[[], Backend]] = {"subset": SubsetBackend, "cel-expr": _cel_expr}
 _CACHE: dict[str, Backend] = {}
 _LOCK = threading.Lock()
+
+
+def _after_fork_in_child() -> None:
+    """A fresh _LOCK in a forked child: a thread of the parent may have held it (building a backend)
+    at the fork, and no thread of the child would ever release it."""
+    global _LOCK
+    _LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 # The engine module each built-in backend needs; a backend whose module is missing is unavailable.
 _REQUIRES = {"cel-expr": "cel_expr_python"}
 AUTO_ORDER = ("cel-expr", "subset")
@@ -128,4 +140,5 @@ def get_backend(name: str | Backend | None = None) -> Backend:
 
 
 __all__ = ["Backend", "Program", "CelError", "CelSyntaxError", "get_backend", "register_backend",
-           "available_backends", "resolve_name", "SubsetBackend", "ENGINE_FUNCTIONS", "subset"]
+           "available_backends", "resolve_name", "SubsetBackend", "ENGINE_FUNCTIONS", "subset", "set_string_limit",
+           "string_limit"]

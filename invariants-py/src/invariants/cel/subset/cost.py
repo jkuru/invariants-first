@@ -1,4 +1,5 @@
-"""The cost budget: one unit per evaluated node, and matches(), the one call charged by its work.
+"""The cost budget: one unit per evaluated node, plus the work of matches() (its regex steps) and of
+contains(), startsWith() and endsWith() (the characters they scan).
 
 A budget is a one-item list [units left], shared by every node of one evaluation.
 """
@@ -14,6 +15,18 @@ DEFAULT_BUDGET = 10_000
 class CostExceeded(CelError):
     """The cost budget is spent. Never absorbed: && || all exists exists_one re-raise it at once, so a
     clause that runs out of budget is a rule_error whatever its other branches say."""
+
+
+CHARS_PER_COST = 4096       # characters contains(), startsWith() and endsWith() scan per unit of the budget
+
+
+def charge(budget: list[int] | None, chars: int) -> None:
+    """Charge a string function's scan of chars characters to the budget (one unit per
+    CHARS_PER_COST, on top of its node's own unit); CostExceeded once it is spent."""
+    if budget is not None and chars >= CHARS_PER_COST:
+        budget[0] -= chars // CHARS_PER_COST
+        if budget[0] < 0:
+            raise CostExceeded("cost limit exceeded")
 
 
 _RE_CACHE: dict[str, list[list]] = {}

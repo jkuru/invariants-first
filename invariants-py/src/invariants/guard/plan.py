@@ -363,6 +363,13 @@ def _set_path(root: Any, path: tuple[str, ...], value: Any) -> Any:
     return _with_field(root, path[0], _set_path(_get_field(root, path[0]), path[1:], value))
 
 
+def no_schema(rule: Rule) -> str:
+    """Why an edge of rule cannot re-check what it receives: its target carries no closed schema."""
+    return (f"{rule.target_key} has no inv.model_call schema (__inv_schema__), so the edge cannot re-check the "
+            f"value it received: the target is not the inv.model_call wrapper (is a decorator above "
+            f"@inv.model_call missing functools.wraps?)")
+
+
 class _EdgePlan:
     """What one @inv.edge needs on every call: where the Checked value arrives (parameter, then
     fields), its Checked subclass, and how to pick the rule's edge enforcer for this consumer."""
@@ -398,7 +405,9 @@ class _EdgePlan:
         perr: str | None = None
         schema = getattr(rule.target, "__inv_schema__", None)
         call = (a, kw)
-        if verdict == "ok" and schema is not None:
+        if schema is None:          # nothing to re-check against: refused whatever on_error says
+            raise CoverageError(f"@inv.edge({rule.id!r}): {no_schema(rule)}")
+        if verdict == "ok":
             try:                    # the closed schema again: a forged or mutated value fails here
                 reply = recheck(reply, schema)
             except ParseError as e:

@@ -57,6 +57,7 @@ import json
 import os
 import pathlib
 import threading
+import weakref
 from collections.abc import Sequence
 from typing import Any
 
@@ -105,6 +106,20 @@ class _Conversation:
 _CONVERSATIONS: contextvars.ContextVar[dict[int, _Conversation]] = contextvars.ContextVar(
     "invariants_anthropic_conversations", default={})
 _IDS = itertools.count(1)
+
+# Every model holding a lock (AnthropicModel, ReplayModel, RecordingModel): a forked child gives each a
+# fresh one, since a thread of the parent may have held it at the fork and none of the child's would
+# ever release it.
+_LOCKED: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def _after_fork_in_child() -> None:
+    for model in list(_LOCKED):
+        model._lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def _opening(prompt: Prompt) -> list[Message]:
@@ -307,6 +322,7 @@ class AnthropicModel(ChatModel):
         self.model, self.max_tokens, self.params = model, max_tokens, params
         self._client, self._async_client = client, async_client
         self._lock = threading.Lock()
+        _LOCKED.add(self)
 
     def _sdk(self) -> Any:
         try:
@@ -438,6 +454,7 @@ class ReplayModel(ChatModel):
         self.calls: list[dict[str, Any]] = trace["calls"]
         self.used: list[bool] = [False] * len(self.calls)
         self._lock = threading.Lock()
+        _LOCKED.add(self)
 
     @property
     def remaining(self) -> int:
@@ -479,6 +496,7 @@ class RecordingModel(ChatModel):
         self.inner, self.path = inner, pathlib.Path(path)
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        _LOCKED.add(self)
 
     def _record(self, request: dict[str, Any], reply: Any) -> None:
         with self._lock:

@@ -49,11 +49,23 @@ An integer outside int64 is a `rule_error` on every backend. Past a cost limit, 
   runs out of budget, as on cel-expr.
 - **cel-expr:** fixed, not settable: at most 9,999 comprehension iterations per clause evaluation,
   summed over every `all`, `exists`, `exists_one`, `map` and `filter` in the clause. Nested ones
-  multiply: `xs.exists(x, ys.exists(y, ...))` costs |xs|·|ys|. Work outside comprehensions (string
-  functions, RE2 `matches()`, `size()`, equality) is not counted and is linear in the data the
-  clause reads, so bound input sizes for untrusted data. cel-cpp also has a fixed nesting limit of
-  32 levels (about 30 nested parentheses or calls, or a sum of more than about 250 terms); a deeper
+  multiply: `xs.exists(x, ys.exists(y, ...))` costs |xs|·|ys|. In a clause that has a
+  comprehension, each check the backend adds around arithmetic, `double()`, `int()`, `timestamp()`
+  and `duration()` (see [NaN and Infinity](#nan-and-infinity)) costs one iteration each time it
+  runs, so `xs.all(x, x * 2 >= 0)` reaches the limit at 5,000 elements, not 10,000 (the price of
+  never reading a stale cel-cpp slot: see [Known engine differences](#known-engine-differences)).
+  Other work (string functions, RE2 `matches()`, `size()`, equality) is not counted. Each call is
+  linear in its operands, but a clause can make one per iteration, so its work is up to about the
+  iteration limit times the size of the data it reads: bound input sizes for untrusted data.
+  cel-cpp also has a fixed nesting limit of 32 levels (about 30 nested parentheses or calls, or a
+  sum of more than about 220 terms, about 100 in a clause that also has a comprehension); a deeper
   clause is a `LoadError` that says so.
+- **String functions, on both:** `contains()`, `startsWith()`, `endsWith()` and `matches()` refuse
+  an operand longer than the string-size limit, 1,000,000 characters by default
+  (`INV_CEL_STRING_LIMIT` at import, `invariants.cel.set_string_limit(n)` at run time): past it the
+  clause is a `rule_error` on every backend. On cel-expr, `contains()`, `startsWith()` and
+  `endsWith()` run in Python (cel-cpp's `contains()` is quadratic: 17 s on 2,000,000 characters);
+  on the subset they cost one budget unit per 4,096 characters they scan, on top of their node's.
 
 **Regular expressions on the subset.** The subset has `matches()` with RE2 syntax (ASCII `\d \w \s`,
 `$` only at the end of text, general-category `\p{..}` classes but not scripts, no lookaround or
@@ -158,6 +170,13 @@ arithmetic does not: `args.price * args.qty` with `price: float` and `qty: int` 
 `numeric.yaml`). A parameter annotated `float` that the caller passes an int (`f(price=100)`) is
 an int to CEL: pass `100.0`, or convert in the rule.
 
+An int and a double compare exactly, by their true values, on every backend: `2**53 + 1 >
+2.0**53` and `2**63 - 1 < 2.0**63` are true, and `double(x) == x + 1` is false for `x = 2**53`.
+(cel-cpp rounds the int to a double first, which is exact only up to 2^53 in magnitude. On
+cel-expr a clause in which an int past 2^53, from the data, a literal, an arithmetic or `int()`
+result or `inv.sum()`, may meet a double from the data, a double literal or `double()` is
+evaluated by the subset instead, which compares exactly: slower, same answer.)
+
 ## NaN and Infinity
 
 Every comparison with NaN is false, so a bound written the usual way, `x < 0.0 || x > 1.0`, is
@@ -188,6 +207,13 @@ whole (`==`, `!=`, `in`) is a `rule_error` on every backend.
 - **NUL characters on cel-expr.** cel-cpp reads a Python string or bytes value as C text, which ends
   at the first NUL, so `"ab\x00cd"` would reach a rule as `"ab"`. On cel-expr, a clause that reads a
   string or bytes value holding a NUL is a `rule_error`. The subset reads it whole.
+- **Surrogate code points.** A Python `str` can hold a lone surrogate (U+D800 to U+DFFF), which is
+  not Unicode text and has no UTF-8 form: `json.loads('"\ud800"')`, a FastAPI or pydantic
+  python-mode body, a tool input re-dumped with `ensure_ascii=False`. A clause that reads one (a
+  value, a map key, inside a list, map or record) is a `rule_error` on every backend, with a
+  message that does not quote it; cel-cpp crashed the process converting one. A rule literal
+  holding one (`'\ud800'`, or the character itself) does not load. Valid text, emoji included,
+  reads as before.
 - **Map keys and indexes.** Map keys follow CEL on every backend: a numeric index matches an int key
   across int and double (`{1: 'a'}[1.0] == 'a'`; `1.5` matches nothing), a bool is never a number
   key (`{1: 'a'}[true]` is no such key, though Python's `dict` calls `True` and `1` one key), a list
@@ -238,12 +264,39 @@ These are the cases where the backends still answer differently. None of them is
 | `string(2.0)` | `rule_error` (refused) | `"2"` |
 | `uint`, `bytes`, `type` | `LoadError` | yes |
 | `type(x) == google.protobuf.Timestamp` (protobuf type names) | `LoadError` | yes |
-| Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 250 terms) | yes | `LoadError` naming cel-cpp's limit |
+| Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 220 terms, about 100 with a comprehension in the clause) | yes | `LoadError` naming cel-cpp's limit |
 | An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
 | Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
+| A string holding a NUL or a surrogate code point that the clause references but does not need (`false && args.s == 'x'`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
+| `x in {...}` with a list, map or null `x` (`[1] in {'a': 1}`, `null in args.m`) | `false` | `rule_error` (no such overload) |
+| A duration past about ±292 years (cel-cpp holds int64 nanoseconds; CEL allows ±10,000 years): in the data, from `duration(text)`, or made by arithmetic (`t - u` for timestamps more than 292 years apart) | result | `rule_error` (cel-cpp would read it saturated, so `d + duration('0s') != d`), a literal included |
+| Regex `\101` (octal), `\C` (any byte), `\p{Greek}` (scripts) | `rule_error` at run time | evaluated by RE2 |
 
-Keep rules off `string()` of a double, and away from the budgets, if they must run on every backend. These used to differ and now agree: cel-expr's hex `double("0x10")` is a `rule_error` as on the subset, and `has()` on a value with no fields (`has(x.f)` with `x` null, a number, a string or a list) is a `rule_error` on the subset as on cel-expr (on a map it tests the key; a null field is present).
+In every row one backend answers and the other is a `rule_error` (or a `LoadError`); in none do the
+two return different values. Keep rules off `string()` of a double, and away from the budgets, if
+they must run on every backend. These used to differ and now agree: cel-expr's hex `double("0x10")`
+is a `rule_error` as on the subset; `has()` on a value with no fields (`has(x.f)` with `x` null, a
+number, a string or a list) is a `rule_error` on the subset as on cel-expr (on a map it tests the
+key; a null field is present); an int and a double past 2^53 compare exactly
+([Numbers](#numbers)); a string holding a surrogate code point is a `rule_error` on both
+([Strings, maps and keys](#strings-maps-and-keys)); and a constant timezone the subset refuses
+(`t.getHours('+25:00')`, which cel-cpp read as a 25-hour offset) is a `rule_error` on both.
+
+**A cel-cpp defect the backend works around.** cel-cpp evaluates `cel.bind` lazily, and a
+comprehension that stops early (`exists` at its first true element, `all` at its first false one)
+leaves its loop variable in its slot, where a later `cel.bind` in the same slot reads it in place of
+its own value. The cel-expr backend used `cel.bind` for its checks, so `args.qtys.exists(q, q > 50)
+&& args.total + args.fee > 100` let `ship([60, 1], 500, 5)` through. Now a clause with a
+comprehension evaluates each checked value once as the one element of a `map()`
+(`[x].map(v, check(v))[0]`, an ordinary comprehension whose variable is always set from its list),
+and only a clause without comprehensions, which has no stale slot, uses `cel.bind`. The backend
+checks this against the engine when it starts (clauses that stop early at one, two and three
+levels, then do arithmetic, `double()`, a long sum, `duration()` and `timestamp()`); if an engine
+build fails the check, a clause with a comprehension and a check is a `LoadError` on cel-expr that
+says to use the subset (fail closed). A differential fuzz of 128,000 such clauses (comprehensions
+that stop early mixed with arithmetic, `double()`, `int()`, long sums, durations and timestamps)
+finds no disagreement with the subset other than the rows above.
 
 ## Performance
 
@@ -268,7 +321,10 @@ length).
 - The table's rules do no arithmetic. A clause that does arithmetic pays for the non-finite check
   once per arithmetic expression (plus once per divisor that is itself arithmetic, and per
   `double()`), about 0.1 to 0.2 µs each on `cel-expr` (`args.a * args.b + args.c - args.d / 2.0 >
-  1.0` costs 0.13 µs).
+  1.0` costs 0.13 µs). In a clause that also has a comprehension each check is a one-element
+  `map()` instead (see [Known engine differences](#known-engine-differences)), about 0.2 µs: a
+  check inside a comprehension body costs that per element (`args.l.all(x, x * 2 >= 0)` over 100
+  elements: 62 µs, against 41 µs with the earlier, unsafe `cel.bind`).
 - The cel-expr 4-clause row includes a per-value NUL check (about 2 µs over the earlier 19.6 µs).
 - Each datetime or timedelta value a clause reads costs about 1.3 µs more on `cel-expr` (its
   conversion to a protobuf message).

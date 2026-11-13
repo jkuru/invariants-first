@@ -10,6 +10,40 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 23 (runtime, cel-expr)
+
+- **cel-expr no longer reads a stale comprehension value (fail-open).** cel-cpp evaluates
+  `cel.bind` lazily, and a comprehension that stops early leaves its loop variable where a later
+  `cel.bind` reads it in place of its own value; the backend's checks around arithmetic, `double()`,
+  `timestamp()` and `duration()` used `cel.bind`, so `args.qtys.exists(q, q > 50) && args.total +
+  args.fee > 100` let `ship([60, 1], 500, 5)` through. A clause with a comprehension now evaluates
+  each checked value as a one-element `map()` (one iteration of cel-expr's budget each time; a long
+  sum in such a clause loads up to about 100 terms), and the backend proves the shape against the
+  engine at start, refusing such clauses at load if a build fails it. Differential fuzz: 128,000
+  clauses mixing early-exit comprehensions with arithmetic, `double()`, `int()`, long sums,
+  durations and timestamps, no undocumented disagreement.
+- **A string holding a surrogate code point (`json.loads('"\ud800"')`) is a `rule_error` on every
+  backend** (value, map key, nested, record or `str` subclass; message value-free); cel-expr
+  segfaulted converting one. A rule literal holding one, or an escape past U+10FFFF, does not load.
+- **int and double compare exactly on cel-expr** (`2**53 + 1 > 2.0**53` was false): a clause in
+  which an int past 2^53 may meet a double is evaluated by the subset.
+- **String-size limit for `contains()`, `startsWith()`, `endsWith()` and `matches()`** (1,000,000
+  characters; `INV_CEL_STRING_LIMIT`, `cel.set_string_limit()`): past it a `rule_error` on every
+  backend. cel-expr's `contains()` runs in Python (cel-cpp's is quadratic: 17 s on 2,000,000
+  characters); the subset charges its budget one unit per 4,096 characters these functions scan.
+- **Fork safety:** the pydantic reply cache lock (no longer held around validation), the backend
+  cache lock and the Anthropic models' locks are fresh in a forked child (children deadlocked).
+- **An edge whose model_call target has no schema refuses:** a `LoadError` at load (a decorator
+  above `@inv.model_call` without `functools.wraps`), a `CoverageError` at call if it is lost later;
+  it used to hand the caller's object (forged values, extra keys) to the consumer unchecked.
+- **Enum fields in a `{field: type}` or dataclass schema parse by value**, as pydantic does (they
+  could never parse); a value outside the enum, or a member of another enum at an edge, is a
+  `parse_error`.
+- **cel-expr: a duration past int64 nanoseconds (about ±292 years) is refused** instead of read
+  saturated (`d + duration('0s') != d`), a `rule_error` as past CEL's range on the subset; a constant timezone the subset refuses
+  (`t.getHours('+25:00')`) is a `rule_error` on both. The remaining engine differences are listed in
+  docs/cel.md.
+
 ### Fix round 22
 
 - **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).

@@ -160,6 +160,8 @@ def _check(v: Any, t: Any, where: str, depth: int, safe: str | None = None) -> A
         return _build(v, t, f"{where}.", depth + 1, f"{safe}.")
     if t in _TEXT_TYPES:
         return _from_text(v, t, where, safe)
+    if isinstance(t, type) and issubclass(t, enum.Enum):
+        return _member(v, t, where, safe)
     if not isinstance(t, type):
         raise _err(f"field {safe}: unsupported field type {_tname(t)}")
     if t is float and type(v) is int:
@@ -210,6 +212,19 @@ def _from_text(v: Any, t: type, where: str, safe: str) -> Any:
         return uuid.UUID(v)
     except (CelError, ValueError, OverflowError):
         raise bad from None
+
+
+def _member(v: Any, t: type[enum.Enum], where: str, safe: str) -> enum.Enum:
+    """An Enum field: a member of t itself (a value re-checked at an edge), or the member whose value
+    the JSON value is (by value, as pydantic reads an Enum field; a bool never matches a number)."""
+    if type(v) is t:
+        return typing.cast(enum.Enum, v)
+    if not isinstance(v, enum.Enum):
+        for m in t:
+            if _same(v, m.value):
+                return m
+    raise _err(f"field {safe}: {_vt(v)} is not one of the allowed values",
+               f"field {where}: {_show(v)} is not one of {[m.value for m in t]}")
 
 
 def instance_class(schema: Any) -> Any:

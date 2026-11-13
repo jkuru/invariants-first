@@ -81,6 +81,10 @@ def _load_policy(rule: Rule, reg: Registry) -> None:
         raise LoadError(f"{rid}: feedback.format parser_error needs a parameter inv_feedback: str | None on {tk}")
     schema = getattr(rule.target, "__inv_schema__", None)
     if schema is None:
+        if any(e.get("point") == "edge" for e in rule.enforcers):   # an edge would have nothing to re-check against
+            raise LoadError(f"{rid}: {tk} has no inv.model_call schema (__inv_schema__), and the rule's edge "
+                            f"enforcer re-checks what it receives against it: decorate {tk} with "
+                            f"@inv.model_call, or give a decorator above it functools.wraps")
         return                                       # verify reports a missing @inv.model_call
     fields = schema_fields(schema)
     name = schema_name(schema)
