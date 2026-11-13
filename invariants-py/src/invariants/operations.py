@@ -22,7 +22,7 @@ def monitor(rule_id: str, rows: Iterable[tuple[Any, dict[str, Any]]],
     reg = reg or current()
     rule = reg.rules[rule_id]
     i, enf = rule.enforcer("monitor")
-    if i is None or enf is None or reg.mode(rule, enf) == "off" or reg.is_ablated(rule_id):
+    if i is None or enf is None or reg.mode(rule, enf) == "off" or reg.skips(rule_id):
         return []
     key_i = i if i in rule.names_for else "rule"
     out = []

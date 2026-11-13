@@ -10,6 +10,29 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 18: ablation
+
+- **`--inv-ablate` counts a falsifier as caught only when its rule fired on the control run.** A
+  falsifier that reached the guard without ever making it reject (`halve(4)` on a rule about
+  negatives) was reported `caught` when something else failed its ablated run: a test asserting
+  `not inv.is_ablated("R-1")`, a module-global counter failing on the third run, or a module-scoped
+  token bucket that refilled in time to pass the second control. Now the control re-run must also
+  record a decision of the rule: a `violation` at a guard, an edge, a middleware or a monitor; at a
+  model call a `violation`, a `parse_error` the enforcer retried or rejected, or an abstain it
+  escalated. Otherwise the falsifier is `inconclusive (the rule never fired on the control run: the
+  test passes whether or not it holds)`. Decisions in subprocesses count too, through the new
+  `INV_DECISION_TRACE` file the plugin sets for the control re-run (`inv-mcp` strips it from its
+  children, as it strips `INV_ABLATE_TRACE`). Scan falsifiers (the ablated run reached the rule
+  through `inv scan`) keep their own check. Every falsifier of the three apps is still caught.
+- **`inv.is_ablated()` and `Registry.is_ablated()` no longer count as reaching the rule.** Only the
+  library's enforcement points (guards, edges, model calls, monitors, `inv scan`) note reach, through
+  the new `Registry.skips(rule_id)`. A test that only asks is `inconclusive (rule not reached)`. The
+  `INV_ABLATE_TRACE` lines now say how the rule was reached (`R-1 enforcer`, `R-23 scan`).
+- Not checked, on purpose: that the ablated run's failure *is* the missing rejection. An ablated
+  rule is never evaluated, so the absence of a violation there is always true, and tying the
+  failing assertion to the skipped call would mean tracing the test's control flow. A test that
+  swallows the rejection and fails later for an unrelated reason can still read as caught.
+
 ### Fix round 17: ablation, MCP, providers
 
 - **`--inv-ablate` no longer counts state carried between re-runs as caught.** The re-runs keep

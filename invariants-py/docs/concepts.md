@@ -352,10 +352,23 @@ Ablation turns a rule off to prove that its falsifiers then fail.
 - **What `--inv-ablate` counts as caught.** A falsifier that still passes with the rule off fails the
   session with "guard not load-bearing". An `enforce` rule with no caught falsifier (not collected,
   failing with the guard on, or inconclusive) also fails it. A failure counts as caught only when the
-  ablation caused it: the falsifier must pass on a control re-run without ablation, the ablated
-  re-run must reach the rule (a guard, `inv.is_ablated` or `inv scan` acted on the ablation, in
-  process or in a subprocess through `INV_ABLATE_TRACE`), and it must pass again on a second control
-  re-run after the ablated one. Otherwise it is `inconclusive`. The re-runs share every fixture
+  ablation caused it: the falsifier must pass on a control re-run without ablation, and on that
+  control re-run the rule's enforcement must have decided something: a `violation` at a guard, an
+  edge, a middleware or a monitor; at a model call a `violation`, a `parse_error` it retried or
+  rejected (not a detect-mode proceed), or an abstain it escalated (in process or in a subprocess,
+  through `INV_DECISION_TRACE`). The ablated re-run must reach the rule (a guard, an edge, a model
+  call, a monitor or `inv scan` skipped it because it is ablated, in process or in a subprocess
+  through `INV_ABLATE_TRACE`; calling `inv.is_ablated()` is asking, not reaching), and the falsifier
+  must pass again on a second control re-run after the ablated one. Otherwise it is `inconclusive`.
+  A falsifier that reaches the rule but never makes it fire is `inconclusive (the rule never fired on
+  the control run: the test passes whether or not it holds)`: whatever fails it under ablation (a
+  counter, a refilling quota, `assert not inv.is_ablated(...)`) is not the rule. A scan falsifier
+  (its ablated re-run reached the rule through `inv scan`) has no in-process decision and keeps the
+  scan check below. The plugin does not try to prove that the ablated failure *is* the missing
+  rejection: an ablated rule is never evaluated, so "no violation on the ablated run" is always
+  true, and tying the failing assertion to the skipped call would need tracing the test's control
+  flow. A test that swallows the rejection and fails later for its own reason can still read as
+  caught. The re-runs share every fixture
   broader than the function, so a module-scoped quota or seeded row the test spends can fail a
   later re-run with or without the guard: a failing second control gives `inconclusive (state carried
   between runs: ...)`, a failing first control `inconclusive (failed on a control re-run without

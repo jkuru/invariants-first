@@ -404,7 +404,9 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 - **Ablation.** A falsifier that runs `inv scan` must assert the rule's findings, not a non-zero
   exit: while its rule is ablated the scan exits 4, which is neither a pass nor a fail (the
   `inv_scan` fixture enforces that). Ablating a rule held only by a closed schema (`point: type`)
-  does not relax parsing, so it reports not load-bearing. `INV_ABLATE` with `INV_ABLATE_TESTING=1`
+  does not relax parsing, so it reports not load-bearing. A falsifier counts as caught only if its
+  rule fired (rejected, escalated) on the control run; one that merely calls the guarded code is
+  inconclusive. `INV_ABLATE` with `INV_ABLATE_TESTING=1`
   turns guards off, so never set both in production. [docs/concepts.md](docs/concepts.md#ablation)
 - **Providers run per call**: every provider bound to a name a clause reads is called on every call
   (there is no data-dependent short circuit). Pydantic
