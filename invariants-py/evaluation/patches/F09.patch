@@ -1,0 +1,19 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -270,13 +270,8 @@
+ 
+     def facts(self, status: str | None = None) -> list[dict[str, Any]]:
+         """Every fact with its current status."""
+-        out = []
+-        for r in self._q("SELECT * FROM facts ORDER BY recorded_at, id"):
+-            row = dict(r)
+-            row["status"] = self.status(r["id"])
+-            if status is None or row["status"] == status:
+-                out.append(row)
+-        return out
++        rows = [{**dict(r), "status": self.status(r["id"])} for r in self._q("SELECT * FROM facts ORDER BY recorded_at, id")]
++        return [row for row in rows if status is None or row["status"] == status]
+ 
+     def evidence(self, fid: str) -> list[dict[str, Any]]:
+         return [dict(r) for r in self._q("SELECT * FROM evidence WHERE fact_id = ? ORDER BY source_id, start", (fid,))]

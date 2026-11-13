@@ -10,6 +10,35 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Ablation in the normal protocol, pytest-xdist, `inv-mcp` and the evaluation harness
+
+- **`--inv-ablate` keeps one fixture lifetime.** A falsifier's control and ablated re-runs now run
+  inside the normal test protocol, right after its own run, each torn down only to the test
+  function. Session, package, module and class fixtures are set up once, as without the plugin
+  (before, every re-run ran with `nextitem=None` after the main loop, so they were torn down and set
+  up again per re-run). A fixture teardown error after the re-runs is reported as the test's
+  teardown error. A falsifier the session never ran (`-x`, `--maxfail`) is reported `not run`.
+- **pytest-xdist.** Under `-n N` each worker ablates the falsifiers it runs; the controller merges the
+  ablation results, the `--inv-verify` result and the `--inv-report` counts from the workers' output.
+- **Scan falsifiers.** `inv scan` exits 4 while its rule is ablated, which is neither a pass nor a
+  fail, so a falsifier asserting `returncode != 0` passed for the wrong reason. The new `inv_scan`
+  fixture reads the scan honestly: `failed(rule)` and `findings()` answer what it reported, and
+  `code` or `passed(rule)` of an ablated rule skip the ablated re-run, which the plugin reports as
+  `inconclusive (read an ablated scan's exit code or pass; assert its findings)`. The pattern for a
+  raw subprocess (exit code 1 exactly, plus the rule's finding) is documented in concepts.md.
+- **`inv-mcp`.** A read-only MCP server over stdio (protocol 2025-06-18, standard library only):
+  `scan`, `check` (never `--relock`), `status`, `explain` (a rule or finding in plain words, with the
+  fix options) and `propose_rules` (`inv init`'s discovery as a dry run in a temporary directory,
+  each proposed rule checked by the scan). No tool writes the rule file, the lock or `allow`. The
+  console script is `inv-mcp`; see [docs/agents.md](docs/agents.md) for the agentic flow
+  (understand, propose, verify, human approval, lock) and a `.mcp.json` with Graphify.
+- **Evaluation harness shipped.** [evaluation/](evaluation) holds the 24-change experiment: the
+  ground truth, the edits and patches, the runner (relative paths; it copies `apps/` into a working
+  directory) and the published results it compares against. docs/evaluation.md says how to
+  reproduce the numbers.
+- **CI** runs the suite under `python -O` and under pytest-xdist (`-n 2`); `pytest-xdist` joins the
+  `dev` extra.
+
 ### Nothing below the API
 
 Every layer is an API, and the rules stay on API boundaries: value laws on an API's inputs and

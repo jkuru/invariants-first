@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/work.py tmp/pool-service/src/pool_service/work.py
+--- pristine/pool-service/src/pool_service/work.py	2026-11-10 04:46:31
++++ tmp/pool-service/src/pool_service/work.py	2026-11-10 18:56:41
+@@ -20,7 +20,7 @@
+     shares = [total_jobs * c // cap for c in capacities]
+     rems = [total_jobs * c % cap for c in capacities]
+     left = total_jobs - sum(shares)
+-    for i in sorted(range(len(capacities)), key=lambda i: (-rems[i], i))[:left]:
++    for i in sorted(range(len(capacities)), key=lambda i: (-rems[i], i))[:left + 1]:
+         shares[i] += 1
+     return shares
+ 

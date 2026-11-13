@@ -1,0 +1,17 @@
+{
+  "id": "P02",
+  "app": "pool-service",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 0.67,
+    "step": "inv scan (clean)",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

@@ -255,8 +255,15 @@ Fixtures:
 - `inv_registry` is a fresh registry that holds the session rules.
 - `inv_ablated(rule_id)` returns a context manager that turns the rule off in this thread or task.
 - `inv_events` is the list of every event recorded during the test.
+- `inv_scan(rule_file="invariants.yaml", *roots, exclude=(), cwd=None)` runs `inv scan --format json`
+  in a subprocess and returns a `ScanRun`: `failed(rule)`, `findings(rule=None, kind=None)`,
+  `passed(rule)`, `code`, `ablated` and the raw `exit_code` and `report`. Under `--inv-ablate`,
+  `code` and `passed(rule)` have no answer for the ablated rule (the scan exits 4), so a falsifier
+  asserts `failed(rule)` or its findings. See [concepts.md](concepts.md#ablation).
 
-The plugin does not support pytest-xdist.
+A falsifier's re-runs share every fixture broader than the test function with the rest of the
+session. Under pytest-xdist each worker ablates the falsifiers it runs and the controller reports
+the merged results.
 
 ## The CLI
 

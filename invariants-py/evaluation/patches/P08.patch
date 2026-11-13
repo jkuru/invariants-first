@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/api.py tmp/pool-service/src/pool_service/api.py
+--- pristine/pool-service/src/pool_service/api.py	2026-11-10 10:39:54
++++ tmp/pool-service/src/pool_service/api.py	2026-11-10 18:56:41
+@@ -209,7 +209,7 @@
+ @router.post("/jobs", status_code=201, operation_id="recordJob", response_model=JobIn)
+ def record_job(body: JobIn, conn: Conn) -> JobIn | JSONResponse:
+     try:
+-        store.insert_job(conn, body.job_id, body.pool_id, body.oom_killed, body.elapsed_s, body.timeout_s,
++        store.insert_job(conn, body.job_id, body.pool_id, body.oom_killed, body.timeout_s, body.elapsed_s,
+                          body.exit_code)
+     except sqlite3.IntegrityError:
+         return problem(409, f"job {body.job_id} cannot be recorded")

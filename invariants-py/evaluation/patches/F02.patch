@@ -1,0 +1,18 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -261,6 +261,14 @@
+             insert_fact_row(self.conn, proposal)
+         return proposal.id
+ 
++    def bulk_import(self, proposals: list[Proposal]) -> list[str]:
++        """Load many already-checked proposals in one transaction (backfills; much faster than ingest)."""
++        with self.txn():
++            for p in proposals:
++                if not self._q("SELECT 1 FROM facts WHERE id = ?", (p.id,)):
++                    insert_fact_row(self.conn, p)
++        return [p.id for p in proposals]
++
+     def status(self, fid: str) -> str | None:
+         rows = self._q("SELECT status FROM fact_status WHERE fact_id = ? ORDER BY seq DESC LIMIT 1", (fid,))
+         if rows:

@@ -1,0 +1,19 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/store.py tmp/pool-service/src/pool_service/store.py
+--- pristine/pool-service/src/pool_service/store.py	2026-11-10 04:46:08
++++ tmp/pool-service/src/pool_service/store.py	2026-11-10 18:56:41
+@@ -28,9 +28,13 @@
+     return {r[0]: int(r[1]) for r in conn.execute("SELECT id, size FROM pools")}
+ 
+ 
++_LEASED_SQL = "SELECT COALESCE(SUM(slots), 0) FROM leases WHERE pool_id = ?"
++
++
+ def leased(conn: sqlite3.Connection, pool_id: str) -> int:
+-    return int(conn.execute("SELECT COALESCE(SUM(slots), 0) FROM leases WHERE pool_id = ?",
+-                            (pool_id,)).fetchone()[0])
++    """Slots leased in the pool."""
++    (total,) = conn.execute(_LEASED_SQL, (pool_id,)).fetchone()
++    return int(total)
+ 
+ 
+ def lease_slots(conn: sqlite3.Connection, pool_id: str) -> list[tuple[int, str, int]]:

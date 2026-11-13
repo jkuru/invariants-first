@@ -1,0 +1,21 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -319,12 +319,13 @@
+         with self.txn():
+             if self.status(fid) != "CHECKED":
+                 raise ValueError(f"only a CHECKED fact can be promoted; {fid} is {self.status(fid)}")
+-            self.promote_door(fid)
++            self.promote_door([fid])
+ 
+     @inv.guard("py:fact_pipeline.store.Store.promote_door")
+-    def promote_door(self, fact_id: str) -> None:
+-        """The only door to BELIEVED (K-12; K-16 watches in detect mode)."""
+-        write_status(self.conn, fact_id, "BELIEVED", "two independent trusted sources")
++    def promote_door(self, fact_ids: list[str]) -> None:
++        """The only door to BELIEVED (K-12; K-16 watches in detect mode). Batch form: one round trip."""
++        for fact_id in fact_ids:
++            write_status(self.conn, fact_id, "BELIEVED", "two independent trusted sources")
+ 
+     def delete_source(self, source_id: str) -> RetractionReport:
+         """Withdraw a source and retract what rested only on it."""

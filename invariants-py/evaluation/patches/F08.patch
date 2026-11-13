@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -238,7 +238,7 @@
+ 
+     def candidates(self, mention: str) -> list[str]:
+         """Entity ids an alias may mean; a pinned alias wins outright."""
+-        rows = self._q("SELECT entity_id, pinned FROM aliases WHERE alias = ? ORDER BY entity_id", (mention.lower(),))
++        rows = self._q("SELECT entity_id, pinned FROM aliases WHERE alias = ? ORDER BY entity_id", (mention,))
+         pinned = [r["entity_id"] for r in rows if r["pinned"]]
+         return pinned[:1] if pinned else [r["entity_id"] for r in rows]
+ 

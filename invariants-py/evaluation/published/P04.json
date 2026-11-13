@@ -1,0 +1,30 @@
+{
+  "id": "P04",
+  "app": "pool-service",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 0.4,
+    "step": "inv lock --check",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "repin": {
+    "rc": 1,
+    "diff": ""
+  },
+  "ci_after_repin": {
+    "rc": 1,
+    "secs": 0.4,
+    "step": "inv lock --check",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 1,
+    "failed_tests": [
+      "tests/test_cli.py::test_lock_is_fresh"
+    ]
+  },
+  "reversed_clean": false
+}

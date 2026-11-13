@@ -1,0 +1,17 @@
+{
+  "id": "F02",
+  "app": "fact-pipeline",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 0.55,
+    "step": "inv scan",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

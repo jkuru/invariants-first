@@ -356,6 +356,7 @@ Details: [docs/api.md](docs/api.md#integrations).
 | `inv verify --import MOD` | Every target carries its guard, and every guard names a rule. |
 | `inv scan [--format text\|json\|sarif]` | No call path reaches a sink around its door (an allowed back door is not a door: a new caller of one fails); flags `getattr`, `__wrapped__` and monkeypatching. [More](docs/scan.md) |
 | `inv status --import MOD` | The standing of each rule, with the reasons it is not `held`. |
+| `inv-mcp --root DIR` | A read-only MCP server (stdio) for coding agents: `scan`, `check`, `status`, `explain` and `propose_rules`. It never writes the rule file, the lock or `allow`. [More](docs/agents.md) |
 
 `validate`, `lock`, `verify` and `status` take `--path DIR` (repeatable) to import the app from DIR
 first; by default they import this checkout's `src/`, setuptools `where` directories and scan
@@ -400,8 +401,9 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 - **The lockfile's weakening analysis is syntactic.** Anything it cannot decide counts as a possible
   weakening, never as safe. A behaviour change inside a function body does not change the lock.
   [docs/lockfile.md](docs/lockfile.md#limitations)
-- **Ablation.** The pytest plugin does not support pytest-xdist. Ablating a rule held only by a
-  closed schema (`point: type`)
+- **Ablation.** A falsifier that runs `inv scan` must assert the rule's findings, not a non-zero
+  exit: while its rule is ablated the scan exits 4, which is neither a pass nor a fail (the
+  `inv_scan` fixture enforces that). Ablating a rule held only by a closed schema (`point: type`)
   does not relax parsing, so it reports not load-bearing. `INV_ABLATE` with `INV_ABLATE_TESTING=1`
   turns guards off, so never set both in production. [docs/concepts.md](docs/concepts.md#ablation)
 - **Providers are eager**, so every provider an enforcer reads is called on every call. Pydantic
@@ -423,7 +425,8 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [Scan](docs/scan.md) | door rules, allow, receiver typing, reachability |
 | [API](docs/api.md) | every public name, the pytest plugin and the integrations |
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
-| [Evaluation](docs/evaluation.md) | the measured experiment and its verdict |
+| [Agents](docs/agents.md) | the agentic flow (understand, propose, verify, approve, lock) and the `inv-mcp` server |
+| [Evaluation](docs/evaluation.md) | the measured experiment and its verdict; the harness is in [evaluation/](evaluation) |
 | [Invariant-first](docs/design-guide.md) | the whole system for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example, the limits |
 
 **Examples.** [apps/pool-service](../apps/pool-service) is a FastAPI and SQLite lease service

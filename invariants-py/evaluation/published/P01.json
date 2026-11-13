@@ -1,0 +1,36 @@
+{
+  "id": "P01",
+  "app": "pool-service",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 4.59,
+    "step": "pytest (R-23's bypass scan is tests/test_scan.py)",
+    "failed_tests": [
+      "tests/test_bench.py::test_bench_runs",
+      "tests/test_work.py::test_r1_property",
+      "tests/test_work.py::test_split_endpoint",
+      "tests/test_work.py::test_split_examples[0-caps1-want1]",
+      "tests/test_work.py::test_split_examples[10-caps4-want4]",
+      "tests/test_work.py::test_split_examples[3-caps5-want5]",
+      "tests/test_work.py::test_split_examples[4-caps6-want6]",
+      "tests/test_work.py::test_split_examples[5-caps3-want3]",
+      "tests/test_work.py::test_split_examples[7-caps2-want2]"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 1,
+    "failed_tests": [
+      "tests/test_work.py::test_r1_property",
+      "tests/test_work.py::test_split_endpoint",
+      "tests/test_work.py::test_split_examples[0-caps1-want1]",
+      "tests/test_work.py::test_split_examples[10-caps4-want4]",
+      "tests/test_work.py::test_split_examples[3-caps5-want5]",
+      "tests/test_work.py::test_split_examples[4-caps6-want6]",
+      "tests/test_work.py::test_split_examples[5-caps3-want3]",
+      "tests/test_work.py::test_split_examples[7-caps2-want2]"
+    ]
+  },
+  "reversed_clean": true
+}

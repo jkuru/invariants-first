@@ -1,0 +1,20 @@
+{
+  "id": "F03",
+  "app": "fact-pipeline",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 2.1,
+    "step": "pytest",
+    "failed_tests": [
+      "tests/test_properties.py::test_k12_promotes_iff_two_distinct_trusted_publishers",
+      "tests/test_store_rules.py::test_k12_untrusted_second_source_does_not_count"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

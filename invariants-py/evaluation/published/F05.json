@@ -1,0 +1,20 @@
+{
+  "id": "F05",
+  "app": "fact-pipeline",
+  "cat": "U",
+  "ci": {
+    "rc": 1,
+    "secs": 1.91,
+    "step": "pytest",
+    "failed_tests": [
+      "tests/test_cli.py::test_cli_flow",
+      "tests/test_worked_flow.py::test_worked_flow_7_6"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

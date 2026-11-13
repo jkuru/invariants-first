@@ -1,0 +1,27 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/api.py tmp/pool-service/src/pool_service/api.py
+--- pristine/pool-service/src/pool_service/api.py	2026-11-10 10:39:54
++++ tmp/pool-service/src/pool_service/api.py	2026-11-10 18:56:41
+@@ -7,6 +7,7 @@
+ from __future__ import annotations
+ 
+ import contextlib
++import logging
+ import pathlib
+ import sqlite3
+ from typing import Annotated, Iterator
+@@ -125,6 +126,7 @@
+ 
+ 
+ router = APIRouter()
++log = logging.getLogger("pool_service.api")
+ 
+ 
+ @router.post("/pools", status_code=201, operation_id="createPool", response_model=PoolOut)
+@@ -152,6 +154,7 @@
+         return problem(404, f"pool {pool_id} not found")
+     with storage_rejections():
+         lease_id = service.lease_slots(conn, pool_id, body.slots, body.holder)
++    log.info("lease %s: %d slots in %s for %s", lease_id, body.slots, pool_id, body.holder)
+     return LeaseOut(lease_id=lease_id, pool_id=pool_id, holder=body.holder, slots=body.slots)
+ 
+ 

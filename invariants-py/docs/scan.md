@@ -85,7 +85,9 @@ sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 harmless. When a method call cannot be resolved, the scan reports it as unresolved, never as a bypass.
 The exit code is 1 on any bypass, forbidden or missing finding, and 3 when nothing failed but some
 calls are unresolved (not a pass). It is 4 when the scan skipped an `enforce` rule because it is
-ablated (`INV_ABLATE`), which is not a pass either.
+ablated (`INV_ABLATE`), which is not a pass either, and not a fail: a falsifier that runs the scan
+asserts the rule's findings (or exit code 1 exactly), never `returncode != 0`. The pytest plugin's
+`inv_scan` fixture reads it that way ([concepts.md](concepts.md#ablation)).
 
 ## Allowed back doors
 
