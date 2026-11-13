@@ -20,7 +20,6 @@ from ..errors import CoverageError
 from ..evaluate import aact, act
 from ..loader import closed_schema, type_hints
 from ..model import GUARD_POINTS, Rule
-from ..providers import prefetch_async
 from ..registry import WRAPPED, _wraps
 from ..resolve import resolve
 from .checked import Checked
@@ -74,27 +73,39 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
             raise TypeError(f"@inv.guard cannot wrap the generator {fn.__qualname__}: its body runs after the "
                             f"guard returns; guard a function that returns a value")
         sig = inspect.signature(fn)
+        shapes: set[tuple[Any, ...]] = set()       # call shapes that bound (see plan.start)
 
+        # no live rule: straight through; a timing no live enforcer checks at is skipped (nothing to emit)
         if inspect.iscoroutinefunction(fn):
+            afn = typing.cast(Callable[..., Awaitable[Any]], fn)
+
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:
-                call = start(sig, keys, points, a, kw)
-                await aprefetch(call, "pre_effect")
-                await acheck(call, "pre_effect")
-                result = await typing.cast(Callable[..., Awaitable[Any]], fn)(*a, **kw)
-                call.started["post_effect"] = time.time_ns()
-                await aprefetch(call, "post_effect", result)
-                await acheck(call, "post_effect", result)
+                call = start(sig, keys, points, a, kw, shapes)
+                if call is None:
+                    return await afn(*a, **kw)
+                if "pre_effect" in call.timings:
+                    await aprefetch(call, "pre_effect")
+                    await acheck(call, "pre_effect")
+                result = await afn(*a, **kw)
+                if "post_effect" in call.timings:
+                    call.started["post_effect"] = time.time_ns()
+                    await aprefetch(call, "post_effect", result)
+                    await acheck(call, "post_effect", result)
                 return result
             wrapper: Any = awrapper
         else:
             @functools.wraps(fn)
             def swrapper(*a: Any, **kw: Any) -> Any:
-                call = start(sig, keys, points, a, kw)
-                check(call, "pre_effect")
+                call = start(sig, keys, points, a, kw, shapes)
+                if call is None:
+                    return fn(*a, **kw)
+                if "pre_effect" in call.timings:
+                    check(call, "pre_effect")
                 result = fn(*a, **kw)
-                call.started["post_effect"] = time.time_ns()
-                check(call, "post_effect", result)
+                if "post_effect" in call.timings:
+                    call.started["post_effect"] = time.time_ns()
+                    check(call, "post_effect", result)
                 return result
             wrapper = swrapper
         wrapper.__inv_rules__, wrapper.__inv_kind__ = keys, "guard"
@@ -166,20 +177,17 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
                 if run.passive:
                     ca, ckw = run.call_args()
                     return run.passive_result(await fn(*ca, **ckw))
-                while True:
-                    ca, ckw = run.call_args()
-                    step, v = run.parsed(await fn(*ca, **ckw))
-                    if step == "eval":
-                        try:        # never raises by contract; evaluate() reports a binding failure
-                            await prefetch_async(run.reg, run.rule, run.rule.names_for[run.i], run.eval_base(v),
-                                                 run.prov, run.providers)
-                        except Exception:
-                            pass
-                        step, v = run.judged(v)
-                    if step == "abstain":
-                        raise run.escalation(await run.reg.ahand_off(run.handoff(v)))
-                    if step == "finish":
-                        return await run.afinish(*v)
+                steps = run.steps(prefetch=True)     # the retry loop (plan.py); this only calls and awaits
+                want, v = next(steps)
+                while want != "finish":
+                    if want == "call":
+                        got = await fn(*v[0], **v[1])
+                    elif want == "prefetch":
+                        got = await run.aprefetch(v)
+                    else:
+                        got = await run.reg.ahand_off(v)
+                    want, v = steps.send(got)
+                return await run.afinish(*v)
             wrapper: Any = awrapper
         else:
             @functools.wraps(fn)
@@ -188,15 +196,12 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
                 if run.passive:
                     ca, ckw = run.call_args()
                     return run.passive_result(fn(*ca, **ckw))
-                while True:
-                    ca, ckw = run.call_args()
-                    step, v = run.parsed(fn(*ca, **ckw))
-                    if step == "eval":
-                        step, v = run.judged(v)
-                    if step == "abstain":
-                        raise run.escalation(run.reg.hand_off(run.handoff(v)))
-                    if step == "finish":
-                        return run.finish(*v)
+                steps = run.steps(prefetch=False)    # the retry loop (plan.py); this only calls
+                want, v = next(steps)
+                while want != "finish":
+                    got = fn(*v[0], **v[1]) if want == "call" else run.reg.hand_off(v)
+                    want, v = steps.send(got)
+                return run.finish(*v)
             wrapper = swrapper
 
         wrapper.__inv_rules__, wrapper.__inv_kind__ = (rule_id,), "model_call"
@@ -248,9 +253,9 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
                who: str) -> tuple[tuple[str, ...], Any]:
     """(parameter, field, ...) leading to the Checked value an edge receives, and its Checked subclass.
 
-    at=None: a parameter annotated with a Checked subclass, else the one field annotated with one in
-    the state types (TypedDict, dataclass, pydantic model) the parameters are annotated with;
-    none, or more than one, is a TypeError. at="state.plan": that parameter and field path, whose
+    at=None: a parameter annotated with a Checked subclass (X or X | None), else the one field
+    annotated with one in the state types (TypedDict, dataclass, pydantic model) the parameters are
+    annotated with; none, or more than one, is a TypeError. at="state.plan": that parameter and field path, whose
     annotations must lead to a Checked subclass."""
     if at is not None:
         parts = tuple(at.split(".")) if isinstance(at, str) else ()
@@ -268,8 +273,8 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
         if refined is None:
             raise TypeError(f"{who}: at={at!r} is annotated {t!r}, not an inv.Checked subclass")
         return parts, refined
-    direct = [(n, c) for n in sig.parameters if (c := _checked_type(hints.get(n))) is not None
-              and isinstance(hints.get(n), type)]
+    # X or X | None, as a state field: a None received there is the TypeError of any non-X value
+    direct = [(n, c) for n in sig.parameters if (c := _checked_type(hints.get(n))) is not None]
     if direct:
         return (direct[0][0],), direct[0][1]
     found = [((n, f), c) for n in sig.parameters for f, ft in _state_fields(hints.get(n), who).items()
@@ -286,9 +291,9 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
 def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """@inv.edge("R-7") on the consumer of a Checked value (sync or async).
 
-    The value arrives in a parameter annotated with the Checked subclass, or in a field of a state
-    parameter (a TypedDict, dataclass or pydantic model, as agent graphs pass): the one field
-    annotated with a Checked subclass (X or X | None), or the one at="state.plan" names. Several
+    The value arrives in a parameter annotated with the Checked subclass (X or X | None), or in a
+    field of a state parameter (a TypedDict, dataclass or pydantic model, as agent graphs pass): the
+    one field annotated with a Checked subclass (X or X | None), or the one at="state.plan" names. Several
     candidates without at= is a TypeError when the decorator runs. For a state, the consumer gets
     a shallow copy of it whose field holds the new Checked (the caller's state is unchanged).
 
@@ -343,11 +348,7 @@ def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], C
             async def awrapper(*a: Any, **kw: Any) -> Any:
                 c = steps.prepare(a, kw)
                 if c is not None:
-                    if c.verdict == "ok" and c.perr is None:
-                        try:    # never raises by contract; evaluate() reports a binding failure
-                            await prefetch_async(c.reg, c.rule, c.rule.names_for[c.i], c.base, c.cache, c.providers)
-                        except Exception:
-                            pass
+                    await steps.aprefetch(c)
                     out, refusal = steps.judge(c)
                     await aact(c.reg, c.rule, c.enf, out, refusal=refusal, started=c.started)
                     a, kw = c.args, c.kwargs
