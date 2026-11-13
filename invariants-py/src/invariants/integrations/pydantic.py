@@ -27,6 +27,7 @@ model, so the core parse, retry, abstain and edge logic run unchanged:
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import datetime
 import enum
@@ -35,6 +36,7 @@ import importlib
 import json
 import math
 import pathlib
+import threading
 import types
 import typing
 from typing import Any, Callable, Iterator, ParamSpec, TypeVar, overload
@@ -137,15 +139,29 @@ def is_lax(model: type[_pd.BaseModel]) -> bool:
     return model.model_config.get("strict") is False
 
 
+def _fields(v: Any) -> list[tuple[str, Any]]:
+    """(name, annotation) of each field of a validated model or dataclass instance, else []."""
+    if isinstance(v, _pd.BaseModel):
+        return [(n, f.annotation) for n, f in type(v).model_fields.items()]
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        try:
+            hints = typing.get_type_hints(type(v))
+        except Exception:
+            hints = {}
+        return [(f.name, hints.get(f.name, f.type)) for f in dataclasses.fields(v)]
+    return []
+
+
 def _non_finite(v: Any, where: str, safe: str, depth: int = 0) -> tuple[str, str] | None:
-    """(path, value-free path) of the first NaN or +-Infinity in validated values (models, lists,
-    tuples, sets, dict values), else None. A dict key is reply data: '*' in the value-free path."""
+    """(path, value-free path) of the first NaN or +-Infinity in validated values (models, dataclass
+    instances, lists, tuples, sets, dict values), else None. A dict key is reply data: '*' in the
+    value-free path."""
     if depth > 200:
         return (where or "(root)", safe or "(root)")
     if isinstance(v, float):
         return None if math.isfinite(v) else (where or "(root)", safe or "(root)")
-    if isinstance(v, _pd.BaseModel):
-        for n in type(v).model_fields:
+    if (fields := _fields(v)):
+        for n, _ in fields:
             sub = f"{where}.{n}" if where else n
             if (bad := _non_finite(getattr(v, n, None), sub, f"{safe}.{n}" if safe else n, depth + 1)) is not None:
                 return bad
@@ -171,15 +187,16 @@ def _allows_naive(ann: Any, depth: int = 0) -> bool:
 
 
 def _naive(v: Any, where: str, depth: int = 0) -> str | None:
-    """The value-free path of the first datetime without a timezone in validated values, else None
-    (fields annotated NaiveDatetime are skipped)."""
+    """The value-free path of the first datetime without a timezone in validated values (models,
+    dataclass instances, lists, tuples, sets, dict values), else None (fields annotated
+    NaiveDatetime are skipped)."""
     if depth > 200:
         return None
     if isinstance(v, datetime.datetime):
         return (where or "(root)") if v.utcoffset() is None else None
-    if isinstance(v, _pd.BaseModel):
-        for n, f in type(v).model_fields.items():
-            if _allows_naive(f.annotation):
+    if (fields := _fields(v)):
+        for n, ann in fields:
+            if _allows_naive(ann):
                 continue
             if (bad := _naive(getattr(v, n, None), f"{where}.{n}" if where else n, depth + 1)) is not None:
                 return bad
@@ -187,11 +204,21 @@ def _naive(v: Any, where: str, depth: int = 0) -> str | None:
         for x in v.values():
             if (bad := _naive(x, f"{where}.*" if where else "*", depth + 1)) is not None:
                 return bad
-    elif isinstance(v, (list, tuple)):
+    elif isinstance(v, (list, tuple, set, frozenset)):
         for i, x in enumerate(v):
             if (bad := _naive(x, f"{where}[{i}]", depth + 1)) is not None:
                 return bad
     return None
+
+
+# (model, JSON text) -> an instance validated from that text that passed the walks below (bounded,
+# least recently used dropped). A later instance validated from the same text and equal to it holds
+# the same values, so it passes them too: an edge or model_of re-validating the same reply (every
+# consumer call) skips the walks, never the validation. NaN != NaN and a naive datetime never equals
+# an aware one, so an instance the walks would refuse is never equal to a cached one.
+_WALKED: collections.OrderedDict[tuple[type, str], _pd.BaseModel] = collections.OrderedDict()
+_WALKED_MAX = 256
+_WALKED_LOCK = threading.Lock()
 
 
 def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
@@ -200,19 +227,27 @@ def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
     The validated instance is then walked: a NaN or +-Infinity anywhere in it (lax mode turns the
     string "NaN" into one) is a ParseError, so a reply that parses never holds one.
     """
+    key: tuple[type, str] | None = None
     try:
         if is_lax(model):
             inst = model.model_validate(data)
         else:
-            pre = _non_finite(data, "", "")       # json.dumps would only say "not JSON data"
-            if pre is not None:
-                what = "non-finite number (NaN or Infinity) is not allowed"
-                raise ParseError(f"field {pre[1]}: {what}", feedback=f"field {pre[0]}: {what}")
             try:
                 text = json.dumps(data, allow_nan=False)
             except (TypeError, ValueError):
+                pre = _non_finite(data, "", "")       # json.dumps would only say "not JSON data"
+                if pre is not None:
+                    what = "non-finite number (NaN or Infinity) is not allowed"
+                    raise ParseError(f"field {pre[1]}: {what}", feedback=f"field {pre[0]}: {what}") from None
                 raise ParseError("reply holds a value that is not JSON data") from None
             inst = model.model_validate_json(text, strict=True)
+            key = (model, text)
+            with _WALKED_LOCK:
+                seen = _WALKED.get(key)
+                if seen is not None:
+                    _WALKED.move_to_end(key)
+            if seen is not None and type(seen) is type(inst) and seen == inst:
+                return inst
     except _pd.ValidationError as e:
         raise ParseError(safe_feedback(e, field_names(model)), feedback=feedback(e)) from None
     bad = _non_finite(inst, "", "")
@@ -224,6 +259,11 @@ def validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel:
         raise ParseError(f"field {naive}: a datetime without a timezone is not allowed",
                          feedback=f"field {naive}: a datetime without a timezone is not allowed; give an "
                                   f"offset or Z (2024-01-31T09:30:00Z)")
+    if key is not None:
+        with _WALKED_LOCK:
+            _WALKED[key] = model.model_validate_json(key[1], strict=True)   # its own copy, never the one handed out
+            while len(_WALKED) > _WALKED_MAX:
+                _WALKED.popitem(last=False)
     return inst
 
 

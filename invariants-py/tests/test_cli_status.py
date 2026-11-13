@@ -13,9 +13,16 @@ def _rows(proc):
     return {r["id"]: r for r in json.loads(proc.stdout)["rules"]}
 
 
-def test_clean_app_standing():
-    rows = _rows(run_inv("status", CLEAN / "invariants.yaml", "--json"))
+CAUGHT = {"ablation": {"rules": {"L-1": [{"test": "t", "result": "caught"}],
+                                   "R-1": [{"test": "t", "result": "caught"}]}}}
+
+
+def test_clean_app_standing(tmp_path):
+    abl = tmp_path / "inv-report.json"
+    abl.write_text(json.dumps(CAUGHT))
+    rows = _rows(run_inv("status", CLEAN / "invariants.yaml", "--json", "--ablation", abl))
     assert rows["L-1"]["standing"] == "held" and rows["L-1"]["reasons"] == [] and rows["L-1"]["scan"] == "pass"
+    assert rows["L-1"]["ablation_proven"] is True
     assert rows["L-2"]["standing"] == "monitored"
     assert rows["L-3"]["standing"] == "candidate"
 
@@ -54,4 +61,4 @@ def test_unscanned_rule_is_not_held(reg):
     assert row["standing"] == "enforce(known-callers)" and row["scan"] == "not_scanned"
     assert any("add mediation.sink" in w for w in row["reasons"])
     # R-1's target is effects: none, so there is no sink to scan for (fix round 1)
-    assert status_report.rule_status(reg, report, "R-1")["standing"] == "held"
+    assert status_report.rule_status(reg, report, "R-1", CAUGHT)["standing"] == "held"

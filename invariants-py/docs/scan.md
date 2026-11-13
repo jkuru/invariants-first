@@ -158,7 +158,7 @@ until it is deleted. Deleting it is a tightening; adding one is a weakening the 
 
 ```text
 inv scan [file] [--root DIR]... [--exclude GLOB]... [--format text|json|sarif] [--output FILE]
-inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--path DIR]...
+inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--ablation JSON] [--path DIR]...
 ```
 
 With no `--root` and no configured roots, `inv scan` and `inv status` scan the rule file's directory

@@ -108,7 +108,7 @@ Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` re
 
 | Standing | When |
 |---|---|
-| `held` | enforced (in effective mode: a spike demotion counts), `mediation.chokepoint` names one of the rule's functions, no live `mediation.allow` back door is left undeclared, `inv verify` and `inv scan` pass, and (when ablation results are given) a falsifier was caught |
+| `held` | enforced (in effective mode: a spike demotion counts), `mediation.chokepoint` names one of the rule's functions, no live `mediation.allow` back door is left undeclared, `inv verify` and `inv scan` pass, and (when ablation results are given; `inv status` labels a `held` without them unproven) a falsifier was caught |
 | `enforce(known-callers)` | enforced, but one of the conditions for `held` is missing; the reasons are listed |
 | `monitored` | the rule runs, but no enforcer is in effective mode `enforce` |
 | `candidate` | status `candidate` or `contested`, or every enforcer is `off` |
@@ -133,7 +133,9 @@ it while `mediation.allow` names a back door that still resolves and is not decl
 `residual_paths`, while the chokepoint text names none of the rule's functions (its target, an edge
 target, the door or the sink) or a `py:` path that does not resolve, and, given the plugin's
 ablation results (`inv.standing(id, ablation=status_report.load_ablation("build/inv-report.json"))`),
-while no falsifier of the rule was caught. `inv verify` also checks that a `py:`-keyed guard wraps
+while no falsifier of the rule was caught. `inv status --ablation build/inv-report.json` checks that proof; without it a
+`held` rule is labelled unproven (`held (unproven: no --ablation)`, `"ablation_proven": false` in
+`--json`, and a reason saying so). `inv.standing()` without `ablation` does not check it. `inv verify` also checks that a `py:`-keyed guard wraps
 the function its key names, and runs the route check of every FastAPI app given to
 `integrations.fastapi.install`.
 
@@ -199,7 +201,8 @@ automatically, and so is any provider name that `bad` references.
 
 A root an enforcer never sets is a `LoadError` with the fix: `result` before the call
 (`pre_effect`) or at a `model_call` or `edge` enforcer, `reply` at a guard, `old_self` at a
-`model_call`, `edge` or `monitor` enforcer, and `args.self` or `args.inv_feedback` anywhere (`self`
+`model_call`, `edge` or `monitor` enforcer or a `pre_effect` guard (before the effect `old_self` is
+`self` itself, so a transition clause there never fires), and `args.self` or `args.inv_feedback` anywhere (`self`
 is its own root on methods, in guards, model calls and edges alike). The check covers the clauses,
 the `bind` entries they read, every `view` entry and the arguments of the providers they bind.
 
@@ -318,7 +321,17 @@ A rule may have several edge enforcers (one per consumer); each edge uses the en
 `target` is that consumer. Model calls and edges, like guards, read one registry generation per call,
 so a reload mid-call never mixes old rules with new providers. On a method, `self` is a root.
 
-The edge enforcer belongs on the model call's rule (the one with `model_policy`), since that is
+In an agent graph the consumer often takes the state, not the value: `def act(state: State)` with
+`plan: CheckedPlan` in a `TypedDict`, dataclass or pydantic `State`. The edge finds the one
+`Checked` field of the parameters' state types, or the one `@inv.edge("R-7", at="state.plan")` names
+(several without `at=` is a `TypeError` at decoration). It checks that value exactly as above, and
+the consumer gets a shallow copy of the state whose field holds the new `Checked`.
+
+The value of a `Checked` over a `{field: type}` schema is frozen: a dict equal to the parsed one
+whose mutating methods (and those of the lists and maps in it) raise `TypeError`.
+
+A rule with `model_policy` needs `subject.target` (the `@inv.model_call` function: its schema is
+the one edges re-check). The edge enforcer belongs on the model call's rule (the one with `model_policy`), since that is
 where the schema comes from. An edge enforcer on a rule without `model_policy` is a `LoadError`.
 
 **Forgeable values.** Python cannot make `inv.Checked` unforgeable. The type is a convenience, and

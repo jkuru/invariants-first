@@ -245,9 +245,31 @@ def closed_schema(schema: Any) -> Any:
     return schema
 
 
+def type_hints(obj: Any, who: str, error: type[Exception] = TypeError,
+               localns: dict[str, Any] | None = None) -> dict[str, Any]:
+    """typing.get_type_hints(obj), or `error` naming the annotation that does not resolve (never a raw
+    NameError). localns: names to try when the module's globals do not hold one (a class defined in
+    the function that applies the decorator, under `from __future__ import annotations`)."""
+    try:
+        return typing.get_type_hints(obj)
+    except NameError as e:
+        first = e
+    except Exception as e:
+        raise error(f"{who}: its annotations do not resolve ({type(e).__name__}: {e})") from None
+    if localns:
+        try:
+            return typing.get_type_hints(obj, localns=localns)
+        except Exception:
+            pass
+    name = getattr(first, "name", None) or str(first)
+    raise error(f"{who}: the annotation name {name!r} does not resolve (with `from __future__ import "
+                f"annotations`, annotations are read by name: define {name} at module level or import it "
+                f"there)") from None
+
+
 @functools.lru_cache(maxsize=512)
 def _dataclass_fields(schema: type) -> dict[str, Any]:
-    return typing.get_type_hints(schema)
+    return type_hints(schema, f"schema {getattr(schema, '__qualname__', schema)!r}")
 
 
 def schema_fields(schema: Any) -> dict[str, Any]:
@@ -255,7 +277,8 @@ def schema_fields(schema: Any) -> dict[str, Any]:
     schema = closed_schema(schema)
     if isinstance(schema, type) and dataclasses.is_dataclass(schema):
         return dict(_dataclass_fields(schema))
-    return typing.get_type_hints(schema) if dataclasses.is_dataclass(schema) else dict(schema)
+    return (type_hints(schema, f"schema {getattr(schema, '__qualname__', schema)!r}")
+            if dataclasses.is_dataclass(schema) else dict(schema))
 
 
 def literal_eq(v: Any, a: Any) -> bool:
@@ -365,7 +388,7 @@ def _load_provider(name: str, p: Any) -> Provider:
     if set(params) != set(p["args"]):
         raise LoadError(f"provider {name}: signature {params} does not match args {sorted(p['args'])}")
     typ, nullable = _parse_type(p["type"])
-    ann = typing.get_type_hints(fn).get("return")
+    ann = type_hints(fn, f"provider {name}: {p['from']}", LoadError).get("return")
     if _type_set(ann) != frozenset({typ} | ({type(None)} if nullable else set())):
         raise LoadError(f"provider {name}: {p['from']} returns {ann}, but the record declares {p['type']!r}")
     return Provider(name, p, fn, typ, nullable)
@@ -439,6 +462,13 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     _check_mediation(rid, raw)
     if not isinstance(raw.get("id"), str) or not raw["id"]:
         raise LoadError(f"{rid}: missing id")
+    subject = raw.get("subject")
+    if subject is not None and not isinstance(subject, dict):
+        raise LoadError(f"{rid}: subject must be a mapping (subject: {{target: 'py:module.function'}}), "
+                        f"got {subject!r}")
+    if subject is not None and "target" in subject and not (isinstance(subject["target"], str)
+                                                            and subject["target"].startswith("py:")):
+        raise LoadError(f"{rid}: subject.target must be a 'py:module.function' string, got {subject['target']!r}")
     if "status" not in raw:
         raise LoadError(f"{rid}: missing status (set only by human review)")
     if "bad" not in raw:
@@ -522,41 +552,29 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
         return rule
     _check_scopes(rule, reg)
     target_key = rule.target_key
-    arg_refs = {r[1] for r in refs if r[0] == "args" and len(r) > 1}
     if target_key:
         rule.target = resolve(target_key)
         t = reg.targets.get(target_key, {"effects": "external"})     # unlisted target: external
         rule.effects = t["effects"]
-        for i, m in rule.names_for.items():                          # every args.<x> resolves
-            enf = rule.enforcers[i] if i != "rule" else {}
-            tk = enf.get("target", target_key)
-            want = set(arg_refs)
-            local = {n for n, p in m.items() if not p.startswith("provider.")} | DEFAULT_NAMES
-            for p in m.values():
-                if p.startswith("args."):
-                    want.add(p.split(".")[1])
-                if p.startswith("provider."):
-                    prov = reg.providers[p.split(".")[1]]
-                    for a, ppath in prov.raw["args"].items():
-                        _check_path(rid, f"provider {p.split('.')[1]} arg {a}", ppath, reg, roots=local)
-                        if ppath.startswith("args."):
-                            want.add(ppath.split(".")[1])
-            missing = want - _params(resolve(tk))
-            if missing:
-                raise LoadError(f"{rid}: args.{sorted(missing)[0]} does not resolve against {tk}")
-        for i, enf in enumerate(rule.enforcers):                     # a sync enforcer cannot await
-            if enf["point"] not in EVALUATED or enf["mode"] == "off":
-                continue
-            tk = enf.get("target", target_key)
-            fn = inspect.unwrap(resolve(tk))
-            fn = getattr(fn, "__func__", fn)
-            if inspect.iscoroutinefunction(fn):
-                continue
-            for p in rule.names_for.get(i, rule.names_for["rule"]).values():
-                if p.startswith("provider.") and reg.providers[p.split(".")[1]].is_async:
-                    raise LoadError(f"{rid}: provider {p.split('.')[1]} is async def, but the {enf['point']} "
-                                    f"enforcer's target {tk} is sync, so it cannot await it (every call would "
-                                    f"be a rule_error); make {tk} async or the provider sync")
+    elif rule.policy is not None:
+        raise LoadError(f"{rid}: a rule with model_policy needs subject.target: the @inv.model_call function "
+                        f"(its closed schema is what the model call parses into and every edge re-checks)")
+    for i, m in rule.names_for.items():          # provider arguments name declared roots or bound names
+        local = {n for n, p in m.items() if not p.startswith("provider.")} | DEFAULT_NAMES
+        for p in m.values():
+            if p.startswith("provider."):
+                for a, ppath in reg.providers[p.split(".")[1]].raw["args"].items():
+                    _check_path(rid, f"provider {p.split('.')[1]} arg {a}", ppath, reg, roots=local)
+    # every args.<x> resolves and no sync enforcer awaits, against each target known here: the rule's,
+    # and an edge enforcer's own (a guard on a rule without subject.target is checked by inv verify)
+    for i in [*rule.names_for, *(j for j in range(len(rule.enforcers)) if j not in rule.names_for)]:
+        enf = rule.enforcers[i] if i != "rule" else {}
+        tk = enf.get("target", target_key)
+        if not tk:
+            continue
+        why = binding_problem(rule, reg, i, resolve(tk), tk)
+        if why:
+            raise LoadError(why)
     if rule.policy is not None:
         _load_policy(rule, reg)
     _typecheck(rule, reg, [(str(c["when"]), str(c.get("message", rid))) for c in bads])
@@ -564,10 +582,48 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     return rule
 
 
+def binding_problem(rule: Rule, reg: Registry, i: Any, target: Any, tk: str) -> str | None:
+    """Why one enforcer (index i, or "rule") cannot bind against target: an args.<x> its clauses,
+    names or provider arguments read that target does not take, or an async provider a sync target
+    cannot await (every call would be a rule_error). None when it binds."""
+    rid = rule.id
+    m = rule.names_for.get(i, rule.names_for.get("rule", {}))
+    if i in rule.names_for:
+        want = {r[1] for r in rule.refs if r[0] == "args" and len(r) > 1}
+        for p in m.values():
+            if p.startswith("args."):
+                want.add(p.split(".")[1])
+            if p.startswith("provider."):
+                for ppath in reg.providers[p.split(".")[1]].raw["args"].values():
+                    head = ppath.split(".")[0]
+                    path = m[head] + ppath[len(head):] if head in m and head not in DEFAULT_NAMES else ppath
+                    if path.startswith("args."):
+                        want.add(path.split(".")[1])
+        missing = want - _params(target)
+        if missing:
+            return f"{rid}: args.{sorted(missing)[0]} does not resolve against {tk}"
+    if i == "rule":
+        return None
+    enf = rule.enforcers[i]
+    if enf["point"] not in EVALUATED or enf["mode"] == "off":
+        return None
+    fn = inspect.unwrap(target)
+    fn = getattr(fn, "__func__", fn)
+    if inspect.iscoroutinefunction(fn):
+        return None
+    for p in m.values():
+        if p.startswith("provider.") and reg.providers[p.split(".")[1]].is_async:
+            return (f"{rid}: provider {p.split('.')[1]} is async def, but the {enf['point']} enforcer's target "
+                    f"{tk} is sync, so it cannot await it (every call would be a rule_error); make {tk} async or "
+                    f"the provider sync")
+    return None
+
+
 def _read_paths(rule: Rule, reg: Registry, i: Any) -> Iterator[tuple[str, str]]:
     """(path, how it is read) for every root path one enforcer's evaluation reads: the clauses' own
     paths, the bind entries they read, every view entry, and the arguments of the providers those
-    bind. A provider argument naming a bound name is covered by that name's own path."""
+    bind. A provider argument naming a bound name reads that name's path, whether or not bad reads
+    the name itself (bind: {prev: old_self.size} read only as a provider argument is still old_self)."""
     for r in sorted(rule.refs):
         if r[0] in DEFAULT_NAMES:
             yield ".".join(r), "bad"
@@ -581,8 +637,11 @@ def _read_paths(rule: Rule, reg: Registry, i: Any) -> Iterator[tuple[str, str]]:
         if head == "provider":
             prov = reg.providers.get(rest[0]) if rest else None
             for a, ap in ((prov.raw.get("args") or {}) if prov else {}).items():
-                if ap.split(".")[0] in DEFAULT_NAMES:
+                ah = ap.split(".")[0]
+                if ah in DEFAULT_NAMES:
                     yield ap, f"provider {rest[0]} argument {a}"
+                elif ah in m and not m[ah].startswith("provider."):
+                    yield m[ah] + ap[len(ah):], f"provider {rest[0]} argument {a} (bind {ah})"
         else:
             yield path, f"{how} {n}"
 
@@ -607,6 +666,10 @@ def _scope_problem(point: str, timing: str, path: str) -> str | None:
     if head == "old_self" and point in ("model_call", "edge", "monitor"):
         return (f"old_self is never set at a {point} enforcer: it is the snapshot of self an @inv.guard takes "
                 f"before the call; read self or args")
+    if head == "old_self" and guard and timing == "pre_effect":
+        return ("old_self is the snapshot of self taken before the call, so before the effect (pre_effect) it "
+                "is self itself and a transition clause never fires; put it on a post_effect enforcer, or read "
+                "self and args")
     return None
 
 

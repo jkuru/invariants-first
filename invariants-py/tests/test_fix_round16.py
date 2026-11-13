@@ -133,6 +133,8 @@ MONITOR = {"rules": [{"id": "MON", "status": "detect", "bad": "old_self.n > 1",
     (r16.model_doc(bad="old_self.n > 1"), "old_self"),
     (r16.model_doc(bad="reply.n > 1", edges={"use_a": "enforce"}, view={"m": "old_self.n"}), "old_self"),
     (MONITOR, "old_self"),
+    # round 19: before the effect old_self is self, so a transition clause there never fires
+    (r16.guard_doc("G-OLD", "Account.withdraw", "old_self.balance < self.balance"), "old_self"),
     (r16.guard_doc("G-SELF", "Account.spend", "args.self == null"), "args.self"),
     (r16.model_doc(bad="args.inv_feedback == 'x'"), "args.inv_feedback"),
 ])
@@ -143,7 +145,6 @@ def test_a_root_the_enforcer_never_sets_is_a_load_error(doc, needle):
 
 @pytest.mark.parametrize("doc", [
     r16.guard_doc("G-P", "pf", "result != null", timing="post_effect"),
-    r16.guard_doc("G-OLD", "Account.withdraw", "old_self.balance < self.balance"),
     r16.guard_doc("G-OLD", "Account.withdraw", "old_self.balance < self.balance", timing="post_effect"),
     r16.guard_doc("G-SELF", "Account.spend", "args.amount > self.limit"),
 ])
@@ -293,7 +294,8 @@ def test_the_json_schema_allows_views_on_middleware_and_monitor_and_subject_oper
 def test_a_snapshot_takes_scalar_values(iso):
     clauses = ["old_self.blob != old_self.blob", "old_self.at > timestamp('2100-01-01T00:00:00Z')",
                "old_self.wait > duration('100h')", "old_self.uid == 'x'", "old_self.color == 'b'"]
-    inv.load(r16.guard_doc("G-SNAP", "Account.touch", [{"when": c, "message": c} for c in clauses]))
+    inv.load(r16.guard_doc("G-SNAP", "Account.touch", [{"when": c, "message": c} for c in clauses],
+                           timing="post_effect"))
     r16.Account().touch()
     a = r16.Account()
     a.color = r16.Color.BLUE
@@ -303,14 +305,14 @@ def test_a_snapshot_takes_scalar_values(iso):
 
 
 def test_a_snapshot_of_a_date_is_refused_as_cel_refuses_it(iso):
-    inv.load(r16.guard_doc("G-SNAP", "Account.touch", "old_self.day == null"))
+    inv.load(r16.guard_doc("G-SNAP", "Account.touch", "old_self.day == null", timing="post_effect"))
     with pytest.raises(inv.Rejected) as ei:
         r16.Account().touch()
     assert ei.value.outcome.kind == "rule_error" and "datetime.date" in ei.value.outcome.error
 
 
 def test_has_on_an_absent_snapshot_field_is_false(iso):
-    inv.load(r16.guard_doc("G-SNAP", "Account.touch", "has(old_self.meta.x)"))
+    inv.load(r16.guard_doc("G-SNAP", "Account.touch", "has(old_self.meta.x)", timing="post_effect"))
     r16.Account().touch()
     with pytest.raises(inv.Rejected) as ei:
         r16.Account(meta={"x": 1}).touch()

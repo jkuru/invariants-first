@@ -709,7 +709,9 @@ That is how you roll a new rule out: watch it in detect mode, then promote it.
 `on_error` decides:
 
 - **`fail_closed`** (the default) blocks the call with the enforcer's `on_violation` action, as for
-  a violation; FastAPI and ASGI answer 503, because it is an outage, not a decision. Use it for
+  a violation; FastAPI and ASGI answer 503, because it is an outage, not a decision (also when
+  `on_violation` is `route` or `escalate`: the review is opened, and the 503 body carries its
+  `review_id`; a check that could not run never looks like a routed 202). Use it for
   anything that moves money or grants access.
 - **`fail_open_and_page`** lets the call through and calls the configured pager. Use it where an
   outage of the check must not become an outage of the product.
