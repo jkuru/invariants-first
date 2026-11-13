@@ -52,20 +52,22 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
             expose_messages: bool = False) -> tuple[int, dict[str, Any]]:
     """(status, problem+json body) for a guard's exception.
 
-    Routed and Escalation -> 202 (with review_id); ReviewNotOpened -> 503; a rule_error under
-    fail_closed -> 503; Halted -> 500; Rejected -> statuses.reject.
+    ReviewNotOpened -> 503; a rule_error under fail_closed -> 503 whatever on_violation did with it
+    (a rule that could not be evaluated is an outage, never a routed success: a route or escalate
+    enforcer that opened a review for it keeps the review_id in the body); Routed and Escalation
+    -> 202 (with review_id); Halted -> 500; Rejected -> statuses.reject.
     Clause messages are included only with expose_messages (they are rule-file text).
     """
     s = statuses or StatusMap()
     out = exc.outcome
     if isinstance(exc, ReviewNotOpened):
         status, slug = s.review_unavailable, "review-unavailable"
+    elif out is not None and out.kind == "rule_error":
+        status, slug = s.rule_error, "rule-error"
     elif isinstance(exc, Routed):
         status, slug = s.route, "routed"
     elif isinstance(exc, Escalation):
         status, slug = s.escalate, "escalated"
-    elif out is not None and out.kind == "rule_error":
-        status, slug = s.rule_error, "rule-error"
     elif isinstance(exc, Halted):
         status, slug = s.halt, "halted"
     else:

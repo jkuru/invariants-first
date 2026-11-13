@@ -395,7 +395,9 @@ def test_checked_copy_deepcopy_pickle(iso, kind):
 def test_deepcopy_then_mutate_is_still_refused(iso):
     c, _ = call("dict", json.dumps(good("dict")))
     d = copy.deepcopy(c)
-    d.value["evil"] = 1                     # the dict is a copy: the original is untouched
+    with pytest.raises(TypeError):          # round 19: the value is frozen
+        d.value["evil"] = 1
+    dict.__setitem__(d.value, "evil", 1)    # bypassed: the dict is a copy, the original is untouched
     assert "evil" not in c.value
     with pytest.raises(inv.Rejected, match="extra fields"):
         r6.dconsume(d)

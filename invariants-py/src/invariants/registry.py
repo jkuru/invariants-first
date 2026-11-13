@@ -193,7 +193,12 @@ class Handoff:
 
 
 class ReviewStore(Protocol):
-    """Where route and escalate open a review. open() returns the review id."""
+    """Where route and escalate open a review. open() returns the review id.
+
+    A store may also define `async def aopen(handoff) -> str`: async guards, model calls and edges
+    await it (Registry.ahand_off). A store without one has its open() run in a worker thread
+    (asyncio.to_thread), so a blocking write never runs on the event loop.
+    """
 
     def open(self, handoff: Handoff) -> str: ...
 
@@ -214,6 +219,15 @@ class MemoryReviews:
             self.items.append({"id": rid, "rule": handoff.rule, "action": handoff.action,
                                "outcome": handoff.outcome, "bound": handoff.bound})
             return rid
+
+    async def aopen(self, handoff: Handoff) -> str:
+        """open() for async callers: in memory, so it runs on the loop (no thread hop)."""
+        return self.open(handoff)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """The reviews held now, copied under the lock (open() may run in another thread)."""
+        with self._lock:
+            return list(self.items)
 
 
 def _jsonable(v: Any, depth: int = 0) -> Any:
@@ -341,7 +355,11 @@ class Registry:
     @property
     def reviews(self) -> list[dict[str, Any]]:
         """Reviews held by the default in-memory store (empty for another store)."""
-        items = getattr(self.review_store, "items", None)
+        store = self.review_store
+        snap = getattr(store, "snapshot", None)
+        if callable(snap):
+            return list(snap())
+        items = getattr(store, "items", None)
         return list(items) if items is not None else []
 
     def record(self, rule_id: str, kind: str, event: dict[str, Any]) -> None:
@@ -359,13 +377,14 @@ class Registry:
                 self.sink.append(event)
             if kind == "rule_error" and self.error_spike is not None and rule_id not in self.demoted:
                 spiked = self._spike(rule_id)
+            exporters = list(self.exporters)      # capture() and configure() change it from other threads
         if is_decision(kind, event):
             note_decision(rule_id)
         if spiked:
             self.page(Handoff(rule_id, "page", event=event, reason=spiked))
         with _GLOBAL_LOCK:
             fns = [*OBSERVERS]
-        for fn in [*fns, *self.exporters]:
+        for fn in [*fns, *exporters]:
             try:
                 fn(rule_id, kind, event)
             except Exception:
@@ -389,7 +408,11 @@ class Registry:
     def mode(self, rule: Rule, enf: dict[str, Any]) -> str:
         """Effective mode of an enforcer here: rule.mode(enf), dropped to detect while the rule is demoted."""
         m = rule.mode(enf)
-        return "detect" if m == "enforce" and rule.id in self.demoted else m
+        if m != "enforce":
+            return m
+        with self._lock:                           # record() demotes from other threads
+            demoted = rule.id in self.demoted
+        return "detect" if demoted else m
 
     def restore(self, rule_id: str) -> None:
         """End a spike demotion (after review)."""
@@ -429,14 +452,15 @@ class Registry:
 
     async def ahand_off(self, h: Handoff) -> str:
         """hand_off() for async callers: a store with an async aopen() is awaited (JsonlReviews runs its
-        fsync in a worker thread); one with only open() is called as hand_off() calls it."""
+        fsync in a worker thread); one with only open() has it run in a worker thread
+        (asyncio.to_thread), never on the event loop."""
         errors: list[BaseException] = []
         for which, store in (("review store", self.review_store), ("review fallback", self.review_fallback)):
             if store is None:
                 continue
             try:
                 aopen = getattr(store, "aopen", None)
-                rid = await aopen(h) if callable(aopen) else store.open(h)
+                rid = await aopen(h) if callable(aopen) else await asyncio.to_thread(store.open, h)
                 if not isinstance(rid, str) or not rid:
                     raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
             except Exception as e:
@@ -470,8 +494,14 @@ class Registry:
         Asking is not acting: this never counts as reaching the rule for --inv-ablate (a test
         asserting `not inv.is_ablated(...)` is not a falsifier). Enforcement points call skips().
         """
-        return (rule_id in self.ablated or self._reg_ablated[rule_id] > 0 or GLOBAL_ABLATED[rule_id] > 0
-                or self._ctx_ablated(rule_id))
+        if rule_id in self.ablated or self._ctx_ablated(rule_id):
+            return True
+        with self._lock:                           # ablate(scope="registry") changes it from other threads
+            here = self._reg_ablated.get(rule_id, 0) > 0
+        if here:
+            return True
+        with _GLOBAL_LOCK:                         # ablated_everywhere() changes it from other threads
+            return GLOBAL_ABLATED.get(rule_id, 0) > 0
 
     def skips(self, rule_id: str) -> bool:
         """is_ablated() for an enforcement point about to skip the rule: a True answer is noted as
@@ -570,8 +600,12 @@ class Registry:
             points = {e["point"] for e in rule.enforcers} & GUARD_POINTS
             if rule.policy or points:
                 keys = getattr(rule.target, "__inv_rules__", ())
+                kind = getattr(rule.target, "__inv_kind__", "")
                 if rule.id not in keys and rule.target_key not in keys:
                     problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
+                elif not rule.policy and kind != "guard":
+                    problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
+                                    f"@inv.guard: its decorator/middleware enforcers are never evaluated")
                 elif not rule.policy and points - set(getattr(rule.target, "__inv_points__", ("decorator",))):
                     missing = sorted(points - set(getattr(rule.target, "__inv_points__", ("decorator",))))
                     problems.append(f"{rule.id}: the guard on {rule.target_key} does not evaluate point "
@@ -596,9 +630,14 @@ class Registry:
                         problems.append(f"{w.__qualname__}: guards {k}, {why}")
                 elif k not in self.rules:
                     problems.append(f"{w.__qualname__}: guards {k}, which is not in the rule file")
-                elif (getattr(w, "__inv_kind__", "") != "edge"
-                      and self.rules[k].target is not None and not _wraps(self.rules[k].target, w)):
+                elif getattr(w, "__inv_kind__", "") == "edge":
+                    why = _edge_problem(self.rules[k], w)
+                    if why:
+                        problems.append(f"{w.__qualname__}: {why}")
+                elif self.rules[k].target is not None and not _wraps(self.rules[k].target, w):
                     problems.append(f"{w.__qualname__}: guards {k}, whose target is {self.rules[k].target_key}")
+                elif self.rules[k].target is None and self.rules[k].status != "retired":
+                    problems.extend(f"{w.__qualname__}: {why}" for why in _targetless_problems(self, self.rules[k], w))
         for check in list(self.verifiers):
             try:
                 check(self)
@@ -640,8 +679,7 @@ class Registry:
         if "enforce" not in modes:
             return "monitored", ["no enforcer in effective mode enforce"]
         why = []
-        if (rule_id in self.ablated or self._reg_ablated[rule_id] > 0 or GLOBAL_ABLATED[rule_id] > 0
-                or self._ctx_ablated(rule_id)):
+        if self.is_ablated(rule_id):
             why.append("ablated: its in-process guards are off (INV_ABLATE or inv.ablated)")
         med = rule.raw.get("mediation") or {}
         if not med.get("chokepoint"):
@@ -666,6 +704,38 @@ class Registry:
         if not scan:
             why.append("inv scan not run")
         return ("held" if not why else "enforce(known-callers)"), why
+
+
+def _edge_problem(rule: Rule, w: Any) -> str | None:
+    """Why an @inv.edge(rule.id) wrapper w is misplaced: no edge enforcer of the rule targets it (at
+    run time it would borrow the rule's only edge enforcer, which names another function)."""
+    targets = [e.get("target") for e in rule.enforcers if e.get("point") == "edge"]
+    for t in targets:
+        try:
+            if _wraps(resolve(str(t)), w):
+                return None
+        except Exception:
+            continue
+    if not targets:
+        return f"@inv.edge({rule.id!r}), but {rule.id} has no edge enforcer"
+    return f"@inv.edge({rule.id!r}), but no edge enforcer of {rule.id} targets it (they target {', '.join(map(str, targets))})"
+
+
+def _targetless_problems(reg: Registry, rule: Rule, w: Any) -> list[str]:
+    """A guard on a rule without subject.target: the load-time binding checks, against the function
+    the guard wraps (the only target there is)."""
+    from .loader import binding_problem
+    points = set(getattr(w, "__inv_points__", ("decorator",)))
+    out = []
+    for i, e in enumerate(rule.enforcers):
+        if e.get("point") in points:
+            try:
+                why = binding_problem(rule, reg, i, w, w.__qualname__)
+            except Exception as ex:
+                why = f"{rule.id}: its bindings could not be checked against {w.__qualname__} ({type(ex).__name__})"
+            if why:
+                out.append(why)
+    return out
 
 
 def _resolves(key: str) -> bool:
@@ -816,11 +886,13 @@ def capture(reg: Registry | None = None) -> Iterator[list[dict[str, Any]]]:
     if reg is None:
         stop = observe(keep)
     else:
-        reg.exporters.append(keep)
+        with reg._lock:
+            reg.exporters.append(keep)
 
         def stop() -> None:
-            if keep in reg.exporters:
-                reg.exporters.remove(keep)
+            with reg._lock:
+                if keep in reg.exporters:
+                    reg.exporters.remove(keep)
     try:
         yield events
     finally:

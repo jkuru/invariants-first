@@ -16,6 +16,7 @@ import math
 import re
 import enum
 import reprlib
+import sys
 import time
 import types
 import typing
@@ -26,7 +27,7 @@ from typing import (Any, Awaitable, Callable, Coroutine, Iterator, ParamSpec, Pr
 from .cel import CelError, values as cel_values
 from .errors import CoverageError, Escalation, ParseError
 from .evaluate import aact, ablated, act, evaluate, report
-from .loader import closed_schema, literal_eq, schema_fields
+from .loader import closed_schema, literal_eq, schema_fields, type_hints
 from .model import GUARD_POINTS, Outcome, Rule
 from .providers import ProviderFailed, prefetch_async, prefetch_many
 from .registry import WRAPPED, Handoff, Registry, _wraps, current, note_decision
@@ -42,6 +43,24 @@ def _descriptor(fn: Any, deco: Callable[[Any], Any]) -> Any:
     if isinstance(fn, (classmethod, staticmethod)):
         return type(fn)(deco(fn.__func__))
     return None
+
+
+def _hints(fn: Any, who: str) -> dict[str, Any]:
+    """fn's resolved annotations; TypeError naming the one that does not resolve. Call it from a
+    decorator's deco(): an annotation naming a class local to the function that applies the
+    decorator (string annotations under `from __future__ import annotations`) is looked up in that
+    function's locals and in fn's closure."""
+    localns: dict[str, Any] = {}
+    f: types.FrameType | None = sys._getframe(1)
+    while f is not None and f.f_globals.get("__name__") == __name__:
+        f = f.f_back
+    if f is not None and f.f_locals is not f.f_globals:
+        localns.update(f.f_locals)
+    try:
+        localns.update(inspect.getclosurevars(fn).nonlocals)
+    except Exception:
+        pass
+    return type_hints(fn, who, TypeError, localns)
 
 
 # --- guard --------------------------------------------------------------------------------------
@@ -182,6 +201,84 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
 
 
 # --- model calls and edges ----------------------------------------------------------------------
+def _immutable(*_: Any, **__: Any) -> Any:
+    raise TypeError("checked values are immutable")
+
+
+_FREEZE_DEPTH = 256
+
+
+class FrozenDict(dict[Any, Any]):
+    """The value of a Checked over a {field: type} schema: a dict (equal to, and read like, the parsed
+    one) whose mutating methods raise TypeError, as do those of the lists and maps inside it."""
+
+    __slots__ = ()
+    __setitem__ = __delitem__ = __ior__ = _immutable
+    clear = pop = popitem = setdefault = update = _immutable
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        if a or k:          # dict.__init__ on a built FrozenDict would update it in place
+            _immutable()
+
+    def __copy__(self) -> Any:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        return _freeze(copy.deepcopy(_thaw(self), memo))
+
+    def __reduce__(self) -> Any:
+        return (_freeze, (_thaw(self),))
+
+
+class FrozenList(list[Any]):
+    """A list inside a frozen Checked value: equal to, and read like, a list; its mutating methods
+    raise TypeError."""
+
+    __slots__ = ()
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _immutable
+    append = extend = insert = pop = remove = clear = sort = reverse = _immutable
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        if a or k:          # list.__init__ on a built FrozenList would replace its items
+            _immutable()
+
+    def __copy__(self) -> Any:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        return _freeze(copy.deepcopy(_thaw(self), memo))
+
+    def __reduce__(self) -> Any:
+        return (_freeze, (_thaw(self),))
+
+
+def _freeze(v: Any, depth: int = 0) -> Any:
+    """Plain dicts and lists (and those inside them) as FrozenDict and FrozenList; anything else as is."""
+    if depth > _FREEZE_DEPTH:
+        return v
+    if type(v) is dict:
+        out = FrozenDict()
+        for k, x in v.items():
+            dict.__setitem__(out, k, _freeze(x, depth + 1))
+        return out
+    if type(v) is list:
+        items = FrozenList()
+        list.extend(items, [_freeze(x, depth + 1) for x in v])
+        return items
+    return v
+
+
+def _thaw(v: Any, depth: int = 0) -> Any:
+    """The plain dicts and lists a frozen value was made from (a copy)."""
+    if depth > _FREEZE_DEPTH:
+        return v
+    if isinstance(v, FrozenDict):
+        return {k: _thaw(x, depth + 1) for k, x in dict.items(v)}
+    if isinstance(v, FrozenList):
+        return [_thaw(x, depth + 1) for x in list.__iter__(v)]
+    return v
+
+
 class Checked:
     """Base for refined types built by inv.model_call; carries value, attempts, rule and verdict.
 
@@ -190,6 +287,9 @@ class Checked:
     its consumer with a new Checked over the re-validated copy (equal to the received one).
     copy.copy returns the same (immutable) object; copy.deepcopy and pickle give an equal
     Checked over a copy of the value. Neither adds trust: an edge re-checks a copy the same way.
+    The value of a {field: type} schema is a FrozenDict (a dict whose mutating methods raise
+    TypeError, as do those of the lists and maps inside it), so neither `checked.value.update(...)`
+    nor `checked.update(...)` (attribute reads are forwarded to the value) changes it.
     """
 
     __slots__ = ("value", "attempts", "rule", "verdict")
@@ -200,7 +300,7 @@ class Checked:
     @classmethod
     def _inv_make(cls, value: Any, attempts: int, rule: str, verdict: str) -> Any:
         obj = object.__new__(cls)
-        for k, v in (("value", value), ("attempts", attempts), ("rule", rule), ("verdict", verdict)):
+        for k, v in (("value", _freeze(value)), ("attempts", attempts), ("rule", rule), ("verdict", verdict)):
             object.__setattr__(obj, k, v)
         return obj
 
@@ -746,7 +846,7 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
         if refined is None:
             refined = sig.return_annotation
             if isinstance(refined, str):
-                refined = typing.get_type_hints(fn).get("return")
+                refined = _hints(fn, f"@inv.model_call({rule_id!r}) on {fn.__qualname__}").get("return")
             if not (isinstance(refined, type) and issubclass(refined, Checked)):
                 raise TypeError(f"{fn.__name__} must be annotated to return an inv.Checked subclass, or pass "
                                 f"returns=<the Checked subclass> to @inv.model_call")
@@ -821,10 +921,10 @@ def recheck(reply: Any, schema: Any) -> Any:
             got = type(reply)
             raise ParseError(f"value was not built by inv.parse from the closed schema "
                              f"{cls.__name__} (got {got.__module__}.{got.__qualname__})")
-    elif type(reply) is not dict:
+    elif type(reply) not in (dict, FrozenDict):
         raise ParseError(f"value was not built by inv.parse from the closed {{field: type}} schema "
                          f"(got {type(reply).__module__}.{type(reply).__qualname__})")
-    return parse(reply, schema)
+    return parse(_thaw(reply), schema)
 
 
 @dataclasses.dataclass
@@ -845,8 +945,104 @@ class _EdgeCall:
     cache: dict[Any, Any] = dataclasses.field(default_factory=dict)
 
 
-def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+def _checked_type(t: Any) -> Any:
+    """The Checked subclass an annotation names (also as X | None), else None."""
+    if isinstance(t, type) and issubclass(t, Checked):
+        return t
+    if typing.get_origin(t) in (typing.Union, types.UnionType):
+        found = [a for a in typing.get_args(t) if isinstance(a, type) and issubclass(a, Checked)]
+        rest = [a for a in typing.get_args(t) if a is not type(None) and a not in found]
+        if len(found) == 1 and not rest:
+            return found[0]
+    return None
+
+
+def _state_fields(t: Any, who: str) -> dict[str, Any]:
+    """Field -> annotation of a state type (TypedDict, dataclass or pydantic model), else {}."""
+    if not isinstance(t, type):
+        return {}
+    model_fields = getattr(t, "model_fields", None)
+    if isinstance(model_fields, dict) and hasattr(t, "model_copy"):
+        return {n: f.annotation for n, f in model_fields.items()}
+    if typing.is_typeddict(t) or dataclasses.is_dataclass(t):
+        return type_hints(t, who)
+    return {}
+
+
+def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
+               who: str) -> tuple[tuple[str, ...], Any]:
+    """(parameter, field, ...) leading to the Checked value an edge receives, and its Checked subclass.
+
+    at=None: a parameter annotated with a Checked subclass, else the one field annotated with one in
+    the state types (TypedDict, dataclass, pydantic model) the parameters are annotated with;
+    none, or more than one, is a TypeError. at="state.plan": that parameter and field path, whose
+    annotations must lead to a Checked subclass."""
+    if at is not None:
+        parts = tuple(at.split(".")) if isinstance(at, str) else ()
+        if len(parts) < 2 or not all(parts) or parts[0] not in sig.parameters:
+            raise TypeError(f"{who}: at={at!r} must be '<parameter>.<field>[.<field>...]' naming one of "
+                            f"its parameters ({', '.join(sig.parameters)})")
+        t = hints.get(parts[0])
+        for f in parts[1:]:
+            fields = _state_fields(t, who)
+            if f not in fields:
+                raise TypeError(f"{who}: at={at!r}: {getattr(t, '__name__', t)!r} has no annotated field {f!r} "
+                                f"(annotate the parameter with a TypedDict, dataclass or pydantic model)")
+            t = fields[f]
+        refined = _checked_type(t)
+        if refined is None:
+            raise TypeError(f"{who}: at={at!r} is annotated {t!r}, not an inv.Checked subclass")
+        return parts, refined
+    direct = [(n, c) for n in sig.parameters if (c := _checked_type(hints.get(n))) is not None
+              and isinstance(hints.get(n), type)]
+    if direct:
+        return (direct[0][0],), direct[0][1]
+    found = [((n, f), c) for n in sig.parameters for f, ft in _state_fields(hints.get(n), who).items()
+             if (c := _checked_type(ft)) is not None]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        raise TypeError(f"{who}: more than one Checked field in its state ({', '.join('.'.join(p) for p, _ in found)}); "
+                        f"name the one this edge receives with at='<parameter>.<field>'")
+    raise TypeError(f"{who}: an edge needs a parameter annotated with an inv.Checked subclass, or a state "
+                    f"parameter (TypedDict, dataclass or pydantic model) with one Checked field (or at=...)")
+
+
+def _get_field(obj: Any, f: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(f)
+    return getattr(obj, f, None)
+
+
+def _with_field(obj: Any, f: str, value: Any) -> Any:
+    """A shallow copy of a state object with one field replaced (the caller's object is unchanged)."""
+    if isinstance(obj, dict):
+        new = copy.copy(obj)
+        new[f] = value
+        return new
+    if hasattr(obj, "model_copy") and isinstance(getattr(type(obj), "model_fields", None), dict):
+        return obj.model_copy(update={f: value})
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(obj, **{f: value})
+    raise TypeError(f"cannot hand the consumer a copy of a {type(obj).__name__} with {f} re-checked: use a "
+                    f"dict (TypedDict), a dataclass or a pydantic model for the state")
+
+
+def _set_path(root: Any, path: tuple[str, ...], value: Any) -> Any:
+    """root with the field at path replaced, each container on the way a shallow copy."""
+    if not path:
+        return value
+    return _with_field(root, path[0], _set_path(_get_field(root, path[0]), path[1:], value))
+
+
+def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """@inv.edge("R-7") on the consumer of a Checked value (sync or async).
+
+    The value arrives in a parameter annotated with the Checked subclass, or in a field of a state
+    parameter (a TypedDict, dataclass or pydantic model, as agent graphs pass): the one field
+    annotated with a Checked subclass (X or X | None), or the one at="state.plan" names. Several
+    candidates without at= is a TypeError when the decorator runs. For a state, the consumer gets
+    a shallow copy of it whose field holds the new Checked (the caller's state is unchanged).
 
     The type gate stops honest mistakes; then the verdict must be ok, the value is re-validated
     against the closed schema of the rule's model call (extra or missing fields, out-of-enum
@@ -862,11 +1058,11 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
         if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
             raise TypeError(f"@inv.edge cannot wrap the generator {fn.__qualname__}")
         sig = inspect.signature(fn)
-        hints = typing.get_type_hints(fn)
-        pname, refined = next(((n, t) for n, t in hints.items() if isinstance(t, type) and issubclass(t, Checked)),
-                              (None, None))
-        if pname is None or refined is None:
-            raise TypeError(f"{fn.__name__}: an edge needs a parameter annotated with an inv.Checked subclass")
+        who = f"@inv.edge({rule_id!r}) on {fn.__qualname__}"
+        hints = _hints(fn, who)
+        # parameters only: the return annotation is not a parameter the Checked value arrives in
+        path, refined = _edge_path(sig, hints, at, who)
+        pname, fields = path[0], path[1:]
         me: list[Any] = []                                    # the wrapper, once built
         picked: dict[str, tuple[Rule, int, dict[str, Any]]] = {}
         name = f"py:{fn.__module__}.{fn.__qualname__}"
@@ -901,6 +1097,8 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
             bound = sig.bind(*a, **kw)
             bound.apply_defaults()
             value = bound.arguments[pname]
+            for f in fields:                                    # read once: the value checked is this one
+                value = _get_field(value, f)
             if not isinstance(value, refined):
                 raise TypeError(f"{fn.__name__} accepts only {refined.__name__}")
             providers, rules = reg.generation((rule_id,))       # one generation per call
@@ -922,7 +1120,8 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
                     perr = parse_error_text(e, reg)
                 else:                   # the consumer gets the copy the rule judges, never the received one
                     _, attempts, rid, _ = Checked._inv_state(value)
-                    bound.arguments[pname] = type(value)._inv_make(reply, attempts, rid, verdict)
+                    fresh = type(value)._inv_make(reply, attempts, rid, verdict)
+                    bound.arguments[pname] = _set_path(bound.arguments[pname], fields, fresh)
                     call = (bound.args, bound.kwargs)
             base = {"args": {k: v for k, v in bound.arguments.items() if k != "self"},
                     "self": bound.arguments.get("self"), "reply": rule_view(reply)}
@@ -971,6 +1170,7 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
 
         me.append(wrapper)
         wrapper.__inv_rules__, wrapper.__inv_kind__ = (rule_id,), "edge"
+        wrapper.__inv_at__ = ".".join(path)
         WRAPPED.add(wrapper)
         return typing.cast(Callable[P, R], wrapper)
     return deco

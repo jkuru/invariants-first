@@ -33,7 +33,21 @@ Key behaviours that the one-line docstrings leave out:
   plugin's `--inv-report-json` data (`status_report.load_ablation(path)`); see
   [concepts.md](concepts.md#standing).
 - `JsonlReviews.aopen(handoff)` runs the write and fsync in a worker thread; async guards, model
-  calls and edges use it (`Registry.ahand_off`), so they never block the event loop.
+  calls and edges use it (`Registry.ahand_off`), so they never block the event loop. A review store
+  may define `async def aopen(handoff) -> str`; one that defines only `open()` has it run in a worker
+  thread (`asyncio.to_thread`) on the async paths (`MemoryReviews` opens on the loop: it is in memory).
+- `@inv.edge(rule_id, at=None)` on agent-graph state: the `Checked` value may arrive in a field of a
+  state parameter (a `TypedDict`, dataclass or pydantic model), as in `def act(state: State)` with
+  `state["plan"]` or `state.plan` annotated `CheckedPlan` (or `CheckedPlan | None`). With one such field
+  in the parameters' state types the edge finds it; with several, name it with
+  `@inv.edge("R-7", at="state.plan")` (a dotted path from a parameter through annotated fields).
+  None, several without `at=`, or an `at=` path that does not lead to a `Checked` annotation is a
+  `TypeError` when the decorator runs. The checks are the direct case's: the value is read once,
+  re-validated and re-checked, and the consumer gets a shallow copy of the state whose field holds
+  the new `Checked` over the judged copy (the caller's state object is never changed).
+- The value of a `Checked` over a `{field: type}` schema is a frozen dict (`guard.FrozenDict`, its
+  lists `FrozenList`): equal to and read like the parsed dict, but `update`, `pop`, item assignment
+  and the list methods raise `TypeError`, through `.value` or through attribute forwarding.
 - Registries are context-local. `inv.ablated(id, scope="registry")` turns a rule off for every
   thread and task that uses the registry; see [concepts.md](concepts.md#ablation).
 - `inv.__version__` is read from the installed metadata.
@@ -49,7 +63,7 @@ Key behaviours that the one-line docstrings leave out:
 | `provider(name: str, *more: str, concurrent: bool = False) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. concurrent=True lets an async provider overlap other opted-in ones (the record's `concurrent:` overrides it). |
 | `Dependency(name: str) -> None` | class | A context-local value providers read: a store, a client, a tenant (contextvars underneath). |
 | `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept, with bounded retries. |
-| `edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async). |
+| `edge(rule_id: str, *, at: str \| None = None) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async); at="state.plan" names it inside a state parameter. |
 | `Checked(*a: Any, **k: Any) -> None` | class | Base for refined types built by inv.model_call; carries value, attempts, rule and verdict. |
 | `parse(raw: Any, schema: Any, *, max_size: int \| None = None) -> Any` | function | Parse a reply into a closed schema (dataclass, {field: type} or pydantic model); extra or missing fields fail. |
 
@@ -163,7 +177,7 @@ or `args.region`. They bind to handler parameter names, not to OpenAPI JSON path
 |---|---|
 | reject | 422, configurable within 4xx |
 | route or escalate | 202, with `review_id` |
-| `rule_error` under `fail_closed` | 503 |
+| `rule_error` under `fail_closed` | 503, whatever `on_violation` is (a route or escalate enforcer still opens the review, and the body keeps its `review_id`) |
 | no review could be opened (`ReviewNotOpened`) | 503 |
 | halt | 500 |
 
@@ -313,7 +327,7 @@ the merged results.
 | `inv lock` | `inv lock [file] [--check] [--accept-weakening] [--lock FILE] [--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]...`: see [lockfile.md](lockfile.md). `--root` and `--exclude` pin extra scan roots and excludes, as `inv check` is then run with them. |
 | `inv verify` | `inv verify [file] [--import MOD]... [--json] [--path DIR]...`: imports the app, then checks that every target is guarded and every guard names a rule. |
 | `inv scan` | `inv scan [file] [--root DIR]... [--exclude GLOB]... [--format text\|json\|sarif] [--output FILE]`: see [scan.md](scan.md). |
-| `inv status` | `inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--path DIR]...`: the standing of each rule, combining verify and scan. |
+| `inv status` | `inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--ablation JSON] [--path DIR]...`: the standing of each rule, combining verify, scan and (with `--ablation`, the pytest `--inv-ablate --inv-report-json` file) ablation. Without `--ablation` a `held` row is labelled unproven: `"ablation_proven": false` and a reason in JSON, `held (unproven: no --ablation)` in text; `ablation_proven` is true only for a `held` backed by the report. |
 | `inv mcp` | `inv mcp [rulefile] [--root DIR]`: a read-only MCP server over stdio for coding agents (tools: scan, check, status, explain, propose_rules); it never writes the rule file, the lock or `allow`. The same server is installed as `inv-mcp [--root DIR] [--rules FILE]`. See [agents.md](agents.md). |
 
 Where `validate`, `lock`, `verify` and `status` import the app from is described in

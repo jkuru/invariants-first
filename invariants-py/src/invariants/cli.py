@@ -451,11 +451,17 @@ def cmd_scan(a: argparse.Namespace) -> int:
 
 def cmd_status(a: argparse.Namespace) -> int:
     path = _rule_file(a.rulefile)
+    ablation = None
+    if a.ablation:
+        try:
+            ablation = status_report.load_ablation(a.ablation)
+        except (OSError, ValueError) as e:
+            raise Usage(f"--ablation: {e}") from e
     roots = _roots(a, path)
     with _import_path(path, a.path), isolated() as reg:
         _load_app(path, a.imports)
         report = scanner.scan(read_document(path), roots, _exclude(a, path))
-        data = status_report.build(reg, report)
+        data = status_report.build(reg, report, ablation)
     _out(json.dumps(data, indent=2) if a.json else status_report.to_text(data))
     return OK
 
@@ -1232,6 +1238,8 @@ def parser() -> argparse.ArgumentParser:
     st.add_argument("--exclude", action="append", default=[], metavar="GLOB")
     st.add_argument("--import", dest="imports", action="append", default=[], metavar="MODULE")
     st.add_argument("--json", action="store_true")
+    st.add_argument("--ablation", metavar="JSON",
+                    help="the pytest --inv-ablate --inv-report-json file; without it no rule is reported held")
     mc = add("mcp", cmd_mcp, "read-only MCP server over stdio for coding agents (docs/agents.md)", imports=False)
     mc.add_argument("--root", default=".", metavar="DIR", help="project root (default: the current directory)")
     return p

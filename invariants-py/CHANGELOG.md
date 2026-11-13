@@ -101,6 +101,56 @@ Lock:
   `account: str` is informational; a renamed parameter, a new default, a parameter made keyword-only
   or a changed `Annotated` marker is stale. Text that does not parse is compared as text.
 
+### Fix round 19 (runtime)
+
+From a review of the guard, loader, registry and integrations. Regression tests:
+`tests/test_fix_round19_runtime.py` (fixture app `tests/fixtures/round19.py`); each failed before its
+fix (checked by reverting each fix in turn).
+
+Behaviour changes:
+
+- **`@inv.edge` reads parameters only.** An edge with untyped parameters and a `-> CheckedPlan` return
+  bound the return annotation as its parameter and failed with `KeyError` on every call; now it is a
+  `TypeError` when the decorator runs. A `Checked` class defined in the function that applies
+  `@inv.edge` or `@inv.model_call` (under `from __future__ import annotations`) now resolves, and an
+  annotation that does not resolve is a `TypeError` naming it (a `LoadError` for a provider's return
+  annotation), never a raw `NameError`.
+- **`@inv.edge` on agent-graph state.** The `Checked` value may sit in a field of a state parameter (a
+  `TypedDict`, dataclass or pydantic model): the one `Checked`-typed field is found, or
+  `@inv.edge("R-7", at="state.plan")` names it; several candidates without `at=` fail at decoration.
+  The re-validation is the direct case's, and the consumer gets a shallow copy of the state holding the
+  new `Checked` (the caller's state is unchanged).
+- **A `{field: type}` `Checked` value is frozen.** `c.update(...)`, `c.pop(...)` (forwarded to the
+  value) and `c.value["k"] = v` mutated the checked value in place; the value is now a `FrozenDict`
+  (its lists `FrozenList`), equal to and read like the parsed dict, whose mutating methods raise
+  `TypeError`. Copy and pickle keep it frozen.
+- **Loader.** `old_self` read by a `pre_effect` guard is a `LoadError` (before the effect it is `self`,
+  so the clause never fires). A rule with `model_policy` needs `subject.target`. A provider argument
+  that names a bound `old_self.<path>` is now snapshotted and scope-checked. Provider arguments are
+  checked, and edge targets bound, also when the rule has no `subject.target`; a guard on such a rule is
+  bound against the function it wraps by `inv verify`. A `subject` that is not a mapping is a
+  `LoadError` (it crashed with `AttributeError`).
+- **Registry locks.** `mode()` (spike demotions), `is_ablated()`/`standing()` (ablation counters),
+  `record()` (exporters), `capture()` and `Registry.reviews` (`MemoryReviews.snapshot()`) read under
+  their locks.
+- **pydantic.** A NaN in a dataclass field of a lax (`strict=False`) model, and a naive datetime in a
+  set, frozenset or dataclass field, are refused like the other cases. A reply re-validated from the
+  same JSON (an edge or `model_of()` on every consumer call) skips the NaN and naive-datetime walks when
+  the new instance equals one that passed them; validation itself always runs. On a 20-leg reply:
+  `model_of()` 81 to 30 µs, an edge call 264 to 155 µs; a new reply's first validation is about 4 µs
+  slower.
+- **HTTP.** A `rule_error` under `fail_closed` on a `route` or `escalate` enforcer raised `Routed` or
+  `Escalation`, which `problem()` answered 202 before it looked at the outcome. It is now 503, as the
+  docs say; the body keeps the opened review's `review_id`.
+- **verify and status.** `inv verify` reports an `@inv.edge` that no edge enforcer of its rule targets
+  (at run time it borrowed the rule's only edge enforcer), and a decorator/middleware rule whose target
+  is wrapped by `@inv.edge` or `@inv.model_call` instead of `@inv.guard`. `inv status` takes
+  `--ablation <pytest --inv-report-json file>`. Each row has `ablation_proven`, true only for a `held`
+  backed by that report; without it a `held` row is labelled unproven (a reason in JSON,
+  `held (unproven: no --ablation)` in text), never shown as ablation-proven.
+- **Async review stores.** On async paths a review store with only `open()` has it run in a worker
+  thread (`asyncio.to_thread`); `MemoryReviews` has an `aopen()` that opens on the loop.
+
 ### Fix round 18: scan
 
 From a third review of `inv scan`. Regression tests: `tests/test_fix_round18_scan.py`; each failed

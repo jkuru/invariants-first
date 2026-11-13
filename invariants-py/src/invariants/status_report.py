@@ -10,6 +10,10 @@ from .registry import Registry
 from .scan import Report
 
 DOWNGRADE = {"held": "enforce(known-callers)"}
+NO_ABLATION = ("held is unproven: no ablation results were given, so nothing shows a falsifier fails with "
+               "the rule off (run pytest --inv-ablate --inv-report-json build/inv-report.json, then inv status "
+               "--ablation build/inv-report.json)")
+UNPROVEN = "held (unproven: no --ablation)"
 
 
 def verify_result(reg: Registry) -> tuple[bool, list[str]]:
@@ -36,7 +40,9 @@ def _scan_reason(report: Report, rule_id: str, pure: bool = False) -> str | None
 def rule_status(reg: Registry, report: Report, rule_id: str,
                 ablation: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One rule's row: status, standing, reasons, scan result. ablation: the pytest plugin's
-    --inv-report-json data (see load_ablation); when given, a rule no falsifier caught is not held."""
+    --inv-report-json data (see load_ablation): a rule no falsifier caught is not held. Without it a
+    held row is labelled unproven (ablation_proven false, a reason saying so, "held (unproven: no
+    --ablation)" in the text output); ablation_proven is true only for a held row backed by ablation."""
     rule = reg.rules[rule_id]
     standing, reasons = reg.standing(rule_id, scan=True, ablation=ablation)
     reasons = list(reasons)
@@ -47,7 +53,10 @@ def rule_status(reg: Registry, report: Report, rule_id: str,
         if why:
             reasons.append(why)
             standing = DOWNGRADE.get(standing, standing)
+    if standing == "held" and ablation is None:
+        reasons.append(NO_ABLATION)          # labelled, never reported as ablation-proven
     return {"id": rule_id, "status": rule.status, "standing": standing, "reasons": reasons,
+            "ablation_proven": standing == "held" and ablation is not None,
             "scan": report.rule_result(rule_id), "scan_counts": report.counts(rule_id)}
 
 
@@ -69,7 +78,8 @@ def build(reg: Registry, report: Report, ablation: Mapping[str, Any] | None = No
 def to_text(data: dict[str, Any]) -> str:
     lines = []
     for r in data["rules"]:
-        lines.append(f"{r['id']:<8} {r['status']:<10} {r['standing']}")
+        shown = UNPROVEN if r["standing"] == "held" and not r.get("ablation_proven") else r["standing"]
+        lines.append(f"{r['id']:<8} {r['status']:<10} {shown}")
         lines += [f"         - {why}" for why in r["reasons"]]
     v = data["verify"]
     lines.append("verify: pass" if v["passed"] else f"verify: FAIL ({len(v['problems'])} problem(s))")
