@@ -1,6 +1,7 @@
 """The registry of loaded rules, its reach counters, and which registry is current."""
 from __future__ import annotations
 
+import asyncio
 import collections
 import contextlib
 import contextvars
@@ -9,12 +10,13 @@ import json
 import logging
 import os
 import pathlib
+import re
 import sys
 import threading
 import time
 import uuid
 import weakref
-from typing import Any, Callable, Iterable, Iterator, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 
 from .errors import CoverageError, LoadError, ReviewNotOpened
 from .model import GUARD_POINTS, Provider, Rule
@@ -238,6 +240,11 @@ class JsonlReviews:
             os.fsync(f.fileno())
         return rid
 
+    async def aopen(self, handoff: Handoff) -> str:
+        """open() in a worker thread (asyncio.to_thread), so the write and fsync never block the event
+        loop. Async guards, model calls and edges use it (Registry.ahand_off); the file is the same."""
+        return await asyncio.to_thread(self.open, handoff)
+
 
 @dataclasses.dataclass(frozen=True)
 class ErrorSpike:
@@ -285,11 +292,23 @@ class Registry:
         self._reg_ablated: collections.Counter[str] = collections.Counter()
         self.backend_name: str | None = None
         self.contracts: dict[str, Any] = {}
+        # extra checks verify() runs, each raising CoverageError: integrations add them (the FastAPI
+        # route check of an app given to integrations.fastapi.install)
+        self.verifiers: list[Callable[[Registry], Any]] = []
         self._lock = threading.Lock()
 
     def install(self, other: Registry) -> Registry:
-        """Take the rules, providers, targets and notes of another loaded registry."""
+        """Take the rules, providers, targets and notes of another loaded registry.
+
+        A spike demotion survives the reload only for a rule that did not change: a rule whose
+        record differs (a new rev, a fixed clause) or that is gone starts again at its own mode.
+        """
         with self._lock:
+            for rid in list(self.demoted):
+                old, new = self.rules.get(rid), other.rules.get(rid)
+                if old is None or new is None or old.raw != new.raw:
+                    self.demoted.pop(rid, None)
+                    self._errors.pop(rid, None)
             self.rules, self.providers, self.targets = other.rules, other.providers, other.targets
             self.notes, self.backend_name = other.notes, other.backend_name
             self.contracts = other.contracts
@@ -365,6 +384,33 @@ class Registry:
                 continue
             try:
                 rid = store.open(h)
+                if not isinstance(rid, str) or not rid:
+                    raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
+            except Exception as e:
+                errors.append(e)
+                log.error("invariants %s %r failed for %s %s: %s%s", which, type(store).__name__, h.rule, h.action,
+                          type(e).__name__, f": {e}" if self.debug else "", exc_info=self.debug)
+                continue
+            if errors:
+                log.warning("invariants %s opened %s for %s %s after the review store failed",
+                            which, rid, h.rule, h.action)
+            return rid
+        raise ReviewNotOpened(
+            f"{h.rule} {h.action}: no review was opened (" + "; ".join(type(e).__name__ for e in errors)
+            + "); the hand-off is on .handoff and the call does not proceed", h,
+            outcome=h.outcome, attempts=h.attempts, rule=h.rule,
+            point=(h.event or {}).get("point")) from (errors[-1] if errors else None)
+
+    async def ahand_off(self, h: Handoff) -> str:
+        """hand_off() for async callers: a store with an async aopen() is awaited (JsonlReviews runs its
+        fsync in a worker thread); one with only open() is called as hand_off() calls it."""
+        errors: list[BaseException] = []
+        for which, store in (("review store", self.review_store), ("review fallback", self.review_fallback)):
+            if store is None:
+                continue
+            try:
+                aopen = getattr(store, "aopen", None)
+                rid = await aopen(h) if callable(aopen) else store.open(h)
                 if not isinstance(rid, str) or not rid:
                     raise TypeError(f"{type(store).__name__}.open returned {type(rid).__name__}, not a review id")
             except Exception as e:
@@ -513,21 +559,51 @@ class Registry:
             if not any(mod == p or mod.startswith(p + ".") for p in prefixes):
                 continue
             for k in getattr(w, "__inv_rules__", ()):
-                if not k.startswith("py:") and k not in self.rules:
+                if k.startswith("py:"):
+                    why = self._py_key_problem(k, w)
+                    if why:
+                        problems.append(f"{w.__qualname__}: guards {k}, {why}")
+                elif k not in self.rules:
                     problems.append(f"{w.__qualname__}: guards {k}, which is not in the rule file")
-                elif (not k.startswith("py:") and getattr(w, "__inv_kind__", "") != "edge"
+                elif (getattr(w, "__inv_kind__", "") != "edge"
                       and self.rules[k].target is not None and not _wraps(self.rules[k].target, w)):
                     problems.append(f"{w.__qualname__}: guards {k}, whose target is {self.rules[k].target_key}")
+        for check in list(self.verifiers):
+            try:
+                check(self)
+            except CoverageError as e:
+                problems.extend(str(e).split("; "))
         if problems:
             raise CoverageError("; ".join(problems))
         return sum(1 for r in self.rules.values() if r.target is not None)
 
-    def standing(self, rule_id: str, scan: bool = False) -> tuple[str, list[str]]:
-        """Computed standing: held | enforce(known-callers) | monitored | candidate | retired, with reasons."""
+    def _py_key_problem(self, key: str, w: Any) -> str | None:
+        """Why a guard keyed by a 'py:' target is miswired (the key resolves to another function than
+        the one the guard wraps), else None. A key no rule of this file names is not a problem here:
+        it may belong to another rule file of the process (calling it under this one is a LoadError)."""
+        try:
+            obj = resolve(key)
+        except LoadError as e:
+            return f"which does not resolve ({e})"
+        if not _wraps(obj, w):
+            return f"but {key} is another function (put the guard on {key}, or name the function it wraps)"
+        return None
+
+    def standing(self, rule_id: str, scan: bool = False,
+                 ablation: Mapping[str, Any] | None = None) -> tuple[str, list[str]]:
+        """Computed standing: held | enforce(known-callers) | monitored | candidate | retired, with reasons.
+
+        Effective modes count (a rule demoted by an error spike is monitored). held is withheld while
+        the rule is ablated, its mediation names no chokepoint (or a chokepoint that names none of the
+        rule's functions, or a py: path that does not resolve), lists residual paths, keeps live
+        mediation.allow back doors that residual_paths does not declare, verify fails, the scan has
+        not run, or (given ablation: the pytest plugin's --inv-report-json data, or its "ablation"
+        part) no falsifier of the rule was caught by the ablation.
+        """
         rule = self.rules[rule_id]
         if rule.status == "retired":
             return "retired", []
-        modes = [rule.mode(e) for e in rule.enforcers]
+        modes = [self.mode(rule, e) for e in rule.enforcers]
         if rule.status in ("candidate", "contested") or not any(m != "off" for m in modes):
             return "candidate", []
         if "enforce" not in modes:
@@ -539,8 +615,19 @@ class Registry:
         med = rule.raw.get("mediation") or {}
         if not med.get("chokepoint"):
             why.append("mediation names no chokepoint")
-        if med.get("residual_paths"):
-            why.append(f"residual paths: {med['residual_paths']}")
+        else:
+            why.extend(_chokepoint_problems(rule, str(med["chokepoint"])))
+        residual = med.get("residual_paths") or []
+        if residual:
+            why.append(f"residual paths: {residual}")
+        allow = med.get("allow") or []
+        live = [a for a in ([allow] if isinstance(allow, str) else allow)
+                if isinstance(a, str) and a not in residual and _resolves(a)]
+        if live:
+            why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
+                       f"(remove them, or declare each in mediation.residual_paths)")
+        if ablation is not None:
+            why.extend(_ablation_problems(rule, ablation))
         try:
             self.verify()
         except CoverageError as e:
@@ -548,6 +635,57 @@ class Registry:
         if not scan:
             why.append("inv scan not run")
         return ("held" if not why else "enforce(known-callers)"), why
+
+
+def _resolves(key: str) -> bool:
+    try:
+        resolve(key)
+    except Exception:
+        return False
+    return True
+
+
+def _function_names(rule: Rule) -> set[str]:
+    """The short names of the functions a rule names: its target, edge targets, door and sink."""
+    med = rule.raw.get("mediation") or {}
+    keys: list[Any] = [rule.target_key, *(e.get("target") for e in rule.enforcers)]
+    for k in ("door", "sink"):
+        v = med.get(k)
+        keys.extend([v] if isinstance(v, str) else v if isinstance(v, list) else [])
+    return {k[3:].split(".")[-1] for k in keys if isinstance(k, str) and k.startswith("py:")}
+
+
+_PY_PATH = re.compile(r"py:[A-Za-z_][\w.]*\w")
+_WORD = re.compile(r"[A-Za-z_][\w.]*")
+
+
+def _chokepoint_problems(rule: Rule, text: str) -> list[str]:
+    """mediation.chokepoint is prose, checked where it can be: every py: path in it resolves, and it
+    names at least one function the rule names (its target, an edge target, the door or the sink)."""
+    out = [f"mediation.chokepoint names {p}, which does not resolve"
+           for p in _PY_PATH.findall(text) if not _resolves(p)]
+    known = _function_names(rule)
+    words = {w for tok in _WORD.findall(text) for w in tok.split(".")}
+    if known and not out and not words & known:
+        out.append(f"mediation.chokepoint names none of the rule's functions ({', '.join(sorted(known))}): "
+                   f"say which function every path crosses")
+    return out
+
+
+def _ablation_problems(rule: Rule, data: Mapping[str, Any]) -> list[str]:
+    """Why ablation does not back the rule, from the pytest plugin's report (--inv-report-json)."""
+    abl = data.get("ablation", data)
+    if not isinstance(abl, Mapping):
+        return ["ablation: the report holds no ablation results"]
+    if rule.id in (abl.get("not_load_bearing") or []):
+        return ["ablation: guard not load-bearing (a falsifier still passes with the rule off)"]
+    rows = (abl.get("rules") or {}).get(rule.id)
+    if not rows:
+        return ["ablation: no falsifier of this rule ran under pytest --inv-ablate"]
+    if not any(isinstance(r, Mapping) and r.get("result") == "caught" for r in rows):
+        return ["ablation: no falsifier caught the ablation ("
+                + ", ".join(str(r.get("result")) for r in rows if isinstance(r, Mapping)) + ")"]
+    return []
 
 
 def _wraps(target: Any, w: Any) -> bool:
@@ -719,6 +857,7 @@ def verify(reg: Registry | None = None, modules: Iterable[str] | None = None) ->
 verify_coverage = verify
 
 
-def standing(rule_id: str, reg: Registry | None = None, scan: bool = False) -> tuple[str, list[str]]:
-    """Computed standing of one rule, with the reasons it is not held."""
-    return (reg or current()).standing(rule_id, scan=scan)
+def standing(rule_id: str, reg: Registry | None = None, scan: bool = False,
+             ablation: Mapping[str, Any] | None = None) -> tuple[str, list[str]]:
+    """Computed standing of one rule, with the reasons it is not held (see Registry.standing)."""
+    return (reg or current()).standing(rule_id, scan=scan, ablation=ablation)

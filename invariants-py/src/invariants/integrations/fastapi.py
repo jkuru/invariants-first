@@ -16,6 +16,7 @@ import functools
 import inspect
 import pathlib
 import typing
+import weakref
 from typing import Any, Callable
 
 import fastapi as _fastapi
@@ -69,9 +70,15 @@ def guard(*keys: str, response_model: type | None = None) -> Callable[[Callable[
 
 
 def install(app: _fastapi.FastAPI, *, reject_status: int = 422, statuses: StatusMap | None = None,
-            expose_messages: bool = False) -> None:
-    """Answer every guard exception raised in app as application/problem+json (see asgi.problem)."""
+            expose_messages: bool = False, reg: Registry | None = None) -> None:
+    """Answer every guard exception raised in app as application/problem+json (see asgi.problem).
+
+    It also registers the app with reg (default: the current registry), so `inv verify` (and
+    inv.verify, --inv-verify, `inv status`) runs verify_routes on it: every rule bound to an
+    openapi operation finds exactly one route, guarded for that rule.
+    """
     s = statuses or StatusMap(reject=reject_status)
+    register(app, reg)
 
     async def handler(request: _fastapi.Request, exc: Exception) -> JSONResponse:
         if not isinstance(exc, InvariantError):        # registered for InvariantError only
@@ -80,6 +87,20 @@ def install(app: _fastapi.FastAPI, *, reject_status: int = 422, statuses: Status
         return JSONResponse(body, status_code=status, media_type=PROBLEM_JSON)
 
     app.add_exception_handler(InvariantError, handler)
+
+
+def register(app: _fastapi.FastAPI, reg: Registry | None = None) -> None:
+    """Have reg's verify() (inv verify) check app's routes with verify_routes (install does this)."""
+    r = reg or current()
+    ref = weakref.ref(app)
+
+    def check(registry: Registry) -> None:
+        live = ref()
+        if live is not None:
+            verify_routes(live, {"contracts": registry.contracts}, registry)
+    check.__inv_app__ = ref  # type: ignore[attr-defined]
+    if not any(getattr(c, "__inv_app__", None) == ref for c in r.verifiers):
+        r.verifiers.append(check)
 
 
 # --- openapi contracts --------------------------------------------------------------------------
@@ -163,5 +184,5 @@ def verify_routes(app: _fastapi.FastAPI, source: str | pathlib.Path | dict[str, 
     return bound
 
 
-__all__ = ["guard", "install", "verify_routes", "operations", "find_route", "operation_of", "Operation",
+__all__ = ["guard", "install", "register", "verify_routes", "operations", "find_route", "operation_of", "Operation",
            "PROBLEM_JSON", "StatusMap", "problem"]

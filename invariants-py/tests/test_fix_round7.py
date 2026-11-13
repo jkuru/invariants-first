@@ -81,6 +81,8 @@ def test_edge_refuses_forged_nan(iso, kind):
     schema = {"dict": r7.DictReply, "dataclass": r7.DcReply, "pydantic": r7.PdReply}[kind]
     if kind == "dict":
         value: Any = {"cause": "A", "confidence": NAN}
+    elif kind == "pydantic":                      # a pydantic reply is the model instance itself
+        value = r7.PdReply.model_construct(cause="A", confidence=NAN)
     else:
         value = object.__new__(closed_schema(schema))
         for k, v in (("cause", "A"), ("confidence", NAN)):

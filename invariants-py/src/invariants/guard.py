@@ -14,19 +14,23 @@ import inspect
 import json
 import math
 import re
+import enum
 import reprlib
+import time
 import types
 import typing
 import uuid
-from typing import Any, Awaitable, Callable, Iterator, ParamSpec, TypeVar
+from typing import (Any, Awaitable, Callable, Coroutine, Iterator, ParamSpec, Protocol, TypeVar,
+                    overload)
 
 from .cel import CelError, values as cel_values
 from .errors import CoverageError, Escalation, ParseError
-from .evaluate import ablated, act, evaluate, report
+from .evaluate import aact, ablated, act, evaluate, report
 from .loader import closed_schema, literal_eq, schema_fields
 from .model import GUARD_POINTS, Outcome, Rule
-from .providers import ProviderFailed, prefetch_async
-from .registry import WRAPPED, Handoff, Registry, current
+from .providers import ProviderFailed, prefetch_async, prefetch_many
+from .registry import WRAPPED, Handoff, Registry, _wraps, current
+from .resolve import resolve
 from .snapshot import take_snapshot
 
 P = ParamSpec("P")
@@ -44,7 +48,7 @@ def _descriptor(fn: Any, deco: Callable[[Any], Any]) -> Any:
 class _Call:
     """One guarded call: bound arguments, the rules that apply, provider caches and snapshots."""
 
-    __slots__ = ("reg", "providers", "self_", "base", "rules", "snap", "pre", "post", "broken")
+    __slots__ = ("reg", "providers", "self_", "base", "rules", "snap", "pre", "post", "broken", "started")
 
     def __init__(self, reg: Registry, self_: Any, args: dict[str, Any]) -> None:
         self.reg, self.self_ = reg, self_
@@ -57,6 +61,7 @@ class _Call:
         self.pre: dict[Any, Any] = {}       # provider values read before the effect
         self.post: dict[Any, Any] = {}      # provider values read after it
         self.broken: dict[tuple[str, Any], str] = {}   # (rule id, enforcer) whose provider prefetch failed
+        self.started: dict[str, int] = {"pre_effect": time.time_ns()}   # when each check began (events, spans)
 
     def enforcers(self, timing: str) -> Iterator[tuple[Rule, int, dict[str, Any]]]:
         for rule, live in self.rules:
@@ -118,34 +123,45 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
             return call
 
         async def aprefetch(call: _Call, timing: str, result: Any = None) -> None:
+            """Every async provider the enforcers at timing read, awaited together."""
             cache = call.pre if timing == "pre_effect" else call.post
-            for rule, i, _ in call.enforcers(timing):
-                try:
-                    why = await prefetch_async(call.reg, rule, rule.names_for[i],
-                                               call.env_base(rule, timing, result), cache, call.providers)
-                except Exception as e:
-                    why = f"binding providers raised {type(e).__name__}"
+            live = list(call.enforcers(timing))
+            try:
+                whys = await prefetch_many(call.reg, [(rule, rule.names_for[i], call.env_base(rule, timing, result))
+                                                      for rule, i, _ in live], cache, call.providers)
+            except Exception as e:
+                whys = [f"binding providers raised {type(e).__name__}"] * len(live)
+            for (rule, i, _), why in zip(live, whys):
                 if why is not None:
                     call.broken.setdefault((rule.id, i), why)
 
-        def check(call: _Call, timing: str, result: Any = None) -> None:
+        def outcomes(call: _Call, timing: str, result: Any = None) -> Iterator[tuple[Rule, dict[str, Any], Outcome]]:
+            """Each enforcer at timing, evaluated when the caller asks for it (its action may raise first)."""
             reg, cache = call.reg, call.pre if timing == "pre_effect" else call.post
             for rule, i, enf in call.enforcers(timing):
                 # a failed old_self snapshot errors only the clauses that read old_self
                 broken = call.broken.get((rule.id, i))
-                out = (Outcome("rule_error", rule.id, error=broken) if broken is not None else
-                       evaluate(rule, call.env_base(rule, timing, result), i, reg, cache, call.providers))
-                act(reg, rule, enf, out)
+                yield rule, enf, (Outcome("rule_error", rule.id, error=broken) if broken is not None else
+                                  evaluate(rule, call.env_base(rule, timing, result), i, reg, cache, call.providers))
+
+        def check(call: _Call, timing: str, result: Any = None) -> None:
+            for rule, enf, out in outcomes(call, timing, result):
+                act(call.reg, rule, enf, out, started=call.started[timing])
+
+        async def acheck(call: _Call, timing: str, result: Any = None) -> None:
+            for rule, enf, out in outcomes(call, timing, result):
+                await aact(call.reg, rule, enf, out, started=call.started[timing])
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:
                 call = start(a, kw)
                 await aprefetch(call, "pre_effect")
-                check(call, "pre_effect")
+                await acheck(call, "pre_effect")
                 result = await typing.cast(Callable[..., Awaitable[Any]], fn)(*a, **kw)
+                call.started["post_effect"] = time.time_ns()
                 await aprefetch(call, "post_effect", result)
-                check(call, "post_effect", result)
+                await acheck(call, "post_effect", result)
                 return result
             wrapper: Any = awrapper
         else:
@@ -154,6 +170,7 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                 call = start(a, kw)
                 check(call, "pre_effect")
                 result = fn(*a, **kw)
+                call.started["post_effect"] = time.time_ns()
                 check(call, "post_effect", result)
                 return result
             wrapper = swrapper
@@ -339,8 +356,8 @@ def _check(v: Any, t: Any, where: str, depth: int, safe: str | None = None) -> A
         raise _err(f"{safe}: nested too deeply", f"{where}: nested too deeply")
     if isinstance(v, float) and not math.isfinite(v):
         raise _err(f"field {safe}: {_NON_FINITE}", f"field {where}: {_NON_FINITE}")
-    if t is Any or t is object:
-        return _finite(v, where, depth, safe)
+    if t is Any or t is object:          # a copy: whoever handed v over cannot change it after the check
+        return copy.deepcopy(_finite(v, where, depth, safe))
     origin, args = typing.get_origin(t), typing.get_args(t)
     if origin is typing.Literal:
         if not any(_same(v, a) for a in args):
@@ -427,12 +444,25 @@ def _from_text(v: Any, t: type, where: str, safe: str) -> Any:
         raise bad from None
 
 
+def instance_class(schema: Any) -> Any:
+    """The class of the values parse builds for a closed schema: the pydantic model of a closed
+    pydantic schema, the dataclass itself, or None for a {field: type} map (a plain dict)."""
+    model = getattr(schema, "__inv_pydantic__", None)
+    if model is not None:
+        return model
+    return schema if isinstance(schema, type) and dataclasses.is_dataclass(schema) else None
+
+
 def _build(data: Any, schema: Any, prefix: str, depth: int, safe: str | None = None) -> Any:
-    """data (a JSON object, or for a dataclass schema an instance of exactly that class) checked
-    field by field and rebuilt: a new dict for a {field: type} map, a new instance for a dataclass."""
+    """data (a JSON object, or an instance of exactly the schema's instance class) checked field by
+    field and rebuilt: a new dict for a {field: type} map, a new instance for a dataclass, a new
+    model instance (validated by pydantic) for a closed pydantic schema."""
     safe = prefix if safe is None else safe
-    if isinstance(schema, type) and dataclasses.is_dataclass(schema) and type(data) is schema:
-        data = {f.name: object.__getattribute__(data, f.name) for f in dataclasses.fields(schema)}
+    cls = instance_class(schema)
+    if cls is not None and type(data) is cls:
+        raw = getattr(schema, "__inv_raw__", None)
+        data = raw(data) if raw is not None else {f.name: object.__getattribute__(data, f.name)
+                                                  for f in dataclasses.fields(schema)}
     if type(data) is not dict:
         what, swhat = ("reply", "reply") if not prefix else (f"field {prefix[:-1]}", f"field {safe[:-1]}")
         raise _err(f"{swhat} is not an object (got {_vt(data)})", f"{what} is not an object (got {type(data).__name__})")
@@ -448,6 +478,9 @@ def _build(data: Any, schema: Any, prefix: str, depth: int, safe: str | None = N
     if missing:
         raise _err(f"{safe}missing fields: {sorted(missing)}")        # schema field names, not reply data
     out = {k: _check(data[k], t, f"{prefix}{k}", depth, f"{safe}{k}") for k, t in fields.items()}
+    build = getattr(schema, "__inv_build__", None)
+    if build is not None:
+        return build(out)
     if isinstance(schema, type) and dataclasses.is_dataclass(schema):
         return schema(**out)
     return out
@@ -488,7 +521,7 @@ def parse(raw: Any, schema: Any, *, max_size: int | None = None) -> Any:
             data = raw
         if isinstance(data, dict) and type(data) is not dict:
             data = dict(data)                       # a dict subclass: plain data only from here on
-        if type(data) is not dict and not (isinstance(schema, type) and type(data) is schema):
+        if type(data) is not dict and not (instance_class(schema) is not None and type(data) is instance_class(schema)):
             raise ParseError(f"reply is not an object (got {type(data).__name__})")
         return _build(data, schema, "", 0)
     except ParseError:
@@ -502,23 +535,35 @@ def parse(raw: Any, schema: Any, *, max_size: int | None = None) -> Any:
 
 
 class _ModelRun:
-    """The state of one model_call invocation: parse -> abstain -> bad, with bounded retries."""
+    """The state of one model_call invocation: parse -> abstain -> bad, with bounded retries.
+
+    A rule that is retired, whose model_call enforcer is in effective mode off, or that is ablated
+    is passive: the model is called once and its reply parsed into the closed schema, and nothing
+    else happens (no format retries, no abstain escalation, no bad, no event but `ablated`).
+    """
 
     def __init__(self, rule_id: str, schema: Any, refined: Any, sig: inspect.Signature,
                  a: tuple[Any, ...], kw: dict[str, Any]) -> None:
+        self.started = time.time_ns()
         self.reg = reg = current()
-        self.rule = rule = reg.rules_for(rule_id)[0]
+        # one registry generation per call, as @inv.guard: a reload mid-call (a hot inv.load) must not
+        # swap the providers this call's rule was loaded with
+        self.providers, rules = reg.generation((rule_id,))
+        self.rule = rule = rules[0]
         pol = rule.policy or {}
         i, enf = rule.enforcer("model_call")
         if i is None or enf is None:
             raise CoverageError(f"@inv.model_call({rule_id!r}): the rule has no model_call enforcer")
         self.i, self.enf = i, enf
-        m = reg.mode(rule, enf)
-        self.mode = "detect" if m == "off" else m       # off acts as detect
+        self.passive = rule.status == "retired" or reg.mode(rule, enf) == "off"
+        if not self.passive and reg.is_ablated(rule.id):
+            ablated(reg, rule, "model_call")
+            self.passive = True
         bound = sig.bind(*a, **kw)
         bound.apply_defaults()
         self.sig, self.bound, self.schema, self.refined = sig, bound, schema, refined
-        self.base = {"args": {k: v for k, v in bound.arguments.items() if k != "inv_feedback"}}
+        self.base = {"args": {k: v for k, v in bound.arguments.items() if k not in ("inv_feedback", "self")},
+                     "self": bound.arguments.get("self")}
         self.fb = pol.get("feedback", {"format": "parser_error", "semantic": "none"})
         self.prov: dict[Any, Any] = {}                 # this call's provider cache
         self.fmt_left, self.sem_left = pol.get("format_retries", 2), rule.semantic_resamples
@@ -533,13 +578,28 @@ class _ModelRun:
             self.bound.arguments["inv_feedback"] = self.feedback
         return self.bound.args, self.bound.kwargs
 
-    def finish(self, out: Outcome, value: Any) -> Any:
-        enf = {**self.enf, "mode": self.mode} if self.mode != self.enf["mode"] else self.enf
-        act(self.reg, self.rule, enf, out, self.record)
+    def passive_result(self, raw: Any) -> Any:
+        """The one reply of a passive run, parsed (verdict ok), or as given (verdict parse_error)."""
+        try:
+            reply = parse(raw, self.schema)
+        except ParseError:
+            return self.refined._inv_make(raw, 1, self.rule.id, "parse_error")
+        return self.refined._inv_make(reply, 1, self.rule.id, "ok")
+
+    def checked(self, out: Outcome, value: Any) -> Any:
         return self.refined._inv_make(value, len(self.record), self.rule.id, out.kind)
 
+    def finish(self, out: Outcome, value: Any) -> Any:
+        act(self.reg, self.rule, self.enf, out, self.record, started=self.started)
+        return self.checked(out, value)
+
+    async def afinish(self, out: Outcome, value: Any) -> Any:
+        await aact(self.reg, self.rule, self.enf, out, self.record, started=self.started)
+        return self.checked(out, value)
+
     def parsed(self, raw: Any) -> tuple[str, Any]:
-        """('retry', None) | ('done', Checked) | ('eval', reply). Nothing but an InvariantError escapes."""
+        """('retry', None) | ('finish', (outcome, value)) | ('abstain', reply) | ('eval', reply).
+        Nothing but an InvariantError escapes."""
         rule, reg = self.rule, self.reg
         try:
             reply = parse(raw, self.schema)
@@ -555,7 +615,7 @@ class _ModelRun:
                 self.fed_back = told if send else None
                 report(reg, rule, self.enf, out, "retry", self.record)
                 return "retry", None
-            return "done", self.finish(out, raw)
+            return "finish", (out, raw)
         ab = self.ab
         if ab is not None:
             try:
@@ -563,47 +623,46 @@ class _ModelRun:
             except Exception as e:      # by contract unreachable (parse gives plain data); fail closed
                 self.record.append({"attempt": len(self.record) + 1, "outcome": "rule_error",
                                     "fed_back": self.fed_back})
-                return "done", self.finish(Outcome("rule_error", rule.id,
-                                                   error=f"abstain check raised {type(e).__name__}"), reply)
+                return "finish", (Outcome("rule_error", rule.id, error=f"abstain check raised {type(e).__name__}"),
+                                  reply)
             if abstained:
                 self.record.append({"attempt": len(self.record) + 1, "outcome": "abstain",
                                     "fed_back": self.fed_back})
-                h = Handoff(rule.id, "escalate", None, {"reply": reply, **self.base}, list(self.record),
-                            reason="abstain")
-                review = reg.hand_off(h)
-                raise Escalation(f"{rule.id}: model abstained ({ab['value']}); sent to a person (opened {review})",
-                                 None, self.record, review, rule=rule.id, point="model_call")
+                return "abstain", reply
         return "eval", reply
+
+    def handoff(self, reply: Any) -> Handoff:
+        return Handoff(self.rule.id, "escalate", None, {"reply": reply, **self.base}, list(self.record),
+                       reason="abstain")
+
+    def escalation(self, review: str) -> Escalation:
+        return Escalation(f"{self.rule.id}: model abstained ({(self.ab or {}).get('value')}); sent to a person "
+                          f"(opened {review})", None, self.record, review, rule=self.rule.id, point="model_call")
 
     def eval_base(self, reply: Any) -> dict[str, Any]:
         return {**self.base, "reply": rule_view(reply)}
 
     def judged(self, reply: Any) -> tuple[str, Any]:
-        """('retry', None) | ('done', Checked)."""
+        """('retry', None) | ('finish', (outcome, reply))."""
         rule, reg = self.rule, self.reg
-        if reg.is_ablated(rule.id):
-            ablated(reg, rule, "model_call")
-            out = Outcome("ok", rule.id)
-        else:
-            out = evaluate(rule, self.eval_base(reply), self.i, reg, self.prov)
+        out = evaluate(rule, self.eval_base(reply), self.i, reg, self.prov, self.providers)
         self.record.append({"attempt": len(self.record) + 1, "outcome": out.kind, "messages": out.messages,
                             "fed_back": self.fed_back})
-        if out.kind == "violation" and self.sem_left and self.mode == "enforce":
+        if out.kind == "violation" and self.sem_left and reg.mode(rule, self.enf) == "enforce":
             self.sem_left -= 1
             self.feedback = self.fed_back = None     # fresh resample: never the rule text or expected value
             report(reg, rule, self.enf, out, "resample", self.record)
             return "retry", None
-        return "done", self.finish(out, reply)              # rule_error never resamples: on_error applies
+        return "finish", (out, reply)              # rule_error never resamples: on_error applies
 
 
-INSTANCE_ATTR = "_inv_model"        # on a closed pydantic reply: the validated model instance
+INSTANCE_ATTR = "_inv_model"        # (0.x) on a closed pydantic reply: the validated model instance
 
 
 def rule_view(reply: Any) -> Any:
-    """What a rule reads as `reply`: for a closed pydantic reply, the validated model instance (its
-    Python values: datetime, timedelta, UUID, Enum members, nested models), mapped to CEL by
-    cel/values.py exactly as arguments are; any other reply unchanged. A closed reply's own
-    attributes hold the JSON form (see integrations.pydantic), which a rule never reads."""
+    """What a rule reads as `reply`: the parsed reply itself (a dict, a dataclass instance, or the
+    validated pydantic model instance, whose datetime, timedelta, UUID, Enum and nested fields are
+    mapped to CEL by cel/values.py exactly as arguments are)."""
     try:
         return object.__getattribute__(reply, INSTANCE_ATTR)
     except Exception:
@@ -611,10 +670,12 @@ def rule_view(reply: Any) -> Any:
 
 
 def _field_of(reply: Any, name: str) -> Any:
-    """A field of a parsed reply: a key of a {field: type} reply, an attribute of a dataclass reply."""
+    """A field of a parsed reply: a key of a {field: type} reply, an attribute of a dataclass or
+    pydantic reply (an Enum member stands for its value)."""
     if type(reply) is dict:
         return reply.get(name)
-    return object.__getattribute__(reply, name)
+    v = object.__getattribute__(reply, name)
+    return v.value if isinstance(v, enum.Enum) else v
 
 
 def check_schema(schema: Any, who: str) -> None:
@@ -628,19 +689,51 @@ def check_schema(schema: Any, who: str) -> None:
                             f"Literal, Optional, list[T], dict[str, T] or a nested dataclass)")
 
 
-def model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """@inv.model_call("R-7", schema=CauseReply): parse -> abstain -> bad -> accept, with bounded retries.
+C = TypeVar("C", bound=Checked)
+C_co = TypeVar("C_co", bound=Checked, covariant=True)
+
+
+class ModelCallDecorator(Protocol[C_co]):
+    """What inv.model_call(rule, schema=S, returns=CheckedT) gives: a decorator for a body that
+    returns the model's raw reply (JSON text, bytes or decoded data); the decorated function
+    returns CheckedT (awaitable for an async def)."""
+
+    @overload
+    def __call__(self, fn: Callable[P, Coroutine[Any, Any, Any]], /) -> Callable[P, Coroutine[Any, Any, C_co]]: ...
+
+    @overload
+    def __call__(self, fn: Callable[P, Any], /) -> Callable[P, C_co]: ...
+
+
+@overload
+def model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]: ...
+
+
+@overload
+def model_call(rule_id: str, schema: Any, *, returns: None = None) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
+    """@inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept,
+    with bounded retries.
+
+    The body calls the model and returns its raw reply; annotate it with what it really returns
+    (`-> str`): with returns=, the decorated function returns that inv.Checked subclass, and type
+    checkers see it so. Without returns=, the body's return annotation must be the Checked
+    subclass (the 0.x form; the body then needs a cast or a `type: ignore` under mypy).
 
     Once retries are spent, the model_call enforcer's on_violation decides. schema may be a
     dataclass, a {field: type} map or a pydantic model with extra='forbid'. On an async def,
     the wrapper is async: each reply is awaited, and async providers are awaited too.
     """
+    if returns is not None and not (isinstance(returns, type) and issubclass(returns, Checked)):
+        raise TypeError(f"@inv.model_call({rule_id!r}): returns must be an inv.Checked subclass, got {returns!r}")
     schema = closed_schema(schema)
     check_schema(schema, f"@inv.model_call({rule_id!r})")
 
-    def deco(fn: Callable[P, R]) -> Callable[P, R]:
+    def deco(fn: Any) -> Any:
         if (d := _descriptor(fn, deco)) is not None:
-            return typing.cast(Callable[P, R], d)
+            return d
         if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
             raise TypeError(f"@inv.model_call cannot wrap the generator {fn.__qualname__}")
         sig = inspect.signature(fn)
@@ -648,46 +741,59 @@ def model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable
         if fb is not None and fb.kind not in (fb.POSITIONAL_OR_KEYWORD, fb.KEYWORD_ONLY):
             raise TypeError(f"@inv.model_call: {fn.__qualname__}'s inv_feedback must be a named parameter, "
                             f"not *args, **kwargs or positional-only")
-        refined = sig.return_annotation
-        if isinstance(refined, str):
-            refined = typing.get_type_hints(fn).get("return")
-        if not (isinstance(refined, type) and issubclass(refined, Checked)):
-            raise TypeError(f"{fn.__name__} must be annotated to return an inv.Checked subclass")
+        refined: Any = returns
+        if refined is None:
+            refined = sig.return_annotation
+            if isinstance(refined, str):
+                refined = typing.get_type_hints(fn).get("return")
+            if not (isinstance(refined, type) and issubclass(refined, Checked)):
+                raise TypeError(f"{fn.__name__} must be annotated to return an inv.Checked subclass, or pass "
+                                f"returns=<the Checked subclass> to @inv.model_call")
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:
                 run = _ModelRun(rule_id, schema, refined, sig, a, kw)
+                if run.passive:
+                    ca, ckw = run.call_args()
+                    return run.passive_result(await fn(*ca, **ckw))
                 while True:
                     ca, ckw = run.call_args()
-                    step, v = run.parsed(await typing.cast(Callable[..., Any], fn)(*ca, **ckw))
+                    step, v = run.parsed(await fn(*ca, **ckw))
                     if step == "eval":
                         try:        # never raises by contract; evaluate() reports a binding failure
                             await prefetch_async(run.reg, run.rule, run.rule.names_for[run.i], run.eval_base(v),
-                                                 run.prov)
+                                                 run.prov, run.providers)
                         except Exception:
                             pass
                         step, v = run.judged(v)
-                    if step == "done":
-                        return v
+                    if step == "abstain":
+                        raise run.escalation(await run.reg.ahand_off(run.handoff(v)))
+                    if step == "finish":
+                        return await run.afinish(*v)
             wrapper: Any = awrapper
         else:
             @functools.wraps(fn)
             def swrapper(*a: Any, **kw: Any) -> Any:
                 run = _ModelRun(rule_id, schema, refined, sig, a, kw)
+                if run.passive:
+                    ca, ckw = run.call_args()
+                    return run.passive_result(fn(*ca, **ckw))
                 while True:
                     ca, ckw = run.call_args()
-                    step, v = run.parsed(typing.cast(Callable[..., Any], fn)(*ca, **ckw))
+                    step, v = run.parsed(fn(*ca, **ckw))
                     if step == "eval":
                         step, v = run.judged(v)
-                    if step == "done":
-                        return v
+                    if step == "abstain":
+                        raise run.escalation(run.reg.hand_off(run.handoff(v)))
+                    if step == "finish":
+                        return run.finish(*v)
             wrapper = swrapper
 
         wrapper.__inv_rules__, wrapper.__inv_kind__ = (rule_id,), "model_call"
         wrapper.__inv_schema__ = schema
         WRAPPED.add(wrapper)
-        return typing.cast(Callable[P, R], wrapper)
+        return wrapper
     return deco
 
 
@@ -704,18 +810,38 @@ def _received(value: Any) -> tuple[str | None, Any]:
 def recheck(reply: Any, schema: Any) -> Any:
     """The received value re-validated against the closed schema (a fresh copy); ParseError if it does not fit.
 
-    A dataclass schema takes an instance of exactly that class, a {field: type} map a plain dict:
-    extra and missing fields, out-of-enum values and wrong types fail as they do in inv.parse.
+    A dataclass schema takes an instance of exactly that class, a closed pydantic schema an
+    instance of exactly its model, a {field: type} map a plain dict: extra and missing fields,
+    out-of-enum values and wrong types fail as they do in inv.parse.
     """
-    if isinstance(schema, type) and dataclasses.is_dataclass(schema):
-        if type(reply) is not schema:
+    cls = instance_class(schema)
+    if cls is not None:
+        if type(reply) is not cls:
             got = type(reply)
             raise ParseError(f"value was not built by inv.parse from the closed schema "
-                             f"{schema.__name__} (got {got.__module__}.{got.__qualname__})")
+                             f"{cls.__name__} (got {got.__module__}.{got.__qualname__})")
     elif type(reply) is not dict:
         raise ParseError(f"value was not built by inv.parse from the closed {{field: type}} schema "
                          f"(got {type(reply).__module__}.{type(reply).__qualname__})")
     return parse(reply, schema)
+
+
+@dataclasses.dataclass
+class _EdgeCall:
+    """One edge call that is checked: what judge() needs, then the consumer's (args, kwargs)."""
+
+    reg: Registry
+    rule: Rule
+    i: int
+    enf: dict[str, Any]
+    verdict: str | None
+    perr: str | None
+    base: dict[str, Any]
+    providers: dict[str, Any]
+    started: int
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    cache: dict[Any, Any] = dataclasses.field(default_factory=dict)
 
 
 def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -727,6 +853,7 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
     The consumer is then called with a new Checked over that re-validated copy, the exact value
     the rule judged: no other code holds it, so nothing can change it between the check and the
     consumer's reads (a received object mutated or swapped later does not reach the consumer).
+    The edge enforcer used is the one whose target is this consumer (a rule may have several).
     """
     def deco(fn: Callable[P, R]) -> Callable[P, R]:
         if (d := _descriptor(fn, deco)) is not None:
@@ -739,19 +866,45 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
                               (None, None))
         if pname is None or refined is None:
             raise TypeError(f"{fn.__name__}: an edge needs a parameter annotated with an inv.Checked subclass")
+        me: list[Any] = []                                    # the wrapper, once built
+        picked: dict[str, tuple[Rule, int, dict[str, Any]]] = {}
+        name = f"py:{fn.__module__}.{fn.__qualname__}"
 
-        def prepare(a: tuple[Any, ...], kw: dict[str, Any]) -> tuple[Any, ...] | None:
-            """None to call straight through; else what judge() needs, then the consumer's (args, kwargs)."""
+        def enforcer_for(rule: Rule) -> tuple[int, dict[str, Any]]:
+            """The rule's edge enforcer whose target is this consumer."""
+            got = picked.get(rule.id)
+            if got is not None and got[0] is rule:
+                return got[1], got[2]
+            edges = [(i, e) for i, e in enumerate(rule.enforcers) if e["point"] == "edge"]
+            mine = [(i, e) for i, e in edges if e.get("target") == name]
+            if not mine:
+                for i, e in edges:
+                    try:
+                        obj = resolve(e["target"])
+                    except Exception:
+                        continue
+                    if me and _wraps(obj, me[0]):
+                        mine.append((i, e))
+            if not mine and len(edges) == 1:
+                mine = edges                   # one edge enforcer: inv verify reports a target mismatch
+            if not mine:
+                raise CoverageError(f"@inv.edge({rule_id!r}): the rule has no edge enforcer" if not edges else
+                                    f"@inv.edge({rule_id!r}): no edge enforcer of the rule targets {name}")
+            picked[rule.id] = (rule, *mine[0])
+            return mine[0]
+
+        def prepare(a: tuple[Any, ...], kw: dict[str, Any]) -> _EdgeCall | None:
+            """None to call straight through; else the checked call."""
+            started = time.time_ns()
             reg = current()
             bound = sig.bind(*a, **kw)
             bound.apply_defaults()
             value = bound.arguments[pname]
             if not isinstance(value, refined):
                 raise TypeError(f"{fn.__name__} accepts only {refined.__name__}")
-            rule = reg.rules_for(rule_id)[0]
-            i, enf = rule.enforcer("edge")
-            if i is None or enf is None:
-                raise CoverageError(f"@inv.edge({rule_id!r}): the rule has no edge enforcer")
+            providers, rules = reg.generation((rule_id,))       # one generation per call
+            rule = rules[0]
+            i, enf = enforcer_for(rule)
             if reg.mode(rule, enf) == "off":
                 return None
             if reg.is_ablated(rule.id):
@@ -770,48 +923,52 @@ def edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
                     _, attempts, rid, _ = Checked._inv_state(value)
                     bound.arguments[pname] = type(value)._inv_make(reply, attempts, rid, verdict)
                     call = (bound.args, bound.kwargs)
-            base = {"args": dict(bound.arguments), "reply": rule_view(reply)}
-            return reg, rule, i, enf, verdict, perr, base, {}, call
+            base = {"args": {k: v for k, v in bound.arguments.items() if k != "self"},
+                    "self": bound.arguments.get("self"), "reply": rule_view(reply)}
+            return _EdgeCall(reg, rule, i, enf, verdict, perr, base, providers, started, *call)
 
-        def judge(reg: Registry, rule: Rule, i: int, enf: dict[str, Any], verdict: str | None, perr: str | None,
-                  base: dict[str, Any], cache: dict[Any, Any]) -> None:
-            refusal = verdict != "ok"            # a received non-ok verdict is refused, never failed open
-            if verdict is None:
+        def judge(c: _EdgeCall) -> tuple[Outcome, bool]:
+            refusal = c.verdict != "ok"          # a received non-ok verdict is refused, never failed open
+            rule = c.rule
+            if c.verdict is None:
                 out = Outcome("rule_error", rule.id, [f"received a {refined.__name__} that inv.model_call did not "
                                                       f"build (it has no verdict)"])
-            elif verdict != "ok":
-                out = Outcome(verdict if verdict in ("violation", "rule_error", "parse_error") else "rule_error",
-                              rule.id, [f"received a {refined.__name__} with verdict {verdict}"])
-            elif perr is not None:
-                out = Outcome("parse_error", rule.id, error=perr)
+            elif c.verdict != "ok":
+                out = Outcome(c.verdict if c.verdict in ("violation", "rule_error", "parse_error") else "rule_error",
+                              rule.id, [f"received a {refined.__name__} with verdict {c.verdict}"])
+            elif c.perr is not None:
+                out = Outcome("parse_error", rule.id, error=c.perr)
             else:
-                out = evaluate(rule, base, i, reg, cache)
-            act(reg, rule, enf, out, refusal=refusal)
+                out = evaluate(rule, c.base, c.i, c.reg, c.cache, c.providers)
+            return out, refusal
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:
-                p = prepare(a, kw)
-                if p is not None:
-                    reg, rule, i, _, verdict, perr, base, cache, (a, kw) = p
-                    if verdict == "ok" and perr is None:
+                c = prepare(a, kw)
+                if c is not None:
+                    if c.verdict == "ok" and c.perr is None:
                         try:    # never raises by contract; evaluate() reports a binding failure
-                            await prefetch_async(reg, rule, rule.names_for[i], base, cache)
+                            await prefetch_async(c.reg, c.rule, c.rule.names_for[c.i], c.base, c.cache, c.providers)
                         except Exception:
                             pass
-                    judge(*p[:-1])
+                    out, refusal = judge(c)
+                    await aact(c.reg, c.rule, c.enf, out, refusal=refusal, started=c.started)
+                    a, kw = c.args, c.kwargs
                 return await typing.cast(Callable[..., Awaitable[Any]], fn)(*a, **kw)
             wrapper: Any = awrapper
         else:
             @functools.wraps(fn)
             def swrapper(*a: Any, **kw: Any) -> Any:
-                p = prepare(a, kw)
-                if p is not None:
-                    judge(*p[:-1])
-                    a, kw = p[-1]
+                c = prepare(a, kw)
+                if c is not None:
+                    out, refusal = judge(c)
+                    act(c.reg, c.rule, c.enf, out, refusal=refusal, started=c.started)
+                    a, kw = c.args, c.kwargs
                 return fn(*a, **kw)
             wrapper = swrapper
 
+        me.append(wrapper)
         wrapper.__inv_rules__, wrapper.__inv_kind__ = (rule_id,), "edge"
         WRAPPED.add(wrapper)
         return typing.cast(Callable[P, R], wrapper)

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from .cel import CelError
 from .cel.errors import ALLOW_NON_FINITE
 from .errors import RAISE
 from .model import DEFAULT_NAMES, Outcome, Rule
-from .providers import ProviderFailed, fetch_providers, resolve_path
+from .providers import ProviderFailed, fetch_providers, read_by_clauses, resolve_path
 from .registry import Handoff, Registry, current
 
 log = logging.getLogger("invariants")
@@ -45,6 +46,8 @@ def fill_view(rule: Rule, enf_index: Any, base: dict[str, Any], reg: Registry | 
             else:
                 env[k] = v
     for n, p in m.items():
+        if p.startswith("provider.") and not read_by_clauses(rule, n):
+            continue                     # a provider no clause reads was never called
         try:
             env[n] = resolve_path(base, p)
         except CelError as e:
@@ -147,11 +150,17 @@ def evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = "rule", reg: Reg
 
 
 def report(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome, action: str,
-           attempts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Count the evaluation and emit its event."""
+           attempts: list[dict[str, Any]] | None = None, started: int | None = None) -> dict[str, Any]:
+    """Count the evaluation and emit its event.
+
+    started: time.time_ns() when the check began (the guarded call's check phase, the model call,
+    the edge call); the event then carries start_ns and end_ns (now), for spans and latency.
+    """
     ev = {"rule": rule.id, "rev": rule.raw.get("rev"), "outcome": out.kind, "mode": reg.mode(rule, enf),
           "point": enf.get("point"), "timing": enf.get("timing"), "messages": out.messages,
           "error": out.error, "attempts": len(attempts or []) or None, "action": action}
+    if started is not None:
+        ev["start_ns"], ev["end_ns"] = started, time.time_ns()
     reg.record(rule.id, out.kind, ev)
     level = (logging.DEBUG if out.kind == "ok" else logging.ERROR if action == "page"
              else reg.violation_log_level)
@@ -168,30 +177,68 @@ def ablated(reg: Registry, rule: Rule, point: str | None) -> None:
     log.info("invariant %s", ev)
 
 
+def _decide(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome, refusal: bool) -> str | None:
+    """The action for an outcome; None for an enforcer in effective mode off (nothing happens)."""
+    mode = reg.mode(rule, enf)
+    if mode == "off":
+        return None
+    if out.kind == "ok" or mode == "detect":
+        return "proceed"
+    if refusal:
+        return str(enf["on_violation"])
+    if out.kind == "rule_error" and enf["on_error"] == "fail_open_and_page":
+        return "page"
+    return str(enf["on_violation"])
+
+
+def _raise(rule: Rule, action: str, enf: dict[str, Any], out: Outcome, attempts: list[dict[str, Any]] | None,
+           review: str | None) -> None:
+    what = "; ".join(out.messages) or out.error
+    raise RAISE[action](f"{rule.id} {out.kind}: {what}" + (f" (opened {review})" if review else ""),
+                        out, attempts, review, point=enf.get("point"))
+
+
+def _handoff(rule: Rule, action: str, out: Outcome, attempts: list[dict[str, Any]] | None,
+             ev: dict[str, Any], reason: str = "") -> Handoff:
+    return Handoff(rule.id, action, out, dict(out.bound or {}), list(attempts or []), ev, reason)
+
+
 def act(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
-        attempts: list[dict[str, Any]] | None = None, refusal: bool = False) -> str:
-    """Detect never blocks; enforce applies on_violation, or on_error for rule_error.
+        attempts: list[dict[str, Any]] | None = None, refusal: bool = False, started: int | None = None) -> str:
+    """Detect never blocks; enforce applies on_violation, or on_error for rule_error; off does nothing.
 
     route and escalate open a review in the registry's review store; page calls its pager.
     refusal: the outcome is a received verdict that is not ok (an edge given a Checked whose
     verdict is rule_error, say). Enforcing, that is refused by on_violation whatever on_error says:
-    on_error covers only errors of this enforcer's own evaluation (guide 2.5, 2.6).
+    on_error covers only errors of this enforcer's own evaluation (guide 2.5, 2.6). An enforcer
+    in effective mode off (a retired rule, mode off) records nothing and returns "proceed".
     """
-    if out.kind == "ok" or reg.mode(rule, enf) == "detect":
-        action = "proceed"
-    elif refusal:
-        action = enf["on_violation"]
-    elif out.kind == "rule_error" and enf["on_error"] == "fail_open_and_page":
-        action = "page"
-    else:
-        action = enf["on_violation"]
-    ev = report(reg, rule, enf, out, action, attempts)
+    action = _decide(reg, rule, enf, out, refusal)
+    if action is None:
+        return "proceed"
+    ev = report(reg, rule, enf, out, action, attempts, started)
     if action == "page":
-        reg.page(Handoff(rule.id, "page", out, dict(out.bound or {}), list(attempts or []), ev, out.error))
+        reg.page(_handoff(rule, "page", out, attempts, ev, out.error))
     if action in RAISE:
-        review = (reg.hand_off(Handoff(rule.id, action, out, dict(out.bound or {}), list(attempts or []), ev))
+        review = (reg.hand_off(_handoff(rule, action, out, attempts, ev))
                   if action in ("route", "escalate") else None)
-        what = "; ".join(out.messages) or out.error
-        raise RAISE[action](f"{rule.id} {out.kind}: {what}" + (f" (opened {review})" if review else ""),
-                            out, attempts, review, point=enf.get("point"))
+        _raise(rule, action, enf, out, attempts, review)
+    return action
+
+
+async def aact(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
+               attempts: list[dict[str, Any]] | None = None, refusal: bool = False,
+               started: int | None = None) -> str:
+    """act() for async guards, model calls and edges: a review store with an async aopen() (such as
+    JsonlReviews, whose fsync runs in a worker thread) is awaited instead of blocking the event loop."""
+    action = _decide(reg, rule, enf, out, refusal)
+    if action is None:
+        return "proceed"
+    ev = report(reg, rule, enf, out, action, attempts, started)
+    if action == "page":
+        reg.page(_handoff(rule, "page", out, attempts, ev, out.error))
+    if action in RAISE:
+        review = (await reg.ahand_off(_handoff(rule, action, out, attempts, ev))
+                  if action in ("route", "escalate") else None)
+        _raise(rule, action, enf, out, attempts, review)
     return action

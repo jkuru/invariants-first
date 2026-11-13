@@ -1,7 +1,9 @@
 """`inv status`: computed standing per rule, from the registry's standing, `inv verify` and `inv scan`."""
 from __future__ import annotations
 
-from typing import Any
+import json
+import pathlib
+from typing import Any, Mapping
 
 from .errors import CoverageError
 from .registry import Registry
@@ -31,10 +33,12 @@ def _scan_reason(report: Report, rule_id: str, pure: bool = False) -> str | None
     return f"inv scan {result}: {counts}"
 
 
-def rule_status(reg: Registry, report: Report, rule_id: str) -> dict[str, Any]:
-    """One rule's row: status, standing, reasons, scan result."""
+def rule_status(reg: Registry, report: Report, rule_id: str,
+                ablation: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One rule's row: status, standing, reasons, scan result. ablation: the pytest plugin's
+    --inv-report-json data (see load_ablation); when given, a rule no falsifier caught is not held."""
     rule = reg.rules[rule_id]
-    standing, reasons = reg.standing(rule_id, scan=True)
+    standing, reasons = reg.standing(rule_id, scan=True, ablation=ablation)
     reasons = list(reasons)
     if standing in ("held", "enforce(known-callers)"):
         pure = (rule.effects == "none" and rule.target is not None
@@ -47,10 +51,18 @@ def rule_status(reg: Registry, report: Report, rule_id: str) -> dict[str, Any]:
             "scan": report.rule_result(rule_id), "scan_counts": report.counts(rule_id)}
 
 
-def build(reg: Registry, report: Report) -> dict[str, Any]:
-    """The whole status report."""
+def load_ablation(path: str | pathlib.Path) -> dict[str, Any]:
+    """The ablation results in a pytest --inv-report-json file (run with --inv-ablate)."""
+    data = json.loads(pathlib.Path(path).read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("ablation"), dict):
+        raise ValueError(f"{path}: no ablation results (run pytest --inv-ablate --inv-report-json {path})")
+    return data
+
+
+def build(reg: Registry, report: Report, ablation: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The whole status report (verify runs the registry's verifiers too: installed FastAPI apps)."""
     ok, problems = verify_result(reg)
-    rows = [rule_status(reg, report, rid) for rid in reg.rules]
+    rows = [rule_status(reg, report, rid, ablation) for rid in reg.rules]
     return {"verify": {"passed": ok, "problems": problems}, "rules": rows}
 
 

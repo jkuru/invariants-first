@@ -19,12 +19,21 @@ Key behaviours that the one-line docstrings leave out:
   sync and async functions, on methods, and above or below `@classmethod` or `@staticmethod`. A
   call raises `LoadError` when a rule-id key is not loaded, or when a `py:` key matches no loaded
   rule and no `targets:` entry, so a guard never runs open because nothing was loaded.
-- `@inv.model_call(id, schema=...)`: `schema` is a dataclass, a `{field: type}` map or a pydantic
-  model. See [concepts.md](concepts.md#model-calls).
+- `@inv.model_call(id, schema=..., returns=CheckedT)`: `schema` is a dataclass, a `{field: type}`
+  map or a pydantic model. With `returns=`, annotate the body with what it really returns
+  (`-> str`); the decorated function returns `CheckedT` to mypy (awaitable for an `async def`), with
+  no `type: ignore`. Without it, the body's return annotation must be the `Checked` subclass (the
+  older form). See [concepts.md](concepts.md#model-calls).
+- `@inv.provider("a", "b")`: one function under several provider names. `inv.Dependency("store")`
+  is a context-local value a provider reads (`with STORE.bound(store): ...`, `STORE.get()`).
 - `inv.verify(reg=None, modules=None)`: by default it checks the guards in the packages of the
   loaded targets.
-- `inv.standing(id)` returns `(standing, reasons)`, where standing is `held`,
-  `enforce(known-callers)`, `monitored`, `candidate` or `retired`.
+- `inv.standing(id, scan=False, ablation=None)` returns `(standing, reasons)`, where standing is
+  `held`, `enforce(known-callers)`, `monitored`, `candidate` or `retired`. `ablation` is the pytest
+  plugin's `--inv-report-json` data (`status_report.load_ablation(path)`); see
+  [concepts.md](concepts.md#standing).
+- `JsonlReviews.aopen(handoff)` runs the write and fsync in a worker thread; async guards, model
+  calls and edges use it (`Registry.ahand_off`), so they never block the event loop.
 - Registries are context-local. `inv.ablated(id, scope="registry")` turns a rule off for every
   thread and task that uses the registry; see [concepts.md](concepts.md#ablation).
 - `inv.__version__` is read from the installed metadata.
@@ -37,8 +46,9 @@ Key behaviours that the one-line docstrings leave out:
 | Name | Kind | Purpose |
 |---|---|---|
 | `guard(*keys: str, points: tuple[str, ...] = ('decorator',)) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.guard("R-1", ...) or @inv.guard("py:jobs.split_work"): pre- and post-effect checks. |
-| `provider(name: str) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. |
-| `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply): parse -> abstain -> bad -> accept, with bounded retries. |
+| `provider(name: str, *more: str) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. |
+| `Dependency(name: str) -> None` | class | A context-local value providers read: a store, a client, a tenant (contextvars underneath). |
+| `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept, with bounded retries. |
 | `edge(rule_id: str) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async). |
 | `Checked(*a: Any, **k: Any) -> None` | class | Base for refined types built by inv.model_call; carries value, attempts, rule and verdict. |
 | `parse(raw: Any, schema: Any, *, max_size: int \| None = None) -> Any` | function | Parse a reply into a closed schema (dataclass, {field: type} or pydantic model); extra or missing fields fail. |
@@ -53,7 +63,7 @@ Key behaviours that the one-line docstrings leave out:
 | `schema_path() -> pathlib.Path` | function | Path to the bundled JSON Schema for rule files. |
 | `verify(reg: Registry \| None = None, modules: Iterable[str] \| None = None) -> int` | function | `inv verify`: every target guarded, every guard names a rule. Returns the number of targeted rules. |
 | `verify_coverage(reg: Registry \| None = None, modules: Iterable[str] \| None = None) -> int` | function | `inv verify`: every target guarded, every guard names a rule. Returns the number of targeted rules. |
-| `standing(rule_id: str, reg: Registry \| None = None, scan: bool = False) -> tuple[str, list[str]]` | function | Computed standing of one rule, with the reasons it is not held. |
+| `standing(rule_id: str, reg: Registry \| None = None, scan: bool = False, ablation: Mapping[str, Any] \| None = None) -> tuple[str, list[str]]` | function | Computed standing of one rule, with the reasons it is not held (see Registry.standing). |
 | `check_snapshot(key: str, instance: Any, reg: Registry \| None = None) -> list[str]` | function | Test-time check with a real instance: every old_self path is plain data, else LoadError. |
 
 ### Evaluating directly
@@ -164,7 +174,8 @@ guarded route. The module re-exports `PROBLEM_JSON`, `StatusMap` and `problem` f
 | Name | Kind | Purpose |
 |---|---|---|
 | `guard(*keys: str, response_model: type \| None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]` | function | @inv.guard for a route handler; put it under the route decorator. |
-| `install(app: _fastapi.FastAPI, *, reject_status: int = 422, statuses: StatusMap \| None = None, expose_messages: bool = False) -> None` | function | Answer every guard exception raised in app as application/problem+json (see asgi.problem). |
+| `install(app: _fastapi.FastAPI, *, reject_status: int = 422, statuses: StatusMap \| None = None, expose_messages: bool = False, reg: Registry \| None = None) -> None` | function | Answer every guard exception raised in app as application/problem+json (see asgi.problem); also registers the app so `inv verify` runs verify_routes on it. |
+| `register(app: _fastapi.FastAPI, reg: Registry \| None = None) -> None` | function | Have reg's verify() (inv verify) check app's routes with verify_routes (install does this). |
 | `verify_routes(app: _fastapi.FastAPI, source: str \| pathlib.Path \| dict[str, Any], reg: Registry \| None = None) -> int` | function | Every rule bound to an openapi operation finds exactly one route, guarded for that rule. |
 | `operations(app: _fastapi.FastAPI) -> list[Operation]` | function | Every APIRoute of app, including routes of included routers (with their prefixes). |
 | `find_route(app: _fastapi.FastAPI, operation: str) -> list[Operation]` | function | Operations matching an operationId, or 'METHOD /path' (the full path template as declared). |
@@ -203,9 +214,9 @@ dataclass for a pydantic model, so the core parse, retry, abstain and edge logic
 | `is_lax(model: type[_pd.BaseModel]) -> bool` | function | True when the model opts out of strict reply validation: model_config sets strict=False explicitly. |
 | `validate(model: type[_pd.BaseModel], data: dict[str, Any]) -> _pd.BaseModel` | function | data validated into model: strict over its JSON form unless the model is lax; ParseError on failure. |
 | `schema_for(schema: Any) -> Any` | function | closed(schema) for a pydantic model; any other schema unchanged. |
-| `model_of(reply: Any) -> _pd.BaseModel` | function | A new pydantic instance validated from a reply's JSON attributes (the reply, or a Checked holding one). |
+| `model_of(reply: Any) -> _pd.BaseModel` | function | A fresh copy of a pydantic reply (the reply, or a Checked holding one), validated again. |
 | `parse(raw: Any, schema: Any) -> Any` | function | inv.parse, also accepting a pydantic model as the schema. |
-| `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | inv.model_call, also accepting a pydantic model as the schema. |
+| `model_call(rule_id: str, schema: Any, *, returns: type[C] \| None = None)` | function | inv.model_call, also accepting a pydantic model as the schema. |
 | `resolve_ref(ref: Any) -> Any` | function | 'package.module:Class' -> the object: import the module, then walk attributes. No eval. |
 | `resolve_contract(spec: Any, name: str = '?') -> type[_pd.BaseModel]` | function | A {type: pydantic, ref: 'module:Class'} contract -> the closed model class, or LoadError. |
 | `check_contracts(source: str \| pathlib.Path \| dict[str, Any], reg: Registry \| None = None) -> dict[str, type[_pd.BaseModel]]` | function | Resolve every pydantic contract in a rule file and check the rules that name one. |
@@ -213,7 +224,10 @@ dataclass for a pydantic model, so the core parse, retry, abstain and edge logic
 
 One span per evaluation, named `invariant.<point>`, with `invariant.*` attributes (`rule_id`,
 `rule_rev`, `outcome`, `mode`, `point`, `timing`, `action`, `attempts`). Clause messages and error
-text are not exported, since they can carry values. Needs the `otel` extra.
+text are not exported, since they can carry values. Needs the `otel` extra. A span runs from when
+the check began (the guard's check phase with its providers, a model call's first attempt, an edge
+call) to when the outcome was recorded (events carry `start_ns` and `end_ns`); a violation,
+rule_error or parse_error sets status ERROR.
 
 ```python
 from invariants.integrations import otel

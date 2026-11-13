@@ -404,11 +404,11 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
   closed schema (`point: type`)
   does not relax parsing, so it reports not load-bearing. `INV_ABLATE` with `INV_ABLATE_TESTING=1`
   turns guards off, so never set both in production. [docs/concepts.md](docs/concepts.md#ablation)
-- **Providers are eager**, so every provider an enforcer reads is called on every call. Pydantic
+- **Providers run per call**: every provider bound to a name a clause reads is called on every call
+  (there is no data-dependent short circuit). Pydantic
   replies must carry every field, and are strict by default. HTTP rules bind to handler parameter
   names, not OpenAPI paths.
-- **Not in v0.1:** clauses scoped to one enforcer, rules that reference contract enums, one function
-  under several provider names, generated differential harnesses for table rules, a sampled mode,
+- **Not in v0.1:** clauses scoped to one enforcer, rules that reference contract enums, generated differential harnesses for table rules, a sampled mode,
   `openapi` contracts from a live app, and conformance cases beyond CEL.
 
 ## Documentation

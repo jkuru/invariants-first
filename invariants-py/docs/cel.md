@@ -249,7 +249,8 @@ length).
 - Each clause costs a few microseconds on `subset` and `cel-expr`, and tens to a hundred and more on
   `celpy`. Use `cel-expr` (or `subset`) on hot paths and keep `celpy` for conformance runs. Keep the
   clause count low on tight loops. At HTTP scale (milliseconds per request) the overhead is noise.
-- Providers add their own cost on top: every provider an enforcer reads is called on every call.
+- Providers add their own cost on top: every provider bound to a name a clause reads is called on
+  every call (async ones concurrently).
 - There is no sampled mode in v0.1.
 - The table's rules do no arithmetic. A clause that does arithmetic pays for the non-finite check
   once per arithmetic expression (plus once per divisor that is itself arithmetic, and per

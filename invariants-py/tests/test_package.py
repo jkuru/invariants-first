@@ -31,7 +31,7 @@ PUBLIC_API = {
     "Registry", "current", "default_registry", "using", "isolated", "ablated", "is_ablated",
     # operations: hooks, hand-offs, test capture, out-of-call points, packaged rule files
     "configure", "observe", "capture", "Handoff", "ReviewStore", "MemoryReviews", "JsonlReviews", "ErrorSpike",
-    "monitor", "load_resource",
+    "monitor", "load_resource", "Dependency",
     # CEL and metadata
     "cel", "CEL_BACKEND", "__version__",
 }

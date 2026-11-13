@@ -125,12 +125,12 @@ def test_schema_for_passes_other_schemas_through():
 
 
 # --- parse --------------------------------------------------------------------------------------
-def test_parse_good_reply_holds_json_values_and_the_model():
+def test_parse_good_reply_is_the_model_instance():
     r = inv_pd.parse(GOOD, app.CauseReply)
-    assert r.cause == "OUT_OF_MEMORY" and type(r.cause) is str
-    assert r.evidence == [{"source": "kernel", "line": 12}]
+    assert isinstance(r, app.CauseReply) and r.cause is app.Cause.OUT_OF_MEMORY
+    assert r.evidence == [app.Evidence(source="kernel", line=12)]
     m = inv_pd.model_of(r)
-    assert isinstance(m, app.CauseReply) and m.cause is app.Cause.OUT_OF_MEMORY
+    assert isinstance(m, app.CauseReply) and m == r and m is not r
 
 
 def test_parse_extra_field_forbidden():
@@ -242,7 +242,7 @@ def test_edge_revalidates_a_forged_value(preg):
     forged = object.__new__(app.CheckedCause)
     for k, v in (("value", value), ("attempts", 1), ("rule", "R-P7"), ("verdict", "ok")):
         object.__setattr__(forged, k, v)
-    assert isinstance(value, schema)
+    assert isinstance(value, app.CauseReply) and getattr(schema, "__inv_pydantic__") is app.CauseReply
     with pytest.raises(inv.Rejected) as ei:
         app.remediate(forged, "J-oom")
     assert ei.value.outcome.kind == "parse_error"
@@ -250,7 +250,7 @@ def test_edge_revalidates_a_forged_value(preg):
 
 def test_edge_parse_error_for_an_unparsed_model_names_the_schema(preg):
     from invariants.testing import make_checked
-    raw = app.CauseReply.model_construct(cause=app.Cause("OUT_OF_MEMORY"), message="m", confidence=0.5, evidence=[])
+    raw = {"cause": "OUT_OF_MEMORY", "message": "m", "confidence": 0.5, "evidence": []}   # not a model instance
     forged = make_checked(app.CheckedCause, raw, verdict="ok")
     with pytest.raises(inv.Rejected) as ei:
         app.remediate(forged, "J-oom")

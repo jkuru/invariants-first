@@ -141,14 +141,15 @@ def test_refused_reply_field_types_are_a_load_error(backend, bad, needle):
 def test_unread_refused_reply_fields_do_not_block_loading(backend):
     raw = '{"cause": "A", "at": "2024-01-01T00:00:00", "price": "1.10", "day": "2024-01-31", "note": "x"}'
     kind, c = model_outcome(backend, "R-N", "reply.note == 'y'", raw)
-    assert kind == "ok" and c.price == "1.10"          # attributes keep their JSON form
+    assert kind == "ok" and c.price == decimal.Decimal("1.10")      # the model instance's own values
     assert inv_pd.model_of(c).price == decimal.Decimal("1.10")
 
 
-def test_pydantic_reply_attributes_keep_the_json_form_and_model_of_is_typed(backend):
+def test_pydantic_reply_is_the_model_instance_and_model_of_is_a_fresh_copy(backend):
     kind, c = model_outcome(backend, "R-P", "reply.wait > duration('1h')", r10.p_reply())
-    assert kind == "ok" and c.at == "2024-06-01T12:00:00Z" and c.col == "r"
+    assert kind == "ok" and isinstance(c.value, r10.PReply) and c.at == NOW and c.col is r10.Color.RED
     m = inv_pd.model_of(c)
+    assert m == c.value and m is not c.value
     assert m.at == NOW and m.wait == dt.timedelta(minutes=5) and m.col is r10.Color.RED
 
 
