@@ -116,15 +116,25 @@ class BufferedExporter:
         return self
 
     def _run(self) -> None:
-        """The flusher: take every queued event, export them, until close() and the queue is empty."""
-        while True:
+        """The flusher: take every queued event, export them, until close() and the queue is empty.
+
+        However it ends (stopped, or a BaseException from the target), it clears itself, so a close()
+        that timed out still leaves an exporter that start() can restart and drain() can empty.
+        """
+        try:
+            while True:
+                with self._lock:
+                    while not self._queue and not self._stopping:
+                        self._changed.wait()
+                    if not self._queue:
+                        return
+                    batch = self._take()
+                self._export(batch)
+        finally:
             with self._lock:
-                while not self._queue and not self._stopping:
-                    self._changed.wait()
-                if not self._queue:
-                    return
-                batch = self._take()
-            self._export(batch)
+                if self._thread is threading.current_thread():
+                    self._thread, self._stopping = None, False
+                self._changed.notify_all()
 
     def _take(self) -> list[tuple[str, str, dict[str, Any]]]:
         """With the lock held: move the queue into a batch the caller exports."""
@@ -137,20 +147,22 @@ class BufferedExporter:
     def _export(self, batch: list[tuple[str, str, dict[str, Any]]]) -> None:
         """Call the target for each event outside the lock; count what it took and what it raised on."""
         ok = failed = 0
-        for rule_id, kind, event in batch:
-            try:
-                self.target(rule_id, kind, event)
-                ok += 1
-            except Exception:
-                failed += 1
-                if self.failed + failed == 1:
-                    log.exception("invariants BufferedExporter: %r failed; later failures are counted in "
-                                  ".failed", self.target)
-        with self._lock:
-            self.exported += ok
-            self.failed += failed
-            self._busy -= len(batch)
-            self._changed.notify_all()
+        try:
+            for rule_id, kind, event in batch:
+                try:
+                    self.target(rule_id, kind, event)
+                    ok += 1
+                except Exception:
+                    failed += 1
+                    if self.failed + failed == 1:
+                        log.exception("invariants BufferedExporter: %r failed; later failures are counted in "
+                                      ".failed", self.target)
+        finally:                                  # a BaseException still settles the batch's count
+            with self._lock:
+                self.exported += ok
+                self.failed += failed + (len(batch) - ok - failed)
+                self._busy -= len(batch)
+                self._changed.notify_all()
 
     def drain(self, timeout: float | None = None) -> bool:
         """Export everything queued now; True when nothing is left (within timeout; None: no limit).

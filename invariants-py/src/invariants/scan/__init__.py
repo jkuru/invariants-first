@@ -128,3 +128,11 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     return report
+
+# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
+# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
+# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
+for _obj in list(globals().values()):
+    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
+        _obj.__module__ = 'invariants.scan'
+del _obj

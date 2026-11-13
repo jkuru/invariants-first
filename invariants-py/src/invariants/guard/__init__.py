@@ -29,3 +29,12 @@ from ..providers import ProviderFailed, prefetch_async, prefetch_many  # noqa: F
 from ..registry import WRAPPED, Handoff, Registry, _wraps, current, note_decision  # noqa: F401
 from ..resolve import resolve  # noqa: F401
 from ..snapshot import take_snapshot  # noqa: F401
+
+# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
+# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
+# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
+for _obj in list(globals().values()):
+    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
+        _obj.__module__ = 'invariants.guard'
+_rebuild_checked.__module__ = _freeze.__module__ = 'invariants.guard'
+del _obj

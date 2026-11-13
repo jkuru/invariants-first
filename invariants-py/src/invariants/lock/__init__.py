@@ -298,3 +298,11 @@ def migrate_v2(old: dict[str, Any], fresh: dict[str, Any],
     references are compared. Version 3 pins resolved types and stores schemas once without prose, so
     those pins are re-taken rather than compared."""
     return changes(_comparable(old, True), _comparable(fresh, False), types)
+
+# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
+# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
+# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
+for _obj in list(globals().values()):
+    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
+        _obj.__module__ = 'invariants.lockfile'
+del _obj

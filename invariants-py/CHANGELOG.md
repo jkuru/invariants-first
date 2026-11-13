@@ -19,6 +19,20 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
   it reads, and the default `graphify-out/graph.json` (a symlink outside `--root` is refused).
 - **A non-UTF-8 OpenAPI contract file is a `LoadError`,** so `inv lock` pins it by digest instead of
   crashing with `UnicodeDecodeError`.
+- **Moved classes keep their module name** (`invariants.guard.Checked`, `invariants.registry.Handoff`,
+  `invariants.lockfile.Change`, ...). A pinned signature names an annotation's class by its module, so
+  without this an upgrade alone made `inv lock --check` fail for a target annotated with a library
+  class; pickles made by this version also load in the previous one.
+- **`BufferedExporter` recovers from a `close(timeout)` that timed out** (the flusher clears itself on
+  exit, so `start()` restarts it and `drain()` empties it), and a `BaseException` from the target no
+  longer leaves a phantom pending count.
+- **`Registry.standing()` calls an overridden `verify`** again (a subclass or patch); `reg.sink`
+  pickles and deep-copies again.
+- **Patching moved internals:** the packages bind their own imports, so patching a name on the old
+  module (`invariants.lockfile.X`, `invariants.guard.current`, `invariants.cli.cmd_*`,
+  `invariants.scan._check_rule`) no longer reaches the code that uses it: patch the stage module
+  (`invariants.lock.pinning`, `invariants.guard.plan`, ...). The private registry globals
+  `_warned_unarmed`, `_warned_armed` and `_pytest_sessions` are attributes of `registry._SESSION`.
 
 ### Refactor: guard/ package
 

@@ -127,6 +127,9 @@ class EventSink(collections.deque[dict[str, Any]]):
 
     __hash__ = None
 
+    def __reduce__(self) -> Any:            # the owning registry's lock is not part of the events
+        return (EventSink, (list(self), self.maxlen))
+
 
 @dataclasses.dataclass(frozen=True)
 class ErrorSpike:
@@ -517,7 +520,10 @@ class Registry:
         if ablation is not None:
             why.extend(_ablation_problems(rule, ablation))
         try:
-            self._verify(view, None)
+            if getattr(self.verify, "__func__", None) is Registry.verify:
+                self._verify(view, None)          # the same rules generation as the rest of this answer
+            else:
+                self.verify()                     # a subclass or patch that replaces verify is honoured
         except CoverageError as e:
             why.append(f"verify fails: {e}")
         if not scan:
@@ -757,3 +763,10 @@ def standing(rule_id: str, reg: Registry | None = None, scan: bool = False,
     """Computed standing of one rule, with the reasons it is not held (see Registry.standing)."""
     return (reg or current()).standing(rule_id, scan=scan, ablation=ablation)
 
+# Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
+# an annotation's class by its module, and pickles name it too, so a moved __module__ would make an
+# upgrade alone re-pin the lock and make new pickles unreadable by older versions.
+for _obj in list(globals().values()):
+    if isinstance(_obj, type) and (_obj.__module__ == __name__ or _obj.__module__.startswith(__name__ + ".")):
+        _obj.__module__ = 'invariants.registry'
+del _obj
