@@ -52,7 +52,8 @@ A trace is a JSON file:
 
 ```json
 {"fixture": "recorded", "model": "claude-haiku-5-5",
- "calls": [{"request": {"system": "...", "messages": [{"role": "user", "content": "..."}]},
+ "calls": [{"request": {"model": "claude-haiku-5-5", "max_tokens": 16000, "system": "...",
+                        "messages": [{"role": "user", "content": "..."}]},
             "reply": "{\"cause\": \"OUT_OF_MEMORY\", \"summary\": \"...\"}"}]}
 ```
 
@@ -61,16 +62,28 @@ the replies came from: `recorded` (a `RecordingModel` wrote them) or `hand-writt
 them in the shape of a recording). A trace file says which it is, and a reader should believe it,
 not the directory it is in.
 
-- `ReplayModel(path, system=...)` answers each request with the reply of the first unused recorded
-  call whose request matches (its `messages`, and its `system` when the trace has one). Identical
+- `ReplayModel(path, system=..., model=..., max_tokens=..., ignore=(), **params)` answers each
+  request with the reply of the first unused recorded call whose whole request matches: `messages`,
+  `system` (a system prompt on one side and none on the other is a mismatch), `model`, `max_tokens`
+  and every other param, as the `AnthropicModel` it stands in for would send them; so give it the
+  same configuration (`model_for` does). `ignore=["model"]` leaves the named fields out of the
+  comparison, for example to replay a trace under another model; nothing is ignored unless you
+  say so. A trace written before round 18 records only `system` and `messages` and now mismatches
+  on `model`: re-record it, or add the request's `model` and `max_tokens`. Identical
   requests (a resample) replay in order; requests from concurrent threads may come in any order. A
   request that no unused call matches raises `ReplayMismatch`, an `AssertionError` whose message is a
   unified diff against the next unused call, so a changed prompt fails loudly. `assert_done()` fails
   when a recorded call was never requested; `remaining` counts them.
 - `RecordingModel(inner, path)` sends through an `AnthropicModel` and rewrites `path` after each call,
-  marked `"fixture": "recorded"`.
+  marked `"fixture": "recorded"`. Each request records everything the adapter sent but the wire
+  form of assistant turns: `model`, `max_tokens`, the params, `system` when set, and the messages.
+  Bytes in a request are recorded as `{"$bytes_base64": "..."}` (a replay of the same bytes
+  matches); any other value JSON cannot hold raises `TypeError` before the API call, so a paid call
+  is never lost to a trace that cannot be written.
 - `model_for(mode, trace, system=..., model=..., **kw)` returns the model for a mode name: `replay`,
-  `record`, `anthropic`, or `fake` (`None`: the caller keeps its own fake).
+  `record`, `anthropic`, or `fake` (`None`: the caller keeps its own fake). `kw` goes to the
+  `AnthropicModel` and to the `ReplayModel` alike, so a replay compares what the live model would
+  send; `ignore=` goes to the `ReplayModel` only.
 
 The three demo apps use this: `APP_MODEL=replay|anthropic|record|fake` picks the model, tests and CI
 default to `replay` on committed traces, the seeded-defect tests stay on each app's fake model (it can

@@ -4,6 +4,8 @@
   "calls": [
     {
       "request": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 16000,
         "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
         "messages": [
           {
@@ -16,6 +18,8 @@
     },
     {
       "request": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 16000,
         "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
         "messages": [
           {

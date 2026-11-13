@@ -1945,8 +1945,9 @@ _NAME_SEGMENTS = frozenset({"properties", "$defs", "definitions", "patternProper
 STRUCTURAL = frozenset({"items", "prefixItems", "additionalItems", "unevaluatedItems", "contains", "allOf",
                         "not", "propertyNames", "dependentRequired", "dependentSchemas", "if", "then", "else",
                         "properties", "patternProperties", "unevaluatedProperties"})
-# inside these a tighter subschema can accept more input (not) or the direction is unknown (if)
-_FLIPPED = frozenset({"not", "if"})
+# inside these a tighter subschema can accept more input (not; oneOf, where a value that now fails
+# one branch may pass as matching exactly one) or the direction is unknown (if)
+_FLIPPED = frozenset({"not", "if", "oneOf"})
 # a bound may be replaced by its exclusive or inclusive twin: removed -> (twin, is an upper bound)
 _TWIN_BOUNDS = {"minimum": ("exclusiveMinimum", False), "exclusiveMinimum": ("minimum", False),
                 "maximum": ("exclusiveMaximum", True), "exclusiveMaximum": ("maximum", True)}
@@ -2033,6 +2034,7 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
         return None
     key, parent = segs[-1], segs[-2]
     new_node = _node(new_root, segs[:-1])
+    old_node = _node(old_root, segs[:-1])
     names = [x.partition("[")[0] for x in segs]
     flipped = next((n for i, n in enumerate(names[1:-1], 1) if n in _FLIPPED and names[i - 1] not in _NAME_SEGMENTS),
                    None)
@@ -2044,6 +2046,10 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
         return f"{parent}.{key} {'removed' if new is None or suffix == 'removed' else 'changed'}: " \
                f"the schema may accept more input"
     if parent in _NAME_SEGMENTS:                                 # a field (or model) entry itself
+        if parent == "patternProperties" and old is None and new is not None:
+            return _opens_closed(_node(old_root, segs[:-2]), f"patternProperties {key!r} added")
+        if parent == "properties" and old is None and new is not None:
+            return _property_opens(_node(old_root, segs[:-2]), _node(new_root, segs[:-2]), key, new)
         if new is None and parent == "properties":
             return f"field {key} removed: its constraints no longer apply"
         if new is None and parent in ("$defs", "definitions"):
@@ -2051,6 +2057,10 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
         return None
     if key == "$ref":
         return _ref_changed(segs[0], old, new, old_root, new_root)
+    if key == "patternProperties" and old is None and new is not None:
+        return _opens_closed(old_node, "patternProperties added")
+    if key in ("nullable", "x-nullable"):                       # OpenAPI 3.0 / Swagger 2.0
+        return f"{key} {_short(old)} -> {_short(new)}: null now passes" if new is True and old is not True else None
     if key in UPPER_BOUNDS or key in LOWER_BOUNDS:
         upper = key in UPPER_BOUNDS
         if new is None:
@@ -2094,8 +2104,48 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
                 and all(any(same(x, y) for y in new) for x in old):
             return None                                          # more schemas, all of which must hold
         if key == "prefixItems" and isinstance(old, list) and isinstance(new, list) and same(old, new[:len(old)]):
-            return None
+            # longer: the new positions were checked by items, if the old schema had one
+            rest = old_node.get("items") if isinstance(old_node, dict) else None
+            if rest is None or rest is True or same(rest, {}) or all(same(x, rest) for x in new[len(old):]):
+                return None
+            return (f"prefixItems extended to {len(new)}: positions {len(old)}.. were checked by items "
+                    f"{_short(rest)}, and are now checked only by the new entries")
         return f"{key} changed: the schema may accept more input"
+    return None
+
+
+def _opens_closed(node: Any, what: str) -> str | None:
+    """Pattern properties added to an object schema: a tightening when other properties were
+    allowed anyway, a weakening when additionalProperties (or unevaluatedProperties) closed or
+    constrained them, since a property that matches the pattern is no longer checked by it."""
+    if not isinstance(node, dict):
+        return None
+    for k in ("additionalProperties", "unevaluatedProperties"):
+        v = node.get(k)
+        if v is not None and v is not True and not same(v, {}):
+            return f"{what} while {k} is {_short(v)}: properties matching it now pass without that check"
+    return None
+
+
+def _property_opens(old_node: Any, new_node: Any, key: str, schema: Any) -> str | None:
+    """A property added to an object schema whose additionalProperties (or unevaluatedProperties)
+    was false or a schema: the property was rejected (or checked by that schema) and now passes by
+    its own schema. Not a weakening when other properties were allowed anyway, when the old schema
+    for extras was the same, or, for a closed schema, when the new property is required and its
+    schema constrains its value (every old instance lacked it, so none of them passes now)."""
+    if not isinstance(old_node, dict):
+        return None
+    for k in ("additionalProperties", "unevaluatedProperties"):
+        v = old_node.get(k)
+        if v is None or v is True or same(v, {}) or same(v, schema):
+            continue
+        required = isinstance(new_node, dict) and isinstance(new_node.get("required"), list) \
+            and key in new_node["required"]
+        constrained = isinstance(schema, dict) and bool(schema) and schema is not True
+        if v is False and required and constrained:
+            continue
+        return (f"field {key} added while {k} is {_short(v)}: inputs with {key} "
+                f"{'were rejected' if v is False else 'were checked by that schema'} and now pass")
     return None
 
 

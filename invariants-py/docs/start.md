@@ -213,7 +213,8 @@ to use it, `pip install 'graphifyy[mcp]'` and add it to the project's `.mcp.json
 
 This package ships a second, read-only MCP server, `inv-mcp`, over the laws themselves (scan, check,
 status, explain, and `inv init`'s proposals as a dry run). [agents.md](agents.md) shows both in one
-`.mcp.json` and the flow they support: the agent proposes, a person approves and locks.
+`.mcp.json` and the flow they support: the agent proposes, a person approves and locks. Every path
+it reads, whether a tool argument or a root that `pyproject.toml` names, must lie inside its `--root`.
 
 ## 4. Make the check unskippable (5 minutes)
 
@@ -309,10 +310,14 @@ invariants.lock  @your-org/payments-owners
   `--allow-weakening` or `INV_ALLOW_WEAKENING`, or an abbreviation of either flag of five
   characters or more (`--accept-w`; `inv` itself takes no abbreviated options). The agent is told
   to report the weakening to you instead.
+  The variable is matched after the shell's unquoting, so `env INV_ALLOW_WEAK''ENING=1`,
+  `export INV_ALLOW_WEAKENIN\G=1` and `X=1 cmd` forms count.
   It also blocks any direct edit of `invariants.lock`: an edit or write tool on it (symlinks are
   resolved first), or a shell command that names it and is not clearly read-only. The command is
   split into words as the shell would, so `"invariants".lock`, `invariants\.lock` and globs such as
-  `inv*.lock` or `*.lock` name it too. Read-only means `cat`, `less`, `head`, `tail`, `grep` and
+  `inv*.lock` or `*.lock` name it too. Names are compared in any letter case (macOS's default
+  filesystem opens `INVARIANTS.LOCK` as the lock), after brace expansion (`invariants{,}.lock`) and
+  after decoding `$'...'` quoting (`$'\x69nvariants.lock'`). Read-only means `cat`, `less`, `head`, `tail`, `grep` and
   the like, `git diff|show|log|status|blame`, and `inv check|lock --check|status|scan|validate`, with
   no redirect into a file, no `--output`, `--output=` or `-o`, no `git -c` and no `GIT_*` variable
   before `git` (a pager or external diff runs code). `git add invariants.lock` is allowed too, so
@@ -320,7 +325,11 @@ invariants.lock  @your-org/payments-owners
   lock. A command the hook cannot read is blocked when it mentions `lock` or `pyproject`: one that
   does not parse, or uses `$(...)`, backticks, `${...}`, `eval`, `sh -c`, `xargs` or `python -c`;
   a writing command with an expanded name (`$f`) is blocked when the command mentions the lock,
-  `invariants`, `pyproject` or `toml`. The hook also blocks an edit that changes the
+  `invariants`, `pyproject` or `toml`. In a directory that holds `invariants.lock` (or below one),
+  a write-capable command (`cp`, `mv`, `tee`, `dd`, `rm`, `ln`, `install`, `rsync`, `sed -i` and
+  the like) or a redirect whose target file name the shell computes (`"$f"`, a backtick) is
+  blocked whatever the rest says; a read-only command with `$` stays allowed, and so does a target
+  whose file name is literal (`"$TMPDIR/out.txt"`). The hook also blocks an edit that changes the
   `[tool.invariants]` tables of `pyproject.toml` (the scan roots and excludes) and any shell
   command that writes `pyproject.toml`, by the same rules.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
@@ -330,7 +339,10 @@ Both commands read Claude Code's hook JSON on stdin, and both block by exiting w
 
 The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
 command can always be talked past (a script file that writes the lock, a name read from a file),
-and an agent may run without hooks. The gate is `inv check --base` in CI, with the rule files owned by a
+and an agent may run without hooks. Commands that overwrite the whole tree without naming a file
+are not caught at all: `git checkout <ref> -- .`, `git restore --source=<ref> :/`, `git stash`
+followed by `git stash pop`, `tar x` of an archive and `cp -r dir/. .` can each put back an old
+`invariants.lock` or `pyproject.toml`. CI is the gate for them. The gate is `inv check --base` in CI, with the rule files owned by a
 person: it compares with the lock on the base branch, whatever happened on the way.
 
 For other agents, put this in `AGENTS.md`, and rely on pre-commit and CI to enforce it:

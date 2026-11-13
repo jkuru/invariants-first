@@ -80,6 +80,7 @@ def _rule_file(root: pathlib.Path, args: dict[str, Any], default: pathlib.Path |
         path = _inside(server_root, root, found.name, "rule file")
     if not path.is_file():
         raise ToolError(f"no rule file at {path}; run propose_rules to draft one (a person writes it)")
+    _settings_inside(server_root, path)
     return path
 
 
@@ -95,6 +96,36 @@ def _strs(args: dict[str, Any], key: str) -> list[str]:
 def _source_roots(server_root: pathlib.Path, root: pathlib.Path, args: dict[str, Any]) -> list[str]:
     """The source_roots argument, each resolved inside the server's --root."""
     return [str(_inside(server_root, root, r, "source root")) for r in _strs(args, "source_roots")]
+
+
+def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None:
+    """The directories pyproject.toml names for scanning or importing ([tool.invariants.scan] roots,
+    setuptools packages.find.where) stay inside the server's --root, like a source_roots argument:
+    `scan` reads them and `check` puts them on sys.path. A rule file outside --root is the operator's
+    own --rules, and its settings are theirs."""
+    from . import cli
+    if not rule_file.resolve().is_relative_to(server_root):
+        return
+    seen: set[pathlib.Path] = set()
+    for proj in (rule_file.resolve().parent, cli.project_root(rule_file)):
+        py = proj / "pyproject.toml"
+        if proj in seen or not py.is_file():
+            continue
+        seen.add(proj)
+        try:
+            tool = cli._pyproject(proj).get("tool") or {}
+        except cli.Usage as e:
+            raise ToolError(str(e)) from e
+        find = ((tool.get("setuptools") or {}).get("packages") or {})
+        find = (find.get("find") or {}) if isinstance(find, dict) else {}
+        for setting, values in (("[tool.invariants.scan] roots", ((tool.get("invariants") or {}).get("scan") or {})
+                                 .get("roots")), ("[tool.setuptools.packages.find] where", find.get("where"))):
+            for r in cli._str_list(values):
+                path = (proj / r).resolve()
+                if not path.is_relative_to(server_root):
+                    raise ToolError(f"{py}: {setting} names {r!r}, which resolves to {path}, outside the "
+                                    f"server's --root {server_root}; a tool reads and imports only inside it "
+                                    f"(start inv-mcp with a wider --root, or change the setting)")
 
 
 def _rel(path: str | None, root: pathlib.Path) -> str | None:

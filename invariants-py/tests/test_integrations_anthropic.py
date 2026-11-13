@@ -237,7 +237,8 @@ def write_trace(path: Any, calls: list[dict[str, Any]], fixture: str = "hand-wri
 
 def req(*contents: str, system: str | None = None) -> dict[str, Any]:
     roles = ["user", "assistant"]
-    r: dict[str, Any] = {"messages": [{"role": roles[i % 2], "content": c} for i, c in enumerate(contents)]}
+    r: dict[str, Any] = {"model": "claude-haiku-5-5", "max_tokens": 16000,
+                         "messages": [{"role": roles[i % 2], "content": c} for i, c in enumerate(contents)]}
     if system is not None:
         r["system"] = system
     return r
@@ -267,9 +268,11 @@ def test_replay_repeats_identical_requests_in_order(tmp_path):
     assert [m.complete("a"), m.complete("a")] == ["1", "2"]
 
 
-def test_replay_system_only_compared_when_recorded(tmp_path):
+def test_replay_system_compared_absent_or_present(tmp_path):
     p = write_trace(tmp_path / "t.json", [{"request": req("a"), "reply": "1"}])
-    assert inv_an.ReplayModel(p, system="anything").complete("a") == "1"
+    with pytest.raises(inv_an.ReplayMismatch, match="system"):     # recorded without one: a new one mismatches
+        inv_an.ReplayModel(p, system="anything").complete("a")
+    assert inv_an.ReplayModel(p).complete("a") == "1"
     p2 = write_trace(tmp_path / "t2.json", [{"request": req("a", system="S"), "reply": "1"}])
     with pytest.raises(inv_an.ReplayMismatch, match="system"):
         inv_an.ReplayModel(p2, system="T").complete("a")

@@ -63,8 +63,10 @@ imported fresh on each call and the project tree is left as it was. The server n
 Every path a tool argument names (`root`, `rules`, `source_roots`, `graphify`) must resolve inside the
 server's `--root`, after following symlinks; anything else (an absolute path elsewhere, `..`, a
 symlink out) is a tool error (`isError: true`), since `check` and `status` import the code they find.
-A filesystem root (`/`) is never a project root. The server's own `--rules`, chosen by whoever starts
-it, may sit anywhere.
+A filesystem root (`/`) is never a project root. The same holds for the directories the project's
+`pyproject.toml` names for scanning or importing, `[tool.invariants.scan] roots` and
+`[tool.setuptools.packages.find] where`: one outside `--root` is a tool error naming the setting.
+The server's own `--rules`, chosen by whoever starts it, may sit anywhere (with its settings).
 
 `explain` is the tool an agent should reach for when `inv check` fails. For a bypass it names the
 door to call instead, and says that adding the caller to `allow` is a person's decision, not a fix:
