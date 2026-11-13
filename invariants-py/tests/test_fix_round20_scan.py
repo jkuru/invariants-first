@@ -85,7 +85,7 @@ def _codes(rep):
     return [f.code for f in rep.findings]
 
 
-UNKNOWN = ["unresolved/inferred-path", "unresolved/unknown-receiver"]    # a name-matched .save()
+UNKNOWN = ["unresolved/inferred-path"]    # a name-matched .save(): one finding per call site (round 23)
 
 
 # --- a. unwrapping a door inside an allowed back door ------------------------------------------------------

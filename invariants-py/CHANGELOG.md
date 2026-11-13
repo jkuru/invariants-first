@@ -10,6 +10,33 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 23 (scan: reflection and typing)
+
+- **A class the code can subvert is no longer trusted as typed.** A custom `__new__`, a scanned
+  metaclass with `__call__`/`__new__`/`__getattr__`/`__getattribute__`, a class decorator that may
+  return another class, a class name bound again at module level (`Safe = Repo`, an import over it,
+  `global Safe`), a dunder written on the class (`Leaf.__bases__ = ...`) and `__class__` assignment
+  all made `Safe().save()` an extracted edge to `Safe.save` while the sink ran: such calls are now
+  name-matched (unresolved); a method replaced or deleted on the class (`del Safe.save`,
+  `Safe.save = len`) distrusts that method only. Reflective writes
+  (`object.__setattr__(self, "r", v)`, `self.__dict__["r"] = v`) make `self.r` untyped, a function
+  annotated `-> Safe` that visibly returns another scanned class gives no type, and a call on a data
+  attribute of a scanned module or class (`other.repo.save()`, `Holder.r.save()`) is name-matched
+  (it was dropped silently). Parameter annotations stay trusted; [docs/scan.md](docs/scan.md) says so.
+- **Names resolved from strings are reported:** `pickle.loads`/`load`/`Unpickler`, `shelve.open`,
+  `runpy.run_path`/`run_module`, `logging.config.fileConfig`/`listen`, a `dictConfig` the scan cannot
+  read and `importlib.util.spec_from_file_location` are `unresolved/reflection` (also taken as a
+  value, as in a `__reduce__`); `pydoc.locate`, `pkgutil.resolve_name` and `inspect.getattr_static`
+  with a literal are getattrs; a readable `dictConfig` calls the scanned functions its strings name;
+  `C.__mro__[i].__dict__[k]`, `door.__globals__[k]` and `builtins.__dict__[k]` are namespace lookups.
+- **Unwrapping a guard is `forbidden/unwrap` in every spelling:** `inspect.unwrap(door)`,
+  `door.__dict__["__wrapped__"]` (or `.get`, `.values()`), `door.__closure__`; assigning
+  `door.__code__` is a monkeypatch.
+- **One finding per call site:** a call on a receiver the scan cannot type is one
+  `unresolved/inferred-path` finding (it was also an `unresolved/unknown-receiver` on the same
+  `file:line:col`), and `getattr(store.sink, "__call__")(c)` is a bypass without an extra
+  `unresolved/sink-escapes`.
+
 ### Fix round 22
 
 - **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).

@@ -28,7 +28,9 @@ mediation:
 entrypoint is a function with no extracted caller, or a module body (and anything those cannot
 reach). Each call site that reaches the sink this way (each `file:line:col`) is one finding, shown
 with the shortest path from the first entrypoint that reaches it: two calls of the sink in one
-function are two findings, and two entrypoints through the same helper call are one. A rule on an `effects: none` target needs no sink: the guard wraps the function itself, and
+function are two findings, and two entrypoints through the same helper call are one. A call the scan
+name-matches on a receiver it cannot type (`repo.save(x)`, `repo` unannotated) is one finding too, the
+`unresolved/inferred-path` with its path. A rule on an `effects: none` target needs no sink: the guard wraps the function itself, and
 the scan reports it as "not scanned (mediation declares no sink)".
 
 ```text
@@ -69,6 +71,36 @@ scanned bases is one of those (tuple assignment `self.a, self.b = a, b` included
 so the call also reaches every scanned subclass's override. Anything else (an unannotated parameter,
 a rebinding, unpacking it cannot pair) is a name-matched edge, which the scan reports as unresolved
 rather than trusting.
+
+Annotations are trusted: a parameter annotated `repo: Repo` is taken to hold a `Repo` (or a
+subclass), whatever a caller passes, because the scan cannot see every caller; a type checker is what
+catches `h(OtherRepo())` against `def h(repo: Repo)`. A return annotation is trusted the same way,
+except when the function's own body visibly returns an instance of another scanned class
+(`def get() -> Safe: return Repo()`): then the call gives no type and its method calls are
+name-matched.
+
+A class whose construction or identity the code can alter is not trusted at all: calls on its
+instances, on its name and through `self` in its methods are name-matched (unresolved), never an
+extracted edge to its own methods. That is a class (or a subclass of one) with a custom `__new__`
+(other than one whose every return is `super().__new__(cls, ...)` or `object.__new__(cls)`); with a
+scanned metaclass that defines `__call__`, `__new__` (beyond handing on to `super()`/`type`),
+`__getattr__` or `__getattribute__`, or a metaclass the scan cannot see into; with a class decorator
+that may return another class (a scanned decorator must return its parameter, `@register("x")` a
+nested function that does; standard-library and third-party decorators such as `@dataclass` are
+trusted); whose module-level name is bound more than once (`Safe = Repo` after the class, an import
+over it, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
+dunder or a computed name written on it (`Leaf.__bases__ = (...)`, `setattr(Safe, name, f)`) or the
+class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__`. A
+method replaced or deleted on a class (`Safe.save = len`, `del Safe.save`, `setattr(Safe, "save", v)`,
+`self.save = v`) distrusts that method only, on the class and the subclasses that inherit it:
+`Safe().save()` is name-matched, `Safe().other()` stays typed; a replacement that is a scanned
+function or a lambda is read where it is (an entrypoint, or the sink as a value). A
+`x.__class__ = Other` on a local makes that local untyped; on `obj.attr`, that attribute; on anything
+the scan cannot place (or a `__bases__` write it cannot place), every class is distrusted. A
+reflective write of an attribute (`object.__setattr__(self, "r", v)`, `self.__dict__["r"] = v`,
+`self.__dict__.update(r=v)`) counts as setting it from outside, so `self.r` is never typed. A data
+attribute of a scanned module or class (`other.repo.save()` where `other.repo = Repo()`, or
+`Holder.r.save()`) is a value whose type the scan does not follow: its calls are name-matched.
 
 A call to a scanned function annotated to return a scanned class types its result too:
 `get_repo().add(...)`, or `r = get_repo()` then `r.add(...)`, where `def get_repo() -> Repo`
@@ -127,9 +159,35 @@ sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 `object.__getattribute__(store, "sink")` are `forbidden/getattr-sink`, and any other use of
 `store.__dict__` (a computed key, `.items()`, the dict as a value) or `inspect.getmembers(store)` is
 `unresolved/reflection`, like `vars(store)`. `type(obj).__dict__` and `obj.__class__.__dict__` are
-a class namespace too. A function's `__dict__` is its metadata and stays harmless. Reflective
+a class namespace too, as are `C.__mro__[i].__dict__`, `C.__bases__[i].__dict__` and
+`C.__base__.__dict__`; any other read of `C.__mro__` is `unresolved/reflection` (its classes are
+values). `f.__globals__` on a scanned function is the namespace of its module
+(`door.__globals__["sink"]` is `forbidden/getattr-sink`); on a function the scan cannot name it is
+`unresolved/reflection`. `builtins.__dict__` (and the `__dict__` of any module outside the scan) is
+reflection when the key is computed or names a reflective builtin, and so is `__builtins__`. A
+function's `__dict__` is its metadata, except for `__wrapped__`: `door.__dict__["__wrapped__"]`,
+`door.__dict__.get("__wrapped__")`, or any other use of a scanned function's `__dict__` (a computed
+key, `.values()`, the dict itself) is `forbidden/unwrap`, as are `inspect.unwrap(door)` and
+`door.__closure__` (its cells hold the function the guard wraps); `obj.__dict__["__wrapped__"]` on an
+object the scan cannot name is an unwrap too. Another object's instance `__dict__` (`o.__dict__`,
+`self.__dict__.update(kw)`) stays harmless; a literal key in it that names a sink or door is
+`forbidden/getattr-sink` (`-door`), as `getattr(o, "save")` is.
+
+Names looked up from strings are lookups too. `pydoc.locate("pkg.mod.f")` and
+`pkgutil.resolve_name("pkg.mod:f")` with a literal are a getattr of that name (naming the sink is
+`forbidden/getattr-sink`), `inspect.getattr_static(obj, "name")` is `getattr(obj, "name")`, and
+`getattr(builtins, "getattr")` is reflection. `logging.config.dictConfig(config)` imports and calls
+the dotted names in its strings (`"()"` factories, `"class"` handlers, `ext://` objects): on a config
+the scan can read (a literal, or a module-level name bound once to one) each scanned function or
+class it names is a call edge (so a `"()": "pkg.store.sink"` is a bypass); any other config, and
+`fileConfig`, `listen`, `pickle.loads` / `load` / `Unpickler` (a pickle names the functions it calls),
+`shelve.open`, `runpy.run_path` / `run_module` and `importlib.util.spec_from_file_location`, are
+`unresolved/reflection`. `copy.copy` and `copy.deepcopy` are not reported themselves: what a
+`__reduce__` returns is (`pickle.loads` or the sink as a value, `getattr`, ...). Assigning a
+dunder of a sink or door (`door.__code__ = other.__code__`) is `forbidden/monkeypatch`. Reflective
 builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
-`importlib.import_module`, `operator.methodcaller`) are `unresolved/reflection`, and an import alias
+`importlib.import_module`, `operator.methodcaller`, `pickle.loads`, `pydoc.locate`, `inspect.unwrap`)
+are `unresolved/reflection`, and an import alias
 (`from builtins import getattr as g`) is checked as `getattr` itself. `getattr(repo, "save")` on a
 receiver the scan can type is an edge to the methods `repo.save` may name (on an unknown receiver,
 name-matched, so unresolved). `operator.attrgetter` and `operator.methodcaller` called with literal

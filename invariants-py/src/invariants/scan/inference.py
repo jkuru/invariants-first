@@ -4,8 +4,9 @@ from __future__ import annotations
 import ast
 import collections
 import dataclasses
+import weakref
 
-from .astutil import _dotted, _own_nodes, _pairs, _single_types
+from .astutil import _attr_writes, _dotted, _own_nodes, _pairs, _single_types
 from .contracts import _Module
 from .indexer import _BUILTINS, _Index
 
@@ -28,8 +29,15 @@ _YIELDS = frozenset({f"{m}.{n}" for m in ("typing", "collections.abc")
 class _Inference:
     """Type queries in one module: what a name, receiver or annotation is."""
 
-    def __init__(self, idx: _Index, mod: _Module) -> None:
+    def __init__(self, idx: _Index, mod: _Module, raw: bool = False) -> None:
         self.idx, self.mod = idx, mod
+        # raw: names resolve as written, trusting every class (only to find the classes not to trust)
+        self._raw = raw
+        self._untrusted: frozenset[str] = frozenset() if raw else subverted(idx)
+        # (class, method name): a method the code replaces or deletes on the class (Safe.save = len,
+        # del Safe.save), so what `Safe().save` runs is not the scanned Safe.save
+        self._untrusted_members: frozenset[tuple[str, str]] = frozenset() if raw else subverted_members(idx)
+        self._rebound_classes: frozenset[str] = frozenset() if raw else rebound_class_names(idx, mod)
         self._local_types: dict[str, dict[str, str]] = {}
         # the parameters of the nested functions and lambdas around the code being walked: their own
         # values, which a binding of the same name in the owner does not type
@@ -62,7 +70,7 @@ class _Inference:
                 first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) and node.slice.elts else node.slice
                 return self._class_named(first, local, me, depth + 1)
             if head in self.idx.classes:                       # BaseRepo[int]: a generic scanned class
-                return head
+                return None if head in self._untrusted else head
             return _CONTAINERS.get(head or "")
         if isinstance(node, (ast.Name, ast.Attribute)):
             fq = self._resolve(node, set(), None)
@@ -71,7 +79,7 @@ class _Inference:
             if fq is None:
                 return None
             if fq in self.idx.classes:
-                return fq
+                return None if fq in self._untrusted else fq
             if fq in _CONTAINERS:
                 return _CONTAINERS[fq]
             mod, _, name = fq.rpartition(".")                  # RepoDep = Annotated[Repo, ...]
@@ -93,7 +101,7 @@ class _Inference:
             fq = self._resolve(node.func, local, me)
             if fq in _CONTAINERS and fq.startswith("builtins."):
                 return fq
-            return fq if fq in self.idx.classes else None
+            return fq if fq in self.idx.classes and fq not in self._untrusted else None
         return None
 
     def _returned(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
@@ -105,7 +113,7 @@ class _Inference:
         if not (isinstance(node, ast.Call) and _dotted(node.func)):
             return None
         if isinstance(node.func, ast.Name) and me and node.func.id == me[0] and self.idx.class_param(me):
-            return me[1]                                       # cls() in a @classmethod: cls or a subclass
+            return None if me[1] in self._untrusted else me[1]  # cls() in a @classmethod: cls or a subclass
         fq = self._resolve(node.func, local, me)
         return self.return_type(fq) if fq else None
 
@@ -139,11 +147,23 @@ class _Inference:
                 except SyntaxError:
                     pass
             if f.cls and _dotted(ann) and home._resolve(ann, set(), None) in _SELF:
-                got = f.cls                                    # -> Self: the class, or a subclass
+                got = None if f.cls in self._untrusted else f.cls   # -> Self: the class, or a subclass
             else:
                 got = home._class_named(fn.returns, set(), None)
+            if got in self.idx.classes and home._returns_other(fn, got):
+                got = None                                     # `-> Safe` over a visible `return Repo()`
         self.idx.returns[fid] = got
         return got
+
+    def _returns_other(self, fn: ast.FunctionDef | ast.AsyncFunctionDef, cls: str) -> bool:
+        """fn, annotated to return cls, visibly returns an instance of a scanned class that is neither cls
+        nor a subclass of it: the annotation is not what it returns."""
+        for node in _own_nodes(fn):
+            if isinstance(node, ast.Return) and node.value is not None:
+                got = self._made(node.value, set(), None)
+                if got in self.idx.classes and got != cls and cls not in self.idx.mro(got):
+                    return True
+        return False
 
     def _made(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
         """The class a value is built as: Cls(...) or a call to a function annotated to return Cls."""
@@ -362,7 +382,7 @@ class _Inference:
             return (got, False) if got else None
         if isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
-                base: tuple[str, bool] | None = (me[1], False)
+                base: tuple[str, bool] | None = None if me[1] in self._untrusted else (me[1], False)
             else:                                             # ctx.billing.refund(): ctx's class, then billing's
                 base = self._receiver(node.value, owner, local, me)
             if base is None or base[0] not in self.idx.classes or node.attr in self._foreign_attrs():
@@ -396,7 +416,8 @@ class _Inference:
             start = named
         out: set[str] = set()
         family = [me[1], *self.idx.subclasses(me[1])]
-        if self.idx.excluded_subclass(set(family)):
+        if self.idx.excluded_subclass(set(family)) or start in self._untrusted or self._untrusted & set(family) \
+                or any((c, node.attr) in self._untrusted_members for c in family):
             return []                                          # a subclass the scan does not read
         for k in family:
             order = self.idx.strict_mro(k)
@@ -418,7 +439,7 @@ class _Inference:
         if sup is not None:
             return sup, None
         rcv = self._receiver(node.value, owner, local, me)
-        if rcv is None:
+        if rcv is None or rcv[0] in self._untrusted or (rcv[0], node.attr) in self._untrusted_members:
             return [], None
         if rcv[0] in self.idx.classes:
             hit = self.idx.method(rcv[0], node.attr)
@@ -430,9 +451,21 @@ class _Inference:
         return [], None
 
     def _via_function(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> bool:
-        """`self.repo.m` where repo is a method or property of a scanned class: its name resolves through a
-        function, so the receiver's type decides what m is."""
-        return bool(_dotted(node.value)) and self._resolve(node.value, local, me) in self.idx.funcs
+        """`self.repo.m` where repo is a method or property of a scanned class, or `mod.repo.m` /
+        `Cls.repo.m` where repo is a data attribute of a scanned module or class (`repo = Repo()`,
+        `Holder.r = Repo()`): its name resolves through a value, so the receiver's type decides what m is."""
+        if not _dotted(node.value):
+            return False
+        fq = self._resolve(node.value, local, me)
+        return fq in self.idx.funcs or (fq is not None and self._data_attr(fq))
+
+    def _data_attr(self, fq: str) -> bool:
+        """fq is a name inside a scanned module or class that is not a function, class or module: a value."""
+        if fq in self.idx.funcs or fq in self.idx.classes or fq in self.idx.modules or fq.startswith("self:"):
+            return False
+        parts = fq.split(".")
+        return any(".".join(parts[:i]) in self.idx.modules or ".".join(parts[:i]) in self.idx.classes
+                   for i in range(len(parts) - 1, 0, -1))
 
     def _value_refs(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> list[str]:
         """The scanned functions a Name/Attribute expression names when it is used as a value."""
@@ -458,25 +491,70 @@ class _Inference:
         seen.add(c)
         return any(fq == base or self._inherits(fq, base, seen) for fq in self.idx.bases(c))
 
-    def _resolve(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str | None:
-        """The canonical name a Name/Attribute chain refers to, or None when it is a runtime value."""
+    def _resolve(self, node: ast.AST, local: set[str], me: tuple[str, str] | None, raw: bool = False) -> str | None:
+        """The canonical name a Name/Attribute chain refers to, or None when it is a runtime value. A name
+        through a class the code subverts (or a class name bound again) is a runtime value too, unless
+        raw: the name as written (what an assignment over it replaces)."""
+        raw = raw or self._raw
         if isinstance(node, ast.Name):
             if me and node.id == me[0]:
                 return f"self:{me[1]}"
             if node.id in local:
                 return None
+            if node.id in self._rebound_classes and not raw:
+                return None                                    # a class name bound again: which one is it?
             hit = self.mod.aliases.get(node.id) or self.idx._star_lookup(self.mod, node.id, 0)
             if hit:
                 return self.idx.canon(hit)
             return f"builtins.{node.id}" if node.id in _BUILTINS else None
         if isinstance(node, ast.Attribute):
-            base = self._resolve(node.value, local, me)
+            base = self._resolve(node.value, local, me, raw)
             if base is None:
                 return None
+            cls = base[5:] if base.startswith("self:") else base
+            if (cls in self._untrusted or (cls, node.attr) in self._untrusted_members) and not raw:
+                return None                                    # Safe.save on a class the code subverts
             if base.startswith("self:"):
-                return self.idx.method(base[5:], node.attr)
+                return self.idx.method(cls, node.attr)
             return self.idx.canon(f"{base}.{node.attr}")
         return None
+
+    def _config_strings(self, node: ast.AST, local: set[str], me: tuple[str, str] | None,
+                        depth: int) -> list[str] | None:
+        """Every string in a configuration value the scan can read: literals (dicts, lists, tuples) and
+        module-level names bound once to one, in the module that binds them; a name outside the scanned
+        code (`logging.INFO`, `sys.stdout`) holds no name to look up. None when any part is unknown (a
+        call, a local, `**rest`)."""
+        if depth > 8:
+            return None
+        if isinstance(node, ast.Constant):
+            return [node.value] if isinstance(node.value, str) else []
+        if isinstance(node, ast.Dict):
+            if any(k is None for k in node.keys):
+                return None
+            parts: list[ast.AST] = [*[k for k in node.keys if k is not None], *node.values]
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            parts = list(node.elts)
+        elif _dotted(node):
+            fq = self._resolve(node, local, me)
+            if fq is None and isinstance(node, ast.Name) and node.id not in local:
+                fq = f"{self.mod.name}.{node.id}"              # a module-level name of this module
+            if fq is None:
+                return None
+            mod, _, name = fq.rpartition(".")
+            if mod in self.idx.modules and (value := self.idx.module_values(mod).get(name)) is not None:
+                return self._home(mod)._config_strings(value, set(), None, depth + 1)
+            tops = {m.split(".")[0] for m in self.idx.modules}
+            return [] if fq.split(".")[0] not in tops and self.idx.excluded_module(fq) is None else None
+        else:
+            return None
+        out: list[str] = []
+        for p in parts:
+            got = self._config_strings(p, local, me, depth + 1)
+            if got is None:
+                return None
+            out += got
+        return out
 
     def _namespace(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str | None:
         """The module or class a Name/Attribute chain names, else None."""
@@ -514,6 +592,9 @@ def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             for n in node.names:
                 b.seen[n].add(None)
+        for obj, name, _ in _attr_writes(node):
+            if isinstance(obj, ast.Name) and name in ("__class__", None):
+                b.seen[obj.id].add(None)                       # x.__class__ = Other: x is no longer typed
 
 
 def _set_from_outside(tree: ast.Module) -> set[str]:
@@ -534,14 +615,261 @@ def _set_from_outside(tree: ast.Module) -> set[str]:
 
 
 def _attrs_set(node: ast.AST, first: str | None) -> set[str]:
-    """The attribute names one statement or call sets on an object other than `first` (the method's self):
-    `obj.x = ...`, `obj.x += ...`, `setattr(obj, "x", ...)`."""
-    targets = node.targets if isinstance(node, ast.Assign) else \
-        [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
-    out = {x.attr for t in targets for x in ast.walk(t) if isinstance(x, ast.Attribute)
-           and isinstance(x.ctx, ast.Store) and not (isinstance(x.value, ast.Name) and x.value.id == first)}
-    if isinstance(node, ast.Call) and _dotted(node.func) in ("setattr", "builtins.setattr") and len(node.args) >= 2:
-        name = node.args[1]
-        if isinstance(name, ast.Constant) and isinstance(name.value, str):
-            out.add(name.value)
+    """The attribute names one node sets on an object other than `first` (the method's self): `obj.x = ...`,
+    `obj.x += ...`, `del obj.x`, `setattr(obj, "x", ...)`; and on any object, self too, the reflective
+    writes (`object.__setattr__(self, "x", v)`, `self.__dict__["x"] = v`), which skip the plain bindings
+    the scan types, and `obj.x.__class__ = ...`, which retypes what obj.x holds."""
+    out: set[str] = set()
+    for obj, name, reflective in _attr_writes(node):
+        if name == "__class__" and isinstance(obj, ast.Attribute):
+            out.add(obj.attr)
+        if name and (reflective or not (isinstance(obj, ast.Name) and obj.id == first)):
+            out.add(name)
     return out
+
+
+# ---- classes whose construction or identity the code can alter: their inferred types are not trusted ----
+
+_SUBVERTED: weakref.WeakKeyDictionary[_Index, tuple[frozenset[str], frozenset[tuple[str, str]]]] = \
+    weakref.WeakKeyDictionary()
+# dunders a class carries as data: writing one does not change what the class makes or looks up
+_DATA_DUNDERS = frozenset({"__doc__", "__module__", "__qualname__", "__name__", "__annotations__",
+                           "__signature__", "__text_signature__", "__slots__", "__match_args__"})
+# metaclass methods that decide what calling the class, or looking a name up on it, gives
+_META_HOOKS = ("__call__", "__new__", "__getattr__", "__getattribute__")
+
+
+def subverted(idx: _Index) -> frozenset[str]:
+    """The scanned classes whose inferred type the scan does not trust (with their subclasses): code can
+    make `Cls(...)`, `Cls.m` or an instance's class something else. A custom `__new__` (one that does not
+    just return `super().__new__(cls, ...)`), a scanned metaclass with `__call__`, `__new__`,
+    `__getattr__` or `__getattribute__` (or one the scan cannot see into), a class decorator that may
+    return another class, a module-level name of the class bound more than once (`Safe = Repo`, an
+    import over it, `global Safe`), a write of a dunder on the class (`Leaf.__bases__ = ...`) or of a
+    computed name (`setattr(Safe, name, v)`), and `self.__class__ = ...` in its methods. A `__class__`
+    or `__bases__` write the scan cannot place distrusts every class. Calls on such a receiver are
+    name-matched (unresolved), never trusted. (A method replaced or deleted is subverted_members.)"""
+    return _subversions(idx)[0]
+
+
+def subverted_members(idx: _Index) -> frozenset[tuple[str, str]]:
+    """(class, method name) for each method code replaces or deletes on a scanned class, for the class
+    and its subclasses: `Safe.save = len`, `del Safe.save` (Safe().save is then a base's save),
+    `setattr(Safe, "save", v)`, `self.save = v` in a method; a subclass with its own save is not changed.
+    A replacement that is a scanned function
+    or a lambda is not one: its code is read where it is (an entrypoint, or the sink as a value)."""
+    return _subversions(idx)[1]
+
+
+def _subversions(idx: _Index) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    got = _SUBVERTED.get(idx)
+    if got is None:
+        direct: set[str] = set()
+        members: set[tuple[str, str]] = set()
+        everything = False
+        for mod in idx.modules.values():
+            everything |= _Subversions(idx, mod, direct, members).run()
+        classes = frozenset(idx.classes) if everything else \
+            frozenset(direct | {s for c in direct for s in idx.subclasses(c)})
+        # a subclass that defines (or inherits from elsewhere) its own m is not changed by a write on c
+        got = classes, frozenset({(s, m) for c, m in members for s in [c, *idx.subclasses(c)]
+                                  if s == c or idx.method(s, m) == idx.method(c, m)})
+        _SUBVERTED[idx] = got
+    return got
+
+
+class _Subversions:
+    """The classes one module subverts (into `found`); run() is True when it subverts one it cannot place."""
+
+    def __init__(self, idx: _Index, mod: _Module, found: set[str], members: set[tuple[str, str]]) -> None:
+        self.idx, self.mod, self.found, self.members = idx, mod, found, members
+        self.inf = _Inference(idx, mod, raw=True)
+        self.tops = {m.split(".")[0] for m in idx.modules}
+        self.everything = False
+        self.values: dict[int, ast.expr] = {}                  # assigned attribute target -> its value
+        self.methods = {id(self.idx.funcs[m].node): cid for cid, info in idx.classes.items()
+                        if info["module"] == mod.name for m in info["methods"].values()}
+
+    def _fq(self, node: ast.AST) -> str | None:
+        return self.inf._resolve(node, set(), None) if _dotted(node) else None
+
+    def run(self) -> bool:
+        for cid, info in self.idx.classes.items():
+            if info["module"] == self.mod.name and self._altered(info["node"]):
+                self.found.add(cid)
+        rebound = rebound_class_names(self.idx, self.mod)
+        for name in rebound:
+            if f"{self.mod.name}.{name}" in self.idx.classes:  # class Safe, then Safe = Repo
+                self.found.add(f"{self.mod.name}.{name}")
+        for cid, info in self.idx.classes.items():             # class Leaf(Safe) on a rebound name
+            if info["module"] == self.mod.name and any(
+                    (_dotted(b.value if isinstance(b, ast.Subscript) else b) or ".").split(".")[0] in rebound
+                    for b in info["bases"]):
+                self.found.add(cid)
+        self._writes(self.mod.tree, {})
+        return self.everything
+
+    def _altered(self, node: ast.ClassDef) -> bool:
+        """The class statement itself lets the class be something else: __new__, metaclass, decorator."""
+        new = next((st for st in node.body if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and st.name == "__new__"), None)
+        if new is not None and not _returns_made(new, "__new__"):
+            return True
+        for k in node.keywords:
+            if k.arg == "metaclass" and not self._plain_meta(k.value):
+                return True
+        return not all(self._keeps_class(d) for d in node.decorator_list)
+
+    def _foreign(self, fq: str | None) -> bool:
+        """fq names something outside the scanned code: the standard library, builtins or a third-party
+        package (not an excluded module, nor an unknown name in a scanned one)."""
+        return fq is not None and fq not in self.idx.funcs and fq not in self.idx.classes \
+            and fq not in self.idx.modules and self.idx.excluded_module(fq) is None \
+            and fq.split(".")[0] not in self.tops
+
+    def _plain_meta(self, node: ast.AST) -> bool:
+        """A metaclass that makes classes as `type` does: a foreign one, or a scanned one whose hooks
+        (through its scanned bases) only hand on to `super()` / `type`."""
+        fq = self._fq(node)
+        if fq not in self.idx.classes:
+            return self._foreign(fq)
+        for c in self.idx.mro(fq) or [fq]:
+            for name in _META_HOOKS:
+                m = self.idx.classes[c]["methods"].get(name)
+                fn = self.idx.funcs[m].node if m else None
+                if fn is not None and not (name in ("__call__", "__new__") and _returns_made(fn, name)):
+                    return False
+        return all(b is not None and (b in self.idx.classes or self._foreign(b))
+                   for c in self.idx.mro(fq) or [fq] for b in self.idx._base_names(c))
+
+    def _keeps_class(self, d: ast.expr) -> bool:
+        """A class decorator that returns the class it is given: a standard-library or third-party one, or
+        a scanned function every return of which gives back its parameter (`@register`), or a factory
+        whose every return is such a nested function (`@register("name")`)."""
+        f = d.func if isinstance(d, ast.Call) else d
+        fq = self._fq(f)
+        if fq in self.idx.funcs:
+            fn = self.idx.funcs[fq].node
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return False
+            return _factory_of_identity(fn) if isinstance(d, ast.Call) else _returns_param(fn)
+        return self._foreign(fq)
+
+    def _writes(self, node: ast.AST, me: dict[str, str]) -> None:
+        """Writes that alter a class, walked with the enclosing methods' first parameters (me: name -> class)."""
+        for child in ast.iter_child_nodes(node):
+            inner = me
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cls = self.methods.get(id(child))
+                inner = {**me, child.args.args[0].arg: cls} if cls and child.args.args else me
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
+                for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
+                    self.values[id(t)] = child.value
+            value = self.values.get(id(child)) if isinstance(child, ast.Attribute) else \
+                child.args[2] if isinstance(child, ast.Call) and len(child.args) > 2 \
+                and _dotted(child.func) in ("setattr", "builtins.setattr") else None
+            for obj, name, _ in _attr_writes(child):
+                self._write(obj, name, me, value)
+            self._writes(child, inner)
+
+    def _write(self, obj: ast.expr, name: str | None, me: dict[str, str], value: ast.expr | None = None) -> None:
+        cls = me.get(obj.id) if isinstance(obj, ast.Name) else None
+        fq = cls or self._fq(obj)
+        if name == "__class__":
+            if fq in self.idx.classes:
+                self.found.add(fq)                             # self.__class__ = Other, Safe.__class__ = M
+            elif not isinstance(obj, (ast.Name, ast.Attribute)):
+                self.everything = True                         # f().__class__ = Other: which object?
+            return                                             # a local or attribute: untyped where it is
+        if fq in self.idx.classes and name and not name.startswith("__") and (
+                isinstance(value, ast.Lambda) or (value is not None and self._fq(value) in self.idx.funcs)):
+            return          # Repo.save = fake: a function the scan reads (an entrypoint, or the sink as a value)
+        if fq in self.idx.classes:
+            # a dunder that shapes the class (Leaf.__bases__ = ...) or a computed name, written on the
+            # class: the class; a method of it (or an override in a subclass), written on the class or on
+            # self (an instance attribute shadows the method): that method; a plain data attribute
+            # (self.x = v, Cls.count += 1) is neither
+            dunder = name is not None and name.startswith("__") and name.endswith("__")
+            if not cls and (name is None or dunder and name not in _DATA_DUNDERS):
+                self.found.add(fq)
+            elif name is not None and not dunder and (
+                    self.idx.method(fq, name) or self.inf._subclasses_overriding(fq, name)):
+                self.members.add((fq, name))
+        elif fq in self.idx.modules:
+            for cid in self.idx.classes:                       # ops.Safe = Repo, setattr(ops, name, v)
+                if cid.rpartition(".")[0] == fq and (name is None or cid == f"{fq}.{name}"):
+                    self.found.add(cid)
+        elif name == "__bases__" and fq is None:
+            self.everything = True                             # x.__bases__ = ...: which class?
+
+
+_REBOUND: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()
+
+
+def rebound_class_names(idx: _Index, mod: _Module) -> frozenset[str]:
+    """The names in mod that name a scanned class but are bound more than once at module scope (`class
+    Safe` then `Safe = Repo`, `from a import Safe` then `Safe = Repo`, `global Safe`): the scan cannot
+    tell which binding a use sees, so it resolves them to nothing (a runtime value)."""
+    per = _REBOUND.setdefault(idx, {})
+    if mod.name not in per:
+        raw = _Inference(idx, mod, raw=True)
+        per[mod.name] = frozenset(
+            name for name, n in _module_binds(mod.tree).items() if n > 1 and (
+                raw._resolve(ast.Name(name, ast.Load()), set(), None) in idx.classes
+                or f"{mod.name}.{name}" in idx.classes))
+    return per[mod.name]
+
+
+def _module_binds(tree: ast.Module) -> collections.Counter[str]:
+    """How many times each name is bound at module scope (`global name` in a function counts too)."""
+    binds: collections.Counter[str] = collections.Counter()
+    for n in _own_nodes(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            binds[n.id] += 1
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            binds[n.name] += 1
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            binds.update((a.asname or a.name).split(".")[0] for a in n.names if a.name != "*")
+        elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and n.name:
+            binds[n.name] += 1
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Global):
+            binds.update({x: 2 for x in n.names})
+    return binds
+
+
+def _returns_made(fn: ast.AST, hook: str) -> bool:
+    """Every return of a `__new__` (or metaclass `__call__`) is `super().<hook>(...)` or `X.<hook>(cls, ...)`
+    on its own first parameter: it gives what the class would have made anyway."""
+    args = getattr(fn, "args", None)
+    first = args.args[0].arg if isinstance(args, ast.arguments) and args.args else None
+    for node in _own_nodes(fn):
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return False
+        if isinstance(node, ast.Return) and node.value is not None:
+            v = node.value
+            if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == hook):
+                return False
+            sup = isinstance(v.func.value, ast.Call) and _dotted(v.func.value.func) == "super"
+            own = bool(v.args) and isinstance(v.args[0], ast.Name) and v.args[0].id == first
+            if not (sup or own):
+                return False
+    return True
+
+
+def _returns_param(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Every return of fn gives back its first parameter (a decorator that registers the class)."""
+    if not fn.args.args or isinstance(fn, ast.AsyncFunctionDef):
+        return False
+    first = fn.args.args[0].arg
+    rets = [n for n in _own_nodes(fn) if isinstance(n, ast.Return)]
+    return bool(rets) and all(isinstance(r.value, ast.Name) and r.value.id == first for r in rets) and \
+        not any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in _own_nodes(fn))
+
+
+def _factory_of_identity(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Every return of fn gives a function defined in it that returns its parameter (`@register("x")`)."""
+    inner = {n.name: n for n in fn.body if isinstance(n, ast.FunctionDef)}
+    rets = [n for n in _own_nodes(fn) if isinstance(n, ast.Return)]
+    return bool(rets) and all(isinstance(r.value, ast.Name) and r.value.id in inner
+                              and _returns_param(inner[r.value.id]) for r in rets)

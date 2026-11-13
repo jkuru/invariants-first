@@ -56,11 +56,19 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
                            file.relative_to(root).as_posix(), line, 1, str(root)))
     t = _Targets(_declared(idx, rid, med.sinks, "sink", out), _declared(idx, rid, med.doors, "door", out),
                  _declared(idx, rid, med.allow, "allow", out))
-    out += _bypasses(idx, rid, edges, entries, t, on_paths)
-    out += _Idioms(idx, rid, edges, sites, entries, t).findings(sites)
+    paths = _bypasses(idx, rid, edges, entries, t, on_paths)
+    out += paths + _one_per_site(paths, _Idioms(idx, rid, edges, sites, entries, t).findings(sites))
     if t.allowed:
         out += _unused_allows(idx, med, edges, sites, entries, t)
     return out
+
+
+def _one_per_site(paths: list[Finding], idioms: list[Finding]) -> list[Finding]:
+    """The idiom findings, less a name-matched call that a path finding already reports at the same call
+    site: `repo.save(x)` on an unknown receiver is one finding (the path, which names the method it
+    matched), not two."""
+    at = {(f.file, f.line, f.col) for f in paths if f.code == "unresolved/inferred-path"}
+    return [f for f in idioms if not (f.code == "unresolved/unknown-receiver" and (f.file, f.line, f.col) in at)]
 
 
 def _declared(idx: _Index, rid: str, paths: list[str], role: str, out: list[Finding]) -> set[str]:
@@ -203,14 +211,19 @@ class _Idioms:
         if _holds(self.idx, s.detail, self.trusted):
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"assigns over {s.detail}, which holds the sink or door, replacing it at run time", s)
+        fn, _, attr = s.detail.rpartition(".")
+        if fn in self.trusted and fn in self.idx.funcs and attr.startswith("__"):
+            return self._found("forbidden", "forbidden/monkeypatch",   # door.__code__ = other.__code__
+                               f"assigns over {s.detail}, replacing what the sink or door runs at run time", s)
         return None
 
     def _other(self, s: _Site) -> Finding | None:
         if s.what == "wrapped":
-            shown, _, fn = s.detail.partition("|")
+            shown, _, rest = s.detail.partition("|")
+            fn, _, how = rest.partition("|")             # how: inspect.unwrap(f), f.__closure__, f.__dict__
             return self._found("forbidden", "forbidden/unwrap",
-                               f"{shown or 'an object'}.__wrapped__ calls a guarded function without its guard",
-                               s) if self._unwraps_here(fn) else None
+                               f"{how or (shown or 'an object') + '.__wrapped__'} calls a guarded function "
+                               f"without its guard", s) if self._unwraps_here(fn) else None
         if s.what == "ref" and s.detail in self.t.sinks:
             return self._found("unresolved", "unresolved/sink-escapes",
                                f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
