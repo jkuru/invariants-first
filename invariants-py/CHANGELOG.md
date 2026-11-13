@@ -12,6 +12,9 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 
 ### Fix round 21 (follow-up)
 
+- **Malformed rule files are a `LoadError`, never a raw Python error:** a provider argument that is
+  not a path string (`args: {x: 1}`) raised `AttributeError`, and a target like `py:` or `py:.x`
+  raised importlib's `ValueError`.
 - **CEL subset: receiver-form `has()` is a syntax error** (`x.has(a)` used to parse, then leak an
   `IndexError` or `TypeError` at evaluation), and **`==` or `in` over a Mapping or record that raises
   while it is read is a `CelError`** with the cause only in `.detail` (it leaked the raw exception).

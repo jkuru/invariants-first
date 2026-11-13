@@ -66,6 +66,9 @@ def _read_paths(rule: Rule, reg: Registry, i: Any) -> Iterator[tuple[str, str]]:
         if head == "provider":
             prov = reg.providers.get(rest[0]) if rest else None
             for a, ap in ((prov.raw.get("args") or {}) if prov else {}).items():
+                if not isinstance(ap, str):
+                    raise LoadError(f"provider {rest[0]}: argument {a!r} must be a path string "
+                                    f"(e.g. args.account), not {type(ap).__name__}")
                 ah = ap.split(".")[0]
                 if ah in DEFAULT_NAMES:
                     yield ap, f"provider {rest[0]} argument {a}"

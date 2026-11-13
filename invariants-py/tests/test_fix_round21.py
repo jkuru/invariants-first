@@ -388,3 +388,26 @@ def test_propose_rules_treats_max_doors_null_as_absent(tmp_path):
         tool_propose_rules(tmp_path.resolve(), None, {"max_doors": None})
     except ToolError as e:
         assert "max_doors" not in str(e), e
+
+
+# --- after the loader split: malformed input is a LoadError, never a raw Python error -------------
+@pytest.mark.parametrize("target", ["py:", "py:.x", "py:a..b", "py:a.b.", "py:1x"])
+def test_a_malformed_py_target_is_a_load_error(target):
+    from invariants.errors import LoadError
+    from invariants.resolve import resolve
+    with pytest.raises(LoadError, match="dotted Python name"):
+        resolve(target)
+
+
+def test_a_non_string_provider_argument_is_a_load_error(monkeypatch):
+    import sys
+    import invariants as inv
+    from invariants.errors import LoadError
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).parent / "fixtures"))
+    r19 = __import__("round19")
+    prov = {"count": {"type": "int", "from": "py:round19.count", "args": {"v": 1}}}
+    bind = {"prev": "old_self.size", "c": "provider.count"}
+    doc = r19.guard_doc("G-OLD", "Box.grow", "c > 100", timing="post_effect", bind=bind, providers=prov)
+    with inv.isolated():
+        with pytest.raises(LoadError, match="must be a path string"):
+            inv.load(doc, install=False)

@@ -12,6 +12,8 @@ def resolve(target: str) -> Any:
     if not str(target).startswith("py:"):
         raise LoadError(f"unsupported target {target!r}")
     parts = target[3:].split(".")
+    if not all(p.isidentifier() for p in parts):
+        raise LoadError(f"target {target!r}: not a dotted Python name (py:package.module.function)")
     for i in range(len(parts), 0, -1):
         try:
             obj = importlib.import_module(".".join(parts[:i]))
