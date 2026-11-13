@@ -26,6 +26,9 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 - **`BufferedExporter` recovers from a `close(timeout)` that timed out** (the flusher clears itself on
   exit, so `start()` restarts it and `drain()` empties it), and a `BaseException` from the target no
   longer leaves a phantom pending count.
+- **`from invariants.scan import *` exports the names it did before the split,** through an `__all__`,
+  and no modules: without it the submodules (`text`, `sql`, `checks`, ...) were bound over a caller's
+  own names. The stdlib modules `scan.py` used to leak (`re`, `sys`, `ast`, ...) are no longer exported.
 - **`Field()` bounds in a TypedDict are pinned on Python 3.11.** Pydantic refuses `typing.TypedDict`
   before Python 3.12, and the stdlib fallback read bounds only as attributes, missing those that
   `Field(le=...)` keeps in `.metadata`: loosening `Field(le=500)` to `le=600` was not a weakening there.

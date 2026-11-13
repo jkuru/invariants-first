@@ -206,3 +206,13 @@ def test_the_stdlib_schema_reads_pydantic_field_bounds():
     props = stdlib_json_schema(_Transfer)["properties"]
     assert props["amount"] == {"type": "integer", "exclusiveMinimum": 0, "maximum": 500}
     assert props["note"] == {"type": "string", "maxLength": 20}
+
+
+def test_scan_star_import_exports_the_old_names_and_no_modules():
+    import types
+    ns: dict = {}
+    exec("from invariants.scan import *", ns)
+    names = {k for k in ns if k != "__builtins__"}
+    assert not [k for k in names if isinstance(ns[k], types.ModuleType)]
+    assert {"scan", "graph", "mediations", "to_sarif", "to_text", "Finding", "Report", "sql_writes"} <= names
+    assert not names & {"text", "sql", "checks", "walker", "re", "sys"}

@@ -38,7 +38,12 @@ from .sql import _KEYWORDS, _SQL_COMMENT, _SQL_FORMS, _TABLE, sql_writes
 from .text import to_text
 from .walker import _REFLECTIVE, _Walker
 
-# No __all__: scan.py had none, so `from invariants.scan import *` keeps exporting the same public names.
+# `from invariants.scan import *` exports exactly the public names scan.py's star import gave (it had no
+# __all__), and no modules: without this list it would bind the submodules (text, sql, checks, ...) over
+# a caller's own names. The stdlib modules scan.py leaked (re, sys, ast, ...) are not re-exported.
+__all__ = ["Any", "DYNAMIC_IMPORT", "Finding", "Graph", "Iterable", "Iterator", "KINDS", "Mediation", "REFLECTION",
+           "Report", "SKIP_DIRS", "ScanConfigError", "SqlWrite", "annotations", "anywhere", "door_only", "graph",
+           "iter_sources", "mediations", "scan", "sql_writes", "to_sarif", "to_text"]
 
 
 # defined here, not in .mediation: `inv validate` labels its errors by this function's module ("scan:")
