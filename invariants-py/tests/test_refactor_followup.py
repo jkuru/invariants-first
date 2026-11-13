@@ -187,3 +187,22 @@ def test_a_pyproject_edit_under_another_case_is_judged_against_the_real_file(tmp
     monkeypatch.setattr(pathlib.Path, "read_text", case_sensitive)
     edit = {"file_path": "PyProject.toml", "old_string": "exclude = []", "new_string": "exclude = ['*']"}
     assert hooks._touches_invariants_table(tmp_path / "PyProject.toml", edit) is True
+
+
+from typing import Annotated, TypedDict  # noqa: E402
+
+from pydantic import Field  # noqa: E402
+
+
+class _Transfer(TypedDict):
+    amount: Annotated[int, Field(gt=0, le=500)]
+    note: Annotated[str, Field(max_length=20)]
+
+
+def test_the_stdlib_schema_reads_pydantic_field_bounds():
+    """The fallback for a TypedDict pydantic refuses (typing.TypedDict before Python 3.12) pins Field()
+    bounds, so loosening Field(le=500) to le=600 is still judged a weakening there."""
+    from invariants.lock.pinning import stdlib_json_schema
+    props = stdlib_json_schema(_Transfer)["properties"]
+    assert props["amount"] == {"type": "integer", "exclusiveMinimum": 0, "maximum": 500}
+    assert props["note"] == {"type": "string", "maxLength": 20}

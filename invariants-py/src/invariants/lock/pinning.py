@@ -292,7 +292,13 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
 def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
     array = typing.get_origin(base) in _ARRAYS or base in _ARRAYS
     out: dict[str, Any] = {}
+    # pydantic's Field(le=...) keeps its bounds as annotated_types objects in .metadata, not as
+    # attributes: this fallback is what pins a TypedDict pydantic refuses (typing.TypedDict < 3.12)
+    flat: list[Any] = []
     for m in meta:
+        inner = getattr(m, "metadata", None)
+        flat.extend([m, *inner] if isinstance(inner, list) else [m])
+    for m in flat:
         for attr, kw in _BOUND_ATTRS.items():
             if getattr(m, attr, None) is not None:
                 out[kw] = _plain(getattr(m, attr))
