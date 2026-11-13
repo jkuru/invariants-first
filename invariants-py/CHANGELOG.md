@@ -26,6 +26,10 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 - **`BufferedExporter` recovers from a `close(timeout)` that timed out** (the flusher clears itself on
   exit, so `start()` restarts it and `drain()` empties it), and a `BaseException` from the target no
   longer leaves a phantom pending count.
+- **The pretool hook judges a pyproject edit on a case-sensitive filesystem.** An Edit of
+  `PyProject.toml` (no such file on Linux) was judged against an empty file and allowed; it is now
+  judged against the `pyproject.toml` its name matches ignoring case, so emptying the scan excludes
+  is blocked on every platform (it failed only in Linux CI).
 - **`Registry.standing()` calls an overridden `verify`** again (a subclass or patch); `reg.sink`
   pickles and deep-copies again.
 - **Patching moved internals:** the packages bind their own imports, so patching a name on the old

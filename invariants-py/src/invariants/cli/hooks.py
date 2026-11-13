@@ -321,11 +321,20 @@ def _edited_text(tool_input: dict[str, Any], before: str) -> str | None:
 
 
 def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) -> bool:
-    """An edit of pyproject.toml that changes its [tool.invariants] tables (the scan roots and excludes)."""
+    """An edit of pyproject.toml that changes its [tool.invariants] tables (the scan roots and excludes).
+
+    The file is read under the name given or, when no file has that exact name, under one that matches
+    it ignoring case: on a case-insensitive filesystem `PyProject.toml` is pyproject.toml, and judging
+    it as an empty file there would miss the edit."""
     try:
         before = path.read_text()
     except OSError:
         before = ""
+        try:
+            twin = next((p for p in path.parent.iterdir() if p.name.casefold() == path.name.casefold()), None)
+            before = twin.read_text() if twin is not None else ""
+        except OSError:
+            pass
     after = _edited_text(tool_input, before)
     if after is None:
         return "invariants" in json.dumps(tool_input)

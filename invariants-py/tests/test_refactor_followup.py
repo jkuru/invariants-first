@@ -171,3 +171,19 @@ def test_a_base_exception_in_the_target_leaves_no_phantom_pending():
     finally:
         threading.excepthook = old
     assert b.running is False and b.pending == 0 and b.failed == 1
+
+
+def test_a_pyproject_edit_under_another_case_is_judged_against_the_real_file(tmp_path, monkeypatch):
+    """On a case-sensitive filesystem (Linux CI) PyProject.toml does not exist; the hook reads the
+    pyproject.toml it matches ignoring case, so emptying [tool.invariants.scan] exclude is still seen."""
+    from invariants.cli import hooks
+    (tmp_path / "pyproject.toml").write_text("[tool.invariants.scan]\nexclude = []\n")
+    real = pathlib.Path.read_text
+
+    def case_sensitive(self, *a, **k):
+        if self.name not in {p.name for p in self.parent.iterdir()}:
+            raise FileNotFoundError(self)
+        return real(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "read_text", case_sensitive)
+    edit = {"file_path": "PyProject.toml", "old_string": "exclude = []", "new_string": "exclude = ['*']"}
+    assert hooks._touches_invariants_table(tmp_path / "PyProject.toml", edit) is True
