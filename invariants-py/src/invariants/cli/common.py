@@ -7,7 +7,7 @@ import pathlib
 import sys
 from typing import Callable
 
-from .. import lockfile, scan as scanner
+from .. import lock, scan as scanner
 from ..errors import LoadError
 
 OK, FAILED, USAGE, UNRESOLVED, ABLATED = 0, 1, 2, 3, 4
@@ -55,16 +55,16 @@ def _captured(fn: Callable[[argparse.Namespace], int], ns: argparse.Namespace) -
     return code, buf.getvalue().strip()
 
 
-def _print_changes(changes: list[lockfile.Change], err: bool = False) -> None:
+def _print_changes(changes: list[lock.Change], err: bool = False) -> None:
     emit = _err if err else _out
     for c in changes:
         emit(f"  {c}")
 
 
-def _compare(fn: Callable[[], list[lockfile.Change]], lock_path: pathlib.Path) -> list[lockfile.Change]:
+def _compare(fn: Callable[[], list[lock.Change]], lock_path: pathlib.Path) -> list[lock.Change]:
     """Run a lock comparison; a stored lock malformed below the shapes read() checks is a LockError."""
     try:
         return fn()
     except (TypeError, AttributeError, KeyError, ValueError) as e:
-        raise lockfile.LockError(f"{lock_path}: malformed lock: cannot compare it with the rule file "
+        raise lock.LockError(f"{lock_path}: malformed lock: cannot compare it with the rule file "
                                  f"({type(e).__name__}: {e}); re-create it with `inv lock`") from e

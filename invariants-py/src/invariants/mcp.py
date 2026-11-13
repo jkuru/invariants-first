@@ -58,9 +58,30 @@ def _inside(server_root: pathlib.Path, base: pathlib.Path, given: str, what: str
     return path
 
 
+def _opt_str(args: dict[str, Any], key: str) -> str | None:
+    """A string argument, None when absent, null or empty; ToolError for any other type (an argument
+    of the wrong type is never read as absent, which would fall back to a default path)."""
+    v = args.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ToolError(f"{key} must be a string, not {type(v).__name__}")
+    return v or None
+
+
+def _opt_bool(args: dict[str, Any], key: str) -> bool:
+    """A boolean argument, False when absent or null; ToolError for any other type."""
+    v = args.get(key)
+    if v is None:
+        return False
+    if not isinstance(v, bool):
+        raise ToolError(f"{key} must be a boolean, not {type(v).__name__}")
+    return v
+
+
 def _root(server_root: pathlib.Path, args: dict[str, Any]) -> pathlib.Path:
-    given = args.get("root")
-    root = _inside(server_root, server_root, given, "root") if isinstance(given, str) and given else server_root
+    given = _opt_str(args, "root")
+    root = _inside(server_root, server_root, given, "root") if given else server_root
     if root == pathlib.Path(root.anchor):
         raise ToolError(f"project root {root} is the filesystem root; start inv-mcp with --root at a project")
     if not root.is_dir():
@@ -70,10 +91,10 @@ def _root(server_root: pathlib.Path, args: dict[str, Any]) -> pathlib.Path:
 
 def _rule_file(root: pathlib.Path, args: dict[str, Any], default: pathlib.Path | None,
                server_root: pathlib.Path) -> pathlib.Path:
-    given = args.get("rules")
-    if isinstance(given, str) and given:
+    given = _opt_str(args, "rules")
+    if given:
         path = _inside(server_root, root, given, "rules")
-    elif default is not None and not args.get("root"):
+    elif default is not None and not _opt_str(args, "root"):
         path = default                                  # the server's own --rules: its operator chose it
     else:
         found = next((root / n for n in RULE_FILES if (root / n).is_file()), root / RULE_FILES[0])
@@ -112,6 +133,9 @@ def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None
         if proj in seen or not py.is_file():
             continue
         seen.add(proj)
+        if not py.resolve().is_relative_to(server_root):     # a symlink to a file outside --root
+            raise ToolError(f"{py} resolves to {py.resolve()}, outside the server's --root {server_root}; a "
+                            f"tool reads only inside it (start inv-mcp with a wider --root)")
         for d, what in ((proj, "the project root (nearest pyproject.toml)"), (proj / "src", "the default src/")):
             if d.exists() and not d.resolve().is_relative_to(server_root):
                 raise ToolError(f"{what} {d} resolves to {d.resolve()}, outside the server's --root {server_root}; "
@@ -276,8 +300,8 @@ def _rule_summary(raw: dict[str, Any]) -> dict[str, Any]:
 def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
     rule_file = _rule_file(root, args, default_rules, server_root)
-    ident = args.get("id")
-    if not isinstance(ident, str) or not ident:
+    ident = _opt_str(args, "id")
+    if not ident:
         raise ToolError("explain needs an id: a rule id (R-1) or a finding id from scan (R-1:bypass:app/x.py:12)")
     rule_id = ident.split(":", 1)[0]
     raw = _rule_doc(rule_file, rule_id)
@@ -335,9 +359,9 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
         raise ToolError("max_doors must be a non-negative integer")
     target = root / RULE_FILES[0]                        # where `inv init` would write; never written here
     given = _source_roots(server_root, root, args)
-    graph_arg = args.get("graphify")
-    graph_path = (str(_inside(server_root, root, graph_arg, "graphify")) if isinstance(graph_arg, str) and graph_arg
-                  else None)
+    graph_arg = _opt_str(args, "graphify")
+    graph_path = str(_inside(server_root, root, graph_arg, "graphify")) if graph_arg else None
+    no_graphify = _opt_bool(args, "no_graphify")
     exclude = _strs(args, "exclude")
     _settings_inside(server_root, target)
     try:
@@ -349,7 +373,7 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
         for r in [*roots, *map(pathlib.Path, scan_roots)]:
             _inside(server_root, root, str(r), "source root")
         found = bootstrap.discover(root, roots, exclude)
-        graph = None if args.get("no_graphify") else graphify.find(root, graph_path)
+        graph = None if no_graphify else graphify.find(root, graph_path)
         if graph is not None:                            # the default graphify-out/graph.json may be a symlink
             _inside(server_root, root, str(graph), "graphify graph")
         scan_exclude = cli._exclude(argparse.Namespace(exclude=exclude), target)
@@ -357,7 +381,7 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
         text = bootstrap.render(found)
         with tempfile.TemporaryDirectory(prefix="inv-propose-") as d:
             draft = pathlib.Path(d) / RULE_FILES[0]
-            draft.write_text(text)
+            draft.write_text(text, encoding="utf-8")
             doc = cli.read_document(draft)
             from . import scan as scanner
             report = scanner.scan(doc, scan_roots, scan_exclude)

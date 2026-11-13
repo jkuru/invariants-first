@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Any
 
-from .. import lockfile
+from .. import lock
 from .commands import cmd_check
 from .common import ALLOW_WEAKENING_ENV, DEFAULT_FILES, OK, _captured, _err
 
@@ -18,7 +18,7 @@ from .common import ALLOW_WEAKENING_ENV, DEFAULT_FILES, OK, _captured, _err
 WEAKENING_FLAGS = ("--accept-weakening", "--allow-weakening")
 WEAKENING_SWITCHES = (*WEAKENING_FLAGS, ALLOW_WEAKENING_ENV)
 
-PROTECTED = (lockfile.LOCK_NAME, "pyproject.toml")
+PROTECTED = (lock.LOCK_NAME, "pyproject.toml")
 # what a shell command may do with a protected file and still pass the hook: read it
 READ_COMMANDS = frozenset({"cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "jq", "diff",
                            "ls", "stat", "cmp", "cd", "pushd", "popd", "pwd", "echo", "printf", "true", "false",
@@ -242,7 +242,7 @@ def _lock_dir(cwd: str | None) -> bool:
     if not cwd:
         return False
     here = pathlib.Path(cwd)
-    return any((d / lockfile.LOCK_NAME).exists() for d in (here, *here.parents))
+    return any((d / lock.LOCK_NAME).exists() for d in (here, *here.parents))
 
 
 def _shell_writes(command: str, cwd: str | None = None) -> str | None:
@@ -271,9 +271,9 @@ def _shell_writes(command: str, cwd: str | None = None) -> str | None:
         for words, redirects in segments:
             texts = [*words, *(t for _, t in redirects)]
             if any("$" in w for w in texts) and not _reads_only(words, redirects):
-                return named[0] if named else lockfile.LOCK_NAME
+                return named[0] if named else lock.LOCK_NAME
     if _lock_dir(cwd) and any(_computed_target(words, redirects) for words, redirects in segments):
-        return lockfile.LOCK_NAME
+        return lock.LOCK_NAME
     return None
 
 
@@ -327,18 +327,18 @@ def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) ->
     it ignoring case: on a case-insensitive filesystem `PyProject.toml` is pyproject.toml, and judging
     it as an empty file there would miss the edit."""
     try:
-        before = path.read_text()
+        before = path.read_text(encoding="utf-8")
     except OSError:
         before = ""
         try:
             twin = next((p for p in path.parent.iterdir() if p.name.casefold() == path.name.casefold()), None)
-            before = twin.read_text() if twin is not None else ""
+            before = twin.read_text(encoding="utf-8") if twin is not None else ""
         except OSError:
             pass
     after = _edited_text(tool_input, before)
     if after is None:
         return "invariants" in json.dumps(tool_input)
-    return not lockfile.same(_invariants_table(before), _invariants_table(after))
+    return not lock.same(_invariants_table(before), _invariants_table(after))
 
 
 def _pretool(event: dict[str, Any]) -> int:
@@ -349,9 +349,9 @@ def _pretool(event: dict[str, Any]) -> int:
     files = [pathlib.Path(os.path.realpath(os.path.join(cwd, str(tool_input[k]))))
              for k in ("file_path", "path", "notebook_path") if tool_input.get(k)]
     written = _shell_writes(command, cwd)
-    lock, pyproject = lockfile.LOCK_NAME.casefold(), "pyproject.toml"   # a case-insensitive filesystem
-    if any(f.name.casefold() == lock for f in files) or written == lockfile.LOCK_NAME:
-        _err(f"invariants: blocked a direct edit of {lockfile.LOCK_NAME}. The lock is written only by "
+    lock_name, pyproject = lock.LOCK_NAME.casefold(), "pyproject.toml"   # a case-insensitive filesystem
+    if any(f.name.casefold() == lock_name for f in files) or written == lock.LOCK_NAME:
+        _err(f"invariants: blocked a direct edit of {lock.LOCK_NAME}. The lock is written only by "
              f"`inv lock` or `inv check --relock`, which refuse a weakening; edit invariants.yaml or the "
              f"code, then run one of them.")
         return 2

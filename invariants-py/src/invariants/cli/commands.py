@@ -5,16 +5,17 @@ import argparse
 import json
 import os
 import pathlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-from .. import lockfile, scan as scanner, status_report
-from ..errors import LoadError
+from .. import lock, scan as scanner, status_report
+from ..errors import CoverageError, LoadError
 from ..loader import load, read_document, schema_path
 from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
                      _err, _out, _print_changes, _rule_file)
 from .git_base import _base_step
-from .project import _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings, source_dirs
+from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
+                      source_dirs)
 
 if TYPE_CHECKING:
     from ..doors import DoorsFound
@@ -26,10 +27,18 @@ def _schema_errors(doc: Any) -> list[str] | None:
         import jsonschema
     except ImportError:
         return None
-    schema = json.loads(schema_path().read_text())
+    schema = json.loads(schema_path().read_text(encoding="utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
     errs = sorted(validator.iter_errors(doc), key=lambda e: [str(p) for p in e.absolute_path])
     return [f"schema: {'/'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}" for e in errs]
+
+
+# the checks `inv validate` runs on the raw document besides the schema and the loader, each with the
+# label its problems are printed under (`lockfile: R-1: applies_to pattern ...`)
+VALIDATE_CHECKS: tuple[tuple[str, Callable[[dict[str, Any]], Any]], ...] = (
+    ("scan", scanner.mediations),
+    ("lockfile", lock.expand_applies_to),
+)
 
 
 def cmd_validate(a: argparse.Namespace) -> int:
@@ -45,11 +54,11 @@ def cmd_validate(a: argparse.Namespace) -> int:
         _err("note: jsonschema is not installed; schema check skipped (the loader checks still run)")
     else:
         problems += schema
-    for check in (scanner.mediations, lockfile.expand_applies_to):
+    for label, check in VALIDATE_CHECKS:
         try:
             check(doc)
         except (LoadError, scanner.ScanConfigError, KeyError, TypeError) as e:
-            problems.append(f"{check.__module__.rsplit('.', 1)[-1]}: {e}")
+            problems.append(f"{label}: {e}")
     notes: list[str] = []
     with _import_path(path, a.path), isolated():
         try:
@@ -72,7 +81,7 @@ def cmd_validate(a: argparse.Namespace) -> int:
 def update_artifacts(path: pathlib.Path) -> list[str]:
     """Rewrite each stale `artifact: FILE#sha256:...` digest in the rule file in place. Returns what changed."""
     import hashlib
-    text, changed = path.read_text(), []
+    text, changed = path.read_text(encoding="utf-8"), []
     for raw in read_document(path).get("rules") or []:
         for enf in (raw.get("enforcers") or []) if isinstance(raw, dict) else []:
             art = enf.get("artifact") if isinstance(enf, dict) else None
@@ -89,7 +98,7 @@ def update_artifacts(path: pathlib.Path) -> list[str]:
                 text = text.replace(old, new)
                 changed.append(f"{raw.get('id')}: {rel} sha256 {old[:12]}... -> {new[:12]}...")
     if changed:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     return changed
 
 
@@ -101,29 +110,29 @@ def cmd_lock(a: argparse.Namespace) -> int:
         raise Usage("--accept-weakening re-pins the lock; it cannot be combined with --check")
     if a.update_artifacts:
         _report_updated_artifacts(path, a.accept_weakening)
-    lock_path = pathlib.Path(a.lock) if a.lock else path.with_name(lockfile.LOCK_NAME)
+    lock_path = pathlib.Path(a.lock) if a.lock else path.with_name(lock.LOCK_NAME)
     doc = read_document(path)
     fresh, types = _fresh_lock(a, path, doc)
     stored: dict[str, Any] | None = None
     if lock_path.exists() or a.check:
         try:
-            stored = lockfile.read(lock_path)
-        except lockfile.LockVersionError:
+            stored = lock.read(lock_path)
+        except lock.LockVersionError:
             raise
         except LoadError as e:
             if a.check:
                 _err(f"stale: {e}")
                 return FAILED
             raise
-    changes: list[lockfile.Change] = []
+    changes: list[lock.Change] = []
     header = ""
     if stored is not None:
-        version = lockfile.check_version(stored, lock_path)
-        damaged = lockfile.schema_problems(stored) if version >= lockfile.LOCK_VERSION else []
+        version = lock.check_version(stored, lock_path)
+        damaged = lock.schema_problems(stored) if version >= lock.LOCK_VERSION else []
         if a.check and _stale_form(version, damaged, lock_path):
             return FAILED
         changes, header = (_migration(stored, version, doc, fresh, types, lock_path)
-                           if version < lockfile.LOCK_VERSION
+                           if version < lock.LOCK_VERSION
                            else _against_stored(stored, damaged, fresh, types, path, lock_path))
     if a.check:
         return _check_result(changes, path, lock_path)
@@ -141,13 +150,13 @@ def _report_updated_artifacts(path: pathlib.Path, accept_weakening: bool) -> Non
 
 
 def _fresh_lock(a: argparse.Namespace, path: pathlib.Path,
-                doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str, lockfile.Typer | None]]:
+                doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str, lock.Typer | None]]:
     """The lock the rule file pins now and its clause types, with the app imported from this checkout."""
     with _import_path(path, a.path), isolated() as reg:
         load(path)
-        fresh = lockfile.build(doc, path.resolve().parent,
-                               scan_settings(a, path) if lockfile.mediated(doc) else None)
-        types = lockfile.clause_types(reg)
+        fresh = lock.build(doc, path.resolve().parent,
+                               scan_settings(a, path) if lock.mediated(doc) else None)
+        types = lock.clause_types(reg)
         for w in outside_roots(path, doc, a.path):
             _err(w)
     return fresh, types
@@ -156,9 +165,9 @@ def _fresh_lock(a: argparse.Namespace, path: pathlib.Path,
 def _stale_form(version: int, damaged: list[str], lock_path: pathlib.Path) -> bool:
     """`inv lock --check` on a stored lock of an older version or with a damaged schemas table: say
     why it is stale (True), else False."""
-    if version < lockfile.LOCK_VERSION:
+    if version < lock.LOCK_VERSION:
         _err(f"stale: {lock_path} is lock version {version}; this invariants writes version "
-             f"{lockfile.LOCK_VERSION}, which pins resolved types and stores each schema once "
+             f"{lock.LOCK_VERSION}, which pins resolved types and stores each schema once "
              f"without prose. Run `inv lock` once to migrate it (it refuses if a rule was "
              f"weakened since the old pin).")
         return True
@@ -172,12 +181,12 @@ def _stale_form(version: int, damaged: list[str], lock_path: pathlib.Path) -> bo
 
 
 def _migration(stored: dict[str, Any], version: int, doc: dict[str, Any], fresh: dict[str, Any],
-               types: dict[str, lockfile.Typer | None],
-               lock_path: pathlib.Path) -> tuple[list[lockfile.Change], str]:
+               types: dict[str, lock.Typer | None],
+               lock_path: pathlib.Path) -> tuple[list[lock.Change], str]:
     """The changes from an older-version stored lock to the fresh one, and the header that shows them."""
-    changes = _compare(lambda: lockfile.migrate_v1(stored, doc) if version == 1
-                       else lockfile.migrate_v2(stored, fresh, types), lock_path)
-    header = (f"migrating {lock_path} from lock version {version} to {lockfile.LOCK_VERSION}: "
+    changes = _compare(lambda: lock.migrate_v1(stored, doc) if version == 1
+                       else lock.migrate_v2(stored, fresh, types), lock_path)
+    header = (f"migrating {lock_path} from lock version {version} to {lock.LOCK_VERSION}: "
               + ("rule hashes compared" if version == 1 else
                  "rule semantics, effects, signatures and provider fields compared; resolved "
                  "types and schemas are re-pinned in the new form (review the lock diff)"))
@@ -185,22 +194,22 @@ def _migration(stored: dict[str, Any], version: int, doc: dict[str, Any], fresh:
 
 
 def _against_stored(stored: dict[str, Any], damaged: list[str], fresh: dict[str, Any],
-                    types: dict[str, lockfile.Typer | None], path: pathlib.Path,
-                    lock_path: pathlib.Path) -> tuple[list[lockfile.Change], str]:
+                    types: dict[str, lock.Typer | None], path: pathlib.Path,
+                    lock_path: pathlib.Path) -> tuple[list[lock.Change], str]:
     """The changes from a current-version stored lock (a damaged schemas table left out) to the fresh one."""
     if damaged:
         _out(f"note: {lock_path}: the schemas table is damaged and is rewritten; changes to the "
              f"schemas it held cannot be shown:")
         for d in damaged:
             _out(f"  {d}")
-    old = lockfile.without_damaged_schemas(stored) if damaged else stored
+    old = lock.without_damaged_schemas(stored) if damaged else stored
     default = (scan_settings(argparse.Namespace(root=[], exclude=[]), path)
                if "scan" not in old and "scan" in fresh else None)
-    changes = _compare(lambda: lockfile.changes(old, fresh, types, default), lock_path)
+    changes = _compare(lambda: lock.changes(old, fresh, types, default), lock_path)
     return changes, f"{lock_path}: {len(changes)} change(s) against the stored lock"
 
 
-def _check_result(changes: list[lockfile.Change], path: pathlib.Path, lock_path: pathlib.Path) -> int:
+def _check_result(changes: list[lock.Change], path: pathlib.Path, lock_path: pathlib.Path) -> int:
     """`inv lock --check`: fresh (informational changes listed), or stale with the changes listed."""
     weak = [c for c in changes if c.weakened]
     # a prose edit (statement, why, owner, class) or a signature spelled differently is recorded in
@@ -221,7 +230,7 @@ def _check_result(changes: list[lockfile.Change], path: pathlib.Path, lock_path:
 
 
 def _write_lock(a: argparse.Namespace, lock_path: pathlib.Path, stored: dict[str, Any] | None,
-                fresh: dict[str, Any], changes: list[lockfile.Change], header: str) -> int:
+                fresh: dict[str, Any], changes: list[lock.Change], header: str) -> int:
     """Show the changes and write the fresh lock, unless one weakens a rule without --accept-weakening."""
     weak = [c for c in changes if c.weakened]
     if header and (changes or stored.get("lock_version") != fresh["lock_version"]):   # type: ignore[union-attr]
@@ -231,10 +240,10 @@ def _write_lock(a: argparse.Namespace, lock_path: pathlib.Path, stored: dict[str
         _err(f"refused: {len(weak)} change(s) weaken a rule; the lock was not written. Review them and re-run "
              f"`inv lock --accept-weakening` to accept them.")
         return FAILED
-    if stored is not None and not changes and lockfile.same(stored, fresh):
+    if stored is not None and not changes and lock.same(stored, fresh):
         _out(f"fresh: {lock_path} (unchanged)")
         return OK
-    lock_path.write_text(lockfile.dumps(fresh))
+    lock_path.write_text(lock.dumps(fresh), encoding="utf-8")
     _out(f"wrote {lock_path}: {len(fresh['rules'])} rule(s), {len(fresh['targets'])} target(s), "
          f"{len(fresh['providers'])} provider(s), {len(fresh['contracts'])} contract(s), "
          f"{len(fresh['schemas'])} schema(s)"
@@ -246,7 +255,14 @@ def cmd_verify(a: argparse.Namespace) -> int:
     path = _rule_file(a.rulefile)
     with _import_path(path, a.path), isolated() as reg:
         _load_app(path, a.imports)
-        ok, problems = status_report.verify_result(reg)
+        # the guards checked are those in the targets' packages and in each --import's package: a
+        # guard on a targetless rule is found only in what is imported
+        modules = reg.scope() | {m.split(".")[0] for m in a.imports}
+        try:
+            reg.verify(sorted(modules))
+            ok, problems = True, []
+        except CoverageError as e:
+            ok, problems = False, str(e).split("; ")
         n = sum(1 for r in reg.rules.values() if r.target is not None)
         for w in outside_roots(path, read_document(path), a.path):
             _err(w)
@@ -273,7 +289,7 @@ def cmd_scan(a: argparse.Namespace) -> int:
     else:
         text = scanner.to_text(report)
     if a.output:
-        pathlib.Path(a.output).write_text(text + "\n")
+        pathlib.Path(a.output).write_text(text + "\n", encoding="utf-8")
     else:
         _out(text)
     kinds = {f.kind for f in report.findings}
@@ -317,7 +333,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     found = bootstrap.discover(project, roots, a.exclude)
     if not a.no_doors:
         found.doors = _init_doors(a, path, project)
-    path.write_text(bootstrap.render(found))
+    path.write_text(bootstrap.render(found), encoding="utf-8")
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
         _out(f"  {line}")
@@ -358,10 +374,10 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
 def cmd_check(a: argparse.Namespace) -> int:
     """Everything CI, pre-commit and an agent hook need, with one exit code."""
     path = _rule_file(a.rulefile)
-    lock_path = path.with_name(lockfile.LOCK_NAME)
+    lock_path = path.with_name(lock.LOCK_NAME)
     doc = read_document(path)
     raw_rules = [r for r in doc.get("rules") or [] if isinstance(r, dict)]
-    targeted = any((r.get("subject") or {}).get("target") for r in raw_rules)
+    importable = _importable(doc, a.imports)
     mediated = any(r.get("mediation") for r in raw_rules)
     failed = False
     _out(f"inv check: {path}")
@@ -391,12 +407,13 @@ def cmd_check(a: argparse.Namespace) -> int:
                                                      scan_settings(ns, path) if mediated else None),
                                argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
-    if targeted:
+    if importable:
         code, text = _captured(cmd_verify, argparse.Namespace(rulefile=str(path), path=a.path, imports=a.imports,
                                                               json=False))
         step("guards", code, text)
     else:
-        _out("  skip  guards: no rule guards a function yet")
+        _out("  skip  guards: nothing to import (no target, edge target or python contract; a guard on a "
+             "targetless rule is checked with --import MODULE)")
     if mediated:
         code, text = _captured(cmd_scan, argparse.Namespace(rulefile=str(path), root=a.root, exclude=a.exclude,
                                                             format="text", output=None))
@@ -405,6 +422,22 @@ def cmd_check(a: argparse.Namespace) -> int:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")
     return FAILED if failed else OK
+
+
+def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:
+    """What `inv verify` imports from this rule file, in order: the targets, rule targets and edge
+    targets it resolves, the python and openapi-app contract modules, and the --import modules. Verify
+    checks guards and registry verifiers (an installed FastAPI app) only in what is imported, so with
+    none of these it can find nothing."""
+    targets = doc.get("targets")
+    keys: list[Any] = list(targets) if isinstance(targets, dict) else []
+    for r in doc.get("rules") or []:
+        if not isinstance(r, dict):
+            continue
+        subject = r.get("subject")
+        keys.append(subject.get("target") if isinstance(subject, dict) else None)
+        keys.extend(e.get("target") for e in r.get("enforcers") or [] if isinstance(e, dict))
+    return [*(k for k in keys if isinstance(k, str) and k), *_contract_modules(doc), *imports]
 
 
 def _lock_step(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path,

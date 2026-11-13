@@ -128,7 +128,7 @@ def _input_schema(schema: Any) -> dict[str, Any]:
     if hasattr(schema, "model_json_schema"):
         out: Any = schema.model_json_schema()
     elif isinstance(schema, type):
-        from ..lockfile import json_schema
+        from ..lock import json_schema
         out = json_schema(schema)
     else:
         raise TypeError(f"reply_tool needs a pydantic model, dataclass, TypedDict or {{field: type}} map, "

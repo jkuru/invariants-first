@@ -4,17 +4,14 @@ Every name this module defined before the lock was split into stages, public and
 re-exported from the stage that now holds it: lock.contracts, lock.pinning, lock.schema_diff,
 lock.cel_mono, lock.rule_diff and lock (the orchestrator). They are the same objects, so patching a
 name here does not change what the stages read: patch the stage module. New code imports
-`invariants.lock`. The only name defined here is expand_applies_to (see its docstring).
+`invariants.lock`.
 """
 from __future__ import annotations
-
-from typing import Any
 
 from .errors import LoadError
 from .lock import (DUMP_WIDTH, _ENTRY_SECTIONS, _ENTRY_SHAPES, _V3_ONLY, LockError, LockVersionError, _comparable,
                    _contract_users, _dump, _refs_in, changes, check_version, diff, dumps, migrate_v1, migrate_v2,
                    read, schema_problems, validate, without_damaged_schemas)
-from .lock import pinning as _pinning
 from .lock.cel_mono import (_BOOL_CALLS, _BOOL_OPS, _CMP, _FALSE, _INT64, _INTEGRAL, _MACRO_CALLS, _MIRROR, _NEGATE,
                             _OP_STRENGTH, _TOTAL_CALLS, Typer, _Canon, _clause_key, _describe_site, _disjuncts,
                             _error_sites, _int_lit, _lit, _magnitude, _mask, _new_sites_text, _nonneg, _num,
@@ -31,7 +28,7 @@ from .lock.pinning import (_ARRAYS, _BOUND_ATTRS, _DATA_KEYS, _JSON_TYPES, _LEN_
                            _constrains, _doc_digests, _has_constraints, _is_pydantic, _is_schema_class,
                            _is_typeddict, _json_object, _json_type, _local_def, _openapi_app, _openapi_app_pin,
                            _openapi_file, _openapi_operations, _operation_ids, _provider_pin, _python_ref,
-                           _signature_pin, _type_schema, build, contract_hash, json_schema, mediated,
+                           _signature_pin, _type_schema, build, contract_hash, expand_applies_to, json_schema, mediated,
                            normalize_semantic, param_schemas, resolved_schema, rule_hash, rule_semantics, scan_pin,
                            signature_types, stdlib_json_schema, strip_prose)
 from .lock.rule_diff import (_bad_changes, _clauses, _direction_change, _enforcer_key, _entry_changes, _field_change,
@@ -45,10 +42,3 @@ from .lock.schema_diff import (_FLIPPED, _NAME_SEGMENTS, _PIN_ARRAYS, _PIN_MAPS,
                                _types, constraint_weakening, pin_json_schema)
 from .resolve import resolve
 from .scan import anywhere
-
-
-def expand_applies_to(doc: dict[str, Any]) -> dict[str, list[str]]:
-    """lock.pinning.expand_applies_to, defined under this module's name: `inv validate` labels each
-    problem with the module of the check that found it (`lockfile: L-3: applies_to pattern ...`), so
-    the check it runs from here keeps that label."""
-    return _pinning.expand_applies_to(doc)

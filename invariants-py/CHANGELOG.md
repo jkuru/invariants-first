@@ -10,6 +10,30 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 20 (cli, mcp, docs)
+
+- **`inv check` runs verify whenever there is something to import,** not only when a rule names
+  `subject.target`: a `targets:` entry, an edge enforcer's target, a python, pydantic or openapi-app
+  contract, or `--import MODULE`. Before, a file without a `subject.target` skipped the guards step,
+  so a FastAPI app's route verifiers, edge guards and the guards of targetless rules were never
+  checked. With nothing to import the step says so (`skip  guards: nothing to import ...`).
+- **`inv verify --import MODULE` checks the guards in MODULE's package,** besides the targets'
+  packages: a guard on a targetless rule is found only in what is imported.
+- **`inv mcp` refuses a `pyproject.toml` that is a symlink to a file outside `--root`,** and a tool
+  argument of the wrong type (`graphify`, `root`, `rules`, `id` not a string; `no_graphify` not a
+  boolean) is a tool error instead of being read as absent and falling back to a default path.
+- **`inv validate` labels its checks from a table** (`scan: ...`, `lockfile: ...`, unchanged text)
+  instead of from each check's `__module__`, so `invariants.lockfile.expand_applies_to` is now the
+  same object as `invariants.lock.expand_applies_to`. The CLI and `integrations.anthropic` import
+  `invariants.lock`, not the `lockfile` compatibility name.
+- **The CLI and `inv mcp` read and write their text files as UTF-8** whatever the locale (the lock,
+  a rule file `--update-artifacts` rewrites, `inv init`'s draft, `inv scan --output`, pyproject.toml,
+  the files the agent hook reads, `git show` output for `--base`): under an ISO-8859-1 locale the lock
+  write raised `UnicodeEncodeError` on a non-Latin-1 character, and a base lock was decoded mangled.
+- **Docs and tests:** api.md lists `exporters.ON_FULL`, `pydantic.closed`, `json_fields` and
+  `MODEL_ATTR`, and the anthropic constants; a test checks `invariants.__all__` against api.md;
+  layering tests cover guard/, registry/ and cli/.
+
 ### Fixes after the layered refactor
 
 - **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose
@@ -42,7 +66,8 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
   module (`invariants.lockfile.X`, `invariants.guard.current`, `invariants.cli.cmd_*`,
   `invariants.scan._check_rule`) no longer reaches the code that uses it: patch the stage module
   (`invariants.lock.pinning`, `invariants.guard.plan`, ...). The private registry globals
-  `_warned_unarmed`, `_warned_armed` and `_pytest_sessions` are attributes of `registry._SESSION`.
+  `_warned_unarmed`, `_warned_armed` and `_pytest_sessions` are now the attributes `warned_unarmed`,
+  `warned_armed` and `pytest_sessions` of `registry._SESSION`.
 
 ### Refactor: guard/ package
 
@@ -75,8 +100,9 @@ registry: it reads ablation through `invariants._scan_hooks`, which `invariants/
   (the Registry, verify, standing, using, isolated, ablated), `reviews.py` (Handoff, the review
   stores), `session.py` (process-wide state), `coverage.py` (verify and standing helpers). Every
   `invariants.registry.<name>` still imports. The module globals `_pytest_sessions`,
-  `_warned_unarmed`, `_warned_armed` and `_noted` are now attributes of one locked
-  `registry._SESSION` (a `ProcessSession`, with a fresh lock in a forked child).
+  `_warned_unarmed`, `_warned_armed` and `_noted` are now the attributes `pytest_sessions`,
+  `warned_unarmed`, `warned_armed` and `noted` of one locked `registry._SESSION` (a `ProcessSession`,
+  with a fresh lock in a forked child).
 - `MemoryReviews.items` is a snapshot (a tuple taken under the store's lock), and iterating
   `Registry.sink` walks a snapshot taken under the registry's lock, so recording from another
   thread never breaks a reader. `verify()` and `standing()` read one loaded generation.

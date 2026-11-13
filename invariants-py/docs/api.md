@@ -1,7 +1,8 @@
 # Public API
 
 `import invariants as inv` exposes exactly the names below: the package's `__all__`, which a test
-checks. The tables are generated from the installed package (the signatures and the first paragraph
+checks (tests/test_api_doc.py: every name in `__all__` has a row in the `invariants` tables, and every
+row names a name in `__all__`). The tables are generated from the installed package (the signatures and the first paragraph
 of each docstring), so they match the code. The integrations' public surface is each module's
 `__all__`.
 
@@ -234,6 +235,10 @@ dataclass for a pydantic model, so the core parse, retry, abstain and edge logic
 | `resolve_ref(ref: Any) -> Any` | function | 'package.module:Class' -> the object: import the module, then walk attributes. No eval. |
 | `resolve_contract(spec: Any, name: str = '?') -> type[_pd.BaseModel]` | function | A {type: pydantic, ref: 'module:Class'} contract -> the closed model class, or LoadError. |
 | `check_contracts(source: str \| pathlib.Path \| dict[str, Any], reg: Registry \| None = None) -> dict[str, type[_pd.BaseModel]]` | function | Resolve every pydantic contract in a rule file and check the rules that name one. |
+| `closed(model: type[_pd.BaseModel]) -> type` | function | The closed-schema dataclass for a pydantic model (cached; the same class for the same model). |
+| `json_fields(model: type[_pd.BaseModel], inst: _pd.BaseModel) -> dict[str, Any]` | function | Every field of a model instance in its JSON form (`Field(exclude=True)` fields too). |
+| `MODEL_ATTR` | `str` | currently `'__inv_pydantic__'`: the attribute of a `closed()` schema that holds the pydantic model it wraps |
+
 ### `invariants.integrations.otel`
 
 One span per evaluation, named `invariant.<point>`, with `invariant.*` attributes (`rule_id`,
@@ -283,6 +288,7 @@ with buffered:                       # or app = FastAPI(lifespan=exporters.lifes
 | `BufferedExporter.close(timeout: float \| None = None) -> bool` | method | Flush the queue, then stop the flusher; idempotent. True when it stopped within timeout. |
 | `BufferedExporter.dropped`, `.failed`, `.exported`, `.pending`, `.running` | attributes | Counts of dropped, failed and exported events; events queued now; whether the flusher runs. |
 | `lifespan(*exporters: BufferedExporter) -> Callable[[Any], AbstractAsyncContextManager[None]]` | function | An ASGI lifespan that runs the exporters' flushers while the app runs (close in a worker thread). |
+| `ON_FULL` | `tuple[str, ...]` | currently `('drop_oldest', 'drop_new', 'block')`: the accepted `on_full` values |
 
 ### `invariants.integrations.anthropic`
 
@@ -307,6 +313,11 @@ llm = AnthropicModel(system="Answer with one JSON object.")      # or ReplayMode
 | `ChatModel.complete(prompt: str \| Sequence[Message], feedback: str \| None = None) -> str` | method | The reply text (with a reply tool, the tool call's input as JSON text). feedback None opens a new conversation; a text continues the current one (as a `tool_result` with `is_error: true` after a tool call). `acomplete` for an async body. |
 | `model_for(mode: str, trace=None, *, system: str \| None = None, model: str = DEFAULT_MODEL, **kw: Any) -> ChatModel \| None` | function | The model for `replay`, `record`, `anthropic`; `None` for `fake`. |
 | `ReplayMismatch`, `ConversationError`, `ModelRefusal` | class | A replayed request no recorded call matches (an AssertionError); feedback with no conversation to continue; a `refusal` stop reason. |
+| `MODES` | `tuple[str, ...]` | currently `('replay', 'record', 'anthropic', 'fake')`: the modes `model_for` takes |
+| `DEFAULT_MODEL` | `str` | currently `'claude-haiku-5-5'` |
+| `FEEDBACK_TEMPLATE` | `str` | the follow-up turn for a text reply that did not parse; `{feedback}` is the parse error |
+| `TOOL_FEEDBACK_TEMPLATE` | `str` | the same for a reply tool call; `{feedback}` and `{tool}` (the tool's name) |
+| `TOOL_CHOICE` | `dict` | currently `{'type': 'auto', 'disable_parallel_tool_use': True}`: the default `tool_choice` with `tool=` |
 
 ## `invariants.testing`
 
