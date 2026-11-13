@@ -28,9 +28,10 @@ def pool_leased(conn: sqlite3.Connection, pool_id: str) -> int:
     return store.leased(conn, pool_id)
 
 
-@inv.provider("pool_size")
+@inv.provider("pool_size", "current_size")
 def pool_size(conn: sqlite3.Connection, pool_id: str) -> int:
-    """The pool's size; raises NotFound, which the guard reports as a rule_error."""
+    """The pool's size, one row (R-20 as pool_size, R-22 as current_size); raises NotFound, which the
+    guard reports as a rule_error."""
     s = store.size(conn, pool_id)
     if s is None:
         raise NotFound(f"pool {pool_id} does not exist")
@@ -107,11 +108,6 @@ class ResizeService:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
-
-    @property
-    def sizes(self) -> dict[str, int]:
-        """Every pool's size (R-22 reads the current size of the pool being resized)."""
-        return store.all_sizes(self.conn)
 
     @contextlib.contextmanager
     def txn(self) -> Iterator["ResizeService"]:

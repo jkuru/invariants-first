@@ -43,7 +43,7 @@ def test_k1_guard_refuses_empty_span(store: Store, make_proposal: Callable[..., 
 
 def test_k1_trigger_refuses_raw_fact_without_evidence(store: Store) -> None:
     eid = store.add_entity("Acme Corp")
-    with pytest.raises(sqlite3.IntegrityError, match="K-1"):
+    with pytest.raises(sqlite3.IntegrityError, match=r"a fact needs an evidence span \(db constraint\)"):
         store.conn.execute("INSERT INTO facts (id, subject_id, predicate, object, object_kind, qualifier, status) "
                            "VALUES ('fact_raw', ?, 'acquired', 'x', 'literal', 'NONE', 'CHECKED')", (eid,))
 
@@ -81,7 +81,7 @@ def test_k8_facts_are_append_only(store: Store, make_proposal: Callable[..., Pro
     fid = store.ingest(make_proposal())
     for sql in ("UPDATE facts SET object = 'Shelbyville' WHERE id = ?", "DELETE FROM facts WHERE id = ?",
                 "DELETE FROM evidence WHERE fact_id = ?"):
-        with pytest.raises(sqlite3.IntegrityError, match="K-8"):
+        with pytest.raises(sqlite3.IntegrityError, match=r"is append-only \(db constraint\)"):
             store.conn.execute(sql, (fid,))
 
 

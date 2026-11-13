@@ -5,7 +5,7 @@ import pathlib
 import sqlite3
 
 SCHEMA_PATH = pathlib.Path(__file__).with_name("schema.sql")
-STORE_REFUSAL = "R-20:"       # the message the schema's triggers raise (the store's own check)
+STORE_REFUSAL = "(db constraint)"   # in the message the schema's triggers raise (the store's own check)
 
 
 def connect(path: str | pathlib.Path) -> sqlite3.Connection:
@@ -17,7 +17,7 @@ def connect(path: str | pathlib.Path) -> sqlite3.Connection:
 
 
 def apply_schema(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """Create the tables and the R-20 triggers on this connection (idempotent)."""
+    """Create the tables and the lease-capacity triggers on this connection (idempotent)."""
     conn.executescript(SCHEMA_PATH.read_text())
     return conn
 

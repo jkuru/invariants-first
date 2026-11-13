@@ -89,7 +89,7 @@ def test_the_bypass_really_bypasses(conn: sqlite3.Connection) -> None:
     service.create_pool(conn, "p1", "P1", 10)
     rogue.emergency_resize(conn, "p1", 1000)            # no approval, 100x growth: nothing at run time stops it
     assert store.size(conn, "p1") == 1000
-    with pytest.raises(sqlite3.IntegrityError, match="R-20"):
+    with pytest.raises(sqlite3.IntegrityError, match=r"pool lease capacity exceeded \(db constraint\)"):
         rogue.overbook(conn, "p1") or rogue.overbook(conn, "p1")
     with pytest.raises(inv.Rejected):                   # the door itself still works
         service.lease_slots(conn, "p1", 1, "x")

@@ -487,7 +487,9 @@ about 0.6 s to fact-pipeline (1.9 s against 1.3 s, +48%). In absolute terms that
 
 The FRICTION files report the cost on real targets. R-1's four clauses add about 42 µs to a 1 µs
 function. The fact ingest door costs about 240 µs guarded against 12 µs bare, because every
-provider runs on every call (the README's figure; this experiment did not re-measure it). At HTTP
+provider runs on every call (the README's figure; this experiment did not re-measure it; on
+2026-11-12, after an index fix in the app's store for the K-11 provider's query, it was about 125 µs
+guarded against 11 µs bare, see fact-pipeline's FRICTION.md item 3). At HTTP
 scale, about 2.5 ms per request, this is noise; on hot loops it is not.
 
 #### What it saved

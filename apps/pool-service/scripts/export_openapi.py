@@ -1,4 +1,8 @@
-"""Write openapi.json (the pool_api contract that invariants.lock pins). Run after any API change."""
+"""Print the app's OpenAPI document (or write it to the file given), for reading.
+
+The pool_api contract reads the live app (pool_service.openapi_app:app), so no file is pinned and none
+needs regenerating: run `inv lock` after an API change.
+"""
 from __future__ import annotations
 
 import json
@@ -8,8 +12,6 @@ import tempfile
 
 from pool_service.api import create_app
 
-OUT = pathlib.Path(__file__).resolve().parents[1] / "openapi.json"
-
 
 def render() -> str:
     with tempfile.TemporaryDirectory() as d:
@@ -18,5 +20,7 @@ def render() -> str:
 
 
 if __name__ == "__main__":
-    OUT.write_text(render())
-    print(f"wrote {OUT}", file=sys.stderr)
+    if len(sys.argv) > 1:
+        pathlib.Path(sys.argv[1]).write_text(render())
+    else:
+        sys.stdout.write(render())

@@ -8,15 +8,9 @@ from .models import ChunkInfo, Contradiction, Support
 from .store import Store
 
 
-@inv.provider("subject_known")
-def subject_known(store: Store, entity_id: str) -> bool:
-    """True when the resolver minted this subject id (K-18)."""
-    return store.entity_known(entity_id)
-
-
-@inv.provider("object_known")
-def object_known(store: Store, entity_id: str) -> bool:
-    """True when the resolver minted this object id (K-18)."""
+@inv.provider("subject_known", "object_known")
+def entity_known(store: Store, entity_id: str) -> bool:
+    """True when the resolver minted this entity id (K-18 reads it for the subject and the object)."""
     return store.entity_known(entity_id)
 
 

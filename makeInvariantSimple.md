@@ -914,7 +914,7 @@ Demonstrates how Invariant-First governs a classic **FastAPI + SQLite infrastruc
 - **Service Doors & Path Laws (`R-20`, `R-21`, `R-22`, `R-23`, `R-24`):**
   - `R-20`: Leases never exceed pool size (`leased + n > size` using `pool_leased` and `pool_size` providers), with `sink: "py:pool_service.store.insert_lease"` and `door: "py:pool_service.service.lease_slots"`.
   - `R-21`: Pool resize requires an `APPROVED` proposal matching `pool_id` and `new_size`, approved by someone other than `proposed_by` (two-person rule).
-  - `R-22`: No single resize grows a pool to more than $4\times$ its current size (`self.sizes[req.pool_id] > 0 && req.new_size > 4 * self.sizes[req.pool_id]`), checked `pre_effect` before `store.set_size`.
+  - `R-22`: No single resize grows a pool to more than $4\times$ its current size (`current > 0 && req.new_size > 4 * current`, where `current` is the `current_size` provider: one row for the pool being resized), checked `pre_effect` before `store.set_size`.
   - `R-23`: Pure structural door rule (`point: structure`) proving `store.set_size` and `store.insert_pool` are only ever called through `ResizeService.resize_door` and `create_pool`.
 - **SRE Triage Model (`R-7`):** `@inv.model_call` on `propose_cause` + `@inv.edge` on `remediate` + `sink: "py:pool_service.store.insert_remediation"`, ensuring the LLM never blames `OUT_OF_MEMORY`, `TIMEOUT`, or `BAD_INPUT` unless the kernel’s immutable `JobFacts` record agrees.
 

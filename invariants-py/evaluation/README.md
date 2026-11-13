@@ -59,5 +59,11 @@ The apps have changed since 2026-11-10 (the release that removed everything belo
 - P04's patch no longer applies: R-22 now refuses at the door before the write. `REBASED["P04"]`
   makes the same weakening (4x to 10x, with the falsifier edited to match) on the current rule.
 - P12's patch fails on context, so its text edits from `changes.py` are applied instead.
+- pool-service's `pool_api` contract now reads the live app (`{type: openapi, app: ...}`), so
+  `openapi.json` is gone and the P02 and P10 patches (which edit it) give way to their text edits.
+  R-22 reads the pool's size from the `current_size` provider, which `REBASED["P04"]` follows.
+- fact-pipeline's `models.PREDICATES` is derived from the `Literal`, so F12's edit of that line no
+  longer applies; `REBASED["F12"]` widens the `Literal` and K-4's list only. A re-run of P02, P04,
+  P10 and F12 on 2026-11-12 matched the published results.
 - B1 drops 29 of the pool-service tests and 37 of the fact-pipeline tests on the current apps
   (the published run dropped 31 and 43).

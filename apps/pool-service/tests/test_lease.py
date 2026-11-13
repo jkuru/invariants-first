@@ -41,7 +41,7 @@ def test_trigger_holds_when_door_is_ablated(conn: sqlite3.Connection) -> None:
     pid = pool(conn, 5)
     service.lease_slots(conn, pid, 3, "a")
     with inv.ablated("R-20"):
-        with pytest.raises(sqlite3.IntegrityError, match="R-20"):
+        with pytest.raises(sqlite3.IntegrityError, match=r"pool lease capacity exceeded \(db constraint\)"):
             service.lease_slots(conn, pid, 3, "b")
     assert store.leased(conn, pid) == 3
 
@@ -55,7 +55,7 @@ def test_unknown_pool_is_rule_error(conn: sqlite3.Connection) -> None:
 def test_trigger_refuses_shrink_below_leased(conn: sqlite3.Connection) -> None:
     pid = pool(conn, 5)
     service.lease_slots(conn, pid, 4, "a")
-    with pytest.raises(sqlite3.IntegrityError, match="R-20"):
+    with pytest.raises(sqlite3.IntegrityError, match=r"pool lease capacity exceeded \(db constraint\)"):
         store.set_size(conn, pid, 3)
 
 

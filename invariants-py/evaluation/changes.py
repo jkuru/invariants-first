@@ -262,17 +262,19 @@ def test_k7_guard_refuses_inverted_interval('''),
 
 # ---------------------------------------------------------------- re-based edits
 # The patches and edits above are the record of the published runs (2026-11-10). Since then the apps
-# changed (R-22 now refuses at the door before the write instead of rolling the write back), so P04's
-# text no longer exists. REBASED makes the same change against the current apps; run.py uses it only
-# when neither the patch nor the edits above apply, and says so in each result ("applied_by").
+# changed (R-22 now refuses at the door before the write instead of rolling the write back, and reads
+# the pool's size from the current_size provider; models.PREDICATES is derived from the Literal), so the
+# text of P04 and F12 no longer exists. REBASED makes the same change against the current apps; run.py
+# uses it only when neither the patch nor the edits above apply, and says so in each result
+# ("applied_by").
 REBASED = {
 "P04": (P, "C", [
     ("invariants.yaml",
      "statement: One resize never grows a pool to more than four times its current size.",
      "statement: One resize never grows a pool to more than ten times its current size."),
     ("invariants.yaml",
-     "req.new_size > 4 * self.sizes[req.pool_id]'",
-     "req.new_size > 10 * self.sizes[req.pool_id]'"),
+     "req.new_size > 4 * current'",
+     "req.new_size > 10 * current'"),
     ("tests/test_resize.py",
      '''    """Falsifier: 10 -> 50 is approved but breaks R-22; the door refuses before the write."""
     make_pool(client, "gpu-a", 10)
@@ -280,5 +282,24 @@ REBASED = {
      '''    """Falsifier: 10 -> 150 is approved but breaks R-22; the door refuses before the write."""
     make_pool(client, "gpu-a", 10)
     pid = propose(client, "gpu-a", 150)'''),
+]),
+
+"F12": (F, "B", [
+    ("src/fact_pipeline/models.py",
+     '''Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in",
+                    "NONE", "CANNOT_COMPLY"]''',
+     '''Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in", "founded_in",
+                    "NONE", "CANNOT_COMPLY"]'''),
+    ("invariants.yaml",
+     '''bad: '!(args.proposal.predicate in ["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in"])\'''',
+     '''bad: '!(args.proposal.predicate in ["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in", "founded_in"])\''''),
+    ("tests/test_store_rules.py",
+     "def test_k7_guard_refuses_inverted_interval(",
+     '''def test_founded_in_is_accepted(store: Store, make_proposal: Callable[..., Proposal]) -> None:
+    fid = store.ingest(make_proposal(predicate="founded_in", object="1999"))
+    assert store.status(fid) == "CHECKED"
+
+
+def test_k7_guard_refuses_inverted_interval('''),
 ]),
 }

@@ -78,10 +78,11 @@ def test_standing_without_scan(rules_loaded: inv.Registry) -> None:
     assert inv.standing("R-21", rules_loaded, scan=True) == ("held", [])
 
 
-def test_openapi_contract_is_current(app) -> None:
-    """openapi.json is the pool_api contract pinned in invariants.lock; regenerate with scripts/export_openapi.py."""
-    stored = json.loads((APP_ROOT / "openapi.json").read_text())
-    assert stored == json.loads(json.dumps(app.openapi(), sort_keys=True))
+def test_openapi_contract_app_is_the_served_app(app) -> None:
+    """The pool_api contract reads pool_service.openapi_app:app (inv lock pins its operations); it must
+    describe the same API as the app the service runs."""
+    from pool_service import openapi_app
+    assert openapi_app.app.openapi() == app.openapi()
 
 
 def test_rules_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
