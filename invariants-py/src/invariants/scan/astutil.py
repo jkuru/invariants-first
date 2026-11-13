@@ -75,6 +75,11 @@ def _locals(fn: ast.AST) -> set[str]:
     return names - glob
 
 
+def _params(args: ast.arguments) -> list[str]:
+    """The names a function or lambda takes as parameters."""
+    return [a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a is not None]
+
+
 def _own_nodes(fn: ast.AST) -> Iterator[ast.AST]:
     """The nodes of a function (or module) body, not descending into nested functions or classes."""
     stack = list(ast.iter_child_nodes(fn))
