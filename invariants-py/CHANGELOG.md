@@ -108,6 +108,20 @@ before its fix (checked by reverting the fixes).
   test on Python 3.14 and 3.11 pins that they never raise "deque mutated during iteration" under
   concurrent `record()` (a plain deque in the same probe does).
 
+### Refactor: cel/subset package
+
+- **`invariants.cel.subset` is a package** (it was one 965-line module): `lexer` (tokens, literal
+  ranges), `catalog` (function names and call shapes), `parser` (text to tree), `tree` (references,
+  reads), `data` (reading values, field selection), `equality` (CEL `==`, map lookup), `operators`
+  (arithmetic, ordering, `in`), `convert` (the conversions), `cost` (the budget, `matches()`),
+  `functions` (the built-ins), `evaluator` (the tree walk, the macros) and `program` (the backend).
+  The package re-exports every name the module had (bar its stdlib imports), and its classes keep
+  `__module__ == "invariants.cel.subset"`. `evaluate()` hands node kinds to a dispatch table and
+  `_convert()` target types to one; behaviour is unchanged (a differential fuzz of the old and new
+  evaluator over the conformance cases and random expressions and environments agrees on every
+  value, exception type, message and remaining budget). One exception, only at the recursion
+  limit: a tree about 500 levels deep can hit `RecursionError` one level sooner or later than before.
+
 ### Fix round 20 (follow-up)
 
 - **Every remaining text read and write is UTF-8:** the rule file read (`loader`), `inv init`'s source
