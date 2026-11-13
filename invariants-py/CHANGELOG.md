@@ -25,6 +25,16 @@ file), `project` (pyproject.toml, import and scan roots), `commands` (the `cmd_*
 dispatches and re-exports every name the module had. No behaviour change: `inv`, `inv-mcp` and
 `python -m invariants.cli` work as before, with the same arguments, help, output and exit codes.
 
+### Refactor: scan/ package
+
+`invariants/scan.py` is now the package `invariants/scan/`, split by stage: `sources` (which files),
+`indexer` (first pass), `inference` and `walker` (second pass: types, call edges, sites),
+`reachability` (path search), `checks` (findings per rule), `mediation` (rule-file fields), `sql`,
+`contracts` (shared types), `text` and `sarif` (output). `invariants.scan` re-exports the names
+`scan.py` had, so imports are unchanged; no behaviour changed. The scan no longer imports the
+registry: it reads ablation through `invariants._scan_hooks`, which `invariants/__init__.py` wires.
+`tests/test_layering_scan.py` checks that `scan/` never imports `guard`, `registry` or `cli`.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed

@@ -19,6 +19,11 @@ from .registry import (ErrorSpike, Handoff, JsonlReviews, MemoryReviews, Registr
                        verify, verify_coverage)
 from .snapshot import check_snapshot
 
+from . import _scan_hooks, registry as _registry   # the scan reads ablation through these hooks
+
+_scan_hooks.ablated = lambda: _registry.env_ablated() | set(_registry.GLOBAL_ABLATED)
+_scan_hooks.reached = lambda rule_id: _registry.note_ablation_reached(rule_id, via="scan")
+
 try:
     __version__ = _metadata.version("invariants-first")
 except _metadata.PackageNotFoundError:      # running from a source tree that is not installed
