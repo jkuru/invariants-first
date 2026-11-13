@@ -210,11 +210,12 @@ def test_a_real_graphify_graph_is_read_and_matched(tmp_path):
     src = SUPPORT_AGENT / "src"
     g = scan.graph([src])
     h = graphify.hints(REAL, g, [SUPPORT_AGENT, src])
-    assert h.nodes == 132 and h.matched >= 60 and len(set(h.community.values())) >= 5
+    # matched: the functions the snapshot names that the app still has (graph.py was rewritten after it)
+    assert h.nodes == 132 and h.matched >= 50 and len(set(h.community.values())) >= 5
     assert ("support_agent.admin.admin_goodwill", "support_agent.admin.goodwill_refund") in h.calls
     doc = json.loads(REAL.read_text())
     inferred = {(e["source"], e["target"]) for e in doc["links"] if e["confidence"] != "EXTRACTED"}
-    assert inferred and len(h.calls) == 11
+    assert inferred and len(h.calls) == 8          # 11 in the snapshot; graph.build and its 3 calls are gone
     plain = doors.discover([src])
     real = doors.discover([src], graph=REAL, project=SUPPORT_AGENT)
     assert [(d.doors, d.sinks, d.allow) for d in real.doors] == [(d.doors, d.sinks, d.allow) for d in plain.doors]

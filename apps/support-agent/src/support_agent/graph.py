@@ -1,20 +1,24 @@
-"""The agent graph: triage -> planner -> router -> tool executor, or human handoff.
+"""The agent: triage -> planner -> executor, or a human handoff.
 
-A small graph runner in the style of LangGraph: nodes are registered as function values and the
-router picks the next node from the state. The executor is an @inv.edge: it takes only a CheckedPlan,
-re-validates it against the closed schema and re-checks PLAN-1 on what it receives, so a forged plan
-or one changed after the planner checked it never reaches a tool.
+The steps are plain functions, so any agent framework can call them: run_ticket() calls them in
+order, and support_agent.langgraph_agent wires the same steps into a LangGraph StateGraph (the
+`langgraph` extra). The planner is an @inv.model_call (planner.plan_action) and the executor an
+@inv.edge (execute_plan): it takes only a CheckedPlan, re-validates it against the closed schema
+and re-checks PLAN-1 on what it receives, so a forged plan, or one changed after the planner checked
+it, never reaches a tool.
 """
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable
+from typing import Any
 
 import invariants as inv
 
 from .context import AgentContext
 from .planner import CheckedPlan, plan_action
 from .tools import TOOLS
+
+BILLING_WORDS = ("refund", "credit", "cancel", "charge")
 
 
 @dataclasses.dataclass
@@ -29,43 +33,29 @@ class State:
     trace: list[str] = dataclasses.field(default_factory=list)
 
 
-Node = Callable[[AgentContext, State], str | None]
+def topic_of(ticket: str) -> str:
+    """billing or other: only billing tickets reach the planner."""
+    t = ticket.lower()
+    return "billing" if any(w in t for w in BILLING_WORDS) else "other"
 
 
-class Graph:
-    def __init__(self) -> None:
-        self.nodes: dict[str, Node] = {}
-        self.start = ""
+@dataclasses.dataclass(frozen=True)
+class Planned:
+    """What the planner step produced: a checked plan, or why a person takes the ticket."""
 
-    def add_node(self, name: str, fn: Node) -> None:
-        self.nodes[name] = fn
-        self.start = self.start or name
-
-    def run(self, ctx: AgentContext, state: State, limit: int = 10) -> State:
-        node: str | None = self.start
-        while node is not None and limit:
-            state.trace.append(node)
-            node = self.nodes[node](ctx, state)
-            limit -= 1
-        return state
+    plan: CheckedPlan | None = None
+    review_id: str | None = None
+    handoff_reason: str | None = None
 
 
-def triage_node(ctx: AgentContext, state: State) -> str:
-    t = state.ticket.lower()
-    state.topic = "billing" if any(w in t for w in ("refund", "credit", "cancel", "charge")) else "other"
-    return "planner" if state.topic == "billing" else "handoff"
-
-
-def planner_node(ctx: AgentContext, state: State) -> str:
+def plan_step(ctx: AgentContext, ticket: str, customer_id: str) -> Planned:
+    """Run the planner (the model call); an escalation, route or rejection becomes a handoff."""
     try:
-        state.plan = plan_action(ctx, state.ticket, state.customer_id)
+        return Planned(plan=plan_action(ctx, ticket, customer_id))
     except (inv.Escalation, inv.Routed, inv.ReviewNotOpened) as e:
-        state.review_id, state.handoff_reason = getattr(e, "review_id", None), str(e)
-        return "handoff"
+        return Planned(review_id=getattr(e, "review_id", None), handoff_reason=str(e))
     except inv.Rejected as e:
-        state.handoff_reason = str(e)
-        return "handoff"
-    return "execute"
+        return Planned(handoff_reason=str(e))
 
 
 @inv.edge("PLAN-1")
@@ -82,37 +72,32 @@ def execute_plan(ctx: AgentContext, plan: CheckedPlan, customer_id: str) -> str:
     return tool(ctx, model(**args))
 
 
-def tool_executor_node(ctx: AgentContext, state: State) -> str:
-    assert state.plan is not None
+def act_step(ctx: AgentContext, plan: CheckedPlan, customer_id: str) -> tuple[str | None, str | None]:
+    """(the tool's result, None), or (None, why a person takes the ticket) when the edge or a door refuses."""
     try:
-        state.result = execute_plan(ctx, state.plan, state.customer_id)
+        return execute_plan(ctx, plan, customer_id), None
     except inv.InvariantError as e:
-        state.handoff_reason = str(e)
-        return "handoff"
-    return "done"
-
-
-def human_handoff_node(ctx: AgentContext, state: State) -> None:
-    state.result = None
-    return None
-
-
-def done_node(ctx: AgentContext, state: State) -> None:
-    return None
-
-
-def build() -> Graph:
-    g = Graph()
-    g.add_node("triage", triage_node)
-    g.add_node("planner", planner_node)
-    g.add_node("execute", tool_executor_node)
-    g.add_node("handoff", human_handoff_node)
-    g.add_node("done", done_node)
-    return g
+        return None, str(e)
 
 
 def run_ticket(ctx: AgentContext, ticket: str, customer_id: str) -> State:
-    return build().run(ctx, State(ticket, customer_id))
+    """One ticket through the steps; state.trace names the steps taken."""
+    s = State(ticket, customer_id)
+    s.trace.append("triage")
+    s.topic = topic_of(ticket)
+    if s.topic == "billing":
+        s.trace.append("planner")
+        planned = plan_step(ctx, ticket, customer_id)
+        s.plan, s.review_id, s.handoff_reason = planned.plan, planned.review_id, planned.handoff_reason
+        if s.plan is not None:
+            s.trace.append("execute")
+            s.result, s.handoff_reason = act_step(ctx, s.plan, customer_id)
+            if s.handoff_reason is None:
+                s.trace.append("done")
+                return s
+    s.trace.append("handoff")
+    s.result = None
+    return s
 
 
 def handle(ctx: AgentContext, ticket: str, customer_id: str) -> dict[str, Any]:

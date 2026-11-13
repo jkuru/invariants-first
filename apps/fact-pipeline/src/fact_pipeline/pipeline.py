@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 from typing import Any
 
@@ -9,7 +10,7 @@ import invariants as inv
 
 from . import providers as _providers  # noqa: F401  (registers the providers the rules bind)
 from .answer import compose_answer, render_answer
-from .context import bind
+from . import context
 from .extract import accept_fact, propose_fact
 from .fake_model import ModelClient
 from .models import ABSTAIN, NO_MORE, ChunkInfo, EvidenceSpan, Proposal, RetractionReport, SourceInfo
@@ -50,11 +51,20 @@ class Report:
 
 
 class Pipeline:
-    """Runs the stages against one store and one model client."""
+    """Runs the stages against one store and one model client.
+
+    The model calls read the store and the client as inv.Dependency values (context.STORE and
+    context.CLIENT): each stage that makes one binds this pipeline's (self.bound()), so two
+    pipelines in one thread or task never read each other's. The constructor also binds them for
+    the rest of the caller's context, for a model call made directly after building one."""
 
     def __init__(self, store: Store, client: ModelClient, owner: str = "team-knowledge") -> None:
         self.store, self.client, self.owner = store, client, owner
-        bind(store, client)
+        context.bind(store, client)
+
+    def bound(self) -> contextlib.AbstractContextManager[None]:
+        """This pipeline's store and client bound for a block: `with pipe.bound(): propose_fact(...)`."""
+        return context.bound(self.store, self.client)
 
     # --- intake and extraction --------------------------------------------------------------------
     def intake(self, uri: str, text: str, publisher: str, trust: str = "trusted",
@@ -65,17 +75,19 @@ class Pipeline:
         """Ask for facts one at a time until the model says there are no more."""
         out: list[Extracted] = []
         reviews: list[int] = []
-        for index in range(MAX_FACTS_PER_CHUNK):
-            try:
-                checked = propose_fact(chunk.id, chunk.text, chunk.source_hash, index)
-                reply = accept_fact(checked, chunk.id, chunk.source_hash)
-            except inv.InvariantError as e:          # escalated or refused: a person looks at it
-                reviews.append(self.store.add_review("extraction", {
-                    "chunk_id": chunk.id, "index": index, "error": str(e), "attempts": e.attempts}, rule=e.rule))
-                continue
-            if reply.predicate in (NO_MORE, ABSTAIN):
-                break
-            out.append(Extracted(chunk.id, reply.model_dump(mode="json"), checked.attempts))
+        with self.bound():
+            for index in range(MAX_FACTS_PER_CHUNK):
+                try:
+                    checked = propose_fact(chunk.id, chunk.text, chunk.source_hash, index)
+                    reply = accept_fact(checked, chunk.id, chunk.source_hash)
+                except inv.InvariantError as e:          # escalated or refused: a person looks at it
+                    reviews.append(self.store.add_review("extraction", {
+                        "chunk_id": chunk.id, "index": index, "error": str(e), "attempts": e.attempts},
+                        rule=e.rule))
+                    continue
+                if reply.predicate in (NO_MORE, ABSTAIN):
+                    break
+                out.append(Extracted(chunk.id, reply.model_dump(mode="json"), checked.attempts))
         return out, reviews
 
     def extract(self, source_id: str) -> tuple[list[Extracted], list[int]]:
@@ -207,8 +219,9 @@ class Pipeline:
         chunks = self.store.retrieve(question, k)
         ids = [c.id for c in chunks]
         try:
-            checked = compose_answer(question, ids, [{"id": c.id, "text": c.text} for c in chunks])
-            return {"status": "ANSWERED", **render_answer(checked, ids), "retrieved": ids}
+            with self.bound():
+                checked = compose_answer(question, ids, [{"id": c.id, "text": c.text} for c in chunks])
+                return {"status": "ANSWERED", **render_answer(checked, ids), "retrieved": ids}
         except inv.Escalation as e:
             return {"status": "NO_ANSWER", "text": "", "citations": [], "retrieved": ids, "reason": str(e)}
         except inv.Rejected as e:

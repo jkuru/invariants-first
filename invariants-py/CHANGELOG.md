@@ -151,6 +151,39 @@ Behaviour changes:
 - **Async review stores.** On async paths a review store with only `open()` has it run in a worker
   thread (`asyncio.to_thread`); `MemoryReviews` has an `aopen()` that opens on the loop.
 
+### Fix round 19 (agent frameworks)
+
+Tool calls, LangGraph and dependency injection for agents. New page:
+[docs/agent-frameworks.md](docs/agent-frameworks.md); [docs/models.md](docs/models.md) updated.
+Regression tests in `tests/test_integrations_anthropic.py` and the apps' tests; each failed with the
+change reverted. The three example apps' CI passes; their rule files and locks did not change.
+
+- **`AnthropicModel(..., tool=reply_tool(name, schema))`: the reply is a tool call.** The request
+  carries `tools=[...]` and `tool_choice` (default `TOOL_CHOICE`, `auto` with one call at most: several
+  current models, and requests with thinking on, refuse a forced choice), and `complete()` returns the
+  input of the model's `tool_use` block as JSON text, so `@inv.model_call` parses and checks
+  tool-call arguments exactly as it does a JSON reply. Before, only text blocks were read and a tool
+  call was dropped. `reply_tool()` builds the tool from a pydantic model, dataclass, TypedDict or
+  `{field: type}` map (its JSON Schema, closed at the top; `strict=True` for strict tool use).
+- **Feedback after a rejected tool call is a `tool_result` turn.** The parser error goes back as a
+  user turn of `tool_result` blocks, one per `tool_use` id of the previous reply, with
+  `is_error: true` (`TOOL_FEEDBACK_TEMPLATE`), after the assistant turn as the API returned it.
+- **Replay and recording handle tool calls.** A trace's `reply` may be a list of text and `tool_use`
+  blocks; a request records `tools` and `tool_choice` and a replay compares them like every other
+  field. `ReplayModel` and `model_for` take `tool=` and `tool_choice=`. Text traces are unchanged.
+- **support-agent: the hand-rolled graph runner is gone.** `graph.py` is plain steps
+  (`run_ticket` calls them in order); the planner answers by calling a `submit_plan` tool by default
+  (`APP_REPLY=tool|json`), with four new hand-written `tool_*.json` traces. A LangGraph `StateGraph`
+  (`support_agent.langgraph_agent`, optional extra `langgraph`, pinned to the tested
+  `langgraph==1.2.21`; its tests skip without it) runs the model call in the planner node and the
+  edge in the act node, with the agent context as LangGraph's runtime context. Found while testing
+  it: a checkpointer restores a `Checked` value as a plain dict, which the edge's type gate refuses
+  (`TypeError`); the act node hands such a ticket to a person.
+- **fact-pipeline: `inv.Dependency` instead of raw contextvars**, bound per pipeline stage, so two
+  pipelines in one thread no longer read each other's store and model client.
+- `tests/test_graphify.py` reads a graphify snapshot of the old support-agent; its matched-function
+  and call counts were lowered to what the rewritten `graph.py` still has.
+
 ### Fix round 18: scan
 
 From a third review of `inv scan`. Regression tests: `tests/test_fix_round18_scan.py`; each failed

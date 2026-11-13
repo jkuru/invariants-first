@@ -14,6 +14,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "hypothesis>=6"]
+# The LangGraph example (support_agent.langgraph_agent, tests/test_langgraph.py); tested with this version.
+langgraph = ["langgraph==1.2.21"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
