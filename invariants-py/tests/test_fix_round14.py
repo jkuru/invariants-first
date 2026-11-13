@@ -399,10 +399,6 @@ def test_check_validates_the_schemas_table(locked, fn, msg):
     assert run_inv("lock", "--check", locked / "invariants.yaml").returncode == 0
 
 
-def test_older_locks_have_no_table_to_check():
-    assert lockmod.schema_problems({"lock_version": 2, "schemas": {"sha256:x": {}}}) == []
-
-
 # --- R11-7: diff text and residual paths --------------------------------------------------------------------
 def test_a_replaced_list_member_prints_as_old_to_new():
     got = [str(c) for c in lockmod.changes({"targets": {"t": {"types": {"return": {"args": ["int"]}}}}},

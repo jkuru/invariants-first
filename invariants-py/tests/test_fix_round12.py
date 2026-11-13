@@ -1,5 +1,5 @@
 """Fix round 12 (evaluation findings): contract-granularity lock pins, the semantic lock diff with
-WEAKENED changes and --accept-weakening, lock version 2 and migration from version 1, and resolved
+WEAKENED changes and --accept-weakening, an older lock version refused, and resolved
 schema pins (a Literal alias counts). (Its raw-SQL checks were removed with mediation.tables: raw SQL
 is below the API.)"""
 from __future__ import annotations
@@ -177,35 +177,14 @@ def test_accept_weakening_with_check_is_a_usage_error(app):
     assert cli.main(["lock", str(app / "invariants.yaml"), "--check", "--accept-weakening"]) == cli.USAGE
 
 
-# --- 3. lock version and migration --------------------------------------------------------------
-def _v1(app):
-    doc = inv.read_document(app / "invariants.yaml")
-    rules = {r["id"]: {"hash": lockmod.rule_hash(r), "rev": r.get("rev"), "status": r.get("status")}
-             for r in doc["rules"]}
-    (app / "invariants.lock").write_text(json.dumps({"lock_version": 1, "spec": doc["spec"], "rules": rules,
-                                                     "targets": {}, "contracts": {}}))
-
-
-def test_check_rejects_a_version_1_lock_with_a_migration_hint(app):
-    _v1(app)
-    proc = _check(app)
-    assert proc.returncode == 1 and "lock version 1" in proc.stderr and "Run `inv lock` once to migrate" in proc.stderr
-
-
-def test_lock_migrates_an_unchanged_version_1_lock(app):
-    _v1(app)
-    proc = run_inv("lock", app / "invariants.yaml")
-    assert proc.returncode == 0 and "migrating" in proc.stdout
-    assert json.loads((app / "invariants.lock").read_text())["lock_version"] == lockmod.LOCK_VERSION
-    assert _check(app).returncode == 0
-
-
-def test_migration_refuses_a_rule_changed_since_the_version_1_pin(app):
-    _v1(app)
-    _edit(app / "invariants.yaml", "bad: args.amount <= 0", "bad: args.amount < 0")
-    proc = run_inv("lock", app / "invariants.yaml")
-    assert proc.returncode == 1 and "rule L-1: changed since the version-1 pin  WEAKENED" in proc.stdout
-    assert run_inv("lock", app / "invariants.yaml", "--accept-weakening").returncode == 0
+# --- 3. lock version -----------------------------------------------------------------------------
+@pytest.mark.parametrize("args", [("lock", "--check"), ("lock",)])
+def test_an_older_lock_version_is_refused(app, args):
+    lock = json.loads((app / "invariants.lock").read_text())
+    (app / "invariants.lock").write_text(json.dumps({**lock, "lock_version": 2}))
+    proc = run_inv(*args, app / "invariants.yaml")
+    assert proc.returncode == 1 and "lock_version 2 is not supported" in proc.stderr, proc.stderr
+    assert "delete it and re-run `inv lock`" in proc.stderr
 
 
 def test_newer_lock_version_is_rejected(app):

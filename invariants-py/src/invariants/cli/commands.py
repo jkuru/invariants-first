@@ -133,13 +133,10 @@ def cmd_lock(a: argparse.Namespace) -> int:
     changes: list[lock.Change] = []
     header = ""
     if stored is not None:
-        version = lock.check_version(stored, lock_path)
-        damaged = lock.schema_problems(stored) if version >= lock.LOCK_VERSION else []
-        if a.check and _stale_form(version, damaged, lock_path):
+        damaged = lock.schema_problems(stored)
+        if a.check and _damaged(damaged, lock_path):
             return FAILED
-        changes, header = (_migration(stored, version, doc, fresh, types, lock_path)
-                           if version < lock.LOCK_VERSION
-                           else _against_stored(stored, damaged, fresh, types, path, lock_path))
+        changes, header = _against_stored(stored, damaged, fresh, types, path, lock_path)
     if a.check:
         return _check_result(changes, path, lock_path)
     return _write_lock(a, lock_path, stored, fresh, changes, header)
@@ -168,15 +165,9 @@ def _fresh_lock(a: argparse.Namespace, path: pathlib.Path,
     return fresh, types
 
 
-def _stale_form(version: int, damaged: list[str], lock_path: pathlib.Path) -> bool:
-    """`inv lock --check` on a stored lock of an older version or with a damaged schemas table: say
-    why it is stale (True), else False."""
-    if version < lock.LOCK_VERSION:
-        _err(f"stale: {lock_path} is lock version {version}; this invariants writes version "
-             f"{lock.LOCK_VERSION}, which pins resolved types and stores each schema once "
-             f"without prose. Run `inv lock` once to migrate it (it refuses if a rule was "
-             f"weakened since the old pin).")
-        return True
+def _damaged(damaged: list[str], lock_path: pathlib.Path) -> bool:
+    """`inv lock --check` on a stored lock with a damaged schemas table: say why it is stale (True),
+    else False."""
     if not damaged:
         return False
     _err(f"stale: {lock_path}: the schemas table is damaged ({len(damaged)} problem(s)):")
@@ -184,19 +175,6 @@ def _stale_form(version: int, damaged: list[str], lock_path: pathlib.Path) -> bo
         _err(f"  {d}")
     _err("run `inv lock` to rewrite it (it still compares rules against the stored lock)")
     return True
-
-
-def _migration(stored: dict[str, Any], version: int, doc: dict[str, Any], fresh: dict[str, Any],
-               types: dict[str, lock.Typer | None],
-               lock_path: pathlib.Path) -> tuple[list[lock.Change], str]:
-    """The changes from an older-version stored lock to the fresh one, and the header that shows them."""
-    changes = _compare(lambda: lock.migrate_v1(stored, doc) if version == 1
-                       else lock.migrate_v2(stored, fresh, types), lock_path)
-    header = (f"migrating {lock_path} from lock version {version} to {lock.LOCK_VERSION}: "
-              + ("rule hashes compared" if version == 1 else
-                 "rule semantics, effects, signatures and provider fields compared; resolved "
-                 "types and schemas are re-pinned in the new form (review the lock diff)"))
-    return changes, header
 
 
 def _against_stored(stored: dict[str, Any], damaged: list[str], fresh: dict[str, Any],
@@ -239,7 +217,7 @@ def _write_lock(a: argparse.Namespace, lock_path: pathlib.Path, stored: dict[str
                 fresh: dict[str, Any], changes: list[lock.Change], header: str) -> int:
     """Show the changes and write the fresh lock, unless one weakens a rule without --accept-weakening."""
     weak = [c for c in changes if c.weakened]
-    if header and (changes or stored.get("lock_version") != fresh["lock_version"]):   # type: ignore[union-attr]
+    if header and changes:
         _out(header)
         _print_changes(changes)
     if weak and not a.accept_weakening:

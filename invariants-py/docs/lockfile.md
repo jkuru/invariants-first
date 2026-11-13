@@ -11,7 +11,7 @@ a rule.
 - [Weakening](#weakening)
 - [How each field is judged](#how-each-field-is-judged)
 - [How `bad` is compared](#how-bad-is-compared)
-- [Migration](#migration)
+- [Lock versions](#lock-versions)
 - [Upgrading from a release with rules below the API](#upgrading-from-a-release-with-rules-below-the-api)
 - [Where the CLI imports from](#where-the-cli-imports-from)
 - [Limitations](#limitations)
@@ -100,11 +100,7 @@ what each rule's meaning depends on, entry by entry:
   order of the roots does not matter and is not pinned. An added exclude is **WEAKENED**; a removed
   one is a change only. `skip` is the scan's built-in list of directories it never reads (each name
   in `invariants.scan.SKIP_DIRS`, and `.*` for dot-directories), pinned so that a library upgrade
-  or change that skips more is **WEAKENED** (an entry added) rather than silent. A lock pinned
-  before `skip` was (invariants up to fix round 22) is compared with the list those versions used:
-  the first `inv lock --check` after upgrading reports `scan: skip pinned` as a one-time re-pin,
-  stale but not weakened, and `inv lock` (or `inv check --relock`) writes it. A
-  lock taken before the scan was pinned is compared with what that configuration scanned by
+  or change that skips more is **WEAKENED** (an entry added) rather than silent. A lock taken before the scan was pinned is compared with what that configuration scanned by
   default: `inv lock` reads `[tool.invariants.scan]` (else src/ and the rule file's directory) from
   the working tree, and `inv check --base REF` reads them from `REF`. So the first pin is not a way
   to slip in an exclude or narrow the roots in the same change. To scan with an extra `--root` or `--exclude`, pin it with
@@ -330,18 +326,12 @@ or a uint-typed field): `> 4 * size(x)` to `> 10 * size(x)` is weaker, while `> 
 `> 10 * x` on an `int` x cannot be decided, since x may be negative. A threshold edit across types
 (`> 5` to `> 6.0`) has no direction. Any other edit to `bad` is a possible weakening.
 
-## Migration
+## Lock versions
 
-`inv lock --check` refuses an older lock with a hint, and `inv lock` migrates it:
-- **Version 2.** The migration compares rule semantics (with the loader's defaults filled in),
-  effects, signature text, provider fields and contract references, so the weakening
-  gate holds across the migration. Types and schemas are re-pinned in the version-3 form.
-- **Version 1** (whole-module hashes). Each rule is compared against its hash. A rule that changed
-  since that pin (version 1 cannot show how) or went away needs `--accept-weakening`.
-
-A lock with a newer version is refused. So is a malformed lock: a `lock_version` that is not an
-integer (`true` included), or a section or entry of the wrong shape, is a `LockError` that names
-the file and the place.
+This invariants reads and writes lock version 3 only. `inv lock` and `inv lock --check` refuse a
+lock of an older version (delete it and re-run `inv lock`) and of a newer one (upgrade invariants).
+A malformed lock is refused too: a `lock_version` that is not an integer (`true` included), or a
+section or entry of the wrong shape, is a `LockError` that names the file and the place.
 
 ## Upgrading from a release with rules below the API
 

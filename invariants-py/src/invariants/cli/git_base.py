@@ -98,14 +98,10 @@ def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None
         stored = json.loads(text)
         if not isinstance(stored, dict):
             raise ValueError("not a JSON object")
-        version = lock.check_version(stored, name)
+        lock.check_version(stored, name)
         lock.validate(stored, name)
     except (ValueError, LoadError) as e:
         raise BaseUnavailable(f"{name} is not a lock this invariants reads ({e})", acceptable=True) from e
-    if version != lock.LOCK_VERSION:
-        raise BaseUnavailable(f"{name} is lock version {version}; this invariants compares version "
-                              f"{lock.LOCK_VERSION} only, so weakenings since {ref} cannot be shown "
-                              f"(migrate the lock on {ref} first)", acceptable=True)
     return stored, name
 
 

@@ -22,11 +22,6 @@ from .pin_signatures import _signature_pin
 from .pin_types import Schemas, _class_ref, resolved_schema
 
 
-def rule_hash(raw: dict[str, Any]) -> str:
-    """Hash of a rule as written, without the computed `evidence` field (lock version 1's rule pin)."""
-    return _sha(canonical({k: v for k, v in raw.items() if k != "evidence"}))
-
-
 def expand_applies_to(doc: dict[str, Any]) -> dict[str, list[str]]:
     """Rule id -> sorted target keys its applies_to patterns match. A pattern that matches nothing fails."""
     keys = sorted((doc.get("targets") or {}).keys())
@@ -49,7 +44,7 @@ def expand_applies_to(doc: dict[str, Any]) -> dict[str, list[str]]:
 
 
 # --- building -----------------------------------------------------------------------------------
-def normalize_semantic(sem: dict[str, Any], compares_to: Any = None) -> dict[str, Any]:
+def normalize_semantic(sem: dict[str, Any]) -> dict[str, Any]:
     """Fill the defaults the loader applies, so writing a default out (or leaving it out) is no change:
     enforcer on_violation/on_error, model_policy format_retries, semantic_resamples and feedback."""
     sem = dict(sem)
@@ -61,7 +56,7 @@ def normalize_semantic(sem: dict[str, Any], compares_to: Any = None) -> dict[str
                             for e in sem["enforcers"]]
     pol = sem.get("model_policy")
     if isinstance(pol, dict):
-        held = (compares_to if compares_to is not None else sem.get("compares_to")) == "held_data"
+        held = sem.get("compares_to") == "held_data"
         pol = {"format_retries": 2, "semantic_resamples": 0 if held else 1, **pol}
         fb = pol.get("feedback")
         pol["feedback"] = {**FEEDBACK_DEFAULT, **fb} if isinstance(fb, dict) else (fb if "feedback" in pol
@@ -86,7 +81,7 @@ def _doc_digests(raw: dict[str, Any]) -> dict[str, str]:
 
 def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]:
     entry = {k: p.get(k) for k in ("type", "from", "args")}
-    if "concurrent" in p:                               # pinned only when set: older locks stay fresh
+    if "concurrent" in p:                               # pinned only when set
         entry["concurrent"] = p["concurrent"]
     src = p.get("from")
     if isinstance(src, str) and src.startswith("py:"):

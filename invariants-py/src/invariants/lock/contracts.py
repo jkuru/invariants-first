@@ -24,10 +24,6 @@ SCHEMA_CONTRACTS = frozenset({"pydantic", "dataclass", "schema"})
 # this list (exclude = [] scans them too).
 DEFAULT_SCAN_EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
                                 "migrations", "alembic")
-# The directories the scan skipped before the lock pinned them (invariants <= fix round 22): a lock
-# without scan.skip is compared with this list, so the first pin of it is a one-time re-pin, not a
-# weakening, and a skip list that grew since is still a weakening.
-LEGACY_SCAN_SKIP = (".*", "__pycache__", "build", "dist", "node_modules", "site-packages", "venv")
 DOC_FIELDS = ("statement", "why", "owner", "class")
 MEDIATION_DOC = ("chokepoint",)
 STATUS_RANK = {"retired": 0, "candidate": 1, "contested": 1, "detect": 2, "enforce": 3}

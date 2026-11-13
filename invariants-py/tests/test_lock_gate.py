@@ -98,7 +98,7 @@ def test_base_without_a_lock_is_a_first_adoption(tmp_path):
 @needs_git
 @pytest.mark.parametrize("stored,msg", [
     ("not json", "not a lock this invariants reads"),
-    (json.dumps({"lock_version": 2, "rules": {}}), "lock version 2"),
+    (json.dumps({"lock_version": 2, "rules": {}}), "lock_version 2 is not supported"),
     (json.dumps({"lock_version": 99, "rules": {}}), "newer invariants"),
 ])
 def test_base_lock_that_cannot_be_compared_fails(tmp_path, stored, msg):

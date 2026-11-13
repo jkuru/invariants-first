@@ -29,13 +29,13 @@ target, or an edit elsewhere in the same module, changes none of these.
 WEAKENED; `inv lock` refuses to re-pin those without --accept-weakening. FIELD_POLICY says how each
 rule-file field is judged. A field it does not classify, and any edit to a field that changes what
 `bad` reads (bind, a view, provider args, the subject, model_policy, an artifact), is a possible
-weakening. Lock versions 1 and 2 are migrated by `inv lock` and refused by `inv lock --check`.
+weakening.
 
 The package is staged: contracts (the shared tables, canonical JSON, Change), pinning (taking the
 pins: build, over pin_types, pin_jsonschema, pin_signatures and pin_contracts), schema_diff (is a
 schema change a weakening?), cel_mono (is a `bad` edit stronger or weaker? over cel_canon and
 cel_sites), rule_diff (one entry's changes) and this module, which composes them (changes, diff), reads,
-validates and writes the lock file, and migrates versions 1 and 2.
+validates and writes the lock file.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from .cel_canon import Typer, canon_tree, clause_types, make_typer
 from .cel_mono import compare_bad
 from .cel_sites import new_error_sites
 from .contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
-                        ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LEGACY_SCAN_SKIP, LOCK_NAME,
+                        ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LOCK_NAME,
                         LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
                         PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS, STATUS_RANK,
                         TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
@@ -57,7 +57,7 @@ from .pin_contracts import contract_hash
 from .pin_jsonschema import json_schema, stdlib_json_schema
 from .pin_signatures import param_schemas, signature_types
 from .pin_types import SCHEMA_PROSE, Schemas, resolved_schema, strip_prose
-from .pinning import (build, expand_applies_to, mediated, normalize_semantic, rule_hash, rule_semantics, scan_pin,
+from .pinning import (build, expand_applies_to, mediated, normalize_semantic, rule_semantics, scan_pin,
                       scan_skip)
 from .rule_diff import _entry_changes, _rule_changes, _scan_changes
 from .schema_diff import (EXACT_CONSTRAINTS, JUDGED_SCHEMAS, LOWER_BOUNDS, STRUCTURAL, UPPER_BOUNDS, _schema_changes,
@@ -111,13 +111,16 @@ def read(path: pathlib.Path) -> dict[str, Any]:
 
 
 def check_version(lock: dict[str, Any], path: pathlib.Path | str = LOCK_NAME) -> int:
-    """The lock's version; LockVersionError for a version newer than this library or one that is not an int."""
+    """The lock's version, LOCK_VERSION; LockVersionError for any other (newer, older, or not an int)."""
     v = lock.get("lock_version")
     if not isinstance(v, int) or isinstance(v, bool) or v < 1:
         raise LockVersionError(f"{path}: lock_version {json.dumps(v)} is not a valid lock version")
     if v > LOCK_VERSION:
         raise LockVersionError(f"{path}: lock_version {v} was written by a newer invariants "
-                               f"(this one reads up to {LOCK_VERSION}); upgrade invariants")
+                               f"(this one reads version {LOCK_VERSION}); upgrade invariants")
+    if v < LOCK_VERSION:
+        raise LockVersionError(f"{path}: lock_version {v} is not supported (this invariants reads version "
+                               f"{LOCK_VERSION}); delete it and re-run `inv lock` to pin the rule file again")
     return v
 
 
@@ -139,8 +142,6 @@ def validate(lock: dict[str, Any], path: pathlib.Path | str = LOCK_NAME) -> None
     if not isinstance(scan, dict):
         raise _malformed(path, "scan", "an object", scan)
     for k in ("roots", "exclude", "skip"):
-        if k == "skip" and "skip" not in scan:
-            continue                                # a lock pinned before the skip list was
         if not (isinstance(scan.get(k), list) and all(isinstance(x, str) for x in scan[k])):
             raise _malformed(path, f"scan.{k}", "a list of strings", scan.get(k))
 
@@ -175,10 +176,10 @@ def _refs_in(node: Any, found: list[str]) -> None:
 
 
 def schema_problems(lock: dict[str, Any]) -> list[str]:
-    """What is wrong with a version-3 lock's schemas table: an entry whose key is not the sha256 of
-    its body (hand-edited, or a bad merge), a `$ref` that names no entry, an entry nothing refers to.
-    Empty when the table is sound (or the lock is older than version 3)."""
-    if lock.get("lock_version") != LOCK_VERSION or not isinstance(lock.get("schemas", {}), dict):
+    """What is wrong with a lock's schemas table: an entry whose key is not the sha256 of its body
+    (hand-edited, or a bad merge), a `$ref` that names no entry, an entry nothing refers to. Empty when
+    the table is sound."""
+    if not isinstance(lock.get("schemas", {}), dict):
         return []
     table: dict[str, Any] = lock.get("schemas") or {}
     out = [f"schemas.{k}: the key is not the sha256 of its body (edited by hand, or a bad merge)"
@@ -211,7 +212,7 @@ def without_damaged_schemas(lock: dict[str, Any]) -> dict[str, Any]:
 def changes(old: dict[str, Any], new: dict[str, Any],
             types: dict[str, Typer | None] | None = None,
             scan_default: dict[str, Any] | None = None) -> list[Change]:
-    """Every semantic difference between a stored version-3 lock and a fresh one; empty when fresh.
+    """Every semantic difference between a stored lock and a fresh one; empty when fresh.
     types (clause_types of the loaded rule file) lets the `bad` comparison use declared types.
     scan_default (a scan_pin) is what the old lock scanned when it pinned no scan: the roots and
     excludes the base's configuration gave by default."""
@@ -258,51 +259,3 @@ def _contract_users(name: str, rules: dict[str, Any]) -> str:
 def diff(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """Readable differences between a stored lock and a fresh one; empty when fresh."""
     return [str(c) for c in changes(old, new)]
-
-
-# --- migration ----------------------------------------------------------------------------------
-def migrate_v1(old: dict[str, Any], doc: dict[str, Any]) -> list[Change]:
-    """What a version-1 lock can still tell about the current rule file: which rules changed since it
-    was pinned (v1 kept only a whole-rule hash, so what changed cannot be shown) and which went away.
-    Every such rule is a possible weakening. Signature changes are reported but are not weakenings."""
-    out: list[Change] = []
-    raws = {r["id"]: r for r in doc.get("rules") or [] if isinstance(r, dict) and "id" in r}
-    for rid, entry in sorted((old.get("rules") or {}).items()):
-        if rid not in raws:
-            out.append(Change(f"rule {rid}", "removed", weakened=True, note="the rule no longer exists"))
-        elif isinstance(entry, dict) and entry.get("hash") != rule_hash(raws[rid]):
-            out.append(Change(f"rule {rid}", "changed since the version-1 pin", weakened=True,
-                              note="lock version 1 kept only a whole-rule hash, so the change cannot be shown; "
-                                   "review the rule file history"))
-    for rid in sorted(set(raws) - set(old.get("rules") or {})):
-        out.append(Change(f"rule {rid}", "added"))
-    return out
-
-
-_V3_ONLY = ("types", "reply_schema", "schema", "operations", "param_schemas")
-
-
-def _comparable(lock: dict[str, Any], v2: bool) -> dict[str, Any]:
-    """A lock reduced to what versions 2 and 3 both pin the same way: rule semantics, status, targets,
-    effects, transaction, signature text, provider fields and contract references."""
-    out: dict[str, Any] = {"lock_version": None, "spec": lock.get("spec"), "rules": {}}
-    for rid, e in (lock.get("rules") or {}).items():
-        e = dict(e)
-        e.pop("applies_to", None)
-        if v2:
-            sem = dict(e.get("semantic") or {})
-            e["semantic"] = normalize_semantic(sem, sem.get("compares_to"))
-        out["rules"][rid] = e
-    for sec in ("targets", "providers", "contracts"):
-        out[sec] = {k: {f: v for f, v in e.items() if f not in _V3_ONLY}
-                    for k, e in (lock.get(sec) or {}).items()}
-    return out
-
-
-def migrate_v2(old: dict[str, Any], fresh: dict[str, Any],
-               types: dict[str, Typer | None] | None = None) -> list[Change]:
-    """What a version-2 lock tells about the fresh version-3 one. Rule semantics (so the weakening gate
-    holds across the migration), effects, transactions, signature text, provider fields and contract
-    references are compared. Version 3 pins resolved types and stores schemas once without prose, so
-    those pins are re-taken rather than compared."""
-    return changes(_comparable(old, True), _comparable(fresh, False), types)

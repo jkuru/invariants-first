@@ -90,13 +90,6 @@ def test_custom_lock_path(app, tmp_path):
 
 
 # --- in-process unit tests (no app imports) -----------------------------------------------------
-def test_rule_hash_ignores_evidence_only():          # the version-1 pin, still used to migrate
-    r = {"id": "R", "bad": "x"}
-    assert lockmod.rule_hash(r) == lockmod.rule_hash({**r, "evidence": {"runs": 3}})
-    assert lockmod.rule_hash(r) != lockmod.rule_hash({**r, "bad": "y"})
-    assert lockmod.rule_hash({"a": 1, "b": 2}) == lockmod.rule_hash({"b": 2, "a": 1})
-
-
 def test_expand_applies_to():
     doc = {"targets": {"py:a.x": {}, "py:a.y": {}, "py:b.z": {}},
            "rules": [{"id": "R", "applies_to": "py:a.*"}, {"id": "S", "applies_to": ["py:b.*", "py:a.x"]},

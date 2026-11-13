@@ -156,5 +156,5 @@ or ISO 8601 `"PT90S"`, a `UUID` field its text).
 
 `inv lock` writes `invariants.lock` beside the rule file (lock version 3). It pins what each rule's
 meaning depends on, and it refuses a change that weakens a rule unless `--accept-weakening` is
-given. The format, the policy for every field of this schema (`invariants.lock.FIELD_POLICY`), how `bad`
-edits are compared, and migration from older versions are in [lockfile.md](lockfile.md).
+given. The format, the policy for every field of this schema (`invariants.lock.FIELD_POLICY`), and how `bad`
+edits are compared are in [lockfile.md](lockfile.md).

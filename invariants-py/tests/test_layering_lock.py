@@ -358,7 +358,7 @@ def test_validate_names_the_bad_place() -> None:
     with pytest.raises(lock.LockError, match=r"rules\.R-1\.targets should be a list"):
         lock._validate_section("x.lock", "rules", {"R-1": {"targets": {}}})
     with pytest.raises(lock.LockError, match=r"scan\.roots should be a list of strings"):
-        lock.validate({"scan": {"roots": [1], "exclude": []}}, "x.lock")
-    lock.validate({"rules": None, "scan": {"roots": ["src"], "exclude": []}}, "x.lock")
+        lock.validate({"scan": {"roots": [1], "exclude": [], "skip": []}}, "x.lock")
+    lock.validate({"rules": None, "scan": {"roots": ["src"], "exclude": [], "skip": []}}, "x.lock")
     assert str(lock._malformed("x.lock", "spec", "a string", 3)).startswith(
         "x.lock: malformed lock: spec should be a string, not int 3;")

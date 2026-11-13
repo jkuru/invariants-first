@@ -186,44 +186,11 @@ def test_a_wider_skip_list_is_a_weakening_and_a_narrower_one_is_not():
     assert cs and not any(c.weakened for c in cs)
 
 
-def test_a_lock_without_the_skip_list_is_a_one_time_repin_not_a_weakening():
-    new = lock.scan_pin(["."], [])
-    old = {k: v for k, v in new.items() if k != "skip"}
-    cs = lock.changes({"lock_version": lock.LOCK_VERSION, "scan": old},
-                          {"lock_version": lock.LOCK_VERSION, "scan": new})
-    assert len(cs) == 1 and not cs[0].weakened and not cs[0].info, [str(c) for c in cs]
-    assert cs[0].what == "skip pinned" and "one-time re-pin" in str(cs[0])
-    # a skip list that grew since the old pin is still a weakening, not hidden by the first pin
-    grown = lock.scan_pin(["."], [], [*lock.scan_skip(), "lib"])
-    cs = lock.changes({"lock_version": lock.LOCK_VERSION, "scan": old},
-                          {"lock_version": lock.LOCK_VERSION, "scan": grown})
-    assert [c.what for c in cs if c.weakened] == ["skip added"]
-
-
-def test_two_pins_without_the_skip_list_report_no_skip_change():
-    a = {"lock_version": lock.LOCK_VERSION, "scan": {"roots": ["."], "exclude": []}}
-    b = {"lock_version": lock.LOCK_VERSION, "scan": {"roots": ["."], "exclude": ["x"]}}
-    assert [c.what for c in lock.changes(a, b)] == ["exclude added"]
-
-
 def test_a_scan_pin_with_a_malformed_skip_list_is_refused(tmp_path):
     p = tmp_path / "invariants.lock"
     p.write_text(json.dumps({"lock_version": 3, "scan": {"roots": ["."], "exclude": [], "skip": "build"}}))
     with pytest.raises(lock.LockError, match="scan.skip"):
         lock.read(p)
-
-
-def test_lock_check_on_a_lock_pinned_before_the_skip_list(tmp_path):
-    root = _r01(tmp_path)
-    lk = root / "invariants.lock"
-    data = json.loads(lk.read_text())
-    del data["scan"]["skip"]
-    lk.write_text(lock.dumps(data))
-    r = run_inv("lock", "--check", cwd=root)
-    assert r.returncode == 1 and "skip pinned" in r.stderr and "WEAKENED" not in r.stderr, r.stderr
-    r = run_inv("lock", cwd=root)
-    assert r.returncode == 0 and "skip pinned" in r.stdout, r.stdout + r.stderr
-    assert "skip" in json.loads(lk.read_text())["scan"]
 
 
 # --- the hook: pyproject settings the scan roots come from ----------------------------------------

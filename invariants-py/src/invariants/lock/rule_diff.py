@@ -9,7 +9,7 @@ from typing import Any
 
 from .cel_canon import Typer, _clause_key, _disjuncts, _unique
 from .cel_mono import judge_bad
-from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, LEGACY_SCAN_SKIP, MORE_IS_WEAKER,
+from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER,
                         NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, REMOVED_NOTE, Change, _json_paths,
                         policy, same)
 from .schema_diff import _param_schema_changes, constraint_weakening
@@ -497,17 +497,13 @@ def _scan_changes(old: Any, new: Any, default: dict[str, Any] | None = None) -> 
     """The pinned scan roots, excludes and always-skipped directories. A root added or removed, an
     added exclude or an added skipped directory: WEAKENED (see _SCAN_WEAK). A lock pinned before the
     scan was pinned is compared with `default`, what the old configuration scanned by default; without
-    one, with the new roots and the default excludes. A scan pin without `skip` (taken before the skip
-    list was pinned) is compared with LEGACY_SCAN_SKIP: pinning it the first time is a one-time re-pin."""
+    one, with the new roots and the default excludes."""
     if same(old, new) or new is None:
         return []
     first = old is None
     if first:
         old = default or {"roots": new["roots"], "exclude": list(DEFAULT_SCAN_EXCLUDE)}
-        old = {k: v for k, v in old.items() if k != "skip"}     # the skip list the old library used
-    skip_first = "skip" not in old and "skip" in new
-    if skip_first:
-        old = {**old, "skip": list(LEGACY_SCAN_SKIP)}
+        old = {**old, "skip": new.get("skip") or []}          # the skip list is pinned as it is
     out: list[Change] = []
     for key, weak_when, why in _SCAN_WEAK:
         a, b = set(old.get(key) or []), set(new.get(key) or [])
@@ -515,16 +511,10 @@ def _scan_changes(old: Any, new: Any, default: dict[str, Any] | None = None) -> 
             for x in items:
                 weak = verb == weak_when or key == "roots"         # any change to the root set
                 notes = [(why if verb == weak_when else _ROOT_ADDED) if weak else "",
-                         "compared with the default: the scan was not pinned before" if first else "",
-                         "compared with the skip list of the library before it was pinned"
-                         if key == "skip" and skip_first else ""]
+                         "compared with the default: the scan was not pinned before" if first else ""]
                 out.append(Change("scan", f"{key} {verb}", None if verb == "added" else x,
                                   x if verb == "added" else None, weak, "; ".join(n for n in notes if n)))
     if first and not out:
         out.append(Change("scan", "pinned", None, new,
                           note="the scan roots, excludes and skipped directories are pinned for the first time"))
-    elif skip_first and not any(c.what.startswith("skip ") for c in out):
-        out.append(Change("scan", "skip pinned", None, new["skip"],
-                          note="the directories the scan always skips are pinned for the first time: a one-time "
-                               "re-pin after upgrading invariants (run `inv lock`), no rule is weakened"))
     return out

@@ -485,30 +485,6 @@ def test_docstring_only_edit_keeps_the_pin():
     assert a == b
 
 
-def test_v2_lock_migrates_with_the_weakening_gate(app):
-    lock = json.loads((app / "invariants.lock").read_text())
-    v2 = {"lock_version": 2, "spec": lock["spec"], "rules": {}, "targets": {}, "providers": {}, "contracts": {}}
-    for rid, e in lock["rules"].items():
-        v2["rules"][rid] = {**e, "semantic": {**e["semantic"], "status": e["status"]}}
-    for k, t in lock["targets"].items():
-        v2["targets"][k] = {"effects": t["effects"], "transaction": t.get("transaction"), "signature": t["signature"]}
-    v2["contracts"] = {k: {f: v for f, v in c.items() if f not in ("schema", "operations")}
-                       for k, c in lock["contracts"].items()}
-    (app / "invariants.lock").write_text(json.dumps(v2))
-    proc = run_inv("lock", "--check", app / "invariants.yaml")
-    assert proc.returncode == 1 and "lock version 2" in proc.stderr and "migrate" in proc.stderr
-    weakened = json.loads(json.dumps(v2))
-    weakened["rules"]["L-2"]["semantic"]["bad"] = "args.amount > 1"            # the old pin was stricter
-    (app / "invariants.lock").write_text(json.dumps(weakened))
-    proc = run_inv("lock", app / "invariants.yaml")
-    assert proc.returncode == 1 and "WEAKENED" in proc.stdout and "refused" in proc.stderr
-    (app / "invariants.lock").write_text(json.dumps(v2))
-    proc = run_inv("lock", app / "invariants.yaml")
-    assert proc.returncode == 0 and "from lock version 2 to 3" in proc.stdout, proc.stdout + proc.stderr
-    assert json.loads((app / "invariants.lock").read_text())["lock_version"] == 3
-    assert run_inv("lock", "--check", app / "invariants.yaml").returncode == 0
-
-
 # --- R10-7: diffs, strict equality, malformed locks ---------------------------------------------------
 def test_dict_changes_are_shown_per_key():
     pol = {"schema": "S", "format_retries": 2, "semantic_resamples": 0, "abstain": {"field": "c", "value": "X"}}

@@ -447,7 +447,7 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [Concepts](docs/concepts.md) | outcomes, standing, status and mode, providers, targets and effects, model calls, edges, `old_self`, operations |
 | [Rule file reference](docs/rule-file.md) | every field |
 | [CEL](docs/cel.md) | backends, the Python-to-CEL type mapping, NaN policy, numbers, time zones, cost limits |
-| [Lockfile](docs/lockfile.md) | the v3 format, field policy, weakening and migration |
+| [Lockfile](docs/lockfile.md) | the v3 format, field policy and weakening |
 | [Scan](docs/scan.md) | door rules, allow, receiver typing, reachability |
 | [API](docs/api.md) | every public name, the pytest plugin and the integrations |
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
