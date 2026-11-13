@@ -3,7 +3,7 @@
 A tool-calling support agent that issues refunds, credits and cancellations. It is the flagship test
 of the [`invariants`](../../invariants-py/README.md) library: every layer is an API, and every law sits
 on one of them. It needs no API key: `FakeAgentModel` stands in for the model and can be told to
-misbehave, and the happy paths also run on a replayed Claude trace (see [Models](#models-fake-replay-claude)).
+misbehave, and the happy paths also run on a replayed trace in the Messages API's shape (hand-written, not recorded; see [Models](#models-fake-replay-claude)).
 
 ```
 ticket -> triage_node -> planner_node -> router -> tool_executor_node -> tool -> BillingService -> StripeGateway / LedgerRepo

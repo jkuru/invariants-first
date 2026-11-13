@@ -314,6 +314,7 @@ the merged results.
 | `inv verify` | `inv verify [file] [--import MOD]... [--json] [--path DIR]...`: imports the app, then checks that every target is guarded and every guard names a rule. |
 | `inv scan` | `inv scan [file] [--root DIR]... [--exclude GLOB]... [--format text\|json\|sarif] [--output FILE]`: see [scan.md](scan.md). |
 | `inv status` | `inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--path DIR]...`: the standing of each rule, combining verify and scan. |
+| `inv mcp` | `inv mcp [rulefile] [--root DIR]`: a read-only MCP server over stdio for coding agents (tools: scan, check, status, explain, propose_rules); it never writes the rule file, the lock or `allow`. The same server is installed as `inv-mcp [--root DIR] [--rules FILE]`. See [agents.md](agents.md). |
 
 Where `validate`, `lock`, `verify` and `status` import the app from is described in
 [lockfile.md](lockfile.md#where-the-cli-imports-from).

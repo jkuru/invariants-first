@@ -22,8 +22,14 @@ Adoption comes in two steps, and the first one changes no production code.
     Stripe-style gateway), the service methods that call it, with the back doors that skip them today
     listed and frozen, so a new one fails CI. It works the same over SQLAlchemy, Django, MongoDB,
     DynamoDB, an HTTP client or raw SQL.
-- **Step 2: value laws at run time, only where you want them.** Once the check has earned trust, put
-  `@inv.guard` on the few service methods that move money or spend quota (section 5).
+- **Step 2: the model and its tools, at run time.** Step 1 governs what people and coding agents
+  write into the repository; it cannot govern what a model outputs at run time on live input (a
+  prompt-injected request, graph state changed after a check, held data that moved between plan
+  and act). If your app calls a model, step 2 starts there: `@inv.model_call` on the call (format
+  retries with the parser's message, semantic resamples that never see the rule, an abstention that
+  goes to a person), `@inv.edge` on the node that consumes the reply (it re-checks against current
+  held state), and `@inv.guard` on the tool doors the reply reaches (section 5). Guards on ordinary
+  deterministic code are optional; a plain `if` is fine there.
 
 ## 1. Draft and lock (2 minutes)
 
@@ -355,6 +361,12 @@ your change weakens and why.
 
 ## 5. Step 2: a value law on one API (when you want one)
 
+Where a model is involved, begin with the model call and its consumer:
+[concepts: model calls](concepts.md#model-calls) and [edges](concepts.md#edges), [models.md](models.md) (Claude, replay and recording) and
+[agent-frameworks.md](agent-frameworks.md) (native tool use and LangGraph) show the loop. The guard
+below is the piece a tool door needs. On a deterministic function a person wrote and tested, it is
+optional: it adds the lock, the scan's door and ablation around a check a plain `if` could also make.
+
 `inv init` turns `if ...: raise` and `assert` preconditions into suggested rules. A suggested rule
 keeps the check even if a later edit deletes the `if`. To turn one on:
 
@@ -405,7 +417,8 @@ path skips it.
 
 Everything else is optional, and you can add it rule by rule:
 
-- value laws on model calls (`@inv.model_call`) and the tool calls an agent makes;
+- value laws on model calls (`@inv.model_call`) and their consumers (`@inv.edge`), and guards on
+  the tool calls an agent makes: the first place to go if your app calls a model;
 - `result` checks on a service method (`timing: post_effect`);
 - providers that read current state for a rule (`provider.pool_leased`);
 - `old_self` transition rules.

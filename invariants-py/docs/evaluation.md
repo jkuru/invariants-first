@@ -220,7 +220,7 @@ when the rule is switched off.
 
 | Round | What ran | Result |
 |---|---|---|
-| 1 | the test suite on Python 3.11 and 3.14 with each CEL backend (subset, cel-expr, celpy), `-O`, mypy | 3,930 to 3,932 passed per run (3 to 5 skipped); mypy clean |
+| 1 | the test suite on Python 3.11 and 3.14 with each CEL backend of the time (subset, cel-expr, celpy; celpy was removed later), `-O`, mypy | 3,930 to 3,932 passed per run (3 to 5 skipped); mypy clean |
 | 2 | 12 mutants of the code this release changed (the `allow` fix, chain typing, chain freezing, Graphify, constants, the hook, the removal errors); the 39 agent-style scenarios on the ledger and ORM apps; the three apps' CI | the 12 mutants caught (one survived at first, Graphify's community check, and a test was added); 39 of 39 scenarios as expected (20 ledger, 19 ORM); the apps' CI passed |
 | 3 | a freshly built wheel in a new venv: removed names absent, all three apps' CI, both scenario sets | 70, 86 and 32 app tests passed; 39 of 39 scenarios as expected |
 
@@ -271,10 +271,13 @@ heuristics missed: on code like this, communities are not a layer signal.
 own source and tests (104 modules, 1,852 functions).
 
 **What this does not show.** The same author wrote the library, the agent, its defects and the
-scenarios, and the agent's model is a deterministic fake. A check on an API's arguments is not a
-lock: two agents refunding one order at once can both pass BILL-1, and the ledger's transaction is
-what decides. Graphify was tested with graph files written for the tests in the shape its v8 source
-writes, not with a graph Graphify produced.
+scenarios. The 12 defects ran on the agent's deterministic fake planner (`APP_MODEL=fake`); the
+replay flows (`tests/test_replay.py`) run on hand-written traces, not recordings, so no reply from a
+real model is part of these numbers. A check on an API's arguments is not a lock: two agents
+refunding one order at once can both pass BILL-1, and the ledger's transaction is what decides.
+Graphify's real output was measured only as reported above (four codebases and the pinned shop
+fixture, tree-sitter extraction with no model); the library's other Graphify tests read graph files
+written for the tests in the same format.
 
 ## Addendum, 2026-11-12: the adoption path
 
@@ -486,7 +489,7 @@ about 0.6 s to fact-pipeline (1.9 s against 1.3 s, +48%). In absolute terms that
 **Runtime overhead**, from the README's Performance table (p50 per call, guard on a pure function):
 - **subset backend:** 7.1 µs for 1 clause, 22.5 µs for 4 clauses;
 - **cel-expr backend:** 9.3 µs and 19.6 µs;
-- **celpy backend:** 87 µs and 858 µs.
+- **celpy backend** (removed since): 87 µs and 858 µs.
 
 The FRICTION files report the cost on real targets. R-1's four clauses add about 42 µs to a 1 µs
 function. The fact ingest door costs about 240 µs guarded against 12 µs bare, because every

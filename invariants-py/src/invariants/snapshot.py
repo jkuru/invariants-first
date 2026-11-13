@@ -8,6 +8,7 @@ import decimal
 import enum
 import fractions
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from .cel import CelError
@@ -34,10 +35,42 @@ def is_plain(v: Any, depth: int = 0) -> bool:
         return True
     if isinstance(v, (list, tuple)):
         return all(is_plain(x, depth + 1) for x in v)
-    if isinstance(v, dict):
+    if isinstance(v, Mapping):          # a dict, MappingProxyType or custom Mapping: a CEL map
         return all(isinstance(k, (str, int)) and is_plain(x, depth + 1) for k, x in v.items())
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
         return all(is_plain(getattr(v, f.name), depth + 1) for f in dataclasses.fields(v))
+    return False
+
+
+def _copy(v: Any) -> Any:
+    """A deep copy of a plain value (is_plain) that a later change to the original never reaches. A
+    Mapping that is not a dict is copied as a dict (the map the engines read): a MappingProxyType
+    cannot be deep-copied, and a custom Mapping may read live state."""
+    if not _holds_mapping(v):
+        return copy.deepcopy(v)
+    if isinstance(v, Mapping):
+        return {k: _copy(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        items = [_copy(x) for x in v]
+        return items if isinstance(v, list) else tuple(items)
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        c = copy.copy(v)
+        for f in dataclasses.fields(v):
+            object.__setattr__(c, f.name, _copy(getattr(v, f.name)))
+        return c
+    return copy.deepcopy(v)
+
+
+def _holds_mapping(v: Any, depth: int = 0) -> bool:
+    """True if a non-dict Mapping is anywhere in plain value v (deepcopy cannot be trusted with it)."""
+    if depth > 64:
+        return False
+    if isinstance(v, Mapping):
+        return not isinstance(v, dict) or any(_holds_mapping(x, depth + 1) for x in v.values())
+    if isinstance(v, (list, tuple)):
+        return any(_holds_mapping(x, depth + 1) for x in v)
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        return any(_holds_mapping(getattr(v, f.name), depth + 1) for f in dataclasses.fields(v))
     return False
 
 
@@ -47,7 +80,7 @@ _ABSENT = object()
 def _step(v: Any, p: str) -> Any:
     """v.p (a key or a public attribute), _ABSENT when v has no such field; a lookup that raises is a
     CelError (rule_error)."""
-    if isinstance(v, dict):
+    if isinstance(v, Mapping):
         try:
             return v[p] if p in v else _ABSENT
         except Exception as e:
@@ -79,7 +112,7 @@ def take_snapshot(rule: Rule, obj: Any) -> dict[str, Any]:
             if k == len(path) - 1:
                 if not is_plain(v):
                     raise CelError(f"old_self.{'.'.join(path)} is not plain data ({type(v).__name__})")
-                d[p] = copy.deepcopy(v)
+                d[p] = _copy(v)
             elif v is None:
                 d[p] = None          # a null on the way: selecting a field of it is the engine's error
                 break

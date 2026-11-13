@@ -1,7 +1,9 @@
 """A small, safe CEL subset evaluator (the stdlib fallback backend).
 
 Not full CEL. No eval/exec: a tokenizer, a recursive-descent parser to tuples, and a
-tree-walking evaluator with a cost budget. Supported: int/double/string/bool/null literals,
+tree-walking evaluator with a cost budget. Supported: int/double/string/bool/null literals (CEL's
+number grammar: hex 0x10, exponents 1e5 and .5, int literals range-checked to int64 at compile
+time; a uint literal 5u parses as uint(5), which only cel-expr evaluates),
 lists, maps, field access, indexing, ! - * / % + -, comparisons, in, && || (CEL's
 commutative error absorption, also in all/exists), ?:, has(e.f), size(), contains/startsWith/endsWith,
 matches, the conversions int(), double(), string(), bool(), dyn(), timestamp() and duration(),
@@ -16,7 +18,8 @@ import datetime
 import enum
 import math
 import re
-from typing import Any, Iterator
+from collections.abc import Mapping
+from typing import Any, Callable, Iterator
 
 from . import _regex, values
 from .errors import ALLOW_NON_FINITE, CelError, CelSyntaxError, check_finite, check_result, raised
@@ -31,9 +34,14 @@ class CostExceeded(CelError):
 INT_MIN, INT_MAX = -2**63, 2**63 - 1
 INV_ARITY = {"inv.sum": 1, "inv.zip": 2, "inv.unique_by": 3}
 
-_TOK = re.compile(r'\s*(?:(\d+\.\d+)|(\d+)|"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|'
+# Number literals as in CEL's grammar: a double is digits.digits, digits with an exponent, or .digits
+# (1.5, 1e5, 1.5E-3, .5); an int is decimal or hex (0x10); a uint is an int with a u or U suffix.
+_EXP = r'[eE][+-]?\d+'
+_TOK = re.compile(r'\s*(?:(\d+\.\d+(?:' + _EXP + r')?|\d+' + _EXP + r'|\.\d+(?:' + _EXP + r')?)|'
+                  r'(0[xX][0-9a-fA-F]+|\d+)([uU]?)|"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|'
                   r'([A-Za-z_][A-Za-z0-9_]*)|(==|!=|<=|>=|&&|\|\||[-+*/%<>!()\[\]{},.:?]))',
                   re.ASCII)       # digits and spaces are ASCII only, as in CEL's grammar
+UINT_MAX = 2**64 - 1
 _MACROS = {"all", "exists", "exists_one", "map", "filter"}
 CONVERSIONS = frozenset({"int", "double", "string", "bool", "dyn", "timestamp", "duration"})
 _GETTERS = ("getFullYear", "getMonth", "getDayOfYear", "getDayOfMonth", "getDate", "getDayOfWeek",
@@ -99,11 +107,20 @@ def tokenize(src: str) -> list[tuple[str, Any]]:
         m = _TOK.match(src, pos)
         if not m or m.end() == pos:
             raise CelSyntaxError(f"bad character at {pos}: {src[pos:pos + 10]!r}")
-        f, i, s1, s2, ident, op = m.groups()
+        f, i, u, s1, s2, ident, op = m.groups()
         if f:
-            out.append(("lit", float(f)))
+            x = float(f)
+            if x - x != 0.0:        # 1e400: cel-cpp reads Infinity; the library refuses non-finite doubles
+                raise CelSyntaxError(f"double literal {f} is out of range (it would be Infinity)")
+            out.append(("lit", x))
         elif i:
-            out.append(("lit", int(i)))
+            n = int(i[2:], 16) if i[:2] in ("0x", "0X") else int(i)
+            if u:
+                if n > UINT_MAX:
+                    raise CelSyntaxError(f"invalid uint literal {i}{u}: outside uint64")
+                out.append(("uint", n))
+            else:
+                out.append(("int", n))  # range-checked by the parser: -9223372036854775808 is valid
         elif s1 is not None or s2 is not None:
             out.append(("lit", decode_string(s1 if s1 is not None else s2)))
         elif ident:
@@ -159,13 +176,19 @@ class _Parser:
             self.i += 1
             left = ("bin", op, left, self.binary(lvl + 1))
 
-    def unary(self) -> Node:
+    def unary(self, run: bool = False) -> Node:
         if self.peek("!"):
             self.i += 1
             return ("un", "!", self.unary())
         if self.peek("-"):
             self.i += 1
-            return ("un", "-", self.unary())
+            # CEL's grammar reads a lone minus sign on an int literal as a negative literal, so
+            # -9223372036854775808 is INT_MIN (bound before any .f or [i]); after two or more
+            # minus signs (--9223372036854775808) every one is an operator and the literal overflows.
+            if not run and self.peek() == ("int", -INT_MIN):
+                self.i += 1
+                return self.member(("lit", INT_MIN))
+            return ("un", "-", self.unary(run=True))
         return self.member()
 
     def args(self, close: str) -> list[Node]:
@@ -177,8 +200,8 @@ class _Parser:
         self.eat(close)
         return out
 
-    def member(self) -> Node:
-        e = self.primary()
+    def member(self, e: Node | None = None) -> Node:
+        e = self.primary() if e is None else e
         while True:
             if self.peek("."):
                 self.i += 1
@@ -208,6 +231,12 @@ class _Parser:
         self.i += 1
         if k == "lit":
             return ("lit", x)
+        if k == "int":
+            if x > INT_MAX:
+                raise CelSyntaxError(f"invalid int literal {x}: outside int64")
+            return ("lit", x)
+        if k == "uint":                         # 5u is uint(5): the same tree, the same checks
+            return ("call", "uint", None, [("lit", x)])
         if k == "id":
             if self.peek("("):
                 self.i += 1
@@ -463,12 +492,25 @@ def _data(v: Any) -> Any:
 _NO_FIELDS = (str, bytes, int, float, list, tuple, *values.SCALARS)
 
 
+def _on_map(m: Mapping[Any, Any], what: str, fn: Callable[[], Any]) -> Any:
+    """fn() on a CEL map. A dict cannot fail here; any other Mapping (MappingProxyType, a custom
+    Mapping: CEL maps too, as on cel-expr) that raises is a CelError, its message only in .detail."""
+    if type(m) is dict:
+        return fn()
+    try:
+        return fn()
+    except CelError:
+        raise
+    except Exception as e:
+        raise raised(f"{what} on {type(m).__name__}", e) from e
+
+
 def _select(o: Any, f: str, test: bool = False) -> Any:
     if test and (o is None or isinstance(o, _NO_FIELDS)):
         # CEL has() needs a map or message: on null, a number, a string or a list it is an error (cel-expr)
         raise CelError(f"has() on {_ty(o)}: field selection on a value that has no fields")
-    if isinstance(o, dict):
-        ok, v = f in o, o.get(f)
+    if isinstance(o, Mapping):
+        ok, v = _on_map(o, f"reading key {f!r}", lambda: (True, o[f]) if f in o else (False, None))
     elif o is None or f.startswith("_") or isinstance(o, _NO_FIELDS) or f in values.api_names(type(o)):
         ok, v = False, None
     else:
@@ -582,8 +624,8 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
         return _select(ev(n[1]), n[2])
     if k == "idx":
         o, i = ev(n[1]), ev(n[2])
-        if isinstance(o, dict):
-            found, v = lookup(o, i)
+        if isinstance(o, Mapping):
+            found, v = _on_map(o, "reading a key", lambda: lookup(o, i))
             if not found:
                 err = CelError("no such key")          # the key is request data: only in .detail
                 err.detail = _safe_repr(i)
@@ -634,8 +676,8 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
             if isinstance(b, (list, tuple)):
                 b = whole(b)
                 return any(_eq(a, x) for x in b)
-            if isinstance(b, dict):
-                return lookup(whole(b), whole(a))[0]
+            if isinstance(b, Mapping):
+                return lookup(_on_map(b, "reading", lambda: whole(b)), whole(a))[0]
             raise CelError(f"no such overload: in {_ty(b)}")
         if op in ("<", "<=", ">", ">="):
             if not ((_num(a) and _num(b)) or _ty(a) == _ty(b) in ("str", "bool", "timestamp", "duration")):
@@ -650,7 +692,9 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
 
 
 def _iter(v: Any, name: str) -> list[Any]:
-    if isinstance(v, (dict, list, tuple)):
+    if isinstance(v, Mapping):
+        return _on_map(v, f"{name}() over the keys", lambda: list(v))
+    if isinstance(v, (list, tuple)):
         return list(v)
     raise CelError(f"{name}() on {_ty(v)}")
 
@@ -697,9 +741,10 @@ def _call(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], bu
         return _select(ev(args[0][1]), args[0][2], test=True)
     vals = ([ev(tgt)] if tgt is not None else []) + [ev(a) for a in args]
     if name == "size":
-        if len(vals) != 1 or not isinstance(vals[0], (str, list, tuple, dict)):
+        if len(vals) != 1 or not isinstance(vals[0], (str, list, tuple, Mapping)):
             raise CelError("size() needs one string, list or map")
-        return len(vals[0])
+        sized = vals[0]
+        return _on_map(sized, "size()", lambda: len(sized)) if isinstance(sized, Mapping) else len(sized)
     if name in ("contains", "startsWith", "endsWith"):
         if len(vals) != 2 or not all(isinstance(v, str) for v in vals):
             raise CelError(f"{name}() needs strings")

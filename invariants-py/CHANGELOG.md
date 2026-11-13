@@ -10,6 +10,39 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 19 (CEL, CI, docs)
+
+Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed
+before its fix.
+
+- **Number literals follow CEL's grammar on every backend.** The shared parser accepted only
+  `123` and `1.5`. It now reads hex ints (`0x10`), exponents (`1e5`, `1.5E-3`) and leading-dot
+  doubles (`.5`), as cel-cpp does. An int literal outside int64 is a `CelSyntaxError` at load (it was
+  accepted, and `9223372036854775808` evaluated on the subset); as in cel-cpp, a single minus sign on
+  the literal reaches `-9223372036854775808`, while `--9223372036854775808` and `-(9223372036854775808)`
+  do not. A uint literal (`5u`, `0x10u`) parses as `uint(5)`, range-checked to uint64: it evaluates on
+  cel-expr and is the same "no uint" error as `uint()` on the subset (it was a syntax error on both).
+  A double literal that overflows to Infinity (`1e400`) is a `CelSyntaxError`; cel-cpp reads it as
+  Infinity, which the library refuses everywhere else.
+- **A `collections.abc.Mapping` that is not a dict is a CEL map on the subset too.** A
+  `MappingProxyType` or custom `Mapping` failed field selection, indexing, `size()`, `in`, `has()` and
+  the macros on the subset (cel-expr already read it as a map). A mapping that raises is a rule_error
+  whose message keeps the exception's text in `.detail` only. `providers.walk` follows its keys, and
+  an `old_self` snapshot of one is plain data, copied as a dict (a `MappingProxyType` cannot be
+  deep-copied).
+- **CI builds and checks both distributions.** The `build` job runs `twine check --strict dist/*`,
+  installs the sdist (not only the wheel) into a fresh venv, imports `invariants`, `invariants.cli`
+  and `invariants.mcp` from outside the checkout, and runs `inv --help` and `inv-mcp --help`.
+  RELEASING.md lists the same steps and states the placeholder package name, authors and missing
+  project URLs as release blockers.
+- **Docs.** The guide (Invariant_first.md, docs/design-guide.md) describes `APP_MODEL`
+  (fake, replay, record, anthropic) and the hand-written traces instead of "a deterministic fake
+  model", lists `integrations.anthropic`, `mcp.py`, `inv mcp` / `inv-mcp`, docs/agents.md and
+  docs/models.md, and leads step 2 with model calls, edges and tool-door guards (guards on
+  deterministic code are optional). README, docs/start.md, docs/api.md (`inv mcp`), docs/agents.md,
+  docs/evaluation.md and the apps' READMEs were corrected where they had drifted (rogue.py holds 4
+  bypasses, the support agent is listed, trace paths and guide section numbers).
+
 ### Fix round 18: scan
 
 From a third review of `inv scan`. Regression tests: `tests/test_fix_round18_scan.py`; each failed

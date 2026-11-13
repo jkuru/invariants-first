@@ -110,7 +110,14 @@ shows there is no other way in.
 | `apps/pool-service` | a FastAPI service that leases slots in worker pools, resizes pools with a two-person approval, and triages failed jobs with a model | leases exceed a pool's size; a resize without approval or more than 4x; the model blames the wrong cause |
 | `apps/fact-pipeline` | a batch pipeline that extracts cited facts from documents with a model and answers questions | an invented quote; a fact believed on one source; an answer citing a chunk it never read |
 
-All three run with a deterministic fake model, so they need no API key.
+None of them needs an API key. `APP_MODEL` picks the model each app's model calls use: `fake` (the
+apps' default, and what the defect tests use) is a deterministic stand-in written for the app;
+`replay` answers from a trace file and fails with a diff on any request the trace does not hold;
+`anthropic` calls Claude through the Messages API (it needs `ANTHROPIC_API_KEY`); `record` calls
+Claude and writes the trace. Each app's `tests/test_replay.py` runs on `replay` by default, over
+traces in `tests/fixtures/traces/` that are hand-written fixtures, not recordings (each says
+`"fixture": "hand-written"`); `pytest --record` rewrites them with real replies. The adapter is
+`invariants.integrations.anthropic`, described in `docs/models.md`.
 
 ---
 
@@ -123,12 +130,20 @@ decorate fifteen functions and ship a new runtime into production does not get a
 comes in two steps:
 
 - **Step 1, CI only.** Install the library as a dev dependency, like a linter. Run `inv init`. It
-  finds the laws your code already has and locks them. Your production code does not import the
-  library at all.
-- **Step 2, at run time, one function at a time.** On the few functions that move money or call a
-  model, add a decorator so a law is also checked on every call.
+  finds the laws your code already has and locks them; `inv scan`, `inv lock` and
+  `inv check --base` keep them in CI, and `inv mcp` lets a coding agent ask about them. Your
+  production code does not import the library at all.
+- **Step 2, at run time, where the model is.** Step 1 governs what people and coding agents write
+  into the repository. It cannot govern what a model outputs at run time on live input: a
+  prompt-injected ticket, a graph-state reducer that changes a plan after it was checked, a ledger
+  that moved between plan and act. So step 2 starts at the model: `@inv.model_call` on each model
+  call, `@inv.edge` on the node that consumes its output, and `@inv.guard` on the tool doors that
+  move money or write state (chapter 5).
 
-Most of the value of step 1 comes for free, and you can stop there.
+Step 1 comes almost for free, and an app with no model in it may need nothing more. Guards on
+ordinary deterministic code (a CRUD handler, a service method a person wrote and tested) are
+optional: a plain Python `if` is fine there. A guard earns its place on the few such functions that
+move money, where the lock, the scan's door and ablation are worth having around the check.
 
 ### 2.2 Install and run
 
@@ -430,8 +445,10 @@ code while it works ("what is the path from this tool to the gateway?"). To use 
 
 Step 1 protects the shape of your APIs and the paths between them, without touching production.
 Step 2 adds checks that need live data: "no more than what is left of *this* order" can only be
-checked at the moment of the call. You add them one function at a time, starting with the few that
-matter most.
+checked at the moment of the call. Most of step 2 is chapter 5, the model calls and the edges after
+them; this chapter is the guard itself, which a tool door needs. You add guards one function at a
+time, starting with the doors a model's output reaches; on deterministic code a person wrote, a
+plain `if` is usually enough.
 
 ### 4.2 Pinned schemas
 
@@ -588,6 +605,16 @@ expects `inv.Rejected`, list it in `tests`, and run `inv lock`.
 A normal function's output was written by a person and reviewed. A model's output was written by
 nobody. It can be malformed, it can contain fields you never asked for, it can be well-formed and
 wrong, and it can decide it does not know. So a model call needs more than a guard.
+
+Libraries such as Instructor and PydanticAI already handle the shape: they parse a reply into a
+pydantic model, retry with the validation error, and let you add your own validators. Use them if
+you have them; the body of an `@inv.model_call` can call either. What this library adds is around
+the shape: the rule lives in the reviewed, locked rule file; a format failure is retried with the
+parser's message, but a semantic failure is resampled blind, and not at all when the reply is
+judged against your own records (5.3); an abstention goes to a person instead of being retried;
+the consumer re-checks the value against held state as it is now (5.4); and no outcome error
+carries the values it read (6.5). `docs/agent-frameworks.md` shows it with native tool use and
+LangGraph.
 
 ### 5.2 The loop: parse, abstain, check
 
@@ -987,8 +1014,9 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | `lockfile.py` | the pins, the semantic diff and the weakening gate |
 | `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
 | `cli.py` | the `inv` command |
+| `mcp.py` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`) |
 | `pytest_plugin.py` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-report` |
-| `integrations/` | FastAPI and ASGI (`application/problem+json`), pydantic (closed schemas, contracts), OpenTelemetry (one span per evaluation) |
+| `integrations/` | FastAPI and ASGI (`application/problem+json`), pydantic (closed schemas, contracts), OpenTelemetry (one span per evaluation), Anthropic (`integrations.anthropic`: Claude, trace replay and recording for a model-call body; `docs/models.md`) |
 
 ### 11.2 Commands
 
@@ -1002,6 +1030,7 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | `inv scan [--format text\|json\|sarif]` | the path-law check |
 | `inv status --import MOD` | each rule's standing, with reasons |
 | `inv hook pretool\|stop` | the agent hooks |
+| `inv mcp [--root DIR] [rulefile]` | a read-only MCP server over stdio for coding agents (also installed as `inv-mcp`; `docs/agents.md`) |
 
 Exit codes: 0 ok, 1 a check failed, 2 a usage error, 3 the scan has unresolved calls, 4 the scan
 skipped an ablated `enforce` rule. Only 0 is a pass.
@@ -1100,8 +1129,8 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 
 | Path | Holds |
 |---|---|
-| `invariants-py/` | the library, its test suite (about 3,600 tests, run on both CEL engines) and its docs |
-| `invariants-py/docs/` | `start.md` (the ten-minute start), `rule-file.md` (every field), `concepts.md`, `scan.md`, `lockfile.md`, `api.md`, `cel.md`, `cookbook.md`, `evaluation.md` |
+| `invariants-py/` | the library, its test suite (about 3,900 tests, run on both CEL engines) and its docs |
+| `invariants-py/docs/` | `start.md` (the ten-minute start), `rule-file.md` (every field), `concepts.md`, `scan.md`, `lockfile.md`, `api.md`, `cel.md`, `cookbook.md`, `models.md` (Claude, replay and recording: `integrations.anthropic`), `agents.md` (agent hooks and the `inv mcp` / `inv-mcp` server), `evaluation.md`, `design-guide.md` (this handbook) |
 | `apps/support-agent/` | the tool-calling agent and its twelve defects |
 | `apps/pool-service/`, `apps/fact-pipeline/` | the other two apps |
 | `action.yml`, `.pre-commit-hooks.yaml` | the GitHub Action and the pre-commit hook |

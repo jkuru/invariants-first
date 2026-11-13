@@ -10,7 +10,7 @@ around a service without someone saying yes.
 |---|---|
 | [`invariants-py/`](invariants-py) | The Python library and `inv` CLI (package `invariants-first`, import `invariants`). Start with its [README](invariants-py/README.md) and the [10-minute guide](invariants-py/docs/start.md). |
 | [`apps/pool-service`](apps/pool-service) | Example app: a FastAPI and SQLite lease service with an LLM triage step. Uses only the library's public API. |
-| [`apps/fact-pipeline`](apps/fact-pipeline) | Example app: a batch pipeline that extracts cited facts with a model (a deterministic fake). |
+| [`apps/fact-pipeline`](apps/fact-pipeline) | Example app: a batch pipeline that extracts cited facts with a model (a deterministic fake by default; `APP_MODEL` picks replay, record or Claude). |
 | [`apps/support-agent`](apps/support-agent) | Example app: a tool-calling support agent (planner, executor edge, billing doors) with 12 seeded agent defects, each caught. |
 | [`prototype/`](prototype) | The first prototype the library grew from. Kept for history; not maintained. |
 | [`Invariant_first.md`](Invariant_first.md) | Invariant-first, for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example and the limits. |

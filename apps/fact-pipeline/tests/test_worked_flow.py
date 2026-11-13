@@ -1,4 +1,4 @@
-"""Guide section 7.6, step by step: Acme acquires Beta."""
+"""A worked flow, step by step: Acme acquires Beta."""
 from __future__ import annotations
 
 import importlib

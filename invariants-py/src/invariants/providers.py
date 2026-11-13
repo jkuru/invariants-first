@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+from collections.abc import Mapping
 from typing import Any, Callable, Generic, Iterator, TypeVar
 
 from .cel import CelError
@@ -115,11 +116,12 @@ class ProviderFailed:
 
 
 def walk(v: Any, parts: Any) -> Any:
-    """Follow a path through dict keys or public attributes. Every error is CelError (rule_error)."""
+    """Follow a path through mapping keys (a dict or any other collections.abc.Mapping, as the CEL
+    engines read one) or public attributes. Every error is CelError (rule_error)."""
     for p in parts:
         if isinstance(v, ProviderFailed):
             raise CelError(v.msg)
-        if isinstance(v, dict):
+        if isinstance(v, Mapping):
             try:
                 if p not in v:
                     raise CelError(f"no such key {p!r}")

@@ -29,7 +29,7 @@ Two MCP servers, both read-only, run over stdio:
 
 - **Graphify** (`graphify-mcp`, from `pip install 'graphifyy[mcp]'`) answers questions about the code:
   the path from a new tool to the gateway, what a change touches, which functions sit together.
-- **invariants** (`inv-mcp`, installed with this package; also `inv mcp` once the CLI exposes it)
+- **invariants** (`inv-mcp`, installed with this package; `inv mcp [--root DIR] [rulefile]` runs the same server)
   answers questions about the laws: what each rule says, whether every path passes its door, and
   why a finding fails.
 

@@ -19,9 +19,9 @@ reviewed YAML file:
   DynamoDB, Stripe or raw SQL.
 
 People own the laws at the boundaries; agents are free inside the implementations. A CLI check in CI
-proves no change loosened a law and no call path skips a door. Optional decorators enforce value laws
-at run time, and a pytest plugin proves each one is load-bearing by switching it off and watching a
-test fail.
+proves no change loosened a law and no call path skips a door. At run time, decorators check what a
+model returns, what its consumer receives and what reaches a tool door: the part no CI check can see.
+A pytest plugin proves each one is load-bearing by switching it off and watching a test fail.
 
 ## Start in 10 minutes: lock the laws you already have
 
@@ -68,8 +68,32 @@ To make the check hard to skip, copy one snippet per layer: a pre-commit hook (`
 a GitHub Action (`inv check --base`, which a reviewer's label can override) and Claude Code hooks.
 The `inv hook pretool` hook stops the agent from accepting a weakening, and `inv hook stop` keeps it
 from finishing while the check fails. The agent hooks are an early warning; the CI check against the
-base branch is the gate. [docs/start.md](docs/start.md) has all three snippets, plus the
-next step: a two-line `guard` rule on the service method that moves the money.
+base branch is the gate. [docs/start.md](docs/start.md) has all three snippets.
+
+## Step 2: the model and its tools, at run time
+
+Step 1 governs what people and coding agents write into the repository. It cannot govern what a
+model outputs at run time on live input: a prompt-injected ticket, a graph-state reducer that changes
+a plan after it was checked, a ledger that moved between plan and act. Step 2 puts the checks there:
+
+- `@inv.model_call` parses the reply into a closed schema and retries a format failure with the
+  parser's message; a reply that breaks a rule is resampled blind (the model never sees the rule),
+  and never resampled when the rule judges it against your own records (`compares_to: held_data`);
+  an abstention opens a review for a person instead of running anything;
+- `@inv.edge` on the node that consumes the reply re-checks it against held state as it is now, so a
+  forged, swapped or since-stale value is caught where it is used;
+- `@inv.guard` on the tool doors the reply reaches (refund, credit, write) checks every caller;
+- outcome errors never carry the values they read.
+
+Instructor and PydanticAI already give you the shape: a pydantic model, a retry with the validation
+error, your own validators. Keep using them inside the body if you like; this adds the reviewed and
+locked rule, the blind or forbidden resample, abstention, the edge re-check and value-free errors.
+See [concepts](docs/concepts.md#model-calls), [models.md](docs/models.md) and
+[agent-frameworks.md](docs/agent-frameworks.md) (native tool use and LangGraph).
+
+Guards on ordinary deterministic code (a CRUD handler, a service method a person wrote and tested)
+are optional; a plain Python `if` is fine there. A guard is worth it on the few that move money,
+where the lock, the scan's door and ablation are worth having around the check.
 
 ## Before and after
 
@@ -152,9 +176,9 @@ both the changes and the rules, so read the method and the verdict in
 
 **The 10-minute path costs almost nothing.** Run against a copy of the pool-service example app,
 `inv init` pinned its 7 pydantic models (13 constraints) and wrote one door rule for its store: every
-write goes through 7 service functions. It found and froze 4 of the 6 bypasses planted in the app's
-`rogue.py` (the other 2 are raw SQL and a dropped trigger: below the API, not reported) and
-3 real back doors: a benchmark and two endpoints that write the store directly. `inv check` passed
+write goes through 7 service functions. It found and froze the 4 bypasses planted in the app's
+`bypass/pool_service/rogue.py` (2 direct sink calls, a door called without its guard, and a sink
+reached through `getattr`; raw SQL is below the API and is not planted there) and 3 real back doors: a benchmark and two endpoints that write the store directly. `inv check` passed
 straight away, and a new direct write failed it. On an app built on SQLAlchemy, a Django-style
 manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back
 doors in a worker and an admin script. On the tool-calling [support agent](../apps/support-agent),
@@ -427,14 +451,18 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [Scan](docs/scan.md) | door rules, allow, receiver typing, reachability |
 | [API](docs/api.md) | every public name, the pytest plugin and the integrations |
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
-| [Agents](docs/agents.md) | the agentic flow (understand, propose, verify, approve, lock) and the `inv-mcp` server |
+| [Agents](docs/agents.md) | the agentic flow (understand, propose, verify, approve, lock) and the `inv mcp` / `inv-mcp` server |
+| [Models](docs/models.md) | `integrations.anthropic`: Claude in a model-call body, trace replay and recording |
 | [Evaluation](docs/evaluation.md) | the measured experiment and its verdict; the harness is in [evaluation/](evaluation) |
 | [Invariant-first](docs/design-guide.md) | the whole system for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example, the limits |
 
-**Examples.** [apps/pool-service](../apps/pool-service) is a FastAPI and SQLite lease service
-with an LLM triage step, and [apps/fact-pipeline](../apps/fact-pipeline) is a batch pipeline
-that extracts cited facts with a model (a deterministic fake). Each is a standalone project whose
-`ci.sh` runs every check.
+**Examples.** [apps/support-agent](../apps/support-agent) is a tool-calling support agent (a
+planner model call, an executor edge, billing doors) with 12 seeded agent defects, each caught;
+[apps/pool-service](../apps/pool-service) is a FastAPI and SQLite lease service with an LLM triage
+step; and [apps/fact-pipeline](../apps/fact-pipeline) is a batch pipeline that extracts cited facts
+with a model. Each app's model runs on a deterministic fake by default; `APP_MODEL` picks a replayed
+trace (the committed traces are hand-written), Claude, or a recording
+([docs/models.md](docs/models.md)). Each is a standalone project whose `ci.sh` runs every check.
 
 ## Contributing
 

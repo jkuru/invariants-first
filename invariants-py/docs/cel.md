@@ -195,6 +195,19 @@ whole (`==`, `!=`, `in`) is a `rule_error` on every backend.
   or string (`{1.0: 'a'}`, `{null: 1}` and a repeated key are `rule_error`s). Python cannot hold `1`
   and `true` as two keys of one map, so a map literal with both is a `rule_error` on the subset
   (cel-expr evaluates it).
+- **Mappings.** Any `collections.abc.Mapping` (a `dict`, a `MappingProxyType`, your own `Mapping`)
+  is a CEL map on every backend: field selection, indexing, `size()`, `in`, `has()` and the macros
+  read its keys.
+
+## Number literals
+
+Both backends read rule text through one parser, with CEL's number grammar: ints in decimal or hex
+(`0x10`), doubles as `1.5`, `1e5`, `1.5E-3` or `.5`, and uints with a `u` suffix (`5u`, `0x10u`).
+An int literal outside int64 is a `LoadError` (`CelSyntaxError`), as in cel-cpp; a single minus sign
+on the literal reaches `-9223372036854775808`, but `--9223372036854775808` and
+`-(9223372036854775808)` do not load. A uint literal outside uint64 does not load either, and a
+uint literal is `uint(n)`, so it needs cel-expr. A double literal that would be Infinity (`1e400`)
+does not load: cel-cpp reads it as Infinity, which the library refuses everywhere else.
 
 ## The load-time type check
 

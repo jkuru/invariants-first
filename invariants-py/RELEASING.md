@@ -3,8 +3,19 @@
 ## Before publishing
 
 The project has not been published yet. Some metadata is deliberately left open, because none of
-it is known yet and none of it should be invented. Settle each item below before the first upload
-to PyPI, then delete this section.
+it is known yet and none of it should be invented. **Every unticked item below is a release
+blocker**: do not upload to PyPI (or TestPyPI) until each one is settled by the project owner, then
+delete this section. Three of them are placeholders in `pyproject.toml` today and must not ship as
+they are:
+
+| Field in `pyproject.toml` | Today                                   | Owner must supply                  |
+|---------------------------|-----------------------------------------|------------------------------------|
+| `[project] name`          | `invariants-first` (placeholder)        | the final distribution name        |
+| `[project] authors`       | "The invariants-first authors"          | the names and contacts to publish  |
+| `[project.urls]`          | absent (no URL is invented)             | Homepage, Source, Issues, Changelog |
+
+CI's `twine check --strict` passes with these placeholders (it checks that the metadata and README
+render, not that they are final), so a green build is not a sign that this list is done.
 
 - [ ] **Final package name.** `invariants-first` in `pyproject.toml` (`[project] name`) is a
       placeholder. Pick the distribution name, check that it is free on PyPI (and on TestPyPI), and
@@ -39,17 +50,26 @@ to PyPI, then delete this section.
 
 ## Every release
 
-1. Run the suite on every CEL backend and under `-O`, mypy, and both example apps' `ci.sh`:
+1. Run the suite on every CEL backend and under `-O`, mypy, and the three example apps' `ci.sh`:
 
    ```
    for b in subset cel-expr; do INV_CEL_BACKEND=$b python -m pytest tests -q; done
    python -O -m pytest tests -q
    python -m mypy
-   ../apps/pool-service/ci.sh && ../apps/fact-pipeline/ci.sh
+   ../apps/pool-service/ci.sh && ../apps/fact-pipeline/ci.sh && ../apps/support-agent/ci.sh
    ```
 
 2. Bump `version` in `pyproject.toml` and date the release in `CHANGELOG.md`.
-3. Build with `python -m build` and install the wheel into a fresh virtual environment; check that
-   `inv --help` runs, `import invariants` works with only the core dependency (PyYAML), and the
-   README Quickstart runs as shown.
-4. Tag the release; the release workflow publishes it through trusted publishing.
+3. Build both distributions and check their metadata (CI's `build` job runs the same steps):
+
+   ```
+   python -m pip install build twine
+   python -m build                       # dist/*.whl and dist/*.tar.gz
+   python -m twine check --strict dist/*
+   ```
+
+4. Install the wheel and, separately, the sdist (`pip install dist/*.tar.gz`) into fresh virtual
+   environments. In each, check that `import invariants` works with only the core dependency
+   (PyYAML), from a directory outside the checkout, and that `inv --help` and `inv-mcp --help` run;
+   with the wheel, check that the README Quickstart runs as shown.
+5. Tag the release; the release workflow publishes it through trusted publishing.

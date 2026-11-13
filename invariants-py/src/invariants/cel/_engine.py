@@ -309,7 +309,7 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
     if k == "cond":
         return f"({u(n[1])}) ? ({u(n[2])}) : ({u(n[3])})"
     if k == "un":
-        if n[1] == "-" and n[2][0] == "lit" and _num(n[2][1]):
+        if n[1] == "-" and n[2][0] == "lit" and _num(n[2][1]) and n[2][1] >= 0:   # -(INT_MIN) keeps its ()
             return f"-{_lit(n[2][1])}"
         return f"{n[1]}({u(n[2])})"
     if k == "bin":
@@ -336,6 +336,9 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
         if name == "inv.unique_by":
             lst, var, body = args[0], args[1], args[2]
             return f"{rename['inv.unique']}({p(lst)}.map({var[1]}, {u(body)}))"
+        if name == "uint" and tgt is None and len(args) == 1 and args[0][0] == "lit" \
+                and type(args[0][1]) is int and args[0][1] >= 0:
+            return f"{args[0][1]}u"     # a uint literal (5u parses as uint(5)); past int64 only nu is valid
         fn = rename.get(name, name)
         text = ", ".join(u(a) for a in args)
         return f"{p(tgt)}.{fn}({text})" if tgt is not None else f"{fn}({text})"

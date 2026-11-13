@@ -8,7 +8,7 @@ A batch worker CLI that:
 5. promotes the facts that are corroborated;
 6. answers questions with citations.
 
-The knowledge rules from section 7.3 of the Invariant-first guide are enforced by the
+The knowledge rules of section 10.3 of the Invariant-first guide ([`Invariant_first.md`](../../Invariant_first.md)) are enforced by the
 `invariants` library, which is installed as a package. The app uses only its public API.
 
 By default the model is `fact_pipeline.fake_model.FakeModel`, a deterministic pattern reader that never
@@ -75,11 +75,11 @@ fact-pipeline --db f.db monitor                         # exit 1 on any finding
 - `tests/`:
   - functional tests;
   - Hypothesis properties (`test_properties.py`);
-  - the guide's section 7.6 worked flow (`test_worked_flow.py`);
+  - a worked flow, step by step: Acme acquires Beta (`test_worked_flow.py`);
   - the async path;
   - the CLI;
   - the scan;
-  - the happy-path flows on replay (`test_replay.py`, traces in `fixtures/traces/`).
+  - the happy-path flows on replay (`test_replay.py`, traces in `tests/fixtures/traces/`).
 
 ## Models: fake, replay, Claude
 
