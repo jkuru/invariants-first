@@ -388,15 +388,17 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     keep = {*d.doors, *d.sinks}
     frozen: set[str] = set()
     for _ in range(MAX_FREEZE_ROUNDS):
-        frozen |= {n for f in found for n in [f.owner, *f.path] if n} - keep
+        frozen |= ({n for f in found for n in [f.owner, *f.path] if n} | report.on_paths.get(d.rid, set())) - keep
         d.allow = sorted(frozen)
         report = _check(d, g, roots, exclude)
         found = report.for_rule(d.rid)
-        if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found):
+        if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found) or not d.allow:
             break
-    if d.allow and report.rule_result(d.rid) != "pass":
+    if report.rule_result(d.rid) != "pass":
         d.active = False
-        d.why_inactive = "the scan still fails with the back doors frozen; review the findings by hand"
+        d.why_inactive = ("the scan still fails with the back doors frozen; review the findings by hand" if d.allow
+                          else "every finding is inside a door or sink, which allow cannot freeze; review the "
+                               "findings by hand")
 
 
 def _yaml_list(xs: list[str]) -> str:

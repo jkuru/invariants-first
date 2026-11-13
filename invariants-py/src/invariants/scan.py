@@ -27,6 +27,22 @@ SKIP_DIRS = frozenset({"__pycache__", "node_modules", "site-packages", "build", 
 REFLECTION = frozenset({"eval", "exec", "compile", "__import__", "globals", "vars", "locals"})
 DYNAMIC_IMPORT = frozenset({"importlib.import_module", "importlib.__import__"})
 _BUILTINS = frozenset(dir(builtins))
+_TYPE_ALIAS = getattr(ast, "TypeAlias", None)            # `type X = ...` (Python 3.12+)
+# builtin containers, as receivers: their own methods (d.update(), s.add()) are not a scanned sink
+_CONTAINERS = {"builtins.dict": "builtins.dict", "typing.Dict": "builtins.dict", "builtins.set": "builtins.set",
+               "typing.Set": "builtins.set", "builtins.list": "builtins.list", "typing.List": "builtins.list",
+               "builtins.frozenset": "builtins.frozenset", "typing.FrozenSet": "builtins.frozenset"}
+_LITERALS = ((ast.Dict, "builtins.dict"), (ast.DictComp, "builtins.dict"), (ast.Set, "builtins.set"),
+             (ast.SetComp, "builtins.set"), (ast.List, "builtins.list"), (ast.ListComp, "builtins.list"))
+_OPTIONAL = frozenset({"typing.Optional", "typing_extensions.Optional"})
+_ANNOTATED = frozenset({"typing.Annotated", "typing_extensions.Annotated"})
+_PROPERTY = frozenset({"builtins.property", "functools.cached_property"})
+_CM = {"contextlib.contextmanager": False, "contextlib.asynccontextmanager": True}
+_YIELDS = frozenset({f"{m}.{n}" for m in ("typing", "collections.abc")
+                     for n in ("Iterator", "Generator", "Iterable", "AsyncIterator", "AsyncGenerator", "AsyncIterable")})
+# reflective builtins and helpers taken as a value (`g = getattr`): calls through the name hide a lookup
+_REFLECTIVE = frozenset({*(f"builtins.{n}" for n in ("getattr", "setattr", "delattr", *REFLECTION)),
+                         *DYNAMIC_IMPORT, "operator.attrgetter", "operator.methodcaller"})
 # a table reference: optional schema qualifier, optional quotes, and a name that may hold placeholders
 _TABLE = r"""(?:["`\[]?\w+["`\]]?\.)?["`\[]?((?:\w|\{\w*\}|%(?:\(\w+\))?s)+|\?|:\w+)["`\]]?"""
 _SQL_FORMS: tuple[tuple[str, frozenset[str], re.Pattern[str]], ...] = tuple(
@@ -120,6 +136,9 @@ class Report:
     not_scanned: dict[str, str]
     files: int = 0
     functions: int = 0
+    # per rule: every function on a path that reaches the sink without the door, from any entrypoint
+    # (a finding shows one path per call site; `inv init` freezes all of them)
+    on_paths: dict[str, set[str]] = dataclasses.field(default_factory=dict)
 
     def for_rule(self, rule_id: str) -> list[Finding]:
         return [f for f in self.findings if f.rule == rule_id]
@@ -305,6 +324,7 @@ class _Index:
         self.attr_types: dict[str, dict[str, str]] = {}  # class -> {attribute: class}, shared by every walker
         self.foreign: set[str] | None = None             # attribute names set from outside their object
         self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
+        self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
 
     def add(self, root: pathlib.Path, file: pathlib.Path, name: str) -> None:
         try:
@@ -397,16 +417,74 @@ class _Index:
         info = self.classes[cls]
         if name in info["methods"]:
             return info["methods"][name]
-        mod = self.modules[info["module"]]
-        for b in info["bases"]:
-            base = _dotted(b)
-            if base:
-                head, _, rest = base.partition(".")
-                fq = self.canon(".".join(filter(None, [mod.aliases.get(head, f"{mod.name}.{head}"), rest])))
-                hit = self.method(fq, name, seen)
-                if hit:
-                    return hit
+        for fq in self.bases(cls):
+            hit = self.method(fq, name, seen)
+            if hit:
+                return hit
         return None
+
+    def bases(self, cls: str) -> list[str]:
+        """The canonical names of a class's bases, as written (`Base[T]`, a generic base, is Base; a
+        builtin such as `dict` is builtins.dict)."""
+        info = self.classes[cls]
+        mod = self.modules[info["module"]]
+        out = []
+        for b in info["bases"]:
+            d = _dotted(b.value if isinstance(b, ast.Subscript) else b)
+            if d:
+                head, _, rest = d.partition(".")
+                here = f"{mod.name}.{head}"
+                first = mod.aliases.get(head) or (
+                    f"builtins.{head}" if head in _BUILTINS and here not in self.classes else here)
+                out.append(self.canon(".".join(filter(None, [first, rest]))))
+        return out
+
+    def mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        """The method resolution order of a class through the scanned classes (C3; bases the scan does
+        not see are left out)."""
+        if cls not in self.classes or cls in seen:
+            return []
+        direct = [b for b in self.bases(cls) if b in self.classes]
+        seqs = [self.mro(b, seen | {cls}) for b in direct] + [list(direct)]
+        out = [cls]
+        while True:
+            seqs = [q for q in seqs if q]
+            if not seqs:
+                return out
+            head = next((q[0] for q in seqs if not any(q[0] in t[1:] for t in seqs)), None)
+            if head is None:                                   # no consistent order: depth first
+                return out + [c for q in seqs for c in q if c not in out]
+            out.append(head)
+            for q in seqs:
+                if q[0] == head:
+                    del q[0]
+
+    def module_values(self, module: str) -> dict[str, ast.expr]:
+        """Module-level `NAME = value` (or `type NAME = value`) bound once in the module: type aliases
+        such as `RepoDep = Annotated[Repo, Depends(get_repo)]`."""
+        if module in self._values:
+            return self._values[module]
+        tree = self.modules[module].tree
+        found: dict[str, ast.expr] = {}
+        for st in tree.body:
+            if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
+                found[st.targets[0].id] = st.value
+            elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) and st.value is not None:
+                found[st.target.id] = st.value
+            elif _TYPE_ALIAS is not None and isinstance(st, _TYPE_ALIAS) and isinstance(st.name, ast.Name):
+                found[st.name.id] = st.value
+        binds: collections.Counter[str] = collections.Counter()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                binds[n.id] += 1
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                binds[n.name] += 1
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                binds.update({x: 2 for x in n.names})
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                binds.update((a.asname or a.name).split(".")[0] for a in n.names)
+        self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
+        return out
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -526,10 +604,16 @@ class _Walker:
         self.sites: list[_Site] = []
         self.doc_ids = _docstrings(mod.tree)
         self._local_types: dict[str, dict[str, str]] = {}
+        self._called: set[int] = set()                        # ids of call targets: a call, not a value
 
     # receiver types: conservative, so a method call becomes an extracted edge only when certain ----
-    def _class_named(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
-        """The scanned class an annotation names (Cls, mod.Cls, 'Cls', Cls | None, Optional[Cls])."""
+    def _class_named(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None,
+                     depth: int = 0) -> str | None:
+        """The scanned class an annotation names (Cls, mod.Cls, 'Cls', Cls | None, Optional[Cls],
+        Annotated[Cls, ...] and a module-level alias of it), or the builtin container it names
+        (dict, dict[str, int], typing.Set[str], ...)."""
+        if depth > 8:
+            return None
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             try:
                 node = ast.parse(node.value, mode="eval").body
@@ -537,24 +621,55 @@ class _Walker:
                 return None
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             sides = [x for x in (node.left, node.right) if not (isinstance(x, ast.Constant) and x.value is None)]
-            return self._class_named(sides[0], local, me) if len(sides) == 1 else None
-        if isinstance(node, ast.Subscript) and _dotted(node.value) in ("Optional", "typing.Optional"):
-            return self._class_named(node.slice, local, me)
+            return self._class_named(sides[0], local, me, depth + 1) if len(sides) == 1 else None
+        if isinstance(node, ast.Subscript):
+            head = self._resolve(node.value, set(), None) if _dotted(node.value) else None
+            if head in _OPTIONAL or _dotted(node.value) == "Optional":
+                return self._class_named(node.slice, local, me, depth + 1)
+            if head in _ANNOTATED:                             # Annotated[Repo, Depends(get_repo)]: Repo
+                first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) and node.slice.elts else node.slice
+                return self._class_named(first, local, me, depth + 1)
+            if head in self.idx.classes:                       # BaseRepo[int]: a generic scanned class
+                return head
+            return _CONTAINERS.get(head or "")
         if isinstance(node, (ast.Name, ast.Attribute)):
             fq = self._resolve(node, set(), None)
-            return fq if fq in self.idx.classes else None
+            if fq is None and isinstance(node, ast.Name):
+                fq = f"{self.mod.name}.{node.id}"
+            if fq is None:
+                return None
+            if fq in self.idx.classes:
+                return fq
+            if fq in _CONTAINERS:
+                return _CONTAINERS[fq]
+            mod, _, name = fq.rpartition(".")                  # RepoDep = Annotated[Repo, ...]
+            if mod in self.idx.modules and (value := self.idx.module_values(mod).get(name)) is not None:
+                return self._home(mod)._class_named(value, set(), None, depth + 1)
         return None
 
+    def _home(self, module: str) -> "_Walker":
+        """A walker for the module that defines a name, so its annotations resolve where they are written."""
+        return self if module == self.mod.name else _Walker(self.idx, self.idx.modules[module])
+
     def _constructed(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
-        """Cls(...) on a scanned class: an instance of exactly that class."""
+        """Cls(...) on a scanned class: an instance of exactly that class; dict(...), set(...), list(...)
+        and a container literal or comprehension: that builtin container."""
+        for kind, name in _LITERALS:
+            if isinstance(node, kind):
+                return name
         if isinstance(node, ast.Call) and _dotted(node.func):
             fq = self._resolve(node.func, local, me)
+            if fq in _CONTAINERS and fq.startswith("builtins."):
+                return fq
             return fq if fq in self.idx.classes else None
         return None
 
     def _returned(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
         """f(...) on a scanned function annotated `-> Cls` (or `Cls | None`, `Optional[Cls]`): an instance of
-        Cls or a subclass. A factory or a FastAPI dependency (`def get_repo() -> RefundRepo`)."""
+        Cls or a subclass. A factory or a FastAPI dependency (`def get_repo() -> RefundRepo`), awaited
+        too (`await get_repo()` on an `async def`)."""
+        if isinstance(node, ast.Await):
+            node = node.value
         if not (isinstance(node, ast.Call) and _dotted(node.func)):
             return None
         fq = self._resolve(node.func, local, me)
@@ -568,18 +683,47 @@ class _Walker:
         f = self.idx.funcs.get(fid)
         fn = f.node if f is not None else None
         got = None
-        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None:
-            home = self if f is not None and f.module == self.mod.name else (
-                _Walker(self.idx, self.idx.modules[f.module]) if f is not None and f.module in self.idx.modules
-                else None)
-            if home is not None:
-                got = home._class_named(fn.returns, set(), None)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None \
+                and f is not None and f.module in self.idx.modules:
+            got = self._home(f.module)._class_named(fn.returns, set(), None)
         self.idx.returns[fid] = got
         return got
 
     def _made(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
         """The class a value is built as: Cls(...) or a call to a function annotated to return Cls."""
         return self._constructed(node, local, me) or self._returned(node, local, me)
+
+    def _entered(self, node: ast.AST, is_async: bool, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """The class `with node as x` binds x to: a scanned class's `__enter__`/`__aenter__` return
+        annotation (`-> Self` is the class), or a @contextmanager factory's `-> Iterator[Cls]`."""
+        cls = self._made(node, local, me)
+        if cls in self.idx.classes:
+            m = self.idx.method(cls, "__aenter__" if is_async else "__enter__")
+            fn = self.idx.funcs[m].node if m else None
+            if m and isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None:
+                if isinstance(fn.returns, (ast.Name, ast.Attribute)) and \
+                        (_dotted(fn.returns) or "").rpartition(".")[2] == "Self":
+                    return cls
+                return self.return_type(m)
+            return None
+        if isinstance(node, ast.Call) and _dotted(node.func):
+            fq = self._resolve(node.func, local, me)
+            f = self.idx.funcs.get(fq or "")
+            fn = f.node if f is not None else None
+            if f is None or not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    or f.module not in self.idx.modules:
+                return None
+            home = self._home(f.module)
+            if not any(_CM.get(home._resolve(d, set(), None) or "") is is_async for d in fn.decorator_list
+                       if _dotted(d)):
+                return None
+            ann = fn.returns
+            if ann is not None and isinstance(ann, ast.Subscript) and _dotted(ann.value) and \
+                    home._resolve(ann.value, set(), None) in _YIELDS:
+                first = ann.slice.elts[0] if isinstance(ann.slice, ast.Tuple) and ann.slice.elts else ann.slice
+                got = home._class_named(first, set(), None)
+                return got if got in self.idx.classes else None
+        return None
 
     def _types_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None) -> dict[str, str]:
         """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments."""
@@ -604,6 +748,12 @@ class _Walker:
                 seen[node.target.id].add(self._made(node.value, local, me) if node.value is not None
                                          else self._class_named(node.annotation, local, me))
                 handled.add(id(node.target))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):     # with Session() as repo
+                for item in node.items:
+                    if isinstance(item.optional_vars, ast.Name):
+                        seen[item.optional_vars.id].add(
+                            self._entered(item.context_expr, isinstance(node, ast.AsyncWith), local, me))
+                        handled.add(id(item.optional_vars))
         for node in ast.walk(fn):                              # any other binding: for, with, walrus, unpacking
             if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in handled:
                 seen[node.id].add(None)
@@ -630,6 +780,10 @@ class _Walker:
             if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
                 ann = self._class_named(st.annotation, set(), None)
                 seen[st.target.id].add(ann if st.value is None else self._made(st.value, set(), None))
+            elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    _dotted(d) and self._resolve(d, set(), None) in _PROPERTY for d in st.decorator_list):
+                # @property def repo(self) -> Repo: self.repo reads it
+                seen[st.name].add(self._class_named(st.returns, set(), None) if st.returns is not None else None)
         for fid in self.idx.classes[cls]["methods"].values():
             fn = self.idx.funcs[fid].node
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
@@ -672,7 +826,7 @@ class _Walker:
                 base: tuple[str, bool] | None = (me[1], False)
             else:                                             # ctx.billing.refund(): ctx's class, then billing's
                 base = self._receiver(node.value, owner, local, me)
-            if base is None or node.attr in self._foreign_attrs():
+            if base is None or base[0] not in self.idx.classes or node.attr in self._foreign_attrs():
                 return None
             got = self._attr_types(base[0]).get(node.attr)
             return (got, False) if got else None
@@ -709,6 +863,60 @@ class _Walker:
             self.idx.foreign = out
         return self.idx.foreign
 
+    def _super_method(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """super().m (or super(Cls, self).m) inside a method: the next m after the class in its method
+        resolution order through the scanned classes; "" when super() names no scanned method, None when
+        node is not a super() lookup."""
+        v = node.value
+        if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and me
+                and self._resolve(v.func, local, me) == "builtins.super"):
+            return None
+        cls = me[1]
+        if v.args:
+            named = self._resolve(v.args[0], local, me) if _dotted(v.args[0]) else None
+            if named not in self.idx.classes:
+                return ""
+            cls = named
+        for c in self.idx.mro(cls)[1:]:
+            if node.attr in self.idx.classes[c]["methods"]:
+                return self.idx.classes[c]["methods"][node.attr]
+        return ""
+
+    def _typed(self, node: ast.Attribute, owner: str, local: set[str],
+               me: tuple[str, str] | None) -> tuple[list[str], str | None]:
+        """For `recv.m` on a receiver the scan can type: the methods it may name (the class's m, and the
+        overrides a subclass instance may bring), else the builtin container it is (d.update on a dict)."""
+        sup = self._super_method(node, local, me)
+        if sup is not None:
+            return ([sup] if sup else []), None
+        rcv = self._receiver(node.value, owner, local, me)
+        if rcv is None:
+            return [], None
+        if rcv[0] in self.idx.classes:
+            hit = self.idx.method(rcv[0], node.attr)
+            if not hit:
+                return [], None
+            return [hit, *([] if rcv[1] else self._subclasses_overriding(rcv[0], node.attr))], None
+        if rcv[0] in _CONTAINERS.values() and (rcv[1] or not self._subclasses_overriding(rcv[0], node.attr)):
+            return [], rcv[0]                                  # a scanned subclass overriding it stays unknown
+        return [], None
+
+    def _via_function(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> bool:
+        """`self.repo.m` where repo is a method or property of a scanned class: its name resolves through a
+        function, so the receiver's type decides what m is."""
+        return bool(_dotted(node.value)) and self._resolve(node.value, local, me) in self.idx.funcs
+
+    def _value_refs(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> list[str]:
+        """The scanned functions a Name/Attribute expression names when it is used as a value."""
+        if not isinstance(node, (ast.Name, ast.Attribute)):
+            return []
+        fq = self._resolve(node, local, me) if _dotted(node) else None
+        if fq and fq in self.idx.funcs:
+            return [fq]
+        if isinstance(node, ast.Attribute) and (fq is None or self._via_function(node, local, me)):
+            return self._typed(node, owner, local, me)[0]
+        return []
+
     def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
         out = []
         for c, info in self.idx.classes.items():
@@ -720,16 +928,7 @@ class _Walker:
         if c in seen or c not in self.idx.classes:
             return False
         seen.add(c)
-        info = self.idx.classes[c]
-        mod = self.idx.modules[info["module"]]
-        for b in info["bases"]:
-            d = _dotted(b)
-            if d:
-                head, _, rest = d.partition(".")
-                fq = self.idx.canon(".".join(filter(None, [mod.aliases.get(head, f"{mod.name}.{head}"), rest])))
-                if fq == base or self._inherits(fq, base, seen):
-                    return True
-        return False
+        return any(fq == base or self._inherits(fq, base, seen) for fq in self.idx.bases(c))
 
     def run(self) -> None:
         self._body(self.mod.tree.body, f"{self.mod.name}.<module>", set(), None, self.mod.name)
@@ -825,8 +1024,18 @@ class _Walker:
 
         def ns_dict(x: ast.AST) -> str | None:
             if isinstance(x, ast.Attribute) and x.attr == "__dict__":
-                return self._namespace(x.value, local, me)
+                v = x.value                                    # type(obj).__dict__, obj.__class__.__dict__
+                if isinstance(v, ast.Attribute) and v.attr == "__class__" or isinstance(v, ast.Call) and \
+                        len(v.args) == 1 and _dotted(v.func) and self._resolve(v.func, local, me) == "builtins.type":
+                    return "type(...)"
+                return self._namespace(v, local, me)
             return None
+
+        if isinstance(node, ast.Compare) and all(isinstance(o, (ast.In, ast.NotIn)) for o in node.ops):
+            rest = [c for c in node.comparators if not (_dotted(c) and self._resolve(c, local, me) == "sys.modules")]
+            if len(rest) < len(node.comparators):             # `name in sys.modules` only asks
+                visit(node.left, *rest)
+                return True
 
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) and (ns := ns_dict(node.value)):
             self._lookup(owner, node, ns, node.slice, "__dict__[...]")
@@ -870,6 +1079,7 @@ class _Walker:
         if self._reflect(node, owner, local, me):
             return
         if isinstance(node, ast.Call):
+            self._called.add(id(node.func))
             self._call(node, owner, local, me)
             if not _dotted(node.func):
                 self._expr(node.func, owner, local, me)
@@ -877,9 +1087,8 @@ class _Walker:
                 self._site("wrapped", owner, node.func, _dotted(node.func.value) or "")
             elif isinstance(node.func, ast.Attribute) and _dunder(node.func.attr) \
                     and node.func.attr not in ("__call__", *_HARMLESS_DUNDERS):
-                base = self._resolve(node.func.value, local, me)  # f.__get__(o)(...): f used as a value
-                if base and base in self.idx.funcs:
-                    self._site("ref", owner, node.func, base)
+                for base in self._value_refs(node.func.value, owner, local, me):   # f.__get__(o)(...): f
+                    self._site("ref", owner, node.func, base)                       # used as a value
             for a in [*node.args, *[k.value for k in node.keywords]]:
                 self._expr(a, owner, local, me)
             return
@@ -887,12 +1096,16 @@ class _Walker:
             if isinstance(node, ast.Attribute) and node.attr == "__wrapped__":
                 self._site("wrapped", owner, node, _dotted(node.value) or "")
             elif isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS:
-                base = self._resolve(node.value, local, me)       # f.__call__, f.__get__, f.__func__ read
-                if base and base in self.idx.funcs:               # as a value: f escapes
-                    self._site("ref", owner, node, base)
-            fq = self._resolve(node, local, me)
-            if fq and fq in self.idx.funcs:
-                self._site("ref", owner, node, fq)
+                for base in self._value_refs(node.value, owner, local, me):   # f.__call__, f.__get__,
+                    self._site("ref", owner, node, base)                      # f.__func__ read as a value
+            fq = self._resolve(node, local, me) if _dotted(node) else None
+            if fq in _REFLECTIVE and id(node) not in self._called:            # g = getattr; g(obj, name)
+                self._site("reflection", owner, node, f"{fq.rpartition('.')[2]} used as a value")
+            elif fq == "sys.modules":                                         # sys.modules[name].Repo
+                self._site("reflection", owner, node, "sys.modules")
+            elif id(node) not in self._called:                                # cb = repo.save: escapes
+                for ref in self._value_refs(node, owner, local, me):
+                    self._site("ref", owner, node, ref)
             if isinstance(node, ast.Attribute) and not _dotted(node):
                 self._expr(node.value, owner, local, me)
             return
@@ -926,7 +1139,8 @@ class _Walker:
         while isinstance(func, ast.Attribute) and func.attr == "__call__":    # f.__call__(x) calls f
             func = func.value
         fq = self._resolve(func, local, me) if _dotted(func) else None
-        if func is not node.func and not (fq and (fq in self.idx.funcs or fq in self.idx.classes)):
+        if func is not node.func and not (fq and (fq in self.idx.funcs or fq in self.idx.classes)) and not (
+                isinstance(func, ast.Attribute) and self._typed(func, owner, local, me)[0]):
             func, fq = node.func, None                 # not a known function: an ordinary attribute call
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
             name = node.args[1] if len(node.args) > 1 else None
@@ -950,6 +1164,9 @@ class _Walker:
         if fq in DYNAMIC_IMPORT:
             self._site("dynimport", owner, node, fq)
             return
+        if fq and fq.startswith("sys.modules."):                   # sys.modules.get(name).Repo
+            self._site("reflection", owner, node, fq)
+            return
         if fq in ("operator.attrgetter", "operator.methodcaller") and node.args and \
                 isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
             self._site("getattr", owner, node, f"?|{node.args[0].value}")
@@ -960,17 +1177,14 @@ class _Walker:
             init = self.idx.method(fq, "__init__")
             if init:
                 self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
-        elif fq is None and isinstance(func, ast.Attribute) and \
-                (rcv := self._receiver(func.value, owner, local, me)) and \
-                (hit := self.idx.method(rcv[0], func.attr)):
-            self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False))
-            if not rcv[1]:                              # a subclass instance may arrive: its override too
-                for m in self._subclasses_overriding(rcv[0], func.attr):
-                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False))
-        elif fq is None and isinstance(func, ast.Attribute):
-            self._site("attrcall", owner, func, func.attr)
-            for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
-                self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True))
+        elif isinstance(func, ast.Attribute) and (fq is None or self._via_function(func, local, me)):
+            hits, container = self._typed(func, owner, local, me)
+            for m in hits:                              # the class's method, and a subclass's override
+                self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False))
+            if not hits and container is None:          # d.update() on a dict is the dict's own method
+                self._site("attrcall", owner, func, func.attr)
+                for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
+                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True))
 
 
 # --- the scan -----------------------------------------------------------------------------------
@@ -1021,7 +1235,8 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
                     functions=sum(1 for f in idx.funcs.values() if f.node is not None))
     entries = g.entries
     for med in scanned.values():
-        report.findings += _check_rule(idx, med, edges, sites, entries)
+        report.on_paths[med.rule] = set()
+        report.findings += _check_rule(idx, med, edges, sites, entries, report.on_paths[med.rule])
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     return report
@@ -1071,7 +1286,9 @@ def _finding(idx: _Index, rule: str, kind: str, code: str, msg: str, owner: str 
 
 
 def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Site],
-                entries: list[str]) -> list[Finding]:
+                entries: list[str], on_paths: set[str] | None = None) -> list[Finding]:
+    """The findings for one rule. on_paths, when given, collects every function on a path that reaches the
+    sink without the door, from every entrypoint (findings show one path per call site)."""
     rid, out = med.rule, []
     for root, file, line, err in idx.parse_errors:
         out.append(Finding("unresolved", rid, "unresolved/parse-error", f"cannot parse: {err}",
@@ -1114,19 +1331,25 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
         for e in edges:
             if e.caller not in doors and e.callee not in doors and not (e.via_getattr and e.callee in sinks):
                 succ[e.caller].append(e)
-        for start in entries:
-            if start in sinks or start in doors:
-                continue
-            for inferred_ok in (False, True):
-                hit = _shortest(start, live, succ, inferred_ok, allowed)
-                if hit:
-                    names, last = hit
+        # one finding per call site that reaches the sink (file:line:col), with the shortest path from the
+        # first entrypoint that reaches it; a site reached only through a name-matched call is unresolved
+        reported: set[tuple[str, int, int]] = set()
+        for inferred_ok in (False, True):
+            for start in entries:
+                if start in sinks or start in doors:
+                    continue
+                for names, last in _paths(start, live, succ, inferred_ok, allowed):
+                    if on_paths is not None:
+                        on_paths.update(names)
+                    site = (last.caller, last.line, last.col)
+                    if site in reported:
+                        continue
+                    reported.add(site)
                     kind = "unresolved" if inferred_ok else "bypass"
                     via = " (through a name-matched call on an unknown receiver)" if inferred_ok else ""
                     out.append(_finding(idx, rid, kind, "unresolved/inferred-path" if inferred_ok else "bypass",
                                         f"{' -> '.join(names)} reaches the sink without passing {door_txt}{via}",
                                         last.caller, last.line, last.col, names))
-                    break
 
     # 2. idioms, per site. Inside an allowed back door, the ways it reaches the sink are frozen with it;
     # unwrapping a guard, monkeypatching and reflection are still reported there.
@@ -1158,6 +1381,15 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
             out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
                                 f"assigns over {s.detail}, replacing the sink or door at run time",
                                 s.owner, s.line, s.col))
+        elif s.what == "patch" and _holds(idx, s.detail, trusted):
+            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
+                                f"assigns over {s.detail}, which holds the sink or door, replacing it at run time",
+                                s.owner, s.line, s.col))
+        elif s.what in ("setattr", "delattr") and lit and obj and not obj.startswith(("self:", "?")) \
+                and _holds(idx, idx.canon(f"{obj}.{lit}"), trusted):
+            out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
+                                f"{s.what} on {lit!r} replaces {idx.canon(f'{obj}.{lit}')}, which holds the sink "
+                                f"or door, at run time", s.owner, s.line, s.col))
         elif s.what == "wrapped":
             out.append(_finding(idx, rid, "forbidden", "forbidden/unwrap",
                                 f"{s.detail or 'an object'}.__wrapped__ calls a guarded function without its guard",
@@ -1177,14 +1409,21 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     # 3. an allowed back door that is no longer one: its entry would let a regression through unseen.
     # An entry is in use when the scan without allow reports something in it or on a path through it.
     if allowed:
-        bare = _check_rule(idx, Mediation(rid, med.sinks, med.doors), edges, sites, entries)
-        used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path}
+        on: set[str] = set()
+        bare = _check_rule(idx, Mediation(rid, med.sinks, med.doors), edges, sites, entries, on)
+        used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path} | on
         for a in sorted(allowed - sinks - doors - used):
             out.append(_finding(idx, rid, "missing", "missing/allow-unused",
                                 f"allowed back door {a} no longer reaches the sink without the door; delete it from "
                                 f"allow (a tightening), so a regression there is caught",
                                 a))
     return out
+
+
+def _holds(idx: _Index, name: str, trusted: set[str]) -> bool:
+    """name is a scanned module or class that holds a sink, door or allowed function: rebinding it
+    (`pkg.repo.Repo = Fake`) replaces them all."""
+    return (name in idx.modules or name in idx.classes) and any(t.startswith(name + ".") for t in trusted)
 
 
 def _reach(starts: Iterable[str], edges: list[_Edge], blocked: set[str]) -> set[str]:
@@ -1217,8 +1456,15 @@ def door_only(idx: _Index, edges: list[_Edge], sites: list[_Site], entries: list
 
 def _shortest(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferred_ok: bool,
               allowed: frozenset[str] | set[str] = frozenset()) -> tuple[list[str], _Edge] | None:
-    """BFS: the shortest call path from start to a goal that passes at least one function outside
-    `allowed` (a path of allowed functions alone is a frozen back door), and its last edge."""
+    """The shortest of _paths: the first call path from start to a goal, or None."""
+    return next(_paths(start, goals, succ, inferred_ok, allowed), None)
+
+
+def _paths(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferred_ok: bool,
+           allowed: frozenset[str] | set[str] = frozenset()) -> Iterator[tuple[list[str], _Edge]]:
+    """BFS: for each call into a goal reachable from start, the shortest call path to it that passes at
+    least one function outside `allowed` (a path of allowed functions alone is a frozen back door), and
+    that last edge, shortest first."""
     State = tuple[str, bool]                     # (function, the path so far left `allowed`)
     first: State = (start, start not in allowed)
     prev: dict[State, tuple[State, _Edge] | None] = {first: None}
@@ -1237,13 +1483,13 @@ def _shortest(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferre
                     st, edge = cur
                     names.append(edge.caller)
                     cur = prev[st]
-                return list(reversed(names)), last
+                yield list(reversed(names)), last
+                continue
             nxt: State = (e.callee, out or e.callee not in allowed)
             if nxt in prev:
                 continue
             prev[nxt] = ((n, out), e)
             queue.append(nxt)
-    return None
 
 
 # --- output -------------------------------------------------------------------------------------
