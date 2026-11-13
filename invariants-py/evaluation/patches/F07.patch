@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/pipeline.py tmp/fact-pipeline/src/fact_pipeline/pipeline.py
+--- pristine/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 04:52:30
++++ tmp/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 18:56:42
+@@ -71,7 +71,7 @@
+                 reply = accept_fact(checked, chunk.id, chunk.source_hash)
+             except inv.InvariantError as e:          # escalated or refused: a person looks at it
+                 reviews.append(self.store.add_review("extraction", {
+-                    "chunk_id": chunk.id, "index": index, "error": str(e), "attempts": e.attempts}, rule=e.rule))
++                    "chunk_id": chunk.id, "index": index}, rule=e.rule))
+                 continue
+             if reply.predicate in (NO_MORE, ABSTAIN):
+                 break

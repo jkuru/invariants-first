@@ -1,0 +1,21 @@
+{
+  "id": "P05",
+  "app": "pool-service",
+  "cat": "U",
+  "ci": {
+    "rc": 1,
+    "secs": 4.87,
+    "step": "pytest (R-23's bypass scan is tests/test_scan.py)",
+    "failed_tests": [
+      "tests/test_lease.py::test_concurrent_leases_never_exceed_size"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 1,
+    "failed_tests": [
+      "tests/test_lease.py::test_concurrent_leases_never_exceed_size"
+    ]
+  },
+  "reversed_clean": true
+}

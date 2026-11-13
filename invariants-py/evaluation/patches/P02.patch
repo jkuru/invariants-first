@@ -1,0 +1,126 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/openapi.json tmp/pool-service/openapi.json
+--- pristine/pool-service/openapi.json	2026-11-10 04:48:31
++++ tmp/pool-service/openapi.json	2026-11-10 18:56:41
+@@ -16,6 +16,32 @@
+         "title": "ApproveIn",
+         "type": "object"
+       },
++      "BulkLeaseIn": {
++        "additionalProperties": false,
++        "properties": {
++          "count": {
++            "minimum": 1.0,
++            "title": "Count",
++            "type": "integer"
++          },
++          "holder": {
++            "minLength": 1,
++            "title": "Holder",
++            "type": "string"
++          },
++          "slots": {
++            "title": "Slots",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "holder",
++          "count",
++          "slots"
++        ],
++        "title": "BulkLeaseIn",
++        "type": "object"
++      },
+       "HTTPValidationError": {
+         "properties": {
+           "detail": {
+@@ -606,6 +632,60 @@
+           }
+         },
+         "summary": "Lease"
++      }
++    },
++    "/pools/{pool_id}/leases/bulk": {
++      "post": {
++        "description": "Lease `count` blocks of `slots` in one call (faster than N round trips).",
++        "operationId": "bulkLease",
++        "parameters": [
++          {
++            "in": "path",
++            "name": "pool_id",
++            "required": true,
++            "schema": {
++              "title": "Pool Id",
++              "type": "string"
++            }
++          }
++        ],
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/BulkLeaseIn"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "201": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "items": {
++                    "$ref": "#/components/schemas/LeaseOut"
++                  },
++                  "title": "Response Bulklease",
++                  "type": "array"
++                }
++              }
++            },
++            "description": "Successful Response"
++          },
++          "422": {
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            },
++            "description": "Validation Error"
++          }
++        },
++        "summary": "Bulk Lease"
+       }
+     },
+     "/pools/{pool_id}/resizes": {
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/api.py tmp/pool-service/src/pool_service/api.py
+--- pristine/pool-service/src/pool_service/api.py	2026-11-10 10:39:54
++++ tmp/pool-service/src/pool_service/api.py	2026-11-10 18:56:41
+@@ -155,6 +155,25 @@
+     return LeaseOut(lease_id=lease_id, pool_id=pool_id, holder=body.holder, slots=body.slots)
+ 
+ 
++class BulkLeaseIn(Closed):
++    holder: str = Field(min_length=1)
++    count: int = Field(ge=1)
++    slots: int
++
++
++@router.post("/pools/{pool_id}/leases/bulk", status_code=201, operation_id="bulkLease", response_model=list[LeaseOut])
++def bulk_lease(pool_id: str, body: BulkLeaseIn, conn: Conn) -> list[LeaseOut] | JSONResponse:
++    """Lease `count` blocks of `slots` in one call (faster than N round trips)."""
++    if store.size(conn, pool_id) is None:
++        return problem(404, f"pool {pool_id} not found")
++    out = []
++    with storage_rejections():
++        for _ in range(body.count):
++            lid = store.insert_lease(conn, pool_id, body.holder, body.slots)
++            out.append(LeaseOut(lease_id=lid, pool_id=pool_id, holder=body.holder, slots=body.slots))
++    return out
++
++
+ @router.delete("/leases/{lease_id}", status_code=204, operation_id="releaseLease")
+ def release(lease_id: int, conn: Conn) -> Response:
+     try:

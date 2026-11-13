@@ -1,0 +1,32 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/invariants.yaml tmp/pool-service/invariants.yaml
+--- pristine/pool-service/invariants.yaml	2026-11-10 08:48:21
++++ tmp/pool-service/invariants.yaml	2026-11-10 18:56:41
+@@ -173,11 +173,11 @@
+     status: enforce
+     class: policy
+     owner: ops-policy
+-    statement: One resize never grows a pool to more than four times its size; such a write is rolled back.
++    statement: One resize never grows a pool to more than ten times its size; such a write is rolled back.
+     subject: {contract: pool_py, target: "py:pool_service.service.ResizeService.resize_door"}
+     scope: transition
+     bind: {req: args.req}
+-    bad: 'old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 4 * old_self.sizes[req.pool_id]'
++    bad: 'old_self.sizes[req.pool_id] > 0 && self.sizes[req.pool_id] > 10 * old_self.sizes[req.pool_id]'
+     enforcers:
+       - {point: decorator, timing: post_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+     mediation:
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/tests/test_resize.py tmp/pool-service/tests/test_resize.py
+--- pristine/pool-service/tests/test_resize.py	2026-11-10 04:51:05
++++ tmp/pool-service/tests/test_resize.py	2026-11-10 18:56:41
+@@ -98,9 +98,9 @@
+ 
+ 
+ def test_r22_growth_above_4x_is_rolled_back(client: TestClient) -> None:
+-    """Falsifier: 10 -> 50 is approved but breaks R-22 after the write; the transaction rolls back."""
++    """Falsifier: 10 -> 150 is approved but breaks R-22 after the write; the transaction rolls back."""
+     make_pool(client, "gpu-a", 10)
+-    pid = propose(client, "gpu-a", 50)
++    pid = propose(client, "gpu-a", 150)
+     approve(client, pid)
+     r = client.post(f"/resizes/{pid}/apply")
+     assert r.status_code == 422 and r.json()["rule"] == "R-22"

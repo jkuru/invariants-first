@@ -1,0 +1,41 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/cli.py tmp/fact-pipeline/src/fact_pipeline/cli.py
+--- pristine/fact-pipeline/src/fact_pipeline/cli.py	2026-11-10 05:17:27
++++ tmp/fact-pipeline/src/fact_pipeline/cli.py	2026-11-10 18:56:42
+@@ -48,6 +48,7 @@
+     sub.add_parser("monitor", help="run the monitor over stored data; exit 1 on any finding")
+     facts = sub.add_parser("facts", help="list facts")
+     facts.add_argument("--status")
++    sub.add_parser("stats", help="count facts per status")
+     sub.add_parser("conflicts", help="list Conflict records")
+     sub.add_parser("reviews", help="list open reviews")
+     rr = sub.add_parser("resolve-review", help="rule that an ambiguous mention means an entity")
+@@ -95,6 +96,11 @@
+             return 1 if found else 0
+         elif a.command == "facts":
+             _print(store.facts(a.status))
++        elif a.command == "stats":
++            counts: dict[str, int] = {}
++            for f in store.facts():
++                counts[f["status"]] = counts.get(f["status"], 0) + 1
++            _print(counts)
+         elif a.command == "conflicts":
+             _print(store.conflicts())
+         elif a.command == "reviews":
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/tests/test_cli.py tmp/fact-pipeline/tests/test_cli.py
+--- pristine/fact-pipeline/tests/test_cli.py	2026-11-10 06:34:03
++++ tmp/fact-pipeline/tests/test_cli.py	2026-11-10 18:56:42
+@@ -65,6 +65,14 @@
+     assert run(capsys, "--db", db, "monitor")[0] == 0
+ 
+ 
++def test_cli_stats(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
++    db = str(tmp_path / "f.db")
++    (tmp_path / "s1.txt").write_text(S1)
++    run(capsys, "--db", db, "--inject", "drop_qualifier", "ingest", str(tmp_path / "s1.txt"), "--publisher", "a")
++    code, out = run(capsys, "--db", db, "stats")
++    assert code == 0 and json.loads(out) == {"CHECKED": 2}
++
++
+ def test_cli_unknown_fault_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
+     with pytest.raises(SystemExit) as e:
+         main(["--inject", "nonsense", "promote"])

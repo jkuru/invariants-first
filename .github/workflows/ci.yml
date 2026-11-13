@@ -63,6 +63,39 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m pytest tests -q
 
+  optimized:
+    name: tests under python -O
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,cel]'
+      - name: Test with assert statements stripped
+        env:
+          PYTHONOPTIMIZE: "1"          # the library must never rely on `assert` for a check
+        run: |
+          python -O -c "import sys; assert False; sys.exit(0)" || { echo "python -O is not active"; exit 1; }
+          python -O -m pytest tests -q
+
+  xdist:
+    name: tests under pytest-xdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,cel]'
+          python -m pytest tests -q -n 2
+
   build:
     runs-on: ubuntu-latest
     steps:

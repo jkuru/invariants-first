@@ -211,6 +211,10 @@ to use it, `pip install 'graphifyy[mcp]'` and add it to the project's `.mcp.json
 {"mcpServers": {"graphify": {"command": "graphify-mcp", "args": ["graphify-out/graph.json"]}}}
 ```
 
+This package ships a second, read-only MCP server, `inv-mcp`, over the laws themselves (scan, check,
+status, explain, and `inv init`'s proposals as a dry run). [agents.md](agents.md) shows both in one
+`.mcp.json` and the flow they support: the agent proposes, a person approves and locks.
+
 ## 4. Make the check unskippable (5 minutes)
 
 The lockfile alone isn't enough, because an agent can run `inv lock --accept-weakening` itself.

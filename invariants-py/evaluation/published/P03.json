@@ -1,0 +1,24 @@
+{
+  "id": "P03",
+  "app": "pool-service",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 4.48,
+    "step": "pytest (R-23's bypass scan is tests/test_scan.py)",
+    "failed_tests": [
+      "tests/test_bench.py::test_bench_runs",
+      "tests/test_resize.py::test_approved_resize_applies",
+      "tests/test_resize.py::test_r21_replay_is_rejected",
+      "tests/test_resize.py::test_r22_allows_exactly_4x",
+      "tests/test_resize.py::test_r22_growth_above_4x_is_rolled_back",
+      "tests/test_resize.py::test_shrink_below_leased_is_a_storage_conflict"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

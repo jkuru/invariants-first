@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/api.py tmp/pool-service/src/pool_service/api.py
+--- pristine/pool-service/src/pool_service/api.py	2026-11-10 10:39:54
++++ tmp/pool-service/src/pool_service/api.py	2026-11-10 18:56:41
+@@ -142,7 +142,7 @@
+     p = store.get_pool(conn, pool_id)
+     if p is None:
+         return problem(404, f"pool {pool_id} not found")
+-    return PoolOut(**p, leased=store.leased(conn, pool_id))
++    return PoolOut(**p, leased=len(store.lease_slots(conn, pool_id)))
+ 
+ 
+ @router.post("/pools/{pool_id}/leases", status_code=201, operation_id="leaseSlots", response_model=LeaseOut)

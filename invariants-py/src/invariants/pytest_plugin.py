@@ -10,7 +10,13 @@ Options (all off by default; without them the plugin only adds the fixtures):
   --inv-report-json PATH also write those counts (and verify/ablation results) as JSON
 
 Fixtures: inv_registry (an isolated registry, holding the session rules if any), inv_ablated(rule_id),
-inv_events (every event recorded during the test, in any registry).
+inv_events (every event recorded during the test, in any registry), inv_scan (run `inv scan` the way
+a falsifier should read it).
+
+A falsifier's re-runs happen inside the normal test protocol, right after its own run: each run is
+torn down only to the item, so session, package, module and class fixtures are set up once, as
+without the plugin. Under pytest-xdist each worker ablates the falsifiers it runs and the controller
+reports the merged results.
 
 During an ablation re-run INV_ABLATE also names the rule, so a falsifier that runs `inv scan` or
 the app in a subprocess sees the rule turned off too.
@@ -25,11 +31,14 @@ parse_error: the test passed because the rule could not be evaluated, not becaus
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import pathlib
+import subprocess
+import sys
 import tempfile
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence, cast
 
 import pytest
 
@@ -40,6 +49,8 @@ from .registry import ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, Registry, ab
 
 KINDS = ("ok", "violation", "rule_error", "parse_error")
 STASH: pytest.StashKey[InvSession] = pytest.StashKey()
+SCAN_ABLATED = 4            # `inv scan`'s exit code when it skipped an ablated enforce rule (cli.ABLATED)
+NO_VERDICT = "inconclusive (read an ablated scan's exit code or pass; assert its findings)"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -136,12 +147,21 @@ class InvSession:
         self._saved: Registry | None = None         # the default registry's contents before we installed
         self.verify_problems: list[str] = []
         self.verify_count: int | None = None
-        self.ablation: dict[str, list[dict[str, str]]] = {}
         self.ablation_notes: list[str] = []
         self.counting = self.report_on or bool(self.json_path)
         self.totals: dict[str, dict[str, int]] = {}
         self._unobserve: Callable[[], None] | None = None
-        self._main: dict[str, list[pytest.TestReport]] = {}
+        self.statuses: dict[str, str] = {}          # every loaded rule's status, in rule-file order
+        # the ablation plan, made after collection: per rule, its falsifier items (falsifier index,
+        # item index, node id) and the falsified_by entries that match no collected test
+        self._expect: dict[str, list[tuple[int, int, str]]] = {}
+        self._uncollected: dict[str, list[tuple[int, str]]] = {}
+        self._falsifier_of: dict[str, list[str]] = {}   # node id -> the rules it falsifies
+        self._results: dict[tuple[str, str], str] = {}  # (rule id, node id) -> result
+        self.ablating: str | None = None                # the rule ablated by the re-run in progress
+        self.no_verdict: list[str] = []                 # inv_scan verdicts asked for during that re-run
+        self.worker = hasattr(config, "workerinput")    # a pytest-xdist worker: the controller reports
+        self.workers_reported = 0
 
     def _shown(self, path: pathlib.Path | None) -> str | None:
         """path relative to the pytest rootdir when it is under it (reports carry no local absolute paths)."""
@@ -161,6 +181,11 @@ class InvSession:
             base = self.config.inipath.parent if self.config.inipath else self.config.rootpath
             return pathlib.Path(base, ini).resolve()
         return None
+
+    @property
+    def controller(self) -> bool:
+        """The pytest-xdist controller: it runs no tests, and merges what the workers send."""
+        return self.config.pluginmanager.has_plugin("dsession")
 
     # --- loading ------------------------------------------------------------------------------
     def load_rules(self) -> Registry | None:
@@ -205,8 +230,11 @@ class InvSession:
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         if self.load_rules() is not None:
             self.install_default()
+        reg = self.session_registry()
+        self.statuses = {rid: r.status for rid, r in reg.rules.items()}
+        if self.ablate_on and not session.config.option.collectonly:
+            self.plan_ablation(session, reg)
         if self.verify_on:
-            reg = self.session_registry()
             if not reg.rules:
                 self.verify_problems = ["no rules loaded: pass --inv-rules PATH (or set inv_rules)"]
                 return
@@ -215,21 +243,73 @@ class InvSession:
             except CoverageError as e:
                 self.verify_problems = str(e).split("; ")
 
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        self._main.setdefault(report.nodeid, []).append(report)
-
     @pytest.hookimpl(wrapper=True)
     def pytest_runtestloop(self, session: pytest.Session) -> Iterator[Any]:
-        result = yield
-        self.counting = False                       # ablation re-runs are not counted
-        if self._unobserve is not None:
-            self._unobserve()
-            self._unobserve = None
-        if self.ablate_on and not session.config.option.collectonly:
-            self.run_ablation(session)
-        return result
+        try:
+            return (yield)
+        finally:
+            self.counting = False
+            if self._unobserve is not None:
+                self._unobserve()
+                self._unobserve = None
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_runtest_protocol(self, item: pytest.Item, nextitem: pytest.Item | None) -> bool | None:
+        """A falsifier runs as usual, then its control and ablated re-runs, then the normal teardown."""
+        rule_ids = self._falsifier_of.get(item.nodeid)
+        if not rule_ids or self.config.getoption("setuponly", False) or self.config.getoption("setupplan", False):
+            return None                                 # pytest's own protocol
+        from _pytest.runner import runtestprotocol      # the documented way plugins (re-)run an item
+
+        # Tear each run down to the item only (its parent's chain stays set up), so every fixture
+        # broader than the function lives across the re-runs; _teardown_to then does what pytest's
+        # own teardown with the real nextitem would have done.
+        keep = cast(pytest.Item, item.parent)
+        ihook = item.ihook
+        ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+        try:
+            main = _outcome(runtestprotocol(item, nextitem=keep, log=True))
+            if main != "passed":
+                self._note(rule_ids, item, f"not checked ({main} with the guard on)")
+            elif item.session.shouldfail or item.session.shouldstop:
+                self._note(rule_ids, item, "not checked (the session is stopping)")
+            else:
+                sections = list(item._report_sections)      # the re-runs' captured output is not this test's
+                try:
+                    self.ablate_item(item, keep, rule_ids, runtestprotocol)
+                finally:
+                    item._report_sections[:] = sections
+        finally:
+            self._teardown_to(item, nextitem)
+            ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+        return True
+
+    def _note(self, rule_ids: Sequence[str], item: pytest.Item, result: str) -> None:
+        for rid in rule_ids:
+            self._results[(rid, item.nodeid)] = result
+
+    def _teardown_to(self, item: pytest.Item, nextitem: pytest.Item | None) -> None:
+        """Tear down what the next item does not share, reporting an error as this item's teardown."""
+        stopping = item.session.shouldfail or item.session.shouldstop
+        target = None if stopping else nextitem
+        state = item.session._setupstate             # what pytest's own teardown step calls
+
+        def teardown() -> None:
+            __tracebackhide__ = True
+            state.teardown_exact(target)
+        call = pytest.CallInfo.from_call(teardown, when="teardown", reraise=(pytest.exit.Exception, KeyboardInterrupt))
+        if call.excinfo is not None:
+            report = item.ihook.pytest_runtest_makereport(item=item, call=call)
+            item.ihook.pytest_runtest_logreport(report=report)
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        if self.worker:                             # the controller writes the report and decides
+            cast(Any, self.config).workeroutput["invariants"] = self.worker_payload()
+            return
+        if self.controller and not self.workers_reported and (self.ablate_on or self.verify_on):
+            self.ablation_notes.append("no pytest-xdist worker reported its invariants results")
+            if self.verify_on and not self.verify_problems:
+                self.verify_problems = ["no pytest-xdist worker reported its verify result"]
         if self.json_path:
             path = pathlib.Path(self.config.invocation_params.dir, self.json_path)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,50 +333,109 @@ class InvSession:
         if self.json_path:
             tr.write_line(f"invariants report written to {self.json_path}")
 
-    # --- ablation -----------------------------------------------------------------------------
-    def run_ablation(self, session: pytest.Session) -> None:
-        """For each rule with falsifiers, re-run them with the rule ablated; each must fail."""
-        from _pytest.runner import runtestprotocol      # the documented way plugins re-run an item
+    # --- pytest-xdist -------------------------------------------------------------------------
+    def worker_payload(self) -> dict[str, Any]:
+        """What a worker sends the controller (plain lists and dicts: execnet carries them)."""
+        return {"statuses": [[rid, st] for rid, st in self.statuses.items()],
+                "expect": [[rid, [list(e) for e in rows]] for rid, rows in self._expect.items()],
+                "uncollected": [[rid, [list(u) for u in rows]] for rid, rows in self._uncollected.items()],
+                "results": [[rid, nodeid, res] for (rid, nodeid), res in self._results.items()],
+                "notes": list(self.ablation_notes), "totals": self.totals,
+                "verify": {"problems": self.verify_problems, "count": self.verify_count}}
 
-        reg = self.session_registry()
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node: Any, error: Any) -> None:
+        """Controller: merge one worker's plan, results, counts and verify result."""
+        data = (getattr(node, "workeroutput", None) or {}).get("invariants")
+        if not isinstance(data, dict):
+            return
+        self.workers_reported += 1
+        for rid, st in data["statuses"]:
+            self.statuses.setdefault(rid, st)
+        for rid, rows in data["expect"]:                # every worker collects the same items
+            self._expect.setdefault(rid, [(int(a), int(b), str(c)) for a, b, c in rows])
+        for rid, rows in data["uncollected"]:
+            self._uncollected.setdefault(rid, [(int(a), str(b)) for a, b in rows])
+        for rid, nodeid, res in data["results"]:
+            self._results[(rid, nodeid)] = res
+        self.ablation_notes += [n for n in data["notes"] if n not in self.ablation_notes]
+        for rid, row in data["totals"].items():
+            mine = self.totals.setdefault(rid, {})
+            for k, v in row.items():
+                mine[k] = mine.get(k, 0) + v
+        verify = data["verify"]
+        self.verify_problems += [p for p in verify["problems"] if p not in self.verify_problems]
+        if verify["count"] is not None:
+            self.verify_count = verify["count"]
+
+    # --- ablation -----------------------------------------------------------------------------
+    def plan_ablation(self, session: pytest.Session, reg: Registry) -> None:
+        """Match each rule's falsified_by entries to the collected items."""
         if not reg.rules:
             self.ablation_notes.append("no rules loaded: pass --inv-rules PATH (or set inv_rules)")
             return
+        index = {item.nodeid: i for i, item in enumerate(session.items)}
         for rule in reg.rules.values():
             falsifiers = rule.raw.get("falsified_by") or []
             if rule.status == "retired" or not falsifiers:
                 continue
-            rows = self.ablation.setdefault(rule.id, [])
-            for f in falsifiers:
+            expect, missing = self._expect.setdefault(rule.id, []), self._uncollected.setdefault(rule.id, [])
+            for fi, f in enumerate(falsifiers):
                 items = [i for i in session.items if _matches(i.nodeid, f)]
                 if not items:
-                    rows.append({"falsifier": f, "result": "not collected"})
+                    missing.append((fi, f))
                 for item in items:
-                    main = _outcome(self._main.get(item.nodeid, []))
-                    if main != "passed":
-                        rows.append({"falsifier": item.nodeid, "result": f"not checked ({main} with the guard on)"})
-                        continue
-                    with capture() as events:
-                        control = _outcome(runtestprotocol(item, nextitem=None, log=False))
-                    kinds = {e.get("outcome") for e in events if e.get("rule") == rule.id}
-                    if control != "passed":         # it fails without the ablation: not evidence
-                        rows.append({"falsifier": item.nodeid,
-                                     "result": f"inconclusive ({control} on a re-run without ablation)"})
-                        continue
-                    with tempfile.TemporaryDirectory() as d:
-                        trace = os.path.join(d, "reached")
-                        with ablated_everywhere(rule.id), _env_ablated(rule.id, trace):
-                            out = _outcome(runtestprotocol(item, nextitem=None, log=False))
-                        reached = _reached(trace, rule.id)
-                    if out == "failed" and "rule_error" in kinds and not kinds & {"violation", "parse_error"}:
-                        # with the guard on, the test passed because the rule errored (a typo, a missing
-                        # key), not because it found the violation: a fail_closed error rejects too
-                        result = "inconclusive (rule_error, not violation)"
-                    elif out == "failed":
-                        result = "caught" if reached else "inconclusive (rule not reached)"
-                    else:
-                        result = "still passes" if out == "passed" else f"inconclusive ({out})"
-                    rows.append({"falsifier": item.nodeid, "result": result})
+                    if any(nodeid == item.nodeid for _, _, nodeid in expect):
+                        continue                    # named twice (a module and a test in it): run once
+                    expect.append((fi, index[item.nodeid], item.nodeid))
+                    self._falsifier_of.setdefault(item.nodeid, []).append(rule.id)
+
+    def ablate_item(self, item: pytest.Item, keep: pytest.Item, rule_ids: Sequence[str],
+                    rerun: Callable[..., list[pytest.TestReport]]) -> None:
+        """The falsifier passed with its rules on: a control re-run, then one ablated re-run per rule."""
+        counting, self.counting = self.counting, False  # re-runs are not counted in the report
+        try:
+            with capture() as events:
+                control = _outcome(rerun(item, nextitem=keep, log=False))
+            for rid in rule_ids:
+                if control != "passed":                 # it fails without the ablation: not evidence
+                    self._note([rid], item, f"inconclusive ({control} on a re-run without ablation)")
+                    continue
+                kinds = {e.get("outcome") for e in events if e.get("rule") == rid}
+                self.no_verdict = []
+                with tempfile.TemporaryDirectory() as d:
+                    trace = os.path.join(d, "reached")
+                    self.ablating = rid
+                    try:
+                        with ablated_everywhere(rid), _env_ablated(rid, trace):
+                            out = _outcome(rerun(item, nextitem=keep, log=False))
+                    finally:
+                        self.ablating = None
+                    reached = _reached(trace, rid)
+                if out == "failed" and "rule_error" in kinds and not kinds & {"violation", "parse_error"}:
+                    # with the guard on, the test passed because the rule errored (a typo, a missing
+                    # key), not because it found the violation: a fail_closed error rejects too
+                    result = "inconclusive (rule_error, not violation)"
+                elif out == "failed":
+                    result = "caught" if reached else "inconclusive (rule not reached)"
+                elif out == "skipped" and self.no_verdict:
+                    result = NO_VERDICT
+                else:
+                    result = "still passes" if out == "passed" else f"inconclusive ({out})"
+                self._note([rid], item, result)
+        finally:
+            self.counting = counting
+
+    @property
+    def ablation(self) -> dict[str, list[dict[str, str]]]:
+        """Per rule, one row per falsifier entry or item, in falsified_by order then collection order."""
+        out: dict[str, list[dict[str, str]]] = {}
+        for rid, expect in self._expect.items():
+            rows = [(fi, -1, {"falsifier": f, "result": "not collected"}) for fi, f in self._uncollected.get(rid, [])]
+            rows += [(fi, ii, {"falsifier": nodeid, "result": self._results.get((rid, nodeid), "not run")})
+                     for fi, ii, nodeid in expect]
+            out[rid] = [row for _, _, row in sorted(rows, key=lambda r: (r[0], r[1]))]
+        return out
 
     @property
     def not_load_bearing(self) -> list[str]:
@@ -307,16 +446,19 @@ class InvSession:
         """enforce rules with no caught falsifier (not collected, failing with the guard on, inconclusive)."""
         if self.lenient:
             return []
-        reg = self.session_registry()
+        bad = self.not_load_bearing
         return [rid for rid, rows in self.ablation.items()
-                if rid in reg.rules and reg.rules[rid].status == "enforce" and rid not in self.not_load_bearing
+                if self.statuses.get(rid) == "enforce" and rid not in bad
                 and not any(r["result"] == "caught" for r in rows)]
 
     @property
     def failed(self) -> bool:
-        return bool(self.verify_problems or self.not_load_bearing or (self.ablate_on and self.unverified))
+        no_worker = self.controller and self.ablate_on and not self.workers_reported
+        return bool(self.verify_problems or self.not_load_bearing or (self.ablate_on and self.unverified)
+                    or no_worker)
 
     def _write_ablation(self, tr: Any) -> None:
+        ablation = self.ablation
         bad, unverified = self.not_load_bearing, self.unverified
         if bad:
             tr.write_sep("=", f"invariants ablation FAILED: guard not load-bearing for {', '.join(bad)}",
@@ -325,10 +467,10 @@ class InvSession:
             tr.write_sep("=", f"invariants ablation FAILED: no falsifier caught the ablation of "
                               f"{', '.join(unverified)} (status enforce needs one)", red=True, bold=True)
         if not bad and not unverified:
-            tr.write_sep("-", "invariants ablation", green=bool(self.ablation))
+            tr.write_sep("-", "invariants ablation", green=bool(ablation))
         for note in self.ablation_notes:
             tr.write_line(f"  {note}")
-        for rid, rows in self.ablation.items():
+        for rid, rows in ablation.items():
             verdict = "guard not load-bearing" if rid in bad else (
                 "load-bearing" if any(r["result"] == "caught" for r in rows) else "not checked")
             tr.write_line(f"  {rid}: {verdict}")
@@ -337,13 +479,12 @@ class InvSession:
 
     # --- report -------------------------------------------------------------------------------
     def report_data(self) -> dict[str, Any]:
-        reg = self.session_registry()
-        ids = list(reg.rules) + sorted(set(self.totals) - set(reg.rules))
+        statuses = self.statuses or {rid: r.status for rid, r in self.session_registry().rules.items()}
+        ids = list(statuses) + sorted(set(self.totals) - set(statuses))
         rules = {}
         for rid in ids:
             c = self.totals.get(rid, {})
-            rule = reg.rules.get(rid)
-            rules[rid] = {"status": rule.status if rule else None, "reach": c.get("runs", 0),
+            rules[rid] = {"status": statuses.get(rid), "reach": c.get("runs", 0),
                           **{k: c.get(k, 0) for k in KINDS}}
         data: dict[str, Any] = {"rules_file": self._shown(self.rules_path), "rules": rules}
         if self.verify_on:
@@ -364,6 +505,81 @@ class InvSession:
         for rid, r in rules.items():
             tr.write_line(f"  {rid:<10} {r['status'] or '-':<10} {r['reach']:>6} {r['ok']:>6} {r['violation']:>9} "
                           f"{r['rule_error']:>10} {r['parse_error']:>11}")
+
+
+# --- inv_scan -------------------------------------------------------------------------------------
+@dataclasses.dataclass
+class ScanRun:
+    """One `inv scan --format json` run, read the way a falsifier should read it.
+
+    An ablated enforce rule makes `inv scan` exit 4: the scan refused to judge that rule, which is
+    neither a pass nor a fail. So `failed(rule)` and `findings()` answer what the scan reported (an
+    ablated rule has no findings, so a falsifier asserting `failed(rule)` fails under --inv-ablate:
+    caught), while `code` and `passed(rule)` have no answer for an ablated rule: under --inv-ablate
+    they skip the re-run, which the plugin reports as inconclusive, and anywhere else they fail the
+    test. A falsifier therefore asserts the rule's findings, never `code != 0`.
+    """
+
+    exit_code: int                  # the raw exit code, 4 included; read `code` in assertions
+    report: dict[str, Any]
+    stderr: str
+    session: InvSession | None = None
+
+    @property
+    def ablated(self) -> list[str]:
+        """Rules the scan skipped because they are ablated (INV_ABLATE)."""
+        return [rid for rid, why in (self.report.get("not_scanned") or {}).items() if str(why).startswith("ablated")]
+
+    def findings(self, rule: str | None = None, kind: str | None = None) -> list[dict[str, Any]]:
+        return [f for f in self.report.get("findings") or []
+                if (rule is None or f.get("rule") == rule) and (kind is None or f.get("kind") == kind)]
+
+    def failed(self, rule: str) -> bool:
+        """True when the scan reported a bypass, forbidden or missing finding for the rule."""
+        return (self.report.get("rules") or {}).get(rule, {}).get("result") == "fail"
+
+    def passed(self, rule: str) -> bool:
+        """True when the rule was scanned and nothing failed; no answer for an ablated rule."""
+        if rule in self.ablated:
+            self._no_verdict(f"inv scan skipped {rule} because it is ablated, so it did not pass")
+        return (self.report.get("rules") or {}).get(rule, {}).get("result") == "pass"
+
+    @property
+    def code(self) -> int:
+        """The exit code; no answer when it is 4 (an ablated enforce rule was skipped)."""
+        if self.exit_code == SCAN_ABLATED:
+            self._no_verdict(f"inv scan exited {SCAN_ABLATED}: it skipped ablated enforce rule(s) "
+                             f"{', '.join(self.ablated)}, which is neither a pass nor a fail")
+        return self.exit_code
+
+    def _no_verdict(self, why: str) -> None:
+        if self.session is not None and self.session.ablating is not None:
+            self.session.no_verdict.append(why)
+            pytest.skip(f"invariants: {why}; a falsifier asserts the rule's findings")
+        pytest.fail(f"invariants: {why} (INV_ABLATE is set outside an --inv-ablate re-run)", pytrace=False)
+
+
+@pytest.fixture
+def inv_scan(request: pytest.FixtureRequest) -> Callable[..., ScanRun]:
+    """inv_scan(rule_file="invariants.yaml", *roots, exclude=(), cwd=None) -> ScanRun.
+
+    Runs `inv scan --format json` in a subprocess, the way CI runs it, so an ablation re-run's
+    INV_ABLATE reaches it. Relative paths resolve against cwd (default: the pytest rootdir).
+    """
+    sess = request.config.stash.get(STASH, None)
+
+    def scan(rule_file: str | os.PathLike[str] = "invariants.yaml", *roots: str | os.PathLike[str],
+             exclude: Sequence[str] = (), cwd: str | os.PathLike[str] | None = None) -> ScanRun:
+        args = [sys.executable, "-m", "invariants.cli", "scan", os.fspath(rule_file), "--format", "json"]
+        args += [a for r in roots for a in ("--root", os.fspath(r))]
+        args += [a for g in exclude for a in ("--exclude", g)]
+        p = subprocess.run(args, cwd=cwd or request.config.rootpath, capture_output=True, text=True, timeout=600)
+        try:
+            report = json.loads(p.stdout)
+        except ValueError:
+            pytest.fail(f"inv scan exited {p.returncode} without a JSON report:\n{p.stdout}{p.stderr}", pytrace=False)
+        return ScanRun(p.returncode, report, p.stderr, sess)
+    return scan
 
 
 # --- fixtures -------------------------------------------------------------------------------------

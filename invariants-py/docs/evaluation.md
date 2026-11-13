@@ -560,8 +560,29 @@ Two changes would most improve the ratio, and both are library work:
   took place. All 24 runs, the control runs and the baselines finished without unexplained
   failures, so no re-runs were needed for that reason.
 
-The experiment harness (not shipped) holds, for each run, the ground truth written before any run
+## Reproducing the numbers
+
+The harness ships in [evaluation/](../evaluation): the ground truth written before any run
 (`GROUND_TRUTH.md`), the text edits and patches (`changes.py`, `patches/*.patch`), the runner
-(`run.py`), and one result file and log per change, with the logs of every CI run, re-pinned run
-and baseline run. It is not part of this repository, so the numbers above cannot be reproduced from
-it as shipped.
+(`run.py`), and the per-change result files of the published re-run (`published/`). The bulky
+per-run logs are not shipped; the runner writes them again. From `invariants-py`, in a venv with
+`pip install -e '.[dev,cel]'`:
+
+```bash
+python evaluation/run.py                  # all 24 changes, about 5 minutes; P02 F12 for a subset
+```
+
+It copies `apps/pool-service` and `apps/fact-pipeline` into a temporary working directory (the
+repository is never modified), runs each app's `ci.sh` on the unchanged copy, finds B1's deselect
+list, then applies each change, runs `ci.sh` (and the reflex re-pin when the lock is stale) and B1,
+undoes it, and prints a table that compares each result with the published one. See
+[evaluation/README.md](../evaluation/README.md) for the options.
+
+A re-run on 2026-11-12, on the apps as they are in this repository, reproduced every headline
+number of the current results: 2 of 24 lock failures (P04 and F12, both refused on the reflex
+re-pin), 1 of 8 benign changes red, 8 of 8 covered and 3 of 8 uncovered defects caught by CI, and
+the same 6 caught by an invariants mechanism. 23 of the 24 results match exactly; P03 fails 7 tests
+instead of 6 because the current app has one more happy-path test through an approval. Because the
+apps changed below their APIs since the published run, P04 is applied from a re-based edit (the same
+4x to 10x weakening of R-22) and P12 from its text edits. The details are in
+[evaluation/RESULTS.md](../evaluation/RESULTS.md).

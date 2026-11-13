@@ -1,0 +1,17 @@
+{
+  "id": "P08",
+  "app": "pool-service",
+  "cat": "U",
+  "ci": {
+    "rc": 0,
+    "secs": 4.82,
+    "step": "ok",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

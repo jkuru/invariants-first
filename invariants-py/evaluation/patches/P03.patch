@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/service.py tmp/pool-service/src/pool_service/service.py
+--- pristine/pool-service/src/pool_service/service.py	2026-11-10 04:46:31
++++ tmp/pool-service/src/pool_service/service.py	2026-11-10 18:56:41
+@@ -97,7 +97,7 @@
+     if p is None:
+         raise NotFound(f"proposal {proposal_id} does not exist")
+     if p["state"] == "PENDING":
+-        store.set_proposal_state(conn, proposal_id, "APPROVED", approved_by=approver)
++        store.set_proposal_state(conn, proposal_id, "APPROVED", approved_by=p["proposed_by"])
+ 
+ 
+ class ResizeService:

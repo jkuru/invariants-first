@@ -1,0 +1,21 @@
+{
+  "id": "F01",
+  "app": "fact-pipeline",
+  "cat": "C",
+  "ci": {
+    "rc": 1,
+    "secs": 2.48,
+    "step": "pytest",
+    "failed_tests": [
+      "tests/test_extract.py::test_evidence_offsets_are_absolute_into_the_source"
+    ],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 1,
+    "failed_tests": [
+      "tests/test_extract.py::test_evidence_offsets_are_absolute_into_the_source"
+    ]
+  },
+  "reversed_clean": true
+}

@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -211,7 +211,7 @@
+             if score:
+                 scored.append((-score, r["id"], ChunkInfo(r["id"], r["source_id"], r["source_hash"], r["cur"],
+                                                           r["start"], r["text"])))
+-        return [c for _, _, c in sorted(scored, key=lambda t: (t[0], t[1]))[:k]]
++        return [c for _, _, c in sorted(scored, key=lambda t: (t[0], t[1]))[:k - 1]]
+ 
+     # --- entities -------------------------------------------------------------------------------
+     def add_entity(self, name: str, aliases: tuple[str, ...] = (), xrefs: tuple[tuple[str, str], ...] = ()) -> str:

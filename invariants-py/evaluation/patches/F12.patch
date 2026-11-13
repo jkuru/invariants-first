@@ -1,0 +1,46 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/invariants.yaml tmp/fact-pipeline/invariants.yaml
+--- pristine/fact-pipeline/invariants.yaml	2026-11-10 08:49:19
++++ tmp/fact-pipeline/invariants.yaml	2026-11-10 18:56:42
+@@ -88,7 +88,7 @@
+     why: An unknown predicate has no domain, range or functional flag, so no other rule can check it.
+     subject: {contract: store_py, target: "py:fact_pipeline.store.Store.ingest_door"}
+     scope: call
+-    bad: '!(args.proposal.predicate in ["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in"])'
++    bad: '!(args.proposal.predicate in ["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in", "founded_in"])'
+     enforcers:
+       - {point: type, timing: pre_effect, mode: enforce}
+       - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/models.py tmp/fact-pipeline/src/fact_pipeline/models.py
+--- pristine/fact-pipeline/src/fact_pipeline/models.py	2026-11-10 04:49:15
++++ tmp/fact-pipeline/src/fact_pipeline/models.py	2026-11-10 18:56:42
+@@ -8,12 +8,13 @@
+ 
+ # The closed vocabulary (K-4). invariants.yaml repeats it in K-4's ingest clause;
+ # tests/test_rules.py checks the two lists agree.
+-PREDICATES: tuple[str, ...] = ("acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in")
++PREDICATES: tuple[str, ...] = ("acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in",
++                               "founded_in")
+ FUNCTIONAL: tuple[str, ...] = ("acquisition_price", "ceo_of", "headquartered_in")   # one value per subject (K-11)
+ NO_MORE = "NONE"              # the model has no further fact in this chunk
+ ABSTAIN = "CANNOT_COMPLY"     # the model cannot do the task: escalates at once
+ 
+-Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in",
++Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in", "founded_in",
+                     "NONE", "CANNOT_COMPLY"]
+ Polarity = Literal["ASSERTED", "DENIED", "HYPOTHETICAL", "REPORTED"]
+ Qualifier = Literal["EXACT", "APPROX", "UPPER_BOUND", "LOWER_BOUND", "NONE"]
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/tests/test_store_rules.py tmp/fact-pipeline/tests/test_store_rules.py
+--- pristine/fact-pipeline/tests/test_store_rules.py	2026-11-10 06:17:08
++++ tmp/fact-pipeline/tests/test_store_rules.py	2026-11-10 18:56:42
+@@ -54,6 +54,11 @@
+     assert e.value.rule == "K-4"
+ 
+ 
++def test_founded_in_is_accepted(store: Store, make_proposal: Callable[..., Proposal]) -> None:
++    fid = store.ingest(make_proposal(predicate="founded_in", object="1999"))
++    assert store.status(fid) == "CHECKED"
++
++
+ def test_k7_guard_refuses_inverted_interval(store: Store, make_proposal: Callable[..., Proposal]) -> None:
+     with pytest.raises(inv.Rejected) as e:
+         store.ingest(make_proposal(valid_from="2024-06-30", valid_to="2023-01-01"))

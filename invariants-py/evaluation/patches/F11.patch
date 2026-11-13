@@ -1,0 +1,14 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/pipeline.py tmp/fact-pipeline/src/fact_pipeline/pipeline.py
+--- pristine/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 04:52:30
++++ tmp/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 18:56:42
+@@ -83,8 +83,8 @@
+         reviews: list[int] = []
+         for chunk in self.store.chunks_for(source_id):
+             got, rv = self._extract_chunk(chunk)
+-            items += got
+-            reviews += rv
++            items.extend(got)
++            reviews.extend(rv)
+         return items, reviews
+ 
+     async def extract_async(self, source_id: str, concurrency: int = 4) -> tuple[list[Extracted], list[int]]:

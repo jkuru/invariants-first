@@ -306,8 +306,25 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   those rules' guards are off. The loader logs this at ERROR outside a pytest session (and on stderr
   when no logging is configured), but does not refuse, because an `inv scan` or app subprocess of a
   falsifier must see it. See [SECURITY.md](../SECURITY.md).
-- A rule ablated through `INV_ABLATE` is not scanned, so a scan inside a falsifier is ablated too.
-- The plugin does not support pytest-xdist.
+- **Scan falsifiers.** A rule ablated through `INV_ABLATE` is not scanned, so a scan inside a
+  falsifier is ablated too, and `inv scan` then exits 4: it refused to judge that rule, which is
+  neither a pass nor a fail. So a scan falsifier asserts the rule's findings, never a non-zero exit:
+  `returncode != 0` also holds for 4, so the falsifier still passes with the rule off and the plugin
+  reports the rule not load-bearing. With a raw subprocess, assert `returncode == 1` and a finding
+  for the rule (as `apps/pool-service/tests/test_scan.py` does). The `inv_scan` fixture reads the
+  scan this way for you: `failed(rule)` and `findings()` answer what the scan reported, while `code`
+  and `passed(rule)` have no answer for an ablated rule. Read during an ablated re-run, they skip
+  it, and the plugin reports the falsifier `inconclusive (read an ablated scan's exit code or pass;
+  assert its findings)`, neither crediting nor blaming the rule; read anywhere else, they fail the
+  test. Never list a clean-scan test (`returncode == 0`) as a falsifier: with a raw subprocess, the
+  4 under ablation makes it fail, which would count as caught although it shows nothing.
+- **One fixture lifetime.** A falsifier's control and ablated re-runs happen inside the normal test
+  protocol, right after its own run. Each run is torn down only to the test function, so session,
+  package, module and class fixtures are set up once, as without the plugin; the falsifier's own
+  run is the only one reported as a test.
+- **pytest-xdist.** Under `-n N` each worker ablates the falsifiers it runs, and the controller
+  merges the results (and the `--inv-verify` and `--inv-report` counts) through pytest-xdist's
+  worker output, so the summary and `--inv-report-json` are the same as in a single process.
 
 ## Operations
 

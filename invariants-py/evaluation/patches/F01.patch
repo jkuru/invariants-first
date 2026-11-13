@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/pipeline.py tmp/fact-pipeline/src/fact_pipeline/pipeline.py
+--- pristine/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 04:52:30
++++ tmp/fact-pipeline/src/fact_pipeline/pipeline.py	2026-11-10 18:56:42
+@@ -114,7 +114,7 @@
+         assert chunk is not None
+         f = x.fields
+         ev = EvidenceSpan(chunk.source_id, chunk.source_hash, chunk.id, chunk.start + f["start"],
+-                          chunk.start + f["end"], f["quote"], f["polarity"])
++                          chunk.start + f["end"] - 1, f["quote"], f["polarity"])
+         fid = fact_id(subject_id, f["predicate"], object_value, f["qualifier"], f["valid_from"], f["valid_to"])
+         return Proposal(fid, subject_id, f["predicate"], object_value, f["object_kind"], f["qualifier"],
+                         f["valid_from"], f["valid_to"], [ev], retry_count=max(0, x.attempts - 1))

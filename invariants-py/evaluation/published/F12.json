@@ -1,0 +1,28 @@
+{
+  "id": "F12",
+  "app": "fact-pipeline",
+  "cat": "B",
+  "ci": {
+    "rc": 1,
+    "secs": 0.29,
+    "step": "inv lock --check",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "repin": {
+    "rc": 1,
+    "diff": ""
+  },
+  "ci_after_repin": {
+    "rc": 1,
+    "secs": 0.28,
+    "step": "inv lock --check",
+    "failed_tests": [],
+    "not_load_bearing": []
+  },
+  "baseline": {
+    "rc": 0,
+    "failed_tests": []
+  },
+  "reversed_clean": true
+}

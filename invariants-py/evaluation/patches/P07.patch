@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/pool-service/src/pool_service/api.py tmp/pool-service/src/pool_service/api.py
+--- pristine/pool-service/src/pool_service/api.py	2026-11-10 10:39:54
++++ tmp/pool-service/src/pool_service/api.py	2026-11-10 18:56:41
+@@ -203,7 +203,7 @@
+         shares = work.split_work(body.total_jobs, [slots for _, _, slots in leases])
+     except work.NotEnoughCapacity:
+         return problem(409, "not enough leased capacity for this many jobs")
+-    return SplitOut(pool_id=pool_id, shares={f"lease-{lid}": s for (lid, _, _), s in zip(leases, shares)})
++    return SplitOut(pool_id=pool_id, shares={f"lease-{lid + 1}": s for (lid, _, _), s in zip(leases, shares)})
+ 
+ 
+ @router.post("/jobs", status_code=201, operation_id="recordJob", response_model=JobIn)

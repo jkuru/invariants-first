@@ -1,0 +1,12 @@
+diff -ruN -x __pycache__ -x .hypothesis -x build -x .pytest_cache pristine/fact-pipeline/src/fact_pipeline/store.py tmp/fact-pipeline/src/fact_pipeline/store.py
+--- pristine/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 08:49:19
++++ tmp/fact-pipeline/src/fact_pipeline/store.py	2026-11-10 18:56:42
+@@ -284,7 +284,7 @@
+     def support(self, fid: str) -> Support:
+         """Distinct trusted, non-generated publishers of live sources behind a fact."""
+         rows = self._q("SELECT DISTINCT s.publisher_root FROM evidence e JOIN sources s ON s.id = e.source_id "
+-                       "WHERE e.fact_id = ? AND s.deleted_at IS NULL AND s.trust = 'trusted' "
++                       "WHERE e.fact_id = ? AND s.deleted_at IS NULL "
+                        "AND s.generated_by_pipeline = 0 ORDER BY 1", (fid,))
+         return Support(fid, self.status(fid) or "MISSING", [r[0] for r in rows])
+ 
