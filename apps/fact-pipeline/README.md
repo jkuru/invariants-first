@@ -11,8 +11,8 @@ A batch worker CLI that:
 The knowledge rules from section 7.3 of the Invariant-first guide are enforced by the
 `invariants` library, which is installed as a package. The app uses only its public API.
 
-The model is `fact_pipeline.fake_model.FakeModel`, a deterministic pattern reader. It never calls a real API.
-Its fault switch (`--inject FAULT[:N]`) makes it return bad replies. The faults are:
+By default the model is `fact_pipeline.fake_model.FakeModel`, a deterministic pattern reader that never
+calls a real API; `APP_MODEL` swaps in Claude or a replayed trace (see below). The fake's fault switch (`--inject FAULT[:N]`) makes it return bad replies. The faults are:
 - extraction: misquote, drop_qualifier, model_id, bad_predicate, garbage, inverted_interval, empty_quote, abstain
 - answers: uncited_chunk, answer_garbage, no_citation
 
@@ -69,6 +69,7 @@ fact-pipeline --db f.db monitor                         # exit 1 on any finding
   - `pipeline.py`: the stages.
   - `monitor.py`: the nightly job.
   - `cli.py`: the command line.
+  - `llm.py`: the prompts and the `APP_MODEL` choice of model.
 - `bypass/fact_pipeline_backfill/`: a deliberate bypass of the promotion door. It is never imported by the app and is left out of the clean scan.
 - `bench/bench_guards.py`: guard overhead (p50/p99).
 - `tests/`:
@@ -77,7 +78,39 @@ fact-pipeline --db f.db monitor                         # exit 1 on any finding
   - the guide's section 7.6 worked flow (`test_worked_flow.py`);
   - the async path;
   - the CLI;
-  - the scan.
+  - the scan;
+  - the happy-path flows on replay (`test_replay.py`, traces in `fixtures/traces/`).
+
+## Models: fake, replay, Claude
+
+`APP_MODEL` picks the model (`src/fact_pipeline/llm.py`):
+
+| `APP_MODEL` | model |
+|---|---|
+| `fake` | the deterministic fake above; the app's default, and what the seeded-defect tests use, since it can be told to misbehave |
+| `replay` | answers from a trace file (`APP_TRACE`), failing with a diff on a request the trace does not hold; the default of `tests/test_replay.py` |
+| `anthropic` | Claude (`claude-haiku-5-5`, or `APP_MODEL_ID`) through `invariants.integrations.anthropic`; needs `pip install 'invariants-first[anthropic]'` and `ANTHROPIC_API_KEY` |
+| `record` | Claude, writing every call to the trace file |
+
+The CLI reads it too: `APP_MODEL=anthropic fact-pipeline ingest ...` (`--inject` works only with the fake).
+
+`tests/test_replay.py` runs the happy-path flows on replay, from `tests/fixtures/traces/`. **The
+committed traces are hand-written fixtures, not recordings**: the requests come from the app's own
+prompt code, the replies were written by hand in the shape the API returns, and each file says
+`"fixture": "hand-written"`. One trace scripts a first reply that fails the closed schema, so the
+parser error goes back as a second user turn in the same conversation and the second reply fixes it.
+
+To record real traces (this calls the API and costs money; it rewrites the files, marked
+`"fixture": "recorded"`; the scripted format-failure flow is skipped):
+
+```
+pip install 'invariants-first[anthropic]'
+export ANTHROPIC_API_KEY=...
+python -m pytest tests/test_replay.py --record        # or APP_MODEL=record python -m pytest tests/test_replay.py
+```
+
+`APP_MODEL=anthropic python -m pytest tests/test_replay.py` runs the same flows on Claude without
+writing anything.
 
 ## CI
 

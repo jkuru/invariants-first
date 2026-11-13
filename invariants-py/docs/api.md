@@ -6,7 +6,7 @@ of each docstring), so they match the code. The integrations' public surface is 
 `__all__`.
 
 - [`invariants`](#invariants)
-- [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel)
+- [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel), [Anthropic](#invariantsintegrationsanthropic)
 - [`invariants.testing`](#invariantstesting)
 - [The pytest plugin](#the-pytest-plugin)
 - [The CLI](#the-cli)
@@ -238,6 +238,29 @@ inv.configure(exporter=otel.exporter())
 |---|---|---|
 | `exporter(tracer: Any = None) -> Exporter` | function | An exporter for inv.configure(exporter=...). tracer: an OpenTelemetry tracer (default: the global one). |
 | `attributes(event: dict[str, Any]) -> dict[str, Any]` | function | The span attributes for one event (None values left out). |
+
+### `invariants.integrations.anthropic`
+
+A real model for a `model_call` body, with deterministic replay and recording; see
+[models.md](models.md). `AnthropicModel` needs the `anthropic` extra, imported on its first request;
+the rest needs nothing. One model_call invocation, with its format retries, is one conversation: a
+`feedback` text is sent as a follow-up user turn after the model's previous reply.
+
+```python
+from invariants.integrations.anthropic import AnthropicModel, ReplayModel
+llm = AnthropicModel(system="Answer with one JSON object.")      # or ReplayModel("trace.json", system=...)
+...
+    return llm.complete(prompt, inv_feedback)                    # in the model_call body
+```
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `AnthropicModel(model: str = 'claude-haiku-5-5', *, system: str \| None = None, max_tokens: int = 16000, client: Any = None, async_client: Any = None, feedback_template: str = FEEDBACK_TEMPLATE, **params: Any)` | class | A Claude model through the Messages API; `params` go to `messages.create`. |
+| `ReplayModel(path, *, system: str \| None = None, feedback_template: str = FEEDBACK_TEMPLATE)` | class | Replies from a trace file, matched on the request; `ReplayMismatch` with a diff otherwise. `assert_done()`, `remaining`. |
+| `RecordingModel(inner: AnthropicModel, path)` | class | Sends through inner and writes the trace, marked `"fixture": "recorded"`. |
+| `ChatModel.complete(prompt: str \| Sequence[Message], feedback: str \| None = None) -> str` | method | The reply text. feedback None opens a new conversation; a text continues the current one. `acomplete` for an async body. |
+| `model_for(mode: str, trace=None, *, system: str \| None = None, model: str = DEFAULT_MODEL, **kw: Any) -> ChatModel \| None` | function | The model for `replay`, `record`, `anthropic`; `None` for `fake`. |
+| `ReplayMismatch`, `ConversationError`, `ModelRefusal` | class | A replayed request no recorded call matches (an AssertionError); feedback with no conversation to continue; a `refusal` stop reason. |
 
 ## `invariants.testing`
 

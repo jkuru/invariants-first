@@ -57,11 +57,11 @@ below the API.
 ## Layout
 
 ```
-src/pool_service/    the package: store (raw SQL), service (doors), work, triage, fake_model, api, main
+src/pool_service/    the package: store (raw SQL), service (doors), work, triage, fake_model, llm, api, main
 bypass/              deliberately bad code that the scan must flag; excluded from the clean scan
 bench/bench_guards.py  guard overhead, p50/p99
 scripts/export_openapi.py  regenerates openapi.json (the pool_api contract pinned in invariants.lock)
-tests/               functional, hypothesis property, concurrency, CLI and scan tests
+tests/               functional, hypothesis property, concurrency, CLI, scan and replay tests
 ```
 
 ## The fake model
@@ -70,6 +70,37 @@ tests/               functional, hypothesis property, concurrency, CLI and scan 
 by keywords. `inject("malformed", "contradict", ...)` makes the next replies bad, and `always(fault)` makes
 every reply bad. The faults are `malformed`, `extra_field`, `wrong_enum`, `missing_field`, `contradict` and
 `abstain`.
+
+## Models: fake, replay, Claude
+
+`APP_MODEL` picks the model (`src/pool_service/llm.py`):
+
+| `APP_MODEL` | model |
+|---|---|
+| `fake` | the deterministic fake above; the app's default, and what the seeded-defect tests use, since it can be told to misbehave |
+| `replay` | answers from a trace file (`APP_TRACE`), failing with a diff on a request the trace does not hold; the default of `tests/test_replay.py` |
+| `anthropic` | Claude (`claude-haiku-5-5`, or `APP_MODEL_ID`) through `invariants.integrations.anthropic`; needs `pip install 'invariants-first[anthropic]'` and `ANTHROPIC_API_KEY` |
+| `record` | Claude, writing every call to the trace file |
+
+`main.py` applies it to the served app: `APP_MODEL=anthropic uvicorn pool_service.main:app`.
+
+`tests/test_replay.py` runs the happy-path flows on replay, from `tests/fixtures/traces/`. **The
+committed traces are hand-written fixtures, not recordings**: the requests come from the app's own
+prompt code, the replies were written by hand in the shape the API returns, and each file says
+`"fixture": "hand-written"`. One trace scripts a first reply that fails the closed schema, so the
+parser error goes back as a second user turn in the same conversation and the second reply fixes it.
+
+To record real traces (this calls the API and costs money; it rewrites the files, marked
+`"fixture": "recorded"`; the scripted format-failure flow is skipped):
+
+```
+pip install 'invariants-first[anthropic]'
+export ANTHROPIC_API_KEY=...
+python -m pytest tests/test_replay.py --record        # or APP_MODEL=record python -m pytest tests/test_replay.py
+```
+
+`APP_MODEL=anthropic python -m pytest tests/test_replay.py` runs the same flows on Claude without
+writing anything.
 
 ## CI
 

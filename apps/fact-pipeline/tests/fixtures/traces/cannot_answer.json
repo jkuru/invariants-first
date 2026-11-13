@@ -1,0 +1,18 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: answer the question from the numbered chunks only.\n\nReply with exactly these fields:\n- \"status\": \"ANSWERED\", or \"CANNOT_ANSWER\" when the chunks do not answer it\n- \"text\": the answer in one sentence (\"\" when CANNOT_ANSWER)\n- \"citations\": a list of the ids of the chunks the answer rests on ([] when CANNOT_ANSWER)\n\nQuestion: Where is Beta Ltd headquartered?\n\nChunks:\n[src_9f7ffb42c79a:53e042b3:0] Acme Corp said Tuesday it completed its acquisition of Beta Ltd for about $2.1 billion.\n[src_9f7ffb42c79a:53e042b3:1] Beta had denied talks in 2024.\n[src_b98d1839be3c:c7e3ad5f:0] Acme Corp completed its acquisition of Beta Ltd for $2.0 billion."
+          }
+        ]
+      },
+      "reply": "{\"status\": \"CANNOT_ANSWER\", \"text\": \"\", \"citations\": []}"
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import invariants as inv
 
 from . import store
 from .fake_model import FakeModelClient
+from .llm import ModelClient
 
 ACTIONS = {"OUT_OF_MEMORY": "raise_memory_limit", "TIMEOUT": "extend_timeout", "BAD_INPUT": "quarantine_input"}
 
@@ -56,15 +57,15 @@ class CheckedCause(inv.Checked):
     __slots__ = ()
 
 
-_client = FakeModelClient()
+_client: ModelClient = FakeModelClient()     # llm.from_env() picks a real or replayed model (APP_MODEL)
 
 
-def client() -> FakeModelClient:
+def client() -> ModelClient:
     return _client
 
 
-def set_client(c: FakeModelClient) -> None:
-    """Swap the model client (tests, demos)."""
+def set_client(c: ModelClient) -> None:
+    """Swap the model client (tests, demos, or llm.from_env())."""
     global _client
     _client = c
 

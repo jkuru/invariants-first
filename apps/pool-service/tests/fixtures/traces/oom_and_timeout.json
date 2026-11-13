@@ -1,0 +1,30 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "system": "You triage failed batch jobs for a worker-pool service. You are given a job id and an excerpt of its log.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"cause\": one of \"OUT_OF_MEMORY\", \"TIMEOUT\", \"BAD_INPUT\", \"CANNOT_COMPLY\"\n- \"summary\": one sentence (at most 200 characters) on what in the log points to that cause\n\nAnswer CANNOT_COMPLY when the log does not show the cause.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Job J-oom failed. Classify the cause as OUT_OF_MEMORY, TIMEOUT, BAD_INPUT or CANNOT_COMPLY and answer as JSON {cause, summary}.\n--- log ---\n2026-11-02T03:14:07Z trainer[4242]: allocating 6.0 GiB for batch 118\n2026-11-02T03:14:09Z kernel: Out of memory: Killed process 4242 (trainer) total-vm:9123456kB"
+          }
+        ]
+      },
+      "reply": "{\"cause\": \"OUT_OF_MEMORY\", \"summary\": \"The kernel OOM killer terminated the trainer process (pid 4242) while it allocated memory for a batch.\"}"
+    },
+    {
+      "request": {
+        "system": "You triage failed batch jobs for a worker-pool service. You are given a job id and an excerpt of its log.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"cause\": one of \"OUT_OF_MEMORY\", \"TIMEOUT\", \"BAD_INPUT\", \"CANNOT_COMPLY\"\n- \"summary\": one sentence (at most 200 characters) on what in the log points to that cause\n\nAnswer CANNOT_COMPLY when the log does not show the cause.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Job J-slow failed. Classify the cause as OUT_OF_MEMORY, TIMEOUT, BAD_INPUT or CANNOT_COMPLY and answer as JSON {cause, summary}.\n--- log ---\n2026-11-02T04:00:00Z worker: step 41/80\n2026-11-02T04:10:00Z worker: deadline exceeded after 600s"
+          }
+        ]
+      },
+      "reply": "{\"cause\": \"TIMEOUT\", \"summary\": \"The worker hit its 600 s deadline at step 41 of 80.\"}"
+    }
+  ]
+}

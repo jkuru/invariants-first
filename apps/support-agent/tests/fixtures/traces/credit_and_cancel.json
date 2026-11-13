@@ -1,0 +1,30 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-1\nTicket: credit 300 please"
+          }
+        ]
+      },
+      "reply": "{\"action\": \"CREDIT\", \"customer_id\": \"C-1\", \"order_id\": \"\", \"amount_cents\": 300, \"reason\": \"The customer asked for a 300 cent account credit.\"}"
+    },
+    {
+      "request": {
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-2\nTicket: cancel my plan"
+          }
+        ]
+      },
+      "reply": "{\"action\": \"CANCEL\", \"customer_id\": \"C-2\", \"order_id\": \"\", \"amount_cents\": 0, \"reason\": \"The customer asked to cancel their subscription.\"}"
+    }
+  ]
+}

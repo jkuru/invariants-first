@@ -1,0 +1,38 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-1\nTicket: refund 450 on O-2 please, the item arrived broken"
+          }
+        ]
+      },
+      "reply": "Here is the plan for this ticket:\n\n```json\n{\n  \"action\": \"REFUND\",\n  \"customer_id\": \"C-1\",\n  \"order_id\": \"O-2\",\n  \"amount_cents\": 450,\n  \"reason\": \"The item arrived broken.\"\n}\n```"
+    },
+    {
+      "request": {
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-1\nTicket: refund 450 on O-2 please, the item arrived broken"
+          },
+          {
+            "role": "assistant",
+            "content": "Here is the plan for this ticket:\n\n```json\n{\n  \"action\": \"REFUND\",\n  \"customer_id\": \"C-1\",\n  \"order_id\": \"O-2\",\n  \"amount_cents\": 450,\n  \"reason\": \"The item arrived broken.\"\n}\n```"
+          },
+          {
+            "role": "user",
+            "content": "That reply could not be used: not JSON: Expecting value\nReply again with only the corrected JSON object."
+          }
+        ]
+      },
+      "reply": "{\"action\": \"REFUND\", \"customer_id\": \"C-1\", \"order_id\": \"O-2\", \"amount_cents\": 450, \"reason\": \"The item arrived broken.\"}"
+    }
+  ]
+}

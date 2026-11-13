@@ -1,0 +1,66 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: extract one fact from the text below.\n\nReturn fact number 1 in reading order (counting from 1) as a JSON object with exactly these fields:\n- \"subject\": the entity the fact is about, as written in the text\n- \"predicate\": one of \"acquired\", \"acquisition_price\", \"in_talks\", \"ceo_of\", \"headquartered_in\"\n- \"object\": the other entity as written (object_kind \"entity\"), or a literal value (object_kind \"literal\"); an acquisition price is \"USD <integer>\", like \"USD 2100000000\"\n- \"object_kind\": \"entity\" or \"literal\"\n- \"qualifier\": \"EXACT\", \"APPROX\" (\"about\"), \"UPPER_BOUND\" (\"up to\"), \"LOWER_BOUND\" (\"at least\"), or \"NONE\" when the fact has no amount\n- \"polarity\": \"ASSERTED\", \"DENIED\", \"HYPOTHETICAL\" or \"REPORTED\"\n- \"quote\": the exact words of the text the fact rests on, copied character for character\n- \"start\", \"end\": character offsets of the quote in the text, so that text[start:end] == quote\n- \"valid_from\", \"valid_to\": \"YYYY-MM-DD\" dates the text gives for when the fact held, else null\n\nWhen the text has fewer than 1 facts, answer with predicate \"NONE\", empty strings for subject, object and quote, object_kind \"literal\", qualifier \"NONE\", polarity \"ASSERTED\", start 0, end 0 and null dates. Answer with predicate \"CANNOT_COMPLY\" when you cannot do the task.\n\nText:\nAcme Corp said Tuesday it completed its acquisition of Beta Ltd for about $2.1 billion."
+          }
+        ]
+      },
+      "reply": "{\"subject\": \"Acme Corp\", \"predicate\": \"acquired\", \"object\": \"Beta Ltd\", \"object_kind\": \"entity\", \"qualifier\": \"NONE\", \"polarity\": \"ASSERTED\", \"quote\": \"Acme Corp said Tuesday it completed its acquisition of Beta Ltd\", \"start\": 0, \"end\": 63, \"valid_from\": null, \"valid_to\": null}"
+    },
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: extract one fact from the text below.\n\nReturn fact number 2 in reading order (counting from 1) as a JSON object with exactly these fields:\n- \"subject\": the entity the fact is about, as written in the text\n- \"predicate\": one of \"acquired\", \"acquisition_price\", \"in_talks\", \"ceo_of\", \"headquartered_in\"\n- \"object\": the other entity as written (object_kind \"entity\"), or a literal value (object_kind \"literal\"); an acquisition price is \"USD <integer>\", like \"USD 2100000000\"\n- \"object_kind\": \"entity\" or \"literal\"\n- \"qualifier\": \"EXACT\", \"APPROX\" (\"about\"), \"UPPER_BOUND\" (\"up to\"), \"LOWER_BOUND\" (\"at least\"), or \"NONE\" when the fact has no amount\n- \"polarity\": \"ASSERTED\", \"DENIED\", \"HYPOTHETICAL\" or \"REPORTED\"\n- \"quote\": the exact words of the text the fact rests on, copied character for character\n- \"start\", \"end\": character offsets of the quote in the text, so that text[start:end] == quote\n- \"valid_from\", \"valid_to\": \"YYYY-MM-DD\" dates the text gives for when the fact held, else null\n\nWhen the text has fewer than 2 facts, answer with predicate \"NONE\", empty strings for subject, object and quote, object_kind \"literal\", qualifier \"NONE\", polarity \"ASSERTED\", start 0, end 0 and null dates. Answer with predicate \"CANNOT_COMPLY\" when you cannot do the task.\n\nText:\nAcme Corp said Tuesday it completed its acquisition of Beta Ltd for about $2.1 billion."
+          }
+        ]
+      },
+      "reply": "{\"subject\": \"Beta Ltd\", \"predicate\": \"acquisition_price\", \"object\": \"USD 2100000000\", \"object_kind\": \"literal\", \"qualifier\": \"APPROX\", \"polarity\": \"ASSERTED\", \"quote\": \"about $2.1 billion\", \"start\": 68, \"end\": 86, \"valid_from\": null, \"valid_to\": null}"
+    },
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: extract one fact from the text below.\n\nReturn fact number 3 in reading order (counting from 1) as a JSON object with exactly these fields:\n- \"subject\": the entity the fact is about, as written in the text\n- \"predicate\": one of \"acquired\", \"acquisition_price\", \"in_talks\", \"ceo_of\", \"headquartered_in\"\n- \"object\": the other entity as written (object_kind \"entity\"), or a literal value (object_kind \"literal\"); an acquisition price is \"USD <integer>\", like \"USD 2100000000\"\n- \"object_kind\": \"entity\" or \"literal\"\n- \"qualifier\": \"EXACT\", \"APPROX\" (\"about\"), \"UPPER_BOUND\" (\"up to\"), \"LOWER_BOUND\" (\"at least\"), or \"NONE\" when the fact has no amount\n- \"polarity\": \"ASSERTED\", \"DENIED\", \"HYPOTHETICAL\" or \"REPORTED\"\n- \"quote\": the exact words of the text the fact rests on, copied character for character\n- \"start\", \"end\": character offsets of the quote in the text, so that text[start:end] == quote\n- \"valid_from\", \"valid_to\": \"YYYY-MM-DD\" dates the text gives for when the fact held, else null\n\nWhen the text has fewer than 3 facts, answer with predicate \"NONE\", empty strings for subject, object and quote, object_kind \"literal\", qualifier \"NONE\", polarity \"ASSERTED\", start 0, end 0 and null dates. Answer with predicate \"CANNOT_COMPLY\" when you cannot do the task.\n\nText:\nAcme Corp said Tuesday it completed its acquisition of Beta Ltd for about $2.1 billion."
+          }
+        ]
+      },
+      "reply": "{\"subject\": \"\", \"predicate\": \"NONE\", \"object\": \"\", \"object_kind\": \"literal\", \"qualifier\": \"NONE\", \"polarity\": \"ASSERTED\", \"quote\": \"\", \"start\": 0, \"end\": 0, \"valid_from\": null, \"valid_to\": null}"
+    },
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: extract one fact from the text below.\n\nReturn fact number 1 in reading order (counting from 1) as a JSON object with exactly these fields:\n- \"subject\": the entity the fact is about, as written in the text\n- \"predicate\": one of \"acquired\", \"acquisition_price\", \"in_talks\", \"ceo_of\", \"headquartered_in\"\n- \"object\": the other entity as written (object_kind \"entity\"), or a literal value (object_kind \"literal\"); an acquisition price is \"USD <integer>\", like \"USD 2100000000\"\n- \"object_kind\": \"entity\" or \"literal\"\n- \"qualifier\": \"EXACT\", \"APPROX\" (\"about\"), \"UPPER_BOUND\" (\"up to\"), \"LOWER_BOUND\" (\"at least\"), or \"NONE\" when the fact has no amount\n- \"polarity\": \"ASSERTED\", \"DENIED\", \"HYPOTHETICAL\" or \"REPORTED\"\n- \"quote\": the exact words of the text the fact rests on, copied character for character\n- \"start\", \"end\": character offsets of the quote in the text, so that text[start:end] == quote\n- \"valid_from\", \"valid_to\": \"YYYY-MM-DD\" dates the text gives for when the fact held, else null\n\nWhen the text has fewer than 1 facts, answer with predicate \"NONE\", empty strings for subject, object and quote, object_kind \"literal\", qualifier \"NONE\", polarity \"ASSERTED\", start 0, end 0 and null dates. Answer with predicate \"CANNOT_COMPLY\" when you cannot do the task.\n\nText:\nBeta had denied talks in 2024."
+          }
+        ]
+      },
+      "reply": "{\"subject\": \"Beta\", \"predicate\": \"in_talks\", \"object\": \"acquisition talks\", \"object_kind\": \"literal\", \"qualifier\": \"NONE\", \"polarity\": \"DENIED\", \"quote\": \"Beta had denied talks in 2024\", \"start\": 0, \"end\": 29, \"valid_from\": \"2024-01-01\", \"valid_to\": \"2024-12-31\"}"
+    },
+    {
+      "request": {
+        "system": "You are one step of a pipeline that turns news text into cited facts and answers questions from it. Each message is one task. Reply with one JSON object and nothing else (no prose, no code fence).",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Task: extract one fact from the text below.\n\nReturn fact number 2 in reading order (counting from 1) as a JSON object with exactly these fields:\n- \"subject\": the entity the fact is about, as written in the text\n- \"predicate\": one of \"acquired\", \"acquisition_price\", \"in_talks\", \"ceo_of\", \"headquartered_in\"\n- \"object\": the other entity as written (object_kind \"entity\"), or a literal value (object_kind \"literal\"); an acquisition price is \"USD <integer>\", like \"USD 2100000000\"\n- \"object_kind\": \"entity\" or \"literal\"\n- \"qualifier\": \"EXACT\", \"APPROX\" (\"about\"), \"UPPER_BOUND\" (\"up to\"), \"LOWER_BOUND\" (\"at least\"), or \"NONE\" when the fact has no amount\n- \"polarity\": \"ASSERTED\", \"DENIED\", \"HYPOTHETICAL\" or \"REPORTED\"\n- \"quote\": the exact words of the text the fact rests on, copied character for character\n- \"start\", \"end\": character offsets of the quote in the text, so that text[start:end] == quote\n- \"valid_from\", \"valid_to\": \"YYYY-MM-DD\" dates the text gives for when the fact held, else null\n\nWhen the text has fewer than 2 facts, answer with predicate \"NONE\", empty strings for subject, object and quote, object_kind \"literal\", qualifier \"NONE\", polarity \"ASSERTED\", start 0, end 0 and null dates. Answer with predicate \"CANNOT_COMPLY\" when you cannot do the task.\n\nText:\nBeta had denied talks in 2024."
+          }
+        ]
+      },
+      "reply": "{\"subject\": \"\", \"predicate\": \"NONE\", \"object\": \"\", \"object_kind\": \"literal\", \"qualifier\": \"NONE\", \"polarity\": \"ASSERTED\", \"quote\": \"\", \"start\": 0, \"end\": 0, \"valid_from\": null, \"valid_to\": null}"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import sys
 from collections.abc import Sequence
@@ -11,8 +12,8 @@ from typing import Any
 
 import invariants as inv
 
-from . import monitor, rules_path
-from .fake_model import FAULTS, FakeModel
+from . import llm, monitor, rules_path
+from .fake_model import FAULTS, FakeModel, ModelClient
 from .pipeline import Pipeline
 from .store import Store
 
@@ -25,7 +26,9 @@ def _fault(s: str) -> tuple[str, int]:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="fact-pipeline", description="Ingest documents, extract cited facts, answer.")
+    p = argparse.ArgumentParser(prog="fact-pipeline", description="Ingest documents, extract cited facts, answer.",
+                                epilog="APP_MODEL picks the model: fake (default), anthropic, record or replay "
+                                       "(the last two with APP_TRACE); see llm.py.")
     p.add_argument("--db", default="facts.db", help="SQLite file (default: facts.db)")
     p.add_argument("--rules", default=None, help="rule file (default: the project's invariants.yaml)")
     p.add_argument("--inject", action="append", default=[], type=_fault, metavar="FAULT[:N]",
@@ -69,7 +72,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (inv.LoadError, inv.CoverageError) as e:
         print(f"fact-pipeline: rules: {e}", file=sys.stderr)
         return 2
-    client = FakeModel(dict(a.inject))
+    mode = os.environ.get("APP_MODEL", "fake")
+    if a.inject and mode != "fake":
+        print(f"fact-pipeline: --inject drives the fake model, not APP_MODEL={mode}", file=sys.stderr)
+        return 2
+    client: ModelClient = FakeModel(dict(a.inject)) if mode == "fake" else llm.from_env()
     store = Store(a.db)
     pipe = Pipeline(store, client)
     try:

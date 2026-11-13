@@ -25,8 +25,13 @@ def app(tmp_path: pathlib.Path) -> pathlib.Path:
     return root
 
 
+def pythonpath(root: pathlib.Path) -> str:
+    """The copy's src first (it shadows the installed app), then whatever PYTHONPATH CI set."""
+    return os.pathsep.join(p for p in (str(root / "src"), os.environ.get("PYTHONPATH", "")) if p)
+
+
 def check(root: pathlib.Path, *extra: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "PYTHONPATH": str(root / "src")}           # the copy shadows the installed app
+    env = {**os.environ, "PYTHONPATH": pythonpath(root)}
     env.pop("INV_ABLATE", None)
     return subprocess.run([sys.executable, "-m", "invariants.cli", "check", *extra], cwd=root, env=env,
                           capture_output=True, text=True, timeout=120)
@@ -109,7 +114,7 @@ def test_d3_a_cap_the_agent_re_pinned_itself_fails_against_the_base(app: pathlib
     edit(app / "src/support_agent/models.py", "amount_cents: int = Field(gt=0, le=50_000)",
          "amount_cents: int = Field(gt=0, le=500_000)")
     lock = subprocess.run([sys.executable, "-m", "invariants.cli", "lock", "--accept-weakening"], cwd=app,
-                          env={**os.environ, "PYTHONPATH": str(app / "src")}, capture_output=True, text=True)
+                          env={**os.environ, "PYTHONPATH": pythonpath(app)}, capture_output=True, text=True)
     assert lock.returncode == 0, lock.stdout + lock.stderr            # the agent re-pins it itself
     assert check(app).returncode == 0                                 # the PR's own lock now agrees
     r = check(app, "--base", "main")                                  # CI compares with the base branch

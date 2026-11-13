@@ -2,8 +2,8 @@
 
 A tool-calling support agent that issues refunds, credits and cancellations. It is the flagship test
 of the [`invariants`](../../invariants-py/README.md) library: every layer is an API, and every law sits
-on one of them. It needs no API key; `FakeAgentModel` stands in for the model and can be told to
-misbehave.
+on one of them. It needs no API key: `FakeAgentModel` stands in for the model and can be told to
+misbehave, and the happy paths also run on a replayed Claude trace (see [Models](#models-fake-replay-claude)).
 
 ```
 ticket -> triage_node -> planner_node -> router -> tool_executor_node -> tool -> BillingService -> StripeGateway / LedgerRepo
@@ -68,9 +68,40 @@ Each has a test; the CI ones copy the app, make the change and run `inv check` i
 Safe changes pass: a new tool that goes through `BillingService`, and a tighter cap (re-pinned by
 `inv check --relock` with no person needed).
 
+## Models: fake, replay, Claude
+
+`APP_MODEL` picks the model (`src/support_agent/llm.py`):
+
+| `APP_MODEL` | model |
+|---|---|
+| `fake` | `FakeAgentModel`; the app's default, and what the seeded-defect tests use, since it can be told to misbehave |
+| `replay` | answers from a trace file (`APP_TRACE`), failing with a diff on a request the trace does not hold; the default of `tests/test_replay.py` |
+| `anthropic` | Claude (`claude-haiku-5-5`, or `APP_MODEL_ID`) through `invariants.integrations.anthropic`; needs `pip install 'invariants-first[anthropic]'` and `ANTHROPIC_API_KEY` |
+| `record` | Claude, writing every call to the trace file |
+
+In code: `planner.set_model(llm.from_env())`.
+
+`tests/test_replay.py` runs the happy-path flows on replay, from `tests/fixtures/traces/`. **The
+committed traces are hand-written fixtures, not recordings**: the requests come from the app's own
+prompt code, the replies were written by hand in the shape the API returns, and each file says
+`"fixture": "hand-written"`. One trace scripts a first reply that fails the closed schema, so the
+parser error goes back as a second user turn in the same conversation and the second reply fixes it.
+
+To record real traces (this calls the API and costs money; it rewrites the files, marked
+`"fixture": "recorded"`; the scripted format-failure flow is skipped):
+
+```
+pip install 'invariants-first[anthropic]'
+export ANTHROPIC_API_KEY=...
+python -m pytest tests/test_replay.py --record        # or APP_MODEL=record python -m pytest tests/test_replay.py
+```
+
+`APP_MODEL=anthropic python -m pytest tests/test_replay.py` runs the same flows on Claude without
+writing anything.
+
 ## What it does not show
 
 - Concurrency: two agents refunding the same order at once can both pass BILL-1 (a check is not a
   lock). The ledger's own transaction is the implementation's business, below every rule.
-- The model is a fake. The rules see only its JSON, so a real model changes nothing in the checks,
-  but its failure rates are its own.
+- The defect tests use a fake model, and the committed replay traces are hand-written. The rules see
+  only the model's JSON, so a real model changes nothing in the checks, but its failure rates are its own.

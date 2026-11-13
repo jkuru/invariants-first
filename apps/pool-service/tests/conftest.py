@@ -1,18 +1,31 @@
-"""Fixtures: a fresh SQLite file per test, the app on it, and the fake model client."""
+"""Fixtures: a fresh SQLite file per test, the app on it, the fake model client, and the replay model.
+
+The defect tests run on the fake (it can be told to misbehave). The happy-path flows in
+test_replay.py run on the model APP_MODEL names: replay (the default) answers from
+tests/fixtures/traces/; `--record` (or APP_MODEL=record) calls Claude and rewrites those traces.
+"""
 from __future__ import annotations
 
+import os
 import pathlib
 import sqlite3
-from typing import Iterator
+from typing import Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
 import invariants as inv
-from pool_service import api, db, triage
+from pool_service import api, db, llm, triage
 from pool_service.fake_model import FakeModelClient
 
 APP_ROOT = pathlib.Path(__file__).resolve().parents[1]
+TRACES = APP_ROOT / "tests" / "fixtures" / "traces"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--record", action="store_true", default=False,
+                     help="APP_MODEL=record: run the replay flows on Claude and rewrite tests/fixtures/traces/ "
+                          "(needs the anthropic package and ANTHROPIC_API_KEY)")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -54,6 +67,29 @@ def model() -> Iterator[FakeModelClient]:
     triage.set_client(c)
     yield c
     triage.set_client(FakeModelClient())
+
+
+@pytest.fixture
+def model_mode(request: pytest.FixtureRequest) -> str:
+    """replay (default), record, anthropic or fake: what the replay flows run on."""
+    return "record" if request.config.getoption("--record") else os.environ.get("APP_MODEL", "replay")
+
+
+@pytest.fixture
+def traced(model_mode: str) -> Iterator[Callable[[str], llm.ModelClient]]:
+    """traced(name): make triage use the APP_MODEL model for trace tests/fixtures/traces/<name>.json.
+    On replay, every call the trace holds must have been made by the end of the test."""
+    made: list[llm.ModelClient] = []
+
+    def make(name: str) -> llm.ModelClient:
+        m = llm.select(model_mode, TRACES / f"{name}.json")
+        triage.set_client(m)
+        made.append(m)
+        return m
+    yield make
+    for m in made:
+        if hasattr(m, "assert_done"):
+            m.assert_done()
 
 
 def make_pool(client: TestClient, pool_id: str = "gpu-a", size: int = 10) -> None:

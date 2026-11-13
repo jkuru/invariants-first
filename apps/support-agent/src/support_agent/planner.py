@@ -11,6 +11,7 @@ import invariants as inv
 
 from .context import AgentContext
 from .fake_model import FakeAgentModel
+from .llm import AgentModel
 from .models import Plan
 
 
@@ -20,15 +21,15 @@ class CheckedPlan(inv.Checked):
     __slots__ = ()
 
 
-_model = FakeAgentModel()
+_model: AgentModel = FakeAgentModel()      # llm.from_env() picks a real or replayed model (APP_MODEL)
 
 
-def model() -> FakeAgentModel:
+def model() -> AgentModel:
     return _model
 
 
-def set_model(m: FakeAgentModel) -> None:
-    """Swap the model (tests, demos)."""
+def set_model(m: AgentModel) -> None:
+    """Swap the model (tests, demos, or llm.from_env())."""
     global _model
     _model = m
 

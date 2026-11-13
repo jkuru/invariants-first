@@ -10,6 +10,27 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### A real-model path for model_call, with replay
+
+- **`invariants.integrations.anthropic`** (new `anthropic` extra, imported lazily; no core
+  dependency). `AnthropicModel(model="claude-haiku-5-5", system=..., max_tokens=...)` gives a
+  `model_call` body `complete(prompt, feedback) -> str` (and `acomplete` for an async body). One
+  invocation with its format retries is one conversation: the parser error comes back as a follow-up
+  user turn after the model's previous reply, with the API's content blocks (thinking included) sent
+  back unchanged, while the first attempt and a semantic resample (`inv_feedback` None) open a fresh
+  one. The conversation is context-local, so threads and tasks keep their own. `ReplayModel(path)`
+  answers from a JSON trace (`{"fixture": "recorded" | "hand-written", "model", "calls"}`), matching
+  each request and failing with a unified diff (`ReplayMismatch`) on a mismatch; `RecordingModel`
+  wraps an `AnthropicModel` and writes `"fixture": "recorded"` traces; `model_for(mode, trace)` maps
+  `replay`/`record`/`anthropic`/`fake`. See [docs/models.md](docs/models.md).
+- **The demo apps take `APP_MODEL=replay|anthropic|record|fake`.** Their happy-path flows run on
+  replay in tests and CI (`tests/test_replay.py`, traces in `tests/fixtures/traces/`, one per app
+  exercising a format failure fixed on the second turn); the seeded-defect tests stay on each app's
+  fake model. `pytest --record` with `ANTHROPIC_API_KEY` set records real traces. The committed traces
+  are hand-written fixtures in the API's response shape, not recordings, and say so
+  (`"fixture": "hand-written"`). support-agent's CI-defect tests now keep CI's `PYTHONPATH` after the
+  app copy's `src` in the `inv check` subprocess.
+
 ### Two CEL backends: subset and cel-expr
 
 - **Removed: the `celpy` backend** (cel-python). `cel-python` is no longer in the `cel` extra, and
