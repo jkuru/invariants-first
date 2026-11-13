@@ -7,7 +7,7 @@ import ast
 import json
 from typing import Any
 
-from .cel_mono import Typer, _clause_key, _disjuncts, _new_sites_text, _unique, compare_bad
+from .cel_mono import Typer, _clause_key, _disjuncts, _unique, judge_bad
 from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER, NEUTRAL, NOTES,
                         PIN, PRESENCE, PROSE, RANKED, RANKS, REMOVED_NOTE, Change, _json_paths, policy, same)
 from .schema_diff import _param_schema_changes, constraint_weakening
@@ -119,14 +119,13 @@ def _label(c: tuple[str, str]) -> str:
 def _direction_change(where: str, label: str, old: Any, new: Any, w: str | None = None,
                       w2: str | None = None, typer: Typer | None = None) -> Change:
     from ..cel import subset
-    direction = compare_bad(old if w is None else w, new if w2 is None else w2, subset.parse, typer)
+    direction, sites = judge_bad(old if w is None else w, new if w2 is None else w2, subset.parse, typer)
     if direction == "same":
         return Change(where, label, old, new, False, "the same condition after normalisation")
     if direction == "weaker":
         return Change(where, label, old, new, True, "the condition now matches fewer cases")
     if direction == "stronger":
         return Change(where, label, old, new, False, "the condition now matches more cases")
-    sites = _new_sites_text(old if w is None else w, new if w2 is None else w2, typer)
     if sites:
         return Change(where, label, old, new, True,
                       f"the new condition can raise an error the old one could not ({', '.join(sites)}); "

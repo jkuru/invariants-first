@@ -92,7 +92,7 @@ class LockVersionError(LockError):
 def read(path: pathlib.Path) -> dict[str, Any]:
     """Read a lockfile; LockError when it is missing, not JSON, or not shaped like a lock."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise LockError(f"{path}: no lockfile ({e.strerror}); run `inv lock`") from e
     except (json.JSONDecodeError, UnicodeDecodeError) as e:

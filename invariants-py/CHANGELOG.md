@@ -10,6 +10,32 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 20 (lock)
+
+From a review of the lock. Regression tests: `tests/test_fix_round20_lock.py`; each failed before its
+fix (checked by reverting each fix). The locks of the three example apps and of the test fixtures are
+byte-identical before and after, and `lockfile.changes()` reports the same changes for edited rule files.
+
+- **A self-referential dataclass or TypedDict keeps its definition in its stdlib JSON Schema.** Without
+  pydantic (or when pydantic refuses the class), `Node` with `children: list["Node"]` was pinned with
+  its own definition popped to the top level, so `children.items` held a `$ref` to `#/$defs/Node` that
+  no longer existed. The schema is now `{"$ref": "#/$defs/Node", "$defs": {"Node": ...}}`, as pydantic
+  writes it, and a bound loosened inside it is still judged a weakening. A class that does not refer
+  to itself is pinned as before.
+- **The stdlib JSON Schema reading unwraps a PEP 695 alias** (`type X = ...`, typing.TypeAliasType or
+  its typing_extensions backport): `X`, `X | None`, `list[X]` and a parameterised alias `X[int]` are
+  read as the aliased type, bounds included, instead of an opaque `x-python-type`.
+- **An OpenAPI contract file that cannot be opened says so.** A permission error (or another OSError)
+  was reported as "cannot be read as UTF-8 text"; it is now "cannot be read (PermissionError)". Bytes
+  that are not UTF-8 are still reported as such.
+- **The lock is read as UTF-8 on any locale.** `lockfile.read` used the locale's preferred encoding,
+  so a lock holding a non-ASCII value (the lock is written with `ensure_ascii=False`) read differently,
+  or not at all, under a Latin-1 locale.
+- Internal: the dataclass/TypedDict field reading is shared by the resolved schema and the stdlib JSON
+  Schema; a signature pin resolves the callable's annotations once (not once for its types and again
+  for its parameter constraints); a `bad` edit the polarity walk cannot decide reuses the parsed
+  trees for its error-site check (`judge_bad`) instead of parsing and walking both again.
+
 ### Fixes after the layered refactor
 
 - **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose

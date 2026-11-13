@@ -200,25 +200,33 @@ def resolved_schema(schema: Any, defs: dict[str, Any] | None = None, seen: set[i
     return _plain(strip_prose(out)) if top else _plain(out)
 
 
+class _ClassShape(typing.NamedTuple):
+    kind: str                       # "dataclass" | "typeddict"
+    fields: dict[str, Any]          # field name -> resolved annotation (Annotated kept), in field order
+    required: list[str]             # sorted
+
+
+def _class_shape(cls: type) -> _ClassShape:
+    """A dataclass or TypedDict's resolved fields and its required ones: what both its resolved schema
+    (_class_fields) and its stdlib JSON Schema (_json_object) are read from."""
+    try:
+        hints = typing.get_type_hints(cls, include_extras=True)
+    except Exception as e:                                 # an unresolvable forward reference
+        raise LoadError(f"schema {cls.__qualname__}: cannot resolve its annotations ({e})") from e
+    if dataclasses.is_dataclass(cls):
+        fields = dataclasses.fields(cls)
+        return _ClassShape("dataclass", {f.name: hints[f.name] for f in fields},
+                           sorted(f.name for f in fields
+                                  if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING))
+    return _ClassShape("typeddict", hints, sorted(getattr(cls, "__required_keys__", ())))
+
+
 def _class_fields(schema: type, defs: dict[str, Any], seen: set[int]) -> dict[str, Any]:
     """A dataclass or TypedDict as its resolved field types and its required fields."""
-    try:
-        hints = typing.get_type_hints(schema, include_extras=True)
-    except Exception as e:                                 # an unresolvable forward reference
-        raise LoadError(f"schema {schema.__qualname__}: cannot resolve its annotations ({e})") from e
-    if dataclasses.is_dataclass(schema):
-        names = [f.name for f in dataclasses.fields(schema)]
-        kind = "dataclass"
-    else:
-        names = list(hints)
-        kind = "typeddict"
-    out: dict[str, Any] = {kind: schema.__qualname__, "fields": {n: _type_schema(hints[n], defs, seen) for n in names}}
-    if dataclasses.is_dataclass(schema):
-        out["required"] = sorted(f.name for f in dataclasses.fields(schema)
-                                 if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING)
-    elif _is_typeddict(schema):
-        out["required"] = sorted(getattr(schema, "__required_keys__", ()))
-    return out
+    shape = _class_shape(schema)
+    return {shape.kind: schema.__qualname__,
+            "fields": {n: _type_schema(t, defs, seen) for n, t in shape.fields.items()},
+            "required": shape.required}
 
 
 def json_schema(cls: type) -> Any:
@@ -256,8 +264,20 @@ def stdlib_json_schema(cls: type) -> dict[str, Any]:
 
 
 def _local_def(top: Any, defs: dict[str, Any]) -> Any:
+    """The top class's object schema in place of its {"$ref"}, unless a definition refers back to it
+    (a self-referential class): then the reference and its definition stay, as pydantic writes it."""
     ref = top.get("$ref", "") if isinstance(top, dict) else ""
-    return defs.pop(ref[len("#/$defs/"):]) if ref.startswith("#/$defs/") else top
+    if not ref.startswith("#/$defs/") or _refers_to(defs, ref):
+        return top
+    return defs.pop(ref[len("#/$defs/"):])
+
+
+def _refers_to(node: Any, ref: str) -> bool:
+    if isinstance(node, dict):
+        return node.get("$ref") == ref or any(_refers_to(v, ref) for v in node.values())
+    if isinstance(node, list):
+        return any(_refers_to(v, ref) for v in node)
+    return False
 
 
 def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
@@ -266,6 +286,9 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     d = depth + 1
     if t is Any:
         return {}
+    alias = t if _is_alias(t) else typing.get_origin(t)
+    if _is_alias(alias):                                       # PEP 695: type X = ..., and X[int]
+        return _json_type(alias.__value__, defs, d)
     if t in _JSON_TYPES:
         return {"type": _JSON_TYPES[t]}
     origin, args = typing.get_origin(t), typing.get_args(t)
@@ -287,6 +310,11 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     if isinstance(t, type) and (dataclasses.is_dataclass(t) or _is_typeddict(t)):
         return _json_object(t, defs, d)
     return {"x-python-type": getattr(t, "__qualname__", repr(t))}
+
+
+def _is_alias(t: Any) -> bool:
+    """A PEP 695 alias (typing.TypeAliasType, 3.12+, or typing_extensions' backport)."""
+    return type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__")
 
 
 def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
@@ -315,34 +343,34 @@ def _json_object(cls: type, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     if name in defs:
         return ref
     defs[name] = {}                                            # placeholder: cuts recursion
-    try:
-        hints = typing.get_type_hints(cls, include_extras=True)
-    except Exception as e:
-        raise LoadError(f"schema {name}: cannot resolve its annotations ({e})") from e
-    if dataclasses.is_dataclass(cls):
-        names = [f.name for f in dataclasses.fields(cls)]
-        required = sorted(f.name for f in dataclasses.fields(cls)
-                          if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING)
-    else:
-        names, required = list(hints), sorted(getattr(cls, "__required_keys__", ()))
-    defs[name] = {"type": "object", "properties": {n: _json_type(hints[n], defs, depth) for n in names},
-                  "required": required}
+    shape = _class_shape(cls)
+    defs[name] = {"type": "object", "properties": {n: _json_type(t, defs, depth) for n, t in shape.fields.items()},
+                  "required": shape.required}
     return ref
 
 
 # --- signatures ---------------------------------------------------------------------------------
+def _callable_hints(obj: Any) -> tuple[Any, dict[str, Any] | None]:
+    """The unwrapped callable and its resolved annotations (a class's are its __init__'s), or None when
+    a name cannot be resolved. signature_types and param_schemas read them; a signature pin reads once."""
+    fn = inspect.unwrap(obj)
+    src = fn.__init__ if inspect.isclass(fn) else fn
+    try:
+        return fn, typing.get_type_hints(src, include_extras=True)
+    except Exception:                                          # an unresolvable name: keep the text
+        return fn, None
+
+
 def signature_types(obj: Any, pins: Schemas) -> dict[str, Any]:
     """Resolved parameter and return types of a callable: {param: type, "return": type}.
 
     Read with typing.get_type_hints, so `from __future__ import annotations` text and aliases are
     resolved; a dataclass, TypedDict or pydantic model is pinned by its fields in the schema table."""
-    fn = inspect.unwrap(obj)
+    return _signature_types(*_callable_hints(obj), pins)
+
+
+def _signature_types(fn: Any, hints: dict[str, Any] | None, pins: Schemas) -> dict[str, Any]:
     sig = inspect.signature(fn)
-    src = fn.__init__ if inspect.isclass(fn) else fn
-    try:
-        hints: dict[str, Any] | None = typing.get_type_hints(src, include_extras=True)
-    except Exception:                                          # an unresolvable name: keep the text
-        hints = None
     out: dict[str, Any] = {}
     for name, p in sig.parameters.items():
         if p.annotation is inspect.Parameter.empty:
@@ -362,10 +390,11 @@ def _signature_pin(obj: Any, label: str, pins: Schemas) -> dict[str, Any]:
     except (TypeError, ValueError) as e:
         raise LoadError(f"{label}: no signature ({e})") from e
     pin: dict[str, Any] = {"signature": text}
-    types = signature_types(obj, pins)
+    fn, hints = _callable_hints(obj)
+    types = _signature_types(fn, hints, pins)
     if types:
         pin["types"] = types
-    bounds = param_schemas(obj)
+    bounds = _param_schemas(fn, hints)
     if bounds:
         pin["param_schemas"] = bounds
     return pin
@@ -415,15 +444,14 @@ def param_schemas(obj: Any) -> dict[str, Any]:
     (`Annotated[int, Field(gt=0)]`, `Annotated[str, MaxLen(10)]`, also inside Optional or list). The
     resolved `types` drop Annotated metadata, so these pins are what makes a constraint removed or
     loosened in a signature a weakening (judged like any pinned schema). Empty when none has one."""
-    fn = inspect.unwrap(obj)
-    src = fn.__init__ if inspect.isclass(fn) else fn
-    try:
-        hints = typing.get_type_hints(src, include_extras=True)
-    except Exception:                                          # unresolvable: the signature text pins it
+    return _param_schemas(*_callable_hints(obj))
+
+
+def _param_schemas(fn: Any, hints: dict[str, Any] | None) -> dict[str, Any]:
+    if hints is None:                                          # unresolvable: the signature text pins it
         return {}
-    if inspect.isclass(fn):
-        hints.pop("return", None)
-    return {name: _annotation_schema(t) for name, t in sorted(hints.items()) if _has_constraints(t)}
+    return {name: _annotation_schema(t) for name, t in sorted(hints.items())
+            if not (inspect.isclass(fn) and name == "return") and _has_constraints(t)}
 
 
 # --- contracts ----------------------------------------------------------------------------------
@@ -449,8 +477,10 @@ _PARAM_KEYS = ("name", "in", "required", "schema", "content", "style", "explode"
 def _openapi_file(name: str, path: pathlib.Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
+    except UnicodeDecodeError as e:
         raise LoadError(f"contract {name}: {path.name} cannot be read as UTF-8 text ({type(e).__name__})") from e
+    except OSError as e:
+        raise LoadError(f"contract {name}: {path.name} cannot be read ({type(e).__name__})") from e
     try:
         return json.loads(text)
     except json.JSONDecodeError:

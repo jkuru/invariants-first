@@ -340,31 +340,38 @@ def compare_bad(old: str, new: str, parse: Any, typer: Typer | None = None) -> s
     'unknown': under on_error: fail_open_and_page the error would let through a call the old rule
     rejected. A disjunct or conjunct added to an existing || or && is exempt.
     """
+    return judge_bad(old, new, parse, typer)[0]
+
+
+def judge_bad(old: str, new: str, parse: Any, typer: Typer | None = None) -> tuple[str, list[str]]:
+    """compare_bad's direction, and the sub-expressions that can raise (new_error_sites) when they are
+    what makes an otherwise stronger edit 'unknown' (else []). Both trees are parsed and walked once."""
     if old.strip() == new.strip():
-        return "same"
+        return "same", []
     try:
         ta, tb = canon_tree(parse(old), typer), canon_tree(parse(new), typer)
     except Exception:
         if new.strip() == "false":
-            return "weaker"
+            return "weaker", []
         if old.strip() == "false":
-            return "stronger"
-        return "unknown"
+            return "stronger", []
+        return "unknown", []
     if ta == tb:
-        return "same"
+        return "same", []
     if tb == _FALSE:
-        return "weaker"
+        return "weaker", []
     if ta == _FALSE:
-        return "stronger"
+        return "stronger", []
     effects: list[int] = []
     added: list[Any] = []
     if not _walk(ta, tb, 1, effects, typer, added) or not effects:
-        return "unknown"
+        return "unknown", []
     if all(e > 0 for e in effects):
-        return "unknown" if new_error_sites(ta, tb, added) else "stronger"
+        sites = new_error_sites(ta, tb, added)
+        return ("unknown", sites) if sites else ("stronger", [])
     if all(e < 0 for e in effects):
-        return "weaker"
-    return "unknown"
+        return "weaker", []
+    return "unknown", []
 
 
 _TOTAL_CALLS = frozenset({"has"})
