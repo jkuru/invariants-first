@@ -1,0 +1,176 @@
+{
+  "fixture": "hand-written",
+  "model": "claude-haiku-5-5",
+  "calls": [
+    {
+      "request": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 16000,
+        "tools": [
+          {
+            "name": "submit_plan",
+            "description": "Submit the one action the agent takes for this support ticket: a refund, a credit, a cancellation, or a handoff to a person (ESCALATE_TO_HUMAN).",
+            "input_schema": {
+              "additionalProperties": false,
+              "description": "The planner's reply: one action. Every field is required; an unused one is \"\" or 0. Frozen, so a\nchecked plan cannot be edited on its way to the executor.",
+              "properties": {
+                "action": {
+                  "enum": [
+                    "REFUND",
+                    "CREDIT",
+                    "CANCEL",
+                    "ESCALATE_TO_HUMAN"
+                  ],
+                  "title": "Action",
+                  "type": "string"
+                },
+                "customer_id": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "title": "Customer Id",
+                  "type": "string"
+                },
+                "order_id": {
+                  "maxLength": 40,
+                  "title": "Order Id",
+                  "type": "string"
+                },
+                "amount_cents": {
+                  "maximum": 500000,
+                  "minimum": 0,
+                  "title": "Amount Cents",
+                  "type": "integer"
+                },
+                "reason": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "title": "Reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "customer_id",
+                "order_id",
+                "amount_cents",
+                "reason"
+              ],
+              "title": "Plan",
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": {
+          "type": "auto",
+          "disable_parallel_tool_use": true
+        },
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nCall the submit_plan tool exactly once with the action. Its input has exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-1\nTicket: refund 100 on O-2"
+          }
+        ]
+      },
+      "reply": [
+        {
+          "type": "tool_use",
+          "id": "toolu_hw_resample_1",
+          "name": "submit_plan",
+          "input": {
+            "action": "REFUND",
+            "customer_id": "C-1",
+            "order_id": "O-2",
+            "amount_cents": 99000,
+            "reason": "Refund the order."
+          }
+        }
+      ]
+    },
+    {
+      "request": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 16000,
+        "tools": [
+          {
+            "name": "submit_plan",
+            "description": "Submit the one action the agent takes for this support ticket: a refund, a credit, a cancellation, or a handoff to a person (ESCALATE_TO_HUMAN).",
+            "input_schema": {
+              "additionalProperties": false,
+              "description": "The planner's reply: one action. Every field is required; an unused one is \"\" or 0. Frozen, so a\nchecked plan cannot be edited on its way to the executor.",
+              "properties": {
+                "action": {
+                  "enum": [
+                    "REFUND",
+                    "CREDIT",
+                    "CANCEL",
+                    "ESCALATE_TO_HUMAN"
+                  ],
+                  "title": "Action",
+                  "type": "string"
+                },
+                "customer_id": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "title": "Customer Id",
+                  "type": "string"
+                },
+                "order_id": {
+                  "maxLength": 40,
+                  "title": "Order Id",
+                  "type": "string"
+                },
+                "amount_cents": {
+                  "maximum": 500000,
+                  "minimum": 0,
+                  "title": "Amount Cents",
+                  "type": "integer"
+                },
+                "reason": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "title": "Reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "customer_id",
+                "order_id",
+                "amount_cents",
+                "reason"
+              ],
+              "title": "Plan",
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": {
+          "type": "auto",
+          "disable_parallel_tool_use": true
+        },
+        "system": "You are the planning step of a billing support agent. Read one support ticket and choose exactly one action.\n\nCall the submit_plan tool exactly once with the action. Its input has exactly these fields:\n- \"action\": one of \"REFUND\", \"CREDIT\", \"CANCEL\", \"ESCALATE_TO_HUMAN\"\n- \"customer_id\": the customer id you were given\n- \"order_id\": the order to refund (like \"O-1\") for REFUND, otherwise \"\"\n- \"amount_cents\": an integer; amounts in tickets are already in cents; 0 for CANCEL and ESCALATE_TO_HUMAN\n- \"reason\": one short sentence\n\nChoose ESCALATE_TO_HUMAN when the ticket is unclear or asks for anything else.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Customer id: C-1\nTicket: refund 100 on O-2"
+          }
+        ]
+      },
+      "reply": [
+        {
+          "type": "tool_use",
+          "id": "toolu_hw_resample_2",
+          "name": "submit_plan",
+          "input": {
+            "action": "REFUND",
+            "customer_id": "C-1",
+            "order_id": "O-2",
+            "amount_cents": 100,
+            "reason": "The customer asked for 100 back."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -17,6 +17,15 @@ reply in the current one. The current conversation is context-local (a contextva
 asyncio tasks each keep their own; call the model from the body itself (an `async def` body uses
 `acomplete`), not from a worker thread the body starts.
 
+With a reply tool, the model answers by calling a tool whose input is the structured reply, as an
+agent does, instead of writing JSON text:
+
+    llm = AnthropicModel(system="...", tool=reply_tool("submit_cause", CauseReply))
+
+complete() then returns the tool call's input as JSON text, which the decorator parses and checks
+like any reply, and the feedback after a format failure goes back as a tool_result turn for that
+tool_use id, with is_error true, as the Messages API expects after a tool call.
+
 ReplayModel answers from a JSON trace and fails loudly, with a diff, when a request differs from
 the recorded one. RecordingModel wraps a real model and writes such a trace. A trace is
 
@@ -24,8 +33,11 @@ the recorded one. RecordingModel wraps a real model and writes such a trace. A t
      "calls": [{"request": {"model": "...", "max_tokens": 16000, "system": "...", "messages": [...]},
                 "reply": "..."}]}
 
-A request records everything the adapter sends (model, max_tokens, every param, system when set,
-the messages), and a replay compares all of it, unless ReplayModel(..., ignore=[...]) names fields
+where a reply is the text, or, when the model called the reply tool, its text and tool_use blocks
+as a list ([{"type": "tool_use", "id": "toolu_...", "name": "...", "input": {...}}]).
+
+A request records everything the adapter sends (model, max_tokens, every param, tools and
+tool_choice when a reply tool is set, system when set, the messages), and a replay compares all of it, unless ReplayModel(..., ignore=[...]) names fields
 to leave out.
 
 The `anthropic` package is imported only when an AnthropicModel without a client makes its first
@@ -36,8 +48,10 @@ from __future__ import annotations
 import base64
 import contextvars
 import copy
+import dataclasses
 import difflib
 import importlib
+import inspect
 import itertools
 import json
 import os
@@ -47,10 +61,15 @@ from collections.abc import Sequence
 from typing import Any
 
 __all__ = ["ChatModel", "AnthropicModel", "ReplayModel", "RecordingModel", "ReplayMismatch", "ConversationError",
-           "ModelRefusal", "model_for", "MODES", "DEFAULT_MODEL", "FEEDBACK_TEMPLATE"]
+           "ModelRefusal", "model_for", "reply_tool", "MODES", "DEFAULT_MODEL", "FEEDBACK_TEMPLATE",
+           "TOOL_FEEDBACK_TEMPLATE", "TOOL_CHOICE"]
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 FEEDBACK_TEMPLATE = "That reply could not be used: {feedback}\nReply again with only the corrected JSON object."
+TOOL_FEEDBACK_TEMPLATE = "That call could not be used: {feedback}\nCall {tool} again with the corrected input."
+# auto, not a forced {"type": "tool"}: several current models (and requests with thinking on) refuse a
+# forced tool choice. The system prompt names the tool; a reply with no tool call is parsed as text.
+TOOL_CHOICE: dict[str, Any] = {"type": "auto", "disable_parallel_tool_use": True}
 MODES = ("replay", "record", "anthropic", "fake")
 
 Message = dict[str, Any]
@@ -70,15 +89,17 @@ class ReplayMismatch(AssertionError):
 
 
 class _Conversation:
-    """One logical model call: its messages as a trace records them (assistant turns as text) and as
-    the API is sent them (assistant turns as the content blocks the API returned)."""
+    """One logical model call: its messages as a trace records them (assistant turns as text, or text
+    and tool_use blocks) and as the API is sent them (assistant turns as the content blocks the API
+    returned). pending: the tool_use ids of the last reply, which a follow-up turn must answer."""
 
-    __slots__ = ("opening", "messages", "wire")
+    __slots__ = ("opening", "messages", "wire", "pending")
 
     def __init__(self, opening: list[Message]) -> None:
         self.opening = opening
         self.messages: list[Message] = copy.deepcopy(opening)
         self.wire: list[Any] = copy.deepcopy(opening)
+        self.pending: list[str] = []
 
 
 _CONVERSATIONS: contextvars.ContextVar[dict[int, _Conversation]] = contextvars.ContextVar(
@@ -97,36 +118,128 @@ def _opening(prompt: Prompt) -> list[Message]:
     return msgs
 
 
-class ChatModel:
-    """The conversation logic shared by the three models. Subclasses send one request."""
+def _input_schema(schema: Any) -> dict[str, Any]:
+    """The JSON Schema of a reply schema (pydantic model, dataclass, TypedDict or {field: type} map),
+    closed at the top (additionalProperties false), as the parser closes it."""
+    if isinstance(schema, dict):
+        if not all(isinstance(k, str) for k in schema):
+            raise TypeError("a {field: type} schema has string keys")
+        schema = dataclasses.make_dataclass("Reply", list(schema.items()))
+    if hasattr(schema, "model_json_schema"):
+        out: Any = schema.model_json_schema()
+    elif isinstance(schema, type):
+        from ..lockfile import json_schema
+        out = json_schema(schema)
+    else:
+        raise TypeError(f"reply_tool needs a pydantic model, dataclass, TypedDict or {{field: type}} map, "
+                        f"not {type(schema).__name__}")
+    out = json.loads(json.dumps(out))
+    if not isinstance(out, dict) or out.get("type") != "object":
+        raise TypeError("a reply tool's input schema must describe a JSON object")
+    out.setdefault("additionalProperties", False)
+    return out
 
-    def __init__(self, *, system: str | None = None, feedback_template: str = FEEDBACK_TEMPLATE) -> None:
+
+def reply_tool(name: str, schema: Any = None, *, description: str | None = None,
+               input_schema: dict[str, Any] | None = None, strict: bool = False) -> dict[str, Any]:
+    """A tool definition whose input is the structured reply, for AnthropicModel(tool=...) and
+    ReplayModel(tool=...). schema: the model_call's schema (its JSON Schema becomes input_schema), or
+    give input_schema yourself. strict=True sets the API's strict tool use, which accepts only the
+    JSON Schema subset strict mode supports; the decorator validates the reply either way."""
+    if not isinstance(name, str) or not name:
+        raise TypeError("a reply tool needs a name")
+    if (schema is None) == (input_schema is None):
+        raise TypeError("reply_tool takes a schema or an input_schema, not both or neither")
+    body = _input_schema(schema) if input_schema is None else json.loads(json.dumps(input_schema))
+    if description is None:
+        doc = inspect.getdoc(schema) if schema is not None and not isinstance(schema, dict) else None
+        description = (doc or "").split("\n\n")[0].strip() or "Give your reply as this tool's input."
+    tool: dict[str, Any] = {"name": name, "description": description, "input_schema": body}
+    if strict:
+        tool["strict"] = True
+    return tool
+
+
+def _check_tool(tool: Any) -> dict[str, Any] | None:
+    if tool is None:
+        return None
+    if not (isinstance(tool, dict) and isinstance(tool.get("name"), str) and tool["name"]
+            and isinstance(tool.get("input_schema"), dict)):
+        raise TypeError("tool is a tool definition {name, description, input_schema}; reply_tool() builds one")
+    out: dict[str, Any] = json.loads(json.dumps(tool))
+    return out
+
+
+def _block_dict(b: Any) -> dict[str, Any] | None:
+    """A text or tool_use block as a trace records it; None for any other block (thinking, ...)."""
+    def get(k: str, default: Any = None) -> Any:
+        return b.get(k, default) if isinstance(b, dict) else getattr(b, k, default)
+    kind = get("type")
+    if kind == "text":
+        return {"type": "text", "text": get("text", "")}
+    if kind == "tool_use":
+        return {"type": "tool_use", "id": get("id"), "name": get("name"),
+                "input": json.loads(json.dumps(get("input"), ensure_ascii=False, default=_encode))}
+    return None
+
+
+def _valid_reply(reply: Any) -> bool:
+    """A trace reply: text, or a non-empty list of text and tool_use blocks."""
+    if isinstance(reply, str):
+        return True
+    if not isinstance(reply, list) or not reply:
+        return False
+    for b in reply:
+        if not isinstance(b, dict):
+            return False
+        if b.get("type") == "text" and isinstance(b.get("text"), str):
+            continue
+        if not (b.get("type") == "tool_use" and isinstance(b.get("id"), str) and isinstance(b.get("name"), str)
+                and isinstance(b.get("input"), dict)):
+            return False
+    return True
+
+
+class ChatModel:
+    """The conversation logic shared by the three models. Subclasses send one request.
+
+    tool: a reply tool (reply_tool(...)): the request offers it (tools, tool_choice), the reply is the
+    input of the model's call to it, as JSON text, and feedback goes back as a tool_result."""
+
+    def __init__(self, *, system: str | None = None, feedback_template: str | None = None,
+                 tool: dict[str, Any] | None = None, tool_choice: dict[str, Any] | None = None) -> None:
         self.system = system
-        self.feedback_template = feedback_template
+        self.tool = _check_tool(tool)
+        if tool_choice is not None and self.tool is None:
+            raise TypeError("tool_choice needs a tool")
+        self.tool_choice: dict[str, Any] | None = (
+            None if self.tool is None else copy.deepcopy(TOOL_CHOICE if tool_choice is None else tool_choice))
+        self.feedback_template = (feedback_template if feedback_template is not None
+                                  else TOOL_FEEDBACK_TEMPLATE if self.tool is not None else FEEDBACK_TEMPLATE)
         self._key = next(_IDS)
 
     # --- what a model_call body calls ------------------------------------------------------------
     def complete(self, prompt: Prompt, feedback: str | None = None) -> str:
-        """The model's reply text. feedback None opens a new conversation; a feedback text is sent as
-        the next user turn of the current one."""
+        """The model's reply text (with a reply tool: the tool call's input as JSON text). feedback
+        None opens a new conversation; a feedback text is sent as the next user turn of the current
+        one (a tool_result with is_error true when the last reply was a tool call)."""
         conv, request = self._turn(prompt, feedback)
-        text, wire = self._send(request, conv.wire)
-        self._answered(conv, text, wire)
-        return text
+        content, wire = self._send(request, conv.wire)
+        return self._answered(conv, content, wire)
 
     async def acomplete(self, prompt: Prompt, feedback: str | None = None) -> str:
         """complete() for an async def body."""
         conv, request = self._turn(prompt, feedback)
-        text, wire = await self._asend(request, conv.wire)
-        self._answered(conv, text, wire)
-        return text
+        content, wire = await self._asend(request, conv.wire)
+        return self._answered(conv, content, wire)
 
     # --- for subclasses --------------------------------------------------------------------------
-    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
-        """(reply text, the assistant content to send back on a follow-up turn)."""
+    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
+        """(the reply as a trace records it: text, or a list of text and tool_use blocks; the
+        assistant content to send back on a follow-up turn)."""
         raise NotImplementedError
 
-    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         return self._send(request, wire)
 
     # --- the conversation ------------------------------------------------------------------------
@@ -144,19 +257,37 @@ class ChatModel:
             if got.opening != opening:
                 raise ConversationError("feedback given for another prompt than the current conversation's")
             conv = got
-            turn = {"role": "user", "content": self.feedback_template.format(feedback=feedback)}
+            text = self.feedback_template.format(feedback=feedback, tool=self.tool["name"] if self.tool else "")
+            turn: Message = {"role": "user", "content": text}
+            if conv.pending:            # after a tool call the API wants a tool_result for each tool_use
+                turn = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": i, "content": text,
+                                                     "is_error": True} for i in conv.pending]}
             conv.messages.append(turn)
-            conv.wire.append(dict(turn))
+            conv.wire.append(copy.deepcopy(turn))
         request: dict[str, Any] = {}
+        if self.tool is not None:
+            request["tools"] = [copy.deepcopy(self.tool)]
+            request["tool_choice"] = copy.deepcopy(self.tool_choice)
         if self.system is not None:
             request["system"] = self.system
         request["messages"] = copy.deepcopy(conv.messages)
         return conv, request
 
-    @staticmethod
-    def _answered(conv: _Conversation, text: str, wire: Any) -> None:
-        conv.messages.append({"role": "assistant", "content": text})
+    def _read(self, content: Any) -> tuple[str, list[str]]:
+        """(the reply text, the tool_use ids a follow-up turn answers) of a recorded reply."""
+        if isinstance(content, str):
+            return content, []
+        uses = [b for b in content if b["type"] == "tool_use"]
+        mine = next((b for b in uses if self.tool is not None and b["name"] == self.tool["name"]), None)
+        text = (json.dumps(mine["input"], ensure_ascii=False) if mine is not None
+                else "".join(b["text"] for b in content if b["type"] == "text"))
+        return text, [b["id"] for b in uses]
+
+    def _answered(self, conv: _Conversation, content: Any, wire: Any) -> str:
+        text, conv.pending = self._read(content)
+        conv.messages.append({"role": "assistant", "content": copy.deepcopy(content)})
         conv.wire.append({"role": "assistant", "content": wire})
+        return text
 
 
 class AnthropicModel(ChatModel):
@@ -164,12 +295,15 @@ class AnthropicModel(ChatModel):
     .messages.create); by default one is made on the first request (needs the `anthropic` extra and
     credentials, such as ANTHROPIC_API_KEY). async_client is used by acomplete.
 
-    params are passed to messages.create unchanged (for example output_config)."""
+    params are passed to messages.create unchanged (for example output_config). tool: a reply tool
+    (reply_tool(...)); tool_choice defaults to TOOL_CHOICE (auto, one call at most)."""
 
     def __init__(self, model: str = DEFAULT_MODEL, *, system: str | None = None, max_tokens: int = 16000,
-                 client: Any = None, async_client: Any = None, feedback_template: str = FEEDBACK_TEMPLATE,
+                 client: Any = None, async_client: Any = None, feedback_template: str | None = None,
+                 tool: dict[str, Any] | None = None, tool_choice: dict[str, Any] | None = None,
                  **params: Any) -> None:
-        super().__init__(system=system, feedback_template=feedback_template)
+        super().__init__(system=system, feedback_template=feedback_template, tool=tool, tool_choice=tool_choice)
+        _no_tool_params(params, self.tool)
         self.model, self.max_tokens, self.params = model, max_tokens, params
         self._client, self._async_client = client, async_client
         self._lock = threading.Lock()
@@ -194,29 +328,39 @@ class AnthropicModel(ChatModel):
             return self._async_client
 
     def shape(self, request: dict[str, Any]) -> dict[str, Any]:
-        """The request as a trace records it: model, max_tokens, the params, system (when set) and
-        the messages, assistant turns as text."""
+        """The request as a trace records it: model, max_tokens, the params, tools and tool_choice
+        (with a reply tool), system (when set) and the messages, assistant turns as text (or text and
+        tool_use blocks)."""
         return _request_shape(self.model, self.max_tokens, self.params, request)
 
     def _kwargs(self, request: dict[str, Any], wire: list[Any]) -> dict[str, Any]:
         kw: dict[str, Any] = {"model": self.model, "max_tokens": self.max_tokens, "messages": list(wire),
                               **self.params}
-        if "system" in request:
-            kw["system"] = request["system"]
+        for k in ("tools", "tool_choice", "system"):
+            if k in request:
+                kw[k] = request[k]
         return kw
 
-    def _reply(self, response: Any) -> tuple[str, Any]:
+    def _reply(self, response: Any) -> tuple[Any, Any]:
         if getattr(response, "stop_reason", None) == "refusal":
             raise ModelRefusal(f"{self.model} declined the request")
         content = list(getattr(response, "content", None) or [])
-        text = "".join(getattr(b, "text", "") for b in content if getattr(b, "type", None) == "text")
+        kept = [d for d in map(_block_dict, content) if d is not None]
+        if self.tool is not None and any(d["type"] == "tool_use" for d in kept):
+            return kept, content            # a tool call: recorded as its text and tool_use blocks
+        text = "".join(d["text"] for d in kept if d["type"] == "text")
         return text, content                # the blocks go back unchanged (thinking blocks included)
 
-    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         return self._reply(self.client().messages.create(**self._kwargs(request, wire)))
 
-    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         return self._reply(await self.async_client().messages.create(**self._kwargs(request, wire)))
+
+
+def _no_tool_params(params: dict[str, Any], tool: dict[str, Any] | None) -> None:
+    if tool is not None and ("tools" in params or "tool_choice" in params):
+        raise TypeError("with a reply tool, pass tool= and tool_choice=, not tools or tool_choice params")
 
 
 def _dump(obj: Any) -> str:
@@ -261,12 +405,15 @@ class ReplayModel(ChatModel):
     diff against the next unused call. Thread-safe.
 
     ignore names request fields left out of the comparison (for example ignore=["model"] to replay a
-    trace under another model); nothing is ignored by default."""
+    trace under another model); nothing is ignored by default. tool and tool_choice as AnthropicModel's:
+    the tools and tool_choice are compared like any other field."""
 
     def __init__(self, path: str | os.PathLike[str], *, system: str | None = None, model: str = DEFAULT_MODEL,
-                 max_tokens: int = 16000, ignore: Sequence[str] = (), feedback_template: str = FEEDBACK_TEMPLATE,
+                 max_tokens: int = 16000, ignore: Sequence[str] = (), feedback_template: str | None = None,
+                 tool: dict[str, Any] | None = None, tool_choice: dict[str, Any] | None = None,
                  **params: Any) -> None:
-        super().__init__(system=system, feedback_template=feedback_template)
+        super().__init__(system=system, feedback_template=feedback_template, tool=tool, tool_choice=tool_choice)
+        _no_tool_params(params, self.tool)
         if isinstance(ignore, str) or not all(isinstance(k, str) for k in ignore):
             raise TypeError("ignore is a list of request field names, such as ['model']")
         self.ignore: frozenset[str] = frozenset(ignore)
@@ -282,8 +429,9 @@ class ReplayModel(ChatModel):
             raise ValueError(f"{self.path}: 'fixture' must be 'recorded' or 'hand-written'")
         for i, c in enumerate(trace["calls"]):
             if not (isinstance(c, dict) and isinstance(c.get("request"), dict)
-                    and isinstance(c["request"].get("messages"), list) and isinstance(c.get("reply"), str)):
-                raise ValueError(f"{self.path}: call {i} needs a request with messages and a string reply")
+                    and isinstance(c["request"].get("messages"), list) and _valid_reply(c.get("reply"))):
+                raise ValueError(f"{self.path}: call {i} needs a request with messages and a reply (text, or "
+                                 f"a list of text and tool_use blocks)")
         self.fixture: str = trace["fixture"]
         self.model: str = model
         self.trace_model: str | None = trace.get("model")
@@ -302,7 +450,7 @@ class ReplayModel(ChatModel):
             left = [i for i, u in enumerate(self.used) if not u]
             raise ReplayMismatch(f"{self.path}: {len(left)} recorded call(s) never requested: {left}")
 
-    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         request = _request_shape(self.model, self.max_tokens, self.params, request)
         with self._lock:
             unused = [i for i, u in enumerate(self.used) if not u]
@@ -310,7 +458,7 @@ class ReplayModel(ChatModel):
                 if _matches(self.calls[i]["request"], request, self.ignore):
                     self.used[i] = True
                     reply = self.calls[i]["reply"]
-                    return reply, reply
+                    return copy.deepcopy(reply), copy.deepcopy(reply)
         if not unused:
             raise ReplayMismatch(f"{self.path}: no recorded call left for this request:\n{_dump(request)}")
         expected = {k: v for k, v in self.calls[unused[0]]["request"].items() if k not in self.ignore}
@@ -326,31 +474,32 @@ class RecordingModel(ChatModel):
     "fixture": "recorded". The file is rewritten after each call, so a failed run keeps what it got."""
 
     def __init__(self, inner: AnthropicModel, path: str | os.PathLike[str]) -> None:
-        super().__init__(system=inner.system, feedback_template=inner.feedback_template)
+        super().__init__(system=inner.system, feedback_template=inner.feedback_template, tool=inner.tool,
+                         tool_choice=inner.tool_choice)
         self.inner, self.path = inner, pathlib.Path(path)
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
-    def _record(self, request: dict[str, Any], text: str) -> None:
+    def _record(self, request: dict[str, Any], reply: Any) -> None:
         with self._lock:
-            self.calls.append({"request": request, "reply": text})
+            self.calls.append({"request": request, "reply": copy.deepcopy(reply)})
             self.path.parent.mkdir(parents=True, exist_ok=True)
             trace = {"fixture": "recorded", "model": self.inner.model, "calls": self.calls}
             tmp = self.path.with_name(self.path.name + ".tmp")
             tmp.write_text(json.dumps(trace, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             os.replace(tmp, self.path)
 
-    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         shape = self.inner.shape(request)               # serialised first: a paid call is never lost
-        text, back = self.inner._send(request, wire)
-        self._record(shape, text)
-        return text, back
+        content, back = self.inner._send(request, wire)
+        self._record(shape, content)
+        return content, back
 
-    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+    async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[Any, Any]:
         shape = self.inner.shape(request)
-        text, back = await self.inner._asend(request, wire)
-        self._record(shape, text)
-        return text, back
+        content, back = await self.inner._asend(request, wire)
+        self._record(shape, content)
+        return content, back
 
 
 def model_for(mode: str, trace: str | os.PathLike[str] | None = None, *, system: str | None = None,
@@ -358,7 +507,7 @@ def model_for(mode: str, trace: str | os.PathLike[str] | None = None, *, system:
     """The model for a mode name: "replay" (ReplayModel(trace)), "record" (RecordingModel over an
     AnthropicModel, writing trace), "anthropic" (AnthropicModel) or "fake" (None: the caller keeps
     its own fake). kw goes to AnthropicModel, and to ReplayModel, so a replay compares the model,
-    max_tokens and params the live model would send; ignore= goes to ReplayModel only."""
+    max_tokens, params and reply tool the live model would send; ignore= goes to ReplayModel only."""
     ignore = kw.pop("ignore", ())
     if mode not in MODES:
         raise ValueError(f"unknown model mode {mode!r}; pick from {', '.join(MODES)}")

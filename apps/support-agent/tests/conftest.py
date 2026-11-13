@@ -55,13 +55,14 @@ def model_mode(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture
-def traced(model_mode: str) -> Iterator[Callable[[str], llm.AgentModel]]:
-    """traced(name): make the planner use the APP_MODEL model for trace tests/fixtures/traces/<name>.json.
+def traced(model_mode: str) -> Iterator[Callable[..., llm.AgentModel]]:
+    """traced(name, reply="json"): make the planner use the APP_MODEL model for trace
+    tests/fixtures/traces/<name>.json, answering as JSON text or (reply="tool") by tool call.
     On replay, every call the trace holds must have been made by the end of the test."""
     made: list[llm.AgentModel] = []
 
-    def make(name: str) -> llm.AgentModel:
-        m = llm.select(model_mode, TRACES / f"{name}.json")
+    def make(name: str, reply: str = "json") -> llm.AgentModel:
+        m = llm.select(model_mode, TRACES / f"{name}.json", reply=reply)
         planner.set_model(m)
         made.append(m)
         return m

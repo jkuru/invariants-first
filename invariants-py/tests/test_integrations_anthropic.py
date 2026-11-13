@@ -318,3 +318,154 @@ def test_model_for(tmp_path):
         inv_an.model_for("replay")
     with pytest.raises(ValueError, match="unknown model mode"):
         inv_an.model_for("openai")
+    t = inv_an.model_for("replay", p, tool=inv_an.reply_tool("t", {"n": int}))
+    assert isinstance(t, inv_an.ReplayModel) and t.tool is not None and t.tool_choice == inv_an.TOOL_CHOICE
+
+
+# --- a reply tool: the model answers with a tool call whose input is the reply -------------------
+GOOD_IN = {"cause": "OUT_OF_MEMORY", "summary": "killed at 8 GiB"}
+
+
+def cause_tool() -> dict[str, Any]:
+    return inv_an.reply_tool("submit_cause", app.CauseReply, description="Submit the cause of the failure.")
+
+
+def tool_call(inp: dict[str, Any], tid: str = "toolu_1", text: str | None = None) -> types.SimpleNamespace:
+    content = [block("thinking", thinking="", signature="sig")]
+    if text is not None:
+        content.append(block("text", text=text))
+    content.append(block("tool_use", id=tid, name="submit_cause", input=inp))
+    return types.SimpleNamespace(stop_reason="tool_use", content=content)
+
+
+def test_reply_tool_schemas():
+    t = cause_tool()
+    assert t["name"] == "submit_cause" and t["description"] == "Submit the cause of the failure."
+    s = t["input_schema"]
+    assert s["type"] == "object" and s["additionalProperties"] is False
+    assert set(s["required"]) == {"cause", "summary"} and "OUT_OF_MEMORY" in s["properties"]["cause"]["enum"]
+    assert "strict" not in t and inv_an.reply_tool("t", app.CauseReply, strict=True)["strict"] is True
+    m = inv_an.reply_tool("t", {"n": int})["input_schema"]
+    assert m["properties"]["n"]["type"] == "integer" and m["additionalProperties"] is False
+    raw = {"type": "object", "properties": {}}
+    assert inv_an.reply_tool("t", input_schema=raw)["input_schema"] == raw
+    pydantic = pytest.importorskip("pydantic")
+
+    class P(pydantic.BaseModel):
+        """A reply.
+
+        More detail."""
+        model_config = pydantic.ConfigDict(extra="forbid")
+        n: int = pydantic.Field(ge=0, description="a count")
+
+    p = inv_an.reply_tool("t", P)
+    assert p["description"] == "A reply." and p["input_schema"]["properties"]["n"]["minimum"] == 0
+    with pytest.raises(TypeError, match="name"):
+        inv_an.reply_tool("", app.CauseReply)
+    with pytest.raises(TypeError, match="not both or neither"):
+        inv_an.reply_tool("t")
+    with pytest.raises(TypeError, match="not both or neither"):
+        inv_an.reply_tool("t", app.CauseReply, input_schema=raw)
+    with pytest.raises(TypeError, match="pydantic model, dataclass"):
+        inv_an.reply_tool("t", 3)
+
+
+def test_a_tool_call_is_the_reply(reg):
+    app.llm = m = anthropic_model(tool_call(GOOD_IN), tool=cause_tool())
+    c, err = call()
+    assert err is None and c.cause == "OUT_OF_MEMORY" and c.attempts == 1
+    [r] = m.client().messages.requests
+    assert r["tools"] == [cause_tool()]
+    assert r["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+    assert r["messages"] == [{"role": "user", "content": app.prompt_for("J-1", OOM_LOG)}]
+
+
+def test_a_bad_tool_call_gets_an_error_tool_result_for_its_id(reg):
+    app.llm = m = anthropic_model(tool_call({"cause": "OUT_OF_MEMORY"}, "toolu_A", text="Calling the tool."),
+                                  tool_call(GOOD_IN, "toolu_B"), tool=cause_tool())
+    c, err = call()
+    assert err is None and c.attempts == 2
+    _, second = m.client().messages.requests
+    user, asst, fb = second["messages"]
+    assert [b["type"] for b in asst["content"]] == ["thinking", "text", "tool_use"]    # sent back unchanged
+    assert asst["content"][2]["id"] == "toolu_A"
+    [res] = fb["content"]
+    assert fb["role"] == "user" and res["type"] == "tool_result" and res["tool_use_id"] == "toolu_A"
+    assert res["is_error"] is True and res["content"].startswith("That call could not be used: ")
+    assert res["content"].endswith("Call submit_cause again with the corrected input.")
+
+
+def test_every_tool_use_of_the_reply_gets_a_tool_result():
+    two = types.SimpleNamespace(stop_reason="tool_use", content=[
+        block("tool_use", id="t1", name="submit_cause", input={"cause": "x"}),
+        block("tool_use", id="t2", name="submit_cause", input={})])
+    m = anthropic_model(two, tool_call(GOOD_IN), tool=cause_tool())
+    assert json.loads(m.complete("hello")) == {"cause": "x"}      # the first call to the reply tool
+    m.complete("hello", "bad")
+    fb = m.client().messages.requests[1]["messages"][2]["content"]
+    assert [r["tool_use_id"] for r in fb] == ["t1", "t2"] and all(r["is_error"] for r in fb)
+
+
+def test_a_reply_with_no_tool_call_is_parsed_as_text_and_answered_as_text(reg):
+    app.llm = m = anthropic_model("I think it ran out of memory.", tool_call(GOOD_IN), tool=cause_tool())
+    c, err = call()
+    assert err is None and c.attempts == 2
+    fb = m.client().messages.requests[1]["messages"][2]
+    assert isinstance(fb["content"], str) and fb["content"].startswith("That call could not be used: ")
+
+
+def test_tool_params_are_checked():
+    with pytest.raises(TypeError, match="tool_choice needs a tool"):
+        inv_an.AnthropicModel(tool_choice={"type": "auto"})
+    with pytest.raises(TypeError, match="tool="):
+        inv_an.AnthropicModel(tool=cause_tool(), tools=[])
+    with pytest.raises(TypeError, match="tool definition"):
+        inv_an.AnthropicModel(tool={"name": "x"})
+    m = anthropic_model(tool_call(GOOD_IN), tool=cause_tool(), tool_choice={"type": "any"})
+    m.complete("hello")
+    assert m.client().messages.requests[0]["tool_choice"] == {"type": "any"}
+
+
+def test_async_tool_flow(reg):
+    app.llm = m = inv_an.AnthropicModel(
+        system=app.SYSTEM, tool=cause_tool(),
+        async_client=types.SimpleNamespace(messages=AsyncStubMessages([tool_call({}, "t1"), tool_call(GOOD_IN, "t2")])))
+    c = asyncio.run(app.apropose_cause("J-1", OOM_LOG, True))
+    assert c.attempts == 2
+    fb = m.async_client().messages.requests[1]["messages"][2]["content"]
+    assert fb[0]["tool_use_id"] == "t1" and fb[0]["is_error"] is True
+
+
+def test_record_then_replay_a_tool_flow(reg, tmp_path):
+    path = tmp_path / "tool.json"
+    app.llm = inv_an.RecordingModel(anthropic_model(tool_call({"cause": "OOM"}, "toolu_A"),
+                                                    tool_call(GOOD_IN, "toolu_B"), tool=cause_tool()), path)
+    c, _ = call()
+    assert c.attempts == 2
+    trace = json.loads(path.read_text())
+    first, second = trace["calls"]
+    assert first["request"]["tools"] == [cause_tool()] and first["request"]["tool_choice"]["type"] == "auto"
+    assert first["reply"] == [{"type": "tool_use", "id": "toolu_A", "name": "submit_cause", "input": {"cause": "OOM"}}]
+    asst, fb = second["request"]["messages"][1:]
+    assert asst == {"role": "assistant", "content": first["reply"]}                  # no thinking block
+    assert fb["content"][0]["tool_use_id"] == "toolu_A" and fb["content"][0]["is_error"] is True
+
+    app.llm = rep = inv_an.ReplayModel(path, system=app.SYSTEM, tool=cause_tool())
+    c2, _ = call()
+    assert c2.attempts == 2 and c2.cause == "OUT_OF_MEMORY"
+    rep.assert_done()
+    with pytest.raises(inv_an.ReplayMismatch, match="tools"):                        # no tool: tools differ
+        inv_an.ReplayModel(path, system=app.SYSTEM).complete(app.prompt_for("J-1", OOM_LOG))
+    other = inv_an.reply_tool("submit_cause", app.CauseReply, description="Something else.")
+    with pytest.raises(inv_an.ReplayMismatch, match="Something else"):
+        inv_an.ReplayModel(path, system=app.SYSTEM, tool=other).complete(app.prompt_for("J-1", OOM_LOG))
+
+
+@pytest.mark.parametrize("reply", [[], [{"type": "tool_use", "id": "t", "name": "n"}], [{"type": "thinking"}],
+                                   [{"type": "text"}], ["x"]])
+def test_tool_replies_in_a_trace(tmp_path, reply):
+    good = [{"type": "text", "text": "ok"}, {"type": "tool_use", "id": "t", "name": "n", "input": {}}]
+    assert inv_an.ReplayModel(write_trace(tmp_path / "ok.json", [{"request": req("a"), "reply": good}])).remaining == 1
+    p = write_trace(tmp_path / "t.json", [{"request": req("a"), "reply": reply}])
+    with pytest.raises(ValueError, match="call 0"):
+        inv_an.ReplayModel(p)

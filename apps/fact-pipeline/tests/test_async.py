@@ -6,6 +6,7 @@ import asyncio
 import invariants as inv
 import pytest
 
+from fact_pipeline import context
 from fact_pipeline.fake_model import FakeModel
 from fact_pipeline.pipeline import Pipeline
 from fact_pipeline.store import Store
@@ -46,6 +47,21 @@ def test_async_keeps_chunk_order(store: Store, concurrency: int) -> None:
     sid = store.add_source("t://d", DOC, "p").id
     items, _ = asyncio.run(pipe.extract_async(sid, concurrency))
     assert [x.chunk_id for x in items] == sorted((x.chunk_id for x in items), key=lambda c: int(c.rsplit(":", 1)[1]))
+
+
+def test_two_pipelines_in_one_context_read_their_own_store_and_client() -> None:
+    """The store and client are inv.Dependency values each stage binds for its own pipeline: building
+    a second pipeline does not reroute the first one's model calls or K-2's chunk and span reads."""
+    a, b = Store(), Store()
+    first = Pipeline(a, FakeModel())
+    second = Pipeline(b, FakeModel({"misquote": 100}))
+    rep = first.process("test://doc", DOC, "pub")
+    assert rep.stored and not a.reviews("extraction")
+    assert asyncio.run(first.process_async("test://doc2", DOC, "pub")).stored
+    assert second.process("test://doc", DOC, "pub").stored == []
+    with first.bound():
+        assert context.current_store() is a and context.current_client() is first.client
+    assert context.current_store() is b                       # the binding before the block is restored
 
 
 def test_fake_model_async_client() -> None:

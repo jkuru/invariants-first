@@ -6,11 +6,18 @@ on one of them. It needs no API key: `FakeAgentModel` stands in for the model an
 misbehave, and the happy paths also run on a replayed Claude trace (see [Models](#models-fake-replay-claude)).
 
 ```
-ticket -> triage_node -> planner_node -> router -> tool_executor_node -> tool -> BillingService -> StripeGateway / LedgerRepo
-            (graph)     (@inv.model_call)            (@inv.edge)                (@inv.guard: the doors)    (the sinks)
-                              |  abstain / exhausted
-                              +-> human_handoff_node (a review is opened)
+ticket -> triage -> planner (plan_action) -> execute (execute_plan) -> tool -> BillingService -> StripeGateway / LedgerRepo
+                    (@inv.model_call;         (@inv.edge)                    (@inv.guard: the doors)    (the sinks)
+                     the model calls the
+                     submit_plan tool)
+                          |  abstain / exhausted
+                          +-> handoff (a review is opened)
 ```
+
+The steps are plain functions in `graph.py`; `graph.run_ticket` calls them in order. The same steps
+also run as a LangGraph `StateGraph` (`support_agent/langgraph_agent.py`, the optional `langgraph`
+extra), where the planner node puts the `CheckedPlan` in the graph state and the act node hands it to
+the edge; see [Agent frameworks](#agent-frameworks-tool-calls-and-langgraph).
 
 ## Install and run
 
@@ -79,6 +86,8 @@ Safe changes pass: a new tool that goes through `BillingService`, and a tighter 
 | `anthropic` | Claude (`claude-haiku-5-5`, or `APP_MODEL_ID`) through `invariants.integrations.anthropic`; needs `pip install 'invariants-first[anthropic]'` and `ANTHROPIC_API_KEY` |
 | `record` | Claude, writing every call to the trace file |
 
+`APP_REPLY` picks how the model answers: `tool` (the default) offers the `submit_plan` tool, whose
+input is the `Plan`, and the plan is the model's call to it; `json` asks for the `Plan` as JSON text.
 In code: `planner.set_model(llm.from_env())`.
 
 `tests/test_replay.py` runs the happy-path flows on replay, from `tests/fixtures/traces/`. **The
@@ -86,6 +95,10 @@ committed traces are hand-written fixtures, not recordings**: the requests come 
 prompt code, the replies were written by hand in the shape the API returns, and each file says
 `"fixture": "hand-written"`. One trace scripts a first reply that fails the closed schema, so the
 parser error goes back as a second user turn in the same conversation and the second reply fixes it.
+`tests/test_tool_use.py` replays the `tool_*.json` traces, where the model answers by calling
+`submit_plan`: a refund, an escalation, a call with a field the closed `Plan` does not have (the parser
+error goes back as a `tool_result` with `is_error: true` for that `tool_use` id, and the next call is
+used), and an over-refund that PLAN-1 resamples in a fresh conversation.
 
 To record real traces (this calls the API and costs money; it rewrites the files, marked
 `"fixture": "recorded"`; the scripted format-failure flow is skipped):
@@ -93,11 +106,25 @@ To record real traces (this calls the API and costs money; it rewrites the files
 ```
 pip install 'invariants-first[anthropic]'
 export ANTHROPIC_API_KEY=...
-python -m pytest tests/test_replay.py --record        # or APP_MODEL=record python -m pytest tests/test_replay.py
+python -m pytest tests/test_replay.py tests/test_tool_use.py --record   # or APP_MODEL=record python -m pytest ...
 ```
 
 `APP_MODEL=anthropic python -m pytest tests/test_replay.py` runs the same flows on Claude without
 writing anything.
+
+## Agent frameworks: tool calls and LangGraph
+
+```
+pip install -e '.[langgraph]'          # langgraph==1.2.21, the version the tests ran on
+python -m pytest tests/test_langgraph.py
+```
+
+`support_agent.langgraph_agent.build()` compiles the graph; run it with the agent's context as
+LangGraph's runtime context: `build().invoke({"ticket": ..., "customer_id": ...}, context=ctx)` (or
+`await ...ainvoke(...)`). The tests show a node that swaps the plan in state for one on another
+customer's order being stopped at the edge, and a plan restored from a checkpointer (a plain dict,
+not a `CheckedPlan`) handed to a person instead of run. Without the extra the tests are skipped. See
+[agent-frameworks.md](../../invariants-py/docs/agent-frameworks.md).
 
 ## What it does not show
 
