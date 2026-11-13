@@ -146,7 +146,7 @@ def test_env_ablation_outside_pytest_logs_an_error(monkeypatch, caplog):
     from invariants import registry
     monkeypatch.setenv("INV_ABLATE", "Z-1")
     monkeypatch.setenv("INV_ABLATE_TESTING", "1")
-    monkeypatch.setattr(registry, "under_pytest", lambda: False)
+    monkeypatch.setattr(registry.ablation, "under_pytest", lambda: False)   # env ablation reads it there
     monkeypatch.setattr(registry._SESSION, "warned_armed", set())
     with caplog.at_level("INFO", logger="invariants"):
         assert registry.env_ablated() == {"Z-1"}

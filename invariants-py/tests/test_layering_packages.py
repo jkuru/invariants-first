@@ -1,4 +1,4 @@
-"""Layering of the guard, registry and cli packages, read from their import statements (lazy ones too).
+"""Layering of the guard, registry, cli and mcp packages, read from their import statements (lazy ones too).
 
 The direction, from the imports as they are: registry (rules, verify, standing, review stores) is the
 bottom of the runtime and imports neither the guards that use it nor the static layers (scan, lock)
@@ -22,15 +22,21 @@ FORBIDDEN = {
               "invariants.integrations", "invariants.mcp", "invariants.status_report"),
     # the CLI reads the lock through invariants.lock, never the compatibility name
     "cli": ("invariants.lockfile",),
+    # the MCP server reads through the CLI and the scan; it never imports the runtime guards
+    "mcp": ("invariants.lockfile", "invariants.guard", "invariants.integrations", "invariants.pytest_plugin"),
 }
 # the modules of its own package each module may import (the package __init__ composes them all)
 STAGES = {
-    "registry": {"coverage": {"__init__"}, "reviews": set(), "session": set()},   # coverage: Registry for typing
+    # coverage and ablation: Registry for typing; context: Registry and observe, which __init__ defines first
+    "registry": {"reviews": set(), "session": set(), "events": {"reviews"}, "ablation": {"__init__", "events", "session"},
+                 "coverage": {"__init__"}, "context": {"__init__", "events", "reviews"}},
     "guard": {"checked": set(), "replies": {"checked"}, "plan": {"checked", "replies"},
               "decorators": {"checked", "plan", "replies"}},
     "cli": {"common": set(), "project": {"common"}, "git_base": {"common", "project"},
             "commands": {"common", "git_base", "project"}, "hooks": {"commands", "common"},
             "__main__": {"__init__"}},
+    "mcp": {"confine": set(), "tools": {"confine"}, "propose": {"confine", "tools"},
+            "protocol": {"confine", "propose", "tools"}, "__main__": {"__init__"}},
 }
 
 
@@ -78,7 +84,7 @@ def test_only_the_cli_and_the_mcp_server_import_the_cli() -> None:
     assert len(files) > 40
     for path in files:
         rel = path.relative_to(SRC)
-        if rel.parts[0] == "cli" or rel.as_posix() == "mcp.py":
+        if rel.parts[0] in ("cli", "mcp"):
             continue
         mods = _imports(path, ".".join(rel.parts[:-1]))
         bad = sorted(m for m in mods if m == "invariants.cli" or m.startswith("invariants.cli."))

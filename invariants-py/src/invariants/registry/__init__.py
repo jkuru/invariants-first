@@ -1,161 +1,44 @@
 """The registry of loaded rules, its reach counters, and which registry is current.
 
-The package splits by owner: reviews.py holds the hand-off and the review stores, session.py the
-process-wide state (pytest sessions, warn-once flags, trace files), coverage.py what verify() and
-standing() check beyond the registry. Every name they held as registry.<name> is re-exported here.
+The package splits by owner:
+- reviews.py: the hand-off and the review stores
+- session.py: the process-wide state (pytest sessions, warn-once flags, trace files)
+- events.py: the event sink, the observer/exporter/pager hooks, the error-spike setting, the log
+- ablation.py: INV_ABLATE and the rules ablated everywhere or in this context
+- coverage.py: what verify() and standing() check beyond the registry, and WRAPPED
+- context.py: which registry is current, and the module-level calls on reg or the current one
+This module keeps Registry and the state its one fork reset owns: _GLOBAL_LOCK (rebound in a forked
+child, so it lives where every reader is: Registry.record, Registry.is_ablated, ablated_everywhere,
+observe), OBSERVERS and _REGISTRIES. Every name the modules held as registry.<name> is re-exported.
 """
 from __future__ import annotations
 
 import asyncio
 import collections
 import contextlib
-import contextvars
-import dataclasses
 import logging
 import os
-import sys
 import threading
 import time
 import typing
 import weakref
-from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from ..errors import CoverageError, LoadError, ReviewNotOpened
-from ..model import GUARD_POINTS, Provider, Rule
+from ..model import GUARD_POINTS, Provider, Rule  # noqa: F401  (GUARD_POINTS: re-exported)
 from ..resolve import resolve
-from .coverage import (_ablation_problems, _chokepoint_problems, _edge_problem, _function_names, _resolves,
-                       _targetless_problems, _wraps)
+from .ablation import _CTX_ABLATED, GLOBAL_ABLATED, _has_real_handler, _warn_guards_off, ablation_level, env_ablated
+from .coverage import (WRAPPED, _ablation_problems, _chokepoint_problems, _edge_problem, _function_names,
+                       _mediation_problems, _resolves, _scope, _target_problems, _targetless_problems, _wraps,
+                       _Wrapped)
+from .events import (DEBUG_ENV, DEFAULT_REPLY_SIZE, DEFAULT_SINK_SIZE, REPLY_SIZE_ENV, SINK_ENV, ErrorSpike,
+                     EventSink, Exporter, Observer, Pager, _env_int, log)
 from .reviews import Handoff, JsonlReviews, MemoryReviews, ReviewStore, _jsonable
 from .session import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRACE_ENV, _SESSION, _trace,
                       is_decision, note_ablation_reached, note_decision, pytest_session_ended,
                       pytest_session_started, under_pytest)
 
-SINK_ENV = "INV_SINK_SIZE"
-DEBUG_ENV = "INV_DEBUG"
-REPLY_SIZE_ENV = "INV_MAX_REPLY_SIZE"
-DEFAULT_REPLY_SIZE = 1_000_000           # longest model reply text inv.parse accepts (characters or bytes)
-DEFAULT_SINK_SIZE = 1000                 # recent events kept per registry; counters are separate
-Observer = Callable[[str, str, dict[str, Any]], None]
 OBSERVERS: list[Observer] = []          # called on every record() in any registry
-log = logging.getLogger("invariants")
-log.addHandler(logging.NullHandler())
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return max(0, int(os.environ.get(name, default)))
-    except ValueError:
-        return default
-
-
-def _has_real_handler(lg: logging.Logger) -> bool:
-    """True if a record on lg reaches a handler other than a NullHandler (lastResort is off then)."""
-    c: logging.Logger | None = lg
-    while c is not None:
-        if any(not isinstance(h, logging.NullHandler) for h in c.handlers):
-            return True
-        c = c.parent if c.propagate else None
-    return False
-
-
-def ablation_level() -> int:
-    """Log level for honoured env ablation: INFO under pytest, ERROR anywhere else (guards are off)."""
-    return logging.INFO if under_pytest() else logging.ERROR
-
-
-def env_ablated() -> set[str]:
-    """Rules named in INV_ABLATE, honoured only when INV_ABLATE_TESTING=1 too; else empty (and a warning).
-
-    Honoured outside pytest (an `inv scan` or app subprocess of a falsifier), it logs at ERROR once
-    per rule set: in production it means those rules' in-process guards are off.
-    """
-    names = set(filter(None, (x.strip() for x in os.environ.get(ABLATE_ENV, "").split(","))))
-    if not names:
-        return set()
-    if os.environ.get(ABLATE_ARM_ENV) != "1":
-        if _SESSION.first_unarmed():
-            log.warning("invariants: %s=%s is ignored: ablation through the environment needs %s=1 "
-                        "(set by the pytest plugin)", ABLATE_ENV, ",".join(sorted(names)), ABLATE_ARM_ENV)
-        return set()
-    key = ",".join(sorted(names))
-    if not under_pytest() and _SESSION.first_armed(key):
-        _warn_guards_off(key)
-    return names
-
-
-def _warn_guards_off(key: str) -> None:
-    """Say, at ERROR (and on stderr when the app set no logging), that key's guards are off here."""
-    log.error("invariants: %s=%s with %s=1: the in-process guards of these rules are OFF in this "
-              "process (pid %d). This is for test runs only; unset both outside tests.",
-              ABLATE_ENV, key, ABLATE_ARM_ENV, os.getpid())
-    if not _has_real_handler(log) or not log.isEnabledFor(logging.ERROR):
-        try:                                 # the app set no logging: say it on stderr anyway
-            sys.stderr.write(f"invariants: ERROR: {ABLATE_ENV}={key} with {ABLATE_ARM_ENV}=1: the "
-                             f"in-process guards of these rules are OFF in this process "
-                             f"(pid {os.getpid()}). Unset both outside tests.\n")
-        except Exception:
-            pass
-
-
-class EventSink(collections.deque[dict[str, Any]]):
-    """The recent events of one registry: a ring buffer (oldest dropped). Slices give lists.
-
-    Iterating it (list(reg.sink), `for e in reg.sink`) walks a snapshot taken under the registry's
-    lock, so another thread recording meanwhile never breaks the iteration; so do the searches
-    (`e in reg.sink`, count, index), which deque runs as an iteration that a concurrent append
-    breaks ("deque mutated during iteration"). One-step reads (len, reg.sink[i]) need no snapshot.
-    """
-
-    _lock: Any = None                     # the owning registry's lock (set by Registry)
-
-    def __iter__(self) -> Iterator[dict[str, Any]]:
-        if self._lock is None:
-            return super().__iter__()
-        with self._lock:
-            return iter(tuple(super().__iter__()))
-
-    def __reversed__(self) -> Iterator[dict[str, Any]]:
-        return reversed(tuple(self))
-
-    def __getitem__(self, i: Any) -> Any:
-        if isinstance(i, slice):
-            return list(self)[i]
-        return super().__getitem__(i)
-
-    def __contains__(self, x: object) -> bool:
-        return x in tuple(self)
-
-    def count(self, x: Any) -> int:
-        return tuple(self).count(x)
-
-    def index(self, x: Any, *args: Any) -> int:
-        return collections.deque(self).index(x, *args)   # deque's bounds and message, on a snapshot
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, list):
-            return list(self) == other
-        return super().__eq__(other)
-
-    __hash__ = None
-
-    def __reduce__(self) -> Any:            # the owning registry's lock is not part of the events
-        return (EventSink, (list(self), self.maxlen))
-
-
-@dataclasses.dataclass(frozen=True)
-class ErrorSpike:
-    """errors rule_errors within window seconds demote a rule's effective mode to detect and page."""
-
-    errors: int = 20
-    window: float = 60.0
-
-
-Pager = Callable[[Handoff], None]
-Exporter = Callable[[str, str, dict[str, Any]], None]
-GLOBAL_ABLATED: collections.Counter[str] = collections.Counter()   # rules ablated in every registry
-# (registry, rule id) pairs ablated in this context only: inv.ablated()'s default scope
-_CTX_ABLATED: contextvars.ContextVar[tuple[tuple[Registry, str], ...]] = contextvars.ContextVar(
-    "inv_ctx_ablated", default=())
 _GLOBAL_LOCK = threading.Lock()
 _REGISTRIES: weakref.WeakSet[Registry] = weakref.WeakSet()   # every registry, for the fork reset
 
@@ -567,108 +450,6 @@ class Registry:
         return ("held" if not why else "enforce(known-callers)"), why
 
 
-def _scope(view: _View) -> set[str]:
-    """Top-level packages of one generation's targets, edge targets and python contracts."""
-    out: set[str] = set()
-    keys: list[Any] = list(view.targets)
-    for rule in view.rules.values():
-        keys.append(rule.target_key)
-        keys.extend(e.get("target") for e in rule.enforcers)
-    for key in keys:
-        if isinstance(key, str) and key.startswith("py:"):
-            out.add(key[3:].split(".")[0])
-    for c in view.contracts.values():
-        if isinstance(c, dict) and c.get("type") == "python" and isinstance(c.get("ref"), str):
-            out.add(c["ref"].split(":")[0].split(".")[0])
-    return out
-
-
-def _target_problems(rule: Rule) -> list[str]:
-    """Why a rule's target or edge targets do not carry its guard (verify's first check)."""
-    problems: list[str] = []
-    if rule.status == "retired" or rule.target is None:
-        return problems
-    points = {e["point"] for e in rule.enforcers} & GUARD_POINTS
-    if rule.policy or points:
-        keys = getattr(rule.target, "__inv_rules__", ())
-        kind = getattr(rule.target, "__inv_kind__", "")
-        if rule.id not in keys and rule.target_key not in keys:
-            problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
-        elif not rule.policy and kind != "guard":
-            problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
-                            f"@inv.guard: its decorator/middleware enforcers are never evaluated")
-        elif not rule.policy and points - set(getattr(rule.target, "__inv_points__", ("decorator",))):
-            missing = sorted(points - set(getattr(rule.target, "__inv_points__", ("decorator",))))
-            problems.append(f"{rule.id}: the guard on {rule.target_key} does not evaluate point "
-                            f"{', '.join(missing)}")
-        elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
-            problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
-        elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
-            problems.append(f"{rule.id}: decorator schema differs from model_policy.schema")
-    for e in rule.enforcers:
-        if e["point"] == "edge":
-            t = resolve(e["target"])
-            if getattr(t, "__inv_kind__", "") != "edge" or rule.id not in getattr(t, "__inv_rules__", ()):
-                problems.append(f"{rule.id}: edge target {e['target']} is not wrapped by @inv.edge({rule.id!r})")
-    return problems
-
-
-def _mediation_problems(rule: Rule) -> list[str]:
-    """Why a rule's mediation keeps it from held: no chokepoint, residual paths, live back doors."""
-    why: list[str] = []
-    med = rule.raw.get("mediation") or {}
-    if not med.get("chokepoint"):
-        why.append("mediation names no chokepoint")
-    else:
-        why.extend(_chokepoint_problems(rule, str(med["chokepoint"])))
-    residual = med.get("residual_paths") or []
-    if residual:
-        why.append(f"residual paths: {residual}")
-    allow = med.get("allow") or []
-    live = [a for a in ([allow] if isinstance(allow, str) else allow)
-            if isinstance(a, str) and a not in residual and _resolves(a)]
-    if live:
-        why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
-                   f"(remove them, or declare each in mediation.residual_paths)")
-    return why
-
-
-class _Wrapped(weakref.WeakSet[Callable[..., Any]]):
-    """A WeakSet whose adds and iteration take one lock: verify() iterating it while another thread
-    decorates a function would otherwise raise "Set changed size during iteration" (Python < 3.13)."""
-
-    def __init__(self, data: Iterable[Callable[..., Any]] | None = None) -> None:
-        self._lock = threading.Lock()
-        super().__init__(data)
-
-    def add(self, item: Callable[..., Any]) -> None:
-        with self._lock:
-            super().add(item)
-
-    def discard(self, item: Callable[..., Any]) -> None:
-        with self._lock:
-            super().discard(item)
-
-    def snapshot(self) -> list[Callable[..., Any]]:
-        """The live members now, copied under the lock."""
-        with self._lock:
-            return list(super().__iter__())
-
-    def __iter__(self) -> Iterator[Callable[..., Any]]:
-        return iter(self.snapshot())
-
-    def _after_fork_in_child(self) -> None:
-        self._lock = threading.Lock()
-
-
-# Every guarded callable in the process, for verify. Weak, so guards defined in a
-# function (tests) drop out once they are garbage.
-WRAPPED: _Wrapped = _Wrapped()
-
-_DEFAULT = Registry()
-_CURRENT: contextvars.ContextVar[Registry | None] = contextvars.ContextVar("inv_registry", default=None)
-
-
 def _after_fork_in_child() -> None:
     """Fresh locks in a forked child: a lock another parent thread held at the fork is never released
     there. The values stay the parent's (ProcessSession, BufferedExporter and the review stores do
@@ -682,45 +463,6 @@ def _after_fork_in_child() -> None:
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_after_fork_in_child)
-
-
-def default_registry() -> Registry:
-    """The process-wide default registry."""
-    return _DEFAULT
-
-
-def current() -> Registry:
-    """The registry guards use now: the one set by using()/isolated(), else the default."""
-    return _CURRENT.get() or _DEFAULT
-
-
-@contextlib.contextmanager
-def using(reg: Registry) -> Iterator[Registry]:
-    """Run guards against reg inside the block (context-local), then restore."""
-    token = _CURRENT.set(reg)
-    try:
-        yield reg
-    finally:
-        _CURRENT.reset(token)
-
-
-@contextlib.contextmanager
-def isolated() -> Iterator[Registry]:
-    """A fresh, empty registry for the block; inv.load() inside it installs there."""
-    with using(Registry()) as reg:
-        yield reg
-
-
-def ablated(rule_id: str, reg: Registry | None = None, *,
-            scope: str = "context") -> contextlib.AbstractContextManager[None]:
-    """Disable one rule's guards (what `pytest --inv-ablate` does per rule); its falsifiers must then fail.
-
-    scope "context" (default): this thread or task only (context-local, like the registry).
-    scope "registry": every thread and task using the registry (a falsifier with worker threads).
-    """
-    if scope not in ("context", "registry"):
-        raise ValueError(f"ablation scope must be 'context' or 'registry', not {scope!r}")
-    return (reg or current()).ablate(rule_id, scope)
 
 
 @contextlib.contextmanager
@@ -749,98 +491,9 @@ def observe(fn: Observer) -> Callable[[], None]:
     return stop
 
 
-@contextlib.contextmanager
-def capture(reg: Registry | None = None) -> Iterator[list[dict[str, Any]]]:
-    """Collect every event recorded in the block (in reg only, when given) into a list. For tests."""
-    events: list[dict[str, Any]] = []
-    lock = threading.Lock()
-
-    def keep(rule_id: str, kind: str, event: dict[str, Any]) -> None:
-        with lock:
-            events.append(event)
-    if reg is None:
-        stop = observe(keep)
-    else:
-        with reg._lock:
-            reg.exporters.append(keep)
-
-        def stop() -> None:
-            with reg._lock:
-                if keep in reg.exporters:
-                    reg.exporters.remove(keep)
-    try:
-        yield events
-    finally:
-        stop()
-
-
-_UNSET: Any = object()
-
-
-def configure(reg: Registry | None = None, *, sink_size: int | None = _UNSET, review_store: ReviewStore | None = _UNSET,
-              pager: Pager | None = _UNSET, exporter: Exporter | None = _UNSET,
-              error_spike: ErrorSpike | None = _UNSET, violation_log_level: int = _UNSET,
-              debug: bool = _UNSET, review_fallback: ReviewStore | None = _UNSET,
-              max_reply_size: int = _UNSET, allow_non_finite: bool = _UNSET) -> Registry:
-    """Set the operational hooks of reg (default: the current registry). Unnamed settings are kept.
-
-    sink_size: recent events kept (0 keeps none). review_store: opens reviews for route and
-    escalate (default: MemoryReviews). pager: called for page (default: an ERROR log).
-    exporter: added to the exporters, called on every evaluation. error_spike: demote a rule to
-    detect on a rule-error spike (None: off). violation_log_level: log level of violations.
-    debug: put exception messages (which may hold secrets) into outcome errors, events and logs.
-    review_fallback: a second review store tried when review_store fails (e.g. JsonlReviews);
-    when both fail, route/escalate raise ReviewNotOpened with the hand-off. max_reply_size: the
-    longest model reply text inv.parse accepts (default 1,000,000; 0 for no limit).
-    allow_non_finite: let rules read NaN and +-Infinity as numbers (default False: a clause that
-    reads one is a rule_error, because every comparison with NaN is false and a bound check such
-    as `x < 0.0 || x > 1.0` would pass it). Model replies never carry them (inv.parse refuses them).
-    """
-    r = reg or current()
-    with r._lock:
-        if sink_size is not _UNSET:
-            kept = collections.deque.__iter__(r.sink)    # the lock is held: not the snapshotting __iter__
-            r.sink = EventSink(kept, maxlen=_env_int(SINK_ENV, DEFAULT_SINK_SIZE) if sink_size is None
-                               else sink_size)
-            r.sink._lock = r._lock
-        if review_store is not _UNSET:
-            r.review_store = review_store or MemoryReviews()
-        if pager is not _UNSET:
-            r.pager = pager
-        if exporter is not _UNSET and exporter is not None:
-            r.exporters.append(exporter)
-        if error_spike is not _UNSET:
-            r.error_spike = error_spike
-        if violation_log_level is not _UNSET:
-            r.violation_log_level = violation_log_level
-        if debug is not _UNSET:
-            r.debug = bool(debug)
-        if review_fallback is not _UNSET:
-            r.review_fallback = review_fallback
-        if max_reply_size is not _UNSET:
-            r.max_reply_size = max(0, int(max_reply_size))
-        if allow_non_finite is not _UNSET:
-            r.allow_non_finite = bool(allow_non_finite)
-    return r
-
-
-def is_ablated(rule_id: str, reg: Registry | None = None) -> bool:
-    """True while the rule is ablated (inv.ablated, INV_ABLATE or Registry.ablate)."""
-    return (reg or current()).is_ablated(rule_id)
-
-
-def verify(reg: Registry | None = None, modules: Iterable[str] | None = None) -> int:
-    """`inv verify`: every target guarded, every guard names a rule. Returns the number of targeted rules."""
-    return (reg or current()).verify(modules)
-
-
-verify_coverage = verify
-
-
-def standing(rule_id: str, reg: Registry | None = None, scan: bool = False,
-             ablation: Mapping[str, Any] | None = None) -> tuple[str, list[str]]:
-    """Computed standing of one rule, with the reasons it is not held (see Registry.standing)."""
-    return (reg or current()).standing(rule_id, scan=scan, ablation=ablation)
+# Defined after Registry and observe, which it imports from this package.
+from .context import (_CURRENT, _DEFAULT, _UNSET, ablated, capture, configure, current,  # noqa: E402
+                      default_registry, is_ablated, isolated, standing, using, verify, verify_coverage)
 
 # Classes keep the module name they had before the split: a pinned signature (`invariants.lock`) names
 # an annotation's class by its module, and pickles name it too, so a moved __module__ would make an

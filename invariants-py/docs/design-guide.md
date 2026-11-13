@@ -1012,14 +1012,14 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | Module | Does |
 |---|---|
 | `loader.py`, `typecheck.py`, `schema/` | reads the rule file, expands the short forms, refuses what cannot hold, type-checks every clause |
-| `registry/` | loaded rules, modes, ablation, standing and `verify` (`registry`), review stores (`reviews`), the process session (`session`), coverage checks (`coverage`) |
+| `registry/` | loaded rules, modes, standing and `verify` (`registry`), the current registry and the module-level calls (`context`), the event sink and hooks (`events`), ablation state (`ablation`), review stores (`reviews`), the process session (`session`), coverage checks (`coverage`) |
 | `guard/`, `providers.py`, `evaluate.py` | the decorators (`guard.decorators`), the per-call core shared by sync and async (`guard.plan`), reply parsing and checked values (`guard.replies`, `guard.checked`), provider binding, the evaluator and the actions |
 | `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime); `INV_CEL_BACKEND` picks one |
 | `scan/` | the call graph (`indexer`, `inference`, `walker`) and the path-law check (`reachability`, `checks`), with SARIF and text output |
 | `lock/` (`lockfile.py` is its old name) | the pins (`pinning`, over `pin_types`, `pin_jsonschema`, `pin_signatures` and `pin_contracts`), the semantic diff and the weakening gate (`schema_diff`, `cel_mono` over `cel_canon` and `cel_sites`, `rule_diff`, composed in `lock`), over the shared tables in `contracts` |
 | `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
 | `cli/` | the `inv` command: parser and exit codes (`cli`), commands (`commands`), the `--base` gate (`git_base`), the coding-agent hooks (`hooks`) |
-| `mcp.py` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`) |
+| `mcp/` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`): the JSON-RPC session (`protocol`), argument confinement to `--root` (`confine`), the tools (`tools`, `propose`) |
 | `pytest_plugin.py` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-report` |
 | `integrations/` | FastAPI and ASGI (`application/problem+json`), pydantic (closed schemas, contracts), OpenTelemetry (one span per evaluation), Anthropic (`integrations.anthropic`: Claude, trace replay and recording for a model-call body; `docs/models.md`) |
 
