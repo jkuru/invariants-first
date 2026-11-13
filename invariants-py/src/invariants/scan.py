@@ -38,6 +38,8 @@ _CONTAINERS = {"builtins.dict": "builtins.dict", "typing.Dict": "builtins.dict",
 _LITERALS = ((ast.Dict, "builtins.dict"), (ast.DictComp, "builtins.dict"), (ast.Set, "builtins.set"),
              (ast.SetComp, "builtins.set"), (ast.List, "builtins.list"), (ast.ListComp, "builtins.list"))
 _OPTIONAL = frozenset({"typing.Optional", "typing_extensions.Optional"})
+_UNION = frozenset({"typing.Union", "typing_extensions.Union"})
+_SELF = frozenset({"typing.Self", "typing_extensions.Self"})
 _ANNOTATED = frozenset({"typing.Annotated", "typing_extensions.Annotated"})
 _PROPERTY = frozenset({"builtins.property", "functools.cached_property"})
 _CM = {"contextlib.contextmanager": False, "contextlib.asynccontextmanager": True}
@@ -336,6 +338,7 @@ class _Index:
         self.methods_by_name: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
         self.parse_errors: list[tuple[pathlib.Path, pathlib.Path, int, str]] = []
         self.attr_types: dict[str, dict[str, str]] = {}  # class -> {attribute: class}, shared by every walker
+        self.attr_seen: dict[str, dict[str, set[str | None]]] = {}   # class -> its own self.attr bindings
         self.foreign: set[str] | None = None             # attribute names set from outside their object
         self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
@@ -345,6 +348,13 @@ class _Index:
         self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
         self._excluded_trees: dict[str, tuple[ast.Module, dict[str, str]] | None] = {}
         self._effects: dict[str, bool] = {}               # excluded module -> runs code at import time
+        # (first parameter name, class) -> how the methods naming it so use it: cm, plain, static
+        self.first_params: collections.defaultdict[tuple[str, str], set[str]] = collections.defaultdict(set)
+
+    def class_param(self, me: tuple[str, str] | None) -> bool:
+        """me's name is the class itself (a @classmethod's `cls`), never an instance, in every method of
+        its class that names its first parameter so: `cls()` builds an instance of it or of a subclass."""
+        return me is not None and self.first_params.get(me) == {"cm"}
 
     def excluded_module(self, fq: str) -> str | None:
         """The excluded module fq names or lies in (a scanned module of the same name wins), else None."""
@@ -402,6 +412,11 @@ class _Index:
                 else:
                     self.classes[cls]["methods"][node.name] = fid
                     self.methods_by_name[node.name].add(fid)
+                    if node.args.args:                 # how the first parameter is used: cls or self
+                        decos = {_dotted(d) for d in node.decorator_list}
+                        kind = "cm" if decos & {"classmethod", "builtins.classmethod"} else \
+                            "static" if decos & {"staticmethod", "builtins.staticmethod"} else "plain"
+                        self.first_params[(node.args.args[0].arg, cls)].add(kind)
             elif isinstance(node, ast.ClassDef):
                 cid = f"{prefix}.{node.name}"
                 self.classes[cid] = {"methods": {}, "bases": node.bases, "module": mod.name, "node": node}
@@ -824,6 +839,10 @@ class _Walker:
             head = self._resolve(node.value, set(), None) if _dotted(node.value) else None
             if head in _OPTIONAL or _dotted(node.value) == "Optional":
                 return self._class_named(node.slice, local, me, depth + 1)
+            if head in _UNION:                                 # Union[Repo, None]: Repo; Union[A, B]: unknown
+                elts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+                sides = [x for x in elts if not (isinstance(x, ast.Constant) and x.value is None)]
+                return self._class_named(sides[0], local, me, depth + 1) if len(sides) == 1 else None
             if head in _ANNOTATED:                             # Annotated[Repo, Depends(get_repo)]: Repo
                 first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) and node.slice.elts else node.slice
                 return self._class_named(first, local, me, depth + 1)
@@ -870,8 +889,22 @@ class _Walker:
             node = node.value
         if not (isinstance(node, ast.Call) and _dotted(node.func)):
             return None
+        if isinstance(node.func, ast.Name) and me and node.func.id == me[0] and self.idx.class_param(me):
+            return me[1]                                       # cls() in a @classmethod: cls or a subclass
         fq = self._resolve(node.func, local, me)
         return self.return_type(fq) if fq else None
+
+    def _chained(self, node: ast.AST | None, owner: str | None, local: set[str],
+                 me: tuple[str, str] | None) -> str | None:
+        """recv.m(...) (awaited too) where recv's class is known: the class every method it may call is
+        annotated to return (a fluent `Repo().with_x().save()`, or `repo.with_x()` on a local)."""
+        if isinstance(node, ast.Await):
+            node = node.value
+        if owner is None or not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            return None
+        hits = self._typed(node.func, owner, local, me)[0]
+        got = {self.return_type(h) for h in hits}
+        return next(iter(got)) if len(got) == 1 else None
 
     def return_type(self, fid: str) -> str | None:
         """The scanned class fid's return annotation names, read in the module that defines fid."""
@@ -883,7 +916,17 @@ class _Walker:
         got = None
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None \
                 and f is not None and f.module in self.idx.modules:
-            got = self._home(f.module)._class_named(fn.returns, set(), None)
+            home = self._home(f.module)
+            ann: ast.AST = fn.returns
+            if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+                try:
+                    ann = ast.parse(ann.value, mode="eval").body
+                except SyntaxError:
+                    pass
+            if f.cls and _dotted(ann) and home._resolve(ann, set(), None) in _SELF:
+                got = f.cls                                    # -> Self: the class, or a subclass
+            else:
+                got = home._class_named(fn.returns, set(), None)
         self.idx.returns[fid] = got
         return got
 
@@ -891,10 +934,12 @@ class _Walker:
         """The class a value is built as: Cls(...) or a call to a function annotated to return Cls."""
         return self._constructed(node, local, me) or self._returned(node, local, me)
 
-    def _entered(self, node: ast.AST, is_async: bool, local: set[str], me: tuple[str, str] | None) -> str | None:
+    def _entered(self, node: ast.AST, is_async: bool, local: set[str], me: tuple[str, str] | None,
+                 owner: str | None = None) -> str | None:
         """The class `with node as x` binds x to: a scanned class's `__enter__`/`__aenter__` return
-        annotation (`-> Self` is the class), or a @contextmanager factory's `-> Iterator[Cls]`."""
-        cls = self._made(node, local, me)
+        annotation (`-> Self` is the class), or a @contextmanager factory's `-> Iterator[Cls]` (a function,
+        or a method on a receiver the scan can type, such as a local `svc` in `async with svc.cm()`)."""
+        cls = self._made(node, local, me) or self._chained(node, owner, local, me)
         if cls in self.idx.classes:
             m = self.idx.method(cls, "__aenter__" if is_async else "__enter__")
             fn = self.idx.funcs[m].node if m else None
@@ -904,27 +949,44 @@ class _Walker:
                     return cls
                 return self.return_type(m)
             return None
-        if isinstance(node, ast.Call) and _dotted(node.func):
-            fq = self._resolve(node.func, local, me)
-            f = self.idx.funcs.get(fq or "")
-            fn = f.node if f is not None else None
-            if f is None or not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                    or f.module not in self.idx.modules:
-                return None
-            home = self._home(f.module)
-            if not any(_CM.get(home._resolve(d, set(), None) or "") is is_async for d in fn.decorator_list
-                       if _dotted(d)):
-                return None
-            ann = fn.returns
-            if ann is not None and isinstance(ann, ast.Subscript) and _dotted(ann.value) and \
-                    home._resolve(ann.value, set(), None) in _YIELDS:
-                first = ann.slice.elts[0] if isinstance(ann.slice, ast.Tuple) and ann.slice.elts else ann.slice
-                got = home._class_named(first, set(), None)
-                return got if got in self.idx.classes else None
+        if not isinstance(node, ast.Call):
+            return None
+        fq = self._resolve(node.func, local, me) if _dotted(node.func) else None
+        if fq in self.idx.funcs:
+            cands = [fq]
+        elif owner is not None and isinstance(node.func, ast.Attribute):
+            cands = self._typed(node.func, owner, local, me)[0]
+        else:
+            return None
+        got = {self._yielded(c, is_async) for c in cands}
+        return next(iter(got)) if len(got) == 1 else None
+
+    def _yielded(self, fid: str, is_async: bool) -> str | None:
+        """The scanned class a @contextmanager (@asynccontextmanager) function fid yields, by its
+        `-> Iterator[Cls]` annotation."""
+        f = self.idx.funcs.get(fid)
+        fn = f.node if f is not None else None
+        if f is None or not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                or f.module not in self.idx.modules:
+            return None
+        home = self._home(f.module)
+        if not any(_CM.get(home._resolve(d, set(), None) or "") is is_async for d in fn.decorator_list
+                   if _dotted(d)):
+            return None
+        ann = fn.returns
+        if ann is not None and isinstance(ann, ast.Subscript) and _dotted(ann.value) and \
+                home._resolve(ann.value, set(), None) in _YIELDS:
+            first = ann.slice.elts[0] if isinstance(ann.slice, ast.Tuple) and ann.slice.elts else ann.slice
+            got = home._class_named(first, set(), None)
+            return got if got in self.idx.classes else None
         return None
 
-    def _types_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None) -> dict[str, str]:
-        """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments."""
+    def _types_in(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None,
+                  owner: str | None = None) -> dict[str, str]:
+        """Names whose every binding in fn is one class: an annotated parameter or Cls(...) assignments.
+        With owner (fn's id), a `with recv.cm() as x` on a local receiver is typed from the other
+        bindings (to a fixed point, so nested with blocks chain)."""
+        deferred: list[tuple[str, ast.expr, bool]] = []
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
         args = getattr(fn, "args", None)
         if isinstance(args, ast.arguments):
@@ -949,8 +1011,13 @@ class _Walker:
             elif isinstance(node, (ast.With, ast.AsyncWith)):     # with Session() as repo
                 for item in node.items:
                     if isinstance(item.optional_vars, ast.Name):
-                        seen[item.optional_vars.id].add(
-                            self._entered(item.context_expr, isinstance(node, ast.AsyncWith), local, me))
+                        is_async = isinstance(node, ast.AsyncWith)
+                        got = self._entered(item.context_expr, is_async, local, me)
+                        if got is None and owner is not None and isinstance(item.context_expr, ast.Call) \
+                                and isinstance(item.context_expr.func, ast.Attribute):
+                            deferred.append((item.optional_vars.id, item.context_expr, is_async))
+                        else:
+                            seen[item.optional_vars.id].add(got)
                         handled.add(id(item.optional_vars))
         for node in ast.walk(fn):                              # any other binding: for, with, walrus, unpacking
             if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in handled:
@@ -963,15 +1030,50 @@ class _Walker:
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 for n in node.names:
                     seen[n].add(None)
+        if deferred and owner is not None:
+            saved = self._local_types.pop(owner, None)
+            pending = deferred
+            while pending:
+                waiting = {name for name, _, _ in pending}
+                self._local_types[owner] = {k: v for k, v in _single_types(seen).items() if k not in waiting}
+                left = []
+                for name, ctx, is_async in pending:
+                    got = self._entered(ctx, is_async, local, me, owner)
+                    if got is None:
+                        left.append((name, ctx, is_async))
+                    else:
+                        seen[name].add(got)
+                if len(left) == len(pending):                  # no progress: the rest stay unknown
+                    for name, _, _ in left:
+                        seen[name].add(None)
+                    break
+                pending = left
+            del self._local_types[owner]
+            if saved is not None:
+                self._local_types[owner] = saved
         return _single_types(seen)
 
     def _attr_types(self, cls: str) -> dict[str, str]:
-        """self.<attr> types for a class: every `self.attr = ...` in its methods has the same known class."""
+        """self.<attr> types for a class: every `self.attr = ...` in the methods of the class and of its
+        scanned bases (an inherited `__init__` or @property counts) has the same known class."""
         if cls in self.idx.attr_types:
             return self.idx.attr_types[cls]
+        seen: dict[str, set[str | None]] = collections.defaultdict(set)
+        for c in self.idx.mro(cls) or [cls]:
+            for name, got in self._attr_seen(c).items():
+                seen[name] |= got
+        out = _single_types(seen)
+        self.idx.attr_types[cls] = out
+        return out
+
+    def _attr_seen(self, cls: str) -> dict[str, set[str | None]]:
+        """Every class each `self.attr` binding in cls's own body and methods gives (None: unknown)."""
+        if cls in self.idx.attr_seen:
+            return self.idx.attr_seen[cls]
         home = self.idx.classes[cls]["module"]
         if home != self.mod.name and home in self.idx.modules:   # names resolve where the class is written
-            return _Walker(self.idx, self.idx.modules[home])._attr_types(cls)
+            return _Walker(self.idx, self.idx.modules[home])._attr_seen(cls)
+        self.idx.attr_seen[cls] = {}                           # guards a cycle
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
         cnode = self.idx.classes[cls].get("node")
         for st in getattr(cnode, "body", []):                  # class-level `billing: BillingService` (dataclasses)
@@ -987,7 +1089,7 @@ class _Walker:
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
                 continue
             me_name = fn.args.args[0].arg
-            params = self._types_in(fn, set(), (me_name, cls))
+            params = self._types_in(fn, set(), (me_name, cls), fid)
             for node in ast.walk(fn):
                 pairs = _pairs(node) if isinstance(node, ast.Assign) else \
                     [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
@@ -1000,9 +1102,8 @@ class _Walker:
                         for x in ast.walk(t):                  # unpacking we cannot pair: unknown
                             if isinstance(x, ast.Attribute) and isinstance(x.value, ast.Name) and x.value.id == me_name:
                                 seen[x.attr].add(None)
-        out = _single_types(seen)
-        self.idx.attr_types[cls] = out
-        return out
+        self.idx.attr_seen[cls] = dict(seen)
+        return self.idx.attr_seen[cls]
 
     def _receiver(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> tuple[str, bool] | None:
         """(class, exact) of a call's receiver when the scan can be sure of it, else None. exact: built by
@@ -1010,13 +1111,14 @@ class _Walker:
         cls = self._constructed(node, local, me)
         if cls:
             return cls, True
-        made = self._returned(node, local, me)                 # get_repo().add(): Cls or a subclass
+        # get_repo().add(), Repo().with_x().add(): Cls or a subclass
+        made = self._returned(node, local, me) or self._chained(node, owner, local, me)
         if made:
             return made, False
         fn = self.idx.funcs[owner].node if owner in self.idx.funcs else None
         if isinstance(node, ast.Name) and fn is not None and node.id in local:
             if owner not in self._local_types:
-                self._local_types[owner] = self._types_in(fn, local, me)
+                self._local_types[owner] = self._types_in(fn, local, me, owner)
             got = self._local_types[owner].get(node.id)
             return (got, False) if got else None
         if isinstance(node, ast.Attribute):
@@ -1393,6 +1495,15 @@ class _Walker:
                 hit = self.idx.method(obj[5:], lit) if obj.startswith("self:") else self.idx.canon(f"{obj}.{lit}")
                 if hit and hit in self.idx.funcs:
                     self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False, via_getattr=True))
+            elif lit is not None and fq == "builtins.getattr" and not _dunder(lit):
+                # getattr(repo, "save") on a runtime value: the methods it may name, as for repo.save
+                # (typed: the class's method and its overrides; otherwise name-matched)
+                hits, container = self._typed(ast.Attribute(node.args[0], lit, ast.Load()), owner, local, me)
+                for m in hits:
+                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False, via_getattr=True))
+                if not hits and container is None:
+                    for m in sorted(self.idx.methods_by_name.get(lit, ())):
+                        self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True, via_getattr=True))
             return
         if fq and fq.startswith("builtins.") and fq.split(".", 1)[1] in REFLECTION:
             self._site("reflection", owner, node, fq.split(".", 1)[1])
@@ -1403,9 +1514,18 @@ class _Walker:
         if fq and fq.startswith("sys.modules."):                   # sys.modules.get(name).Repo
             self._site("reflection", owner, node, fq)
             return
-        if fq in ("operator.attrgetter", "operator.methodcaller") and node.args and \
-                isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-            self._site("getattr", owner, node, f"?|{node.args[0].value}")
+        if fq in ("operator.attrgetter", "operator.methodcaller"):
+            # attrgetter takes any number of names, each maybe dotted ("repo.save"); methodcaller one. A
+            # name that is not a literal is a computed lookup, never a silent pass
+            names = node.args if fq == "operator.attrgetter" else node.args[:1]
+            lits = [a.value for a in names if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+            how = f"?{fq.rpartition('.')[2]}"
+            if len(lits) < len(names) or not names:
+                self._site("getattr", owner, node, f"{how}|")
+            else:
+                self._site("getattr", owner, node, f"{how}|{'|'.join(lits)}")
+            for a in [*node.args, *[k.value for k in node.keywords]]:
+                self._expr(a, owner, local, me)
             return
         if fq and fq in self.idx.funcs:
             self.edges.append(_Edge(owner, fq, node.lineno, node.col_offset, False))
@@ -1593,7 +1713,11 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     if live:
         succ: dict[str, list[_Edge]] = collections.defaultdict(list)
         for e in edges:
-            if e.caller not in doors and e.callee not in doors and not (e.via_getattr and e.callee in sinks):
+            # a getattr of the sink name is reported at its site (forbidden/getattr-sink), except inside an
+            # allowed function, where the site is excused: there the edge stays, so a path into the allowed
+            # function from anything outside allow is a bypass, like a direct call
+            if e.caller not in doors and e.callee not in doors and not (
+                    e.via_getattr and e.callee in sinks and e.caller not in allowed):
                 succ[e.caller].append(e)
         # one finding per call site that reaches the sink (file:line:col), with the shortest path from the
         # first entrypoint that reaches it; a site reached only through a name-matched call is unresolved
@@ -1618,13 +1742,20 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
     # 2. idioms, per site. Inside an allowed back door, the ways it reaches the sink are frozen with it;
     # unwrapping a guard, monkeypatching and reflection are still reported there.
     for s in sites:
-        if s.owner in allowed and s.what in ("ref", "attrcall", "getattr"):
-            continue
+        if s.owner in allowed and (s.what in ("ref", "attrcall")
+                                   or s.what == "getattr" and s.detail.partition("|")[2]):
+            continue                                   # a getattr with a computed name is still reported
         if s.owner in trusted and s.what in ("ref", "attrcall"):
             continue
         if s.owner in dominated and s.what == "attrcall":
             continue                                   # reached only through a door or sink
         obj, _, lit = s.detail.partition("|")
+        if s.what == "getattr" and obj in ("?attrgetter", "?methodcaller"):
+            # every name an attrgetter looks up ("repo.save" looks up repo, then save), as one site
+            parts = [p for x in lit.split("|") for p in (x.split(".") if obj == "?attrgetter" else [x])]
+            lit = next((p for p in parts if p in sink_names), None) or next(
+                (p for p in parts if p in guarded_names), None) or (
+                "__wrapped__" if "__wrapped__" in parts else parts[0] if lit else "")
         if s.what == "getattr" and lit in guarded_names:
             what = "sink" if lit in sink_names else "door"
             out.append(_finding(idx, rid, "forbidden", f"forbidden/getattr-{what}",
@@ -1640,8 +1771,10 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Si
             out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",
                                 f"{s.what} on {lit!r} replaces the sink or door at run time", s.owner, s.line, s.col))
         elif s.what in ("getattr", "setattr", "delattr") and not lit and s.what != "hasattr":
+            how = f"operator.{obj[1:]}" if obj in ("?attrgetter", "?methodcaller") else s.what
+            recv = "" if obj in ("?attrgetter", "?methodcaller") else f" on {obj}"
             out.append(_finding(idx, rid, "unresolved", "unresolved/computed-attribute",
-                                f"{s.what} with a computed name on {obj}: the scan cannot tell whether it reaches "
+                                f"{how} with a computed name{recv}: the scan cannot tell whether it reaches "
                                 f"the sink", s.owner, s.line, s.col))
         elif s.what == "patch" and s.detail in trusted:
             out.append(_finding(idx, rid, "forbidden", "forbidden/monkeypatch",

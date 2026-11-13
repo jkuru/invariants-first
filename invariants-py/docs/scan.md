@@ -61,9 +61,11 @@ listed under every rule.
 
 A method call is an extracted edge only when the scan is sure of the receiver's class: a constructor
 call (`Repo(session).add(...)`), a local variable whose every assignment is the same constructor, a
-parameter annotated with a scanned class (`repo: Repo`, `Optional[Repo]`, `Repo | None`, `"Repo"`),
-or `self.x` when every assignment to it in the class's methods is one of those (tuple assignment
-`self.a, self.b = a, b` included). Through an annotation or `self.x`, a subclass instance may arrive,
+parameter annotated with a scanned class (`repo: Repo`, `Optional[Repo]`, `Union[Repo, None]`,
+`Repo | None`, `"Repo"`), `cls()` in a `@classmethod` (an instance of the class or a subclass, also
+through `x = cls()`), or `self.x` when every assignment to it in the methods of the class and of its
+scanned bases is one of those (tuple assignment `self.a, self.b = a, b` included; an inherited
+`__init__` or `@property` counts, and a subclass that assigns a different class makes it untyped). Through an annotation or `self.x`, a subclass instance may arrive,
 so the call also reaches every scanned subclass's override. Anything else (an unannotated parameter,
 a rebinding, unpacking it cannot pair) is a name-matched edge, which the scan reports as unresolved
 rather than trusting.
@@ -71,7 +73,11 @@ rather than trusting.
 A call to a scanned function annotated to return a scanned class types its result too:
 `get_repo().add(...)`, or `r = get_repo()` then `r.add(...)`, where `def get_repo() -> Repo`
 (also `Optional[Repo]`, `Repo | None` or a string annotation), and `await get_repo()` on an
-`async def`. That covers factories and FastAPI dependency helpers: a parameter annotated
+`async def`. A method call on a typed receiver types its result the same way, so fluent chains
+resolve: `Repo().with_x().save()`, or `repo.with_x().save()` on a local or parameter, where
+`with_x` is annotated `-> Repo`, `-> "Repo"` or `-> Self` (the receiver's class); when the method and
+the overrides a subclass may bring disagree, the call stays unresolved. That covers factories and
+FastAPI dependency helpers: a parameter annotated
 `Annotated[Repo, Depends(get_repo)]` is a `Repo`, and so is one annotated with a module-level alias
 of it (`RepoDep = Annotated[Repo, Depends(get_repo)]`, bound once, imported or not). The annotation is read in the module that defines the function, and the result
 may be a subclass, so overrides are reached as for an annotated parameter. A function with no return
@@ -80,7 +86,9 @@ annotation, or one naming more than one class, gives no type.
 `with X() as r` (and `async with`) types `r` by the scanned class's `__enter__` (`__aenter__`)
 return annotation (`-> Self` is the class itself), and `with session() as r` by a `@contextmanager`
 (`@asynccontextmanager`) factory annotated `-> Iterator[Repo]` (`Generator[Repo, ...]`,
-`AsyncIterator[Repo]`). A with target the scan cannot type stays unresolved.
+`AsyncIterator[Repo]`), a function or a method on a receiver the scan can type (`svc = Service()`
+then `async with svc.cm() as r`, or a parameter `svc: Service`). A with target the scan cannot type
+stays unresolved.
 
 Generic classes resolve like plain ones: `class ConcreteRepo(BaseRepo[T])` is a subclass of
 `BaseRepo` (`Generic[T]` and `Protocol` bases are ignored), so a call through a `BaseRepo` (or
@@ -122,7 +130,13 @@ sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 a class namespace too. A function's `__dict__` is its metadata and stays harmless. Reflective
 builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
 `importlib.import_module`, `operator.methodcaller`) are `unresolved/reflection`, and an import alias
-(`from builtins import getattr as g`) is checked as `getattr` itself. Any use of `sys.modules`
+(`from builtins import getattr as g`) is checked as `getattr` itself. `getattr(repo, "save")` on a
+receiver the scan can type is an edge to the methods `repo.save` may name (on an unknown receiver,
+name-matched, so unresolved). `operator.attrgetter` and `operator.methodcaller` called with literal
+names are getattrs of those names (each part of a dotted `attrgetter("repo.save")`, each of several
+names), so naming the sink is `forbidden/getattr-sink`; called with any name that is not a literal
+(`attrgetter(name)`, `methodcaller(name, x)`, `attrgetter(*names)`) they are
+`unresolved/computed-attribute`, like `getattr(obj, name)`. Any use of `sys.modules`
 (`sys.modules[name].Repo`, `sys.modules.get(name)`, assigning into it) is `unresolved/reflection`;
 `name in sys.modules` only asks and stays harmless. Rebinding a scanned module or class that holds a
 sink or door from outside (`pkg.repo.Repo = Fake`, `pkg.repo = fake`, `setattr(pkg.repo, "Repo",
@@ -143,8 +157,12 @@ through only when every function on it is in `allow`. So these are a `bypass`:
 - new code that an allowed function calls and that reaches the sink.
 
 Inside an allowed function, the ways it reaches the sink are excused with it: a direct call, a
-`getattr` of the sink name, or the sink used as a value. `forbidden/unwrap`, `forbidden/monkeypatch`
-and `unresolved/reflection` in it are still reported.
+`getattr` of the sink name, or the sink used as a value. They are excused only for the frozen chain:
+a `getattr(repo, "save")(x)` (or `getattr(Repo, "save")`) in an allowed function is a call edge like
+any other, so a new caller that routes through the allowed function is a `bypass` at that site (on a
+receiver the scan cannot type, `unresolved/inferred-path`). `forbidden/unwrap`, `forbidden/monkeypatch`,
+`unresolved/reflection` and a `getattr` with a computed name (`unresolved/computed-attribute`) in it
+are still reported.
 
 `inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
 `goodwill_refund` it calls, say), from every entrypoint that reaches it (not only the path a finding

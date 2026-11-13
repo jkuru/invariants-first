@@ -10,6 +10,64 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 19 (scan, lock)
+
+From a review of `inv scan` and the lock. Regression tests: `tests/test_fix_round19_scan.py` and
+`tests/test_fix_round19_lock.py`; each failed before its fix (checked by reverting each fix). The three
+example apps' CI passes with their locks unchanged.
+
+Scan:
+
+- **A getattr of the sink inside an allowed back door no longer hides a new caller.** A getattr edge to
+  a sink was dropped from the path search (the site is reported as `forbidden/getattr-sink` instead),
+  but inside an allowed function the site is excused, so `handler -> backfill` where the allowed
+  `backfill` does `getattr(repo, "save")(x)` reported nothing. Inside an allowed function the edge now
+  stays, so the new caller is a `bypass` at that site, as for a direct call; the allowed chain alone
+  stays frozen. `getattr(repo, "save")` on a typed runtime value is now an edge to the methods
+  `repo.save` may name (name-matched, so unresolved, on an unknown receiver); before, only a getattr
+  on a module or class was followed. A getattr with a computed name inside an allowed function is
+  still reported (`unresolved/computed-attribute`).
+- **More receivers are typed; the rest stay unresolved.** `cls()` (and `x = cls()`) in a
+  `@classmethod`; fluent chains through return annotations (`Repo().with_x().save()`,
+  `repo.with_x().save()` on a local or parameter, `-> Self`); `typing.Union[Repo, None]` (also
+  `Union[None, Repo]`); `with svc.cm() as r` / `async with` on a local or parameter receiver; and
+  `self.x` attributes and `@property` getters inherited from a scanned base (merged over the MRO, so a
+  subclass that rebinds the attribute to another class leaves it untyped, which before typed it from the
+  subclass alone). `operator.attrgetter(name)` and `operator.methodcaller(name, ...)` with a computed
+  name passed silently and are now `unresolved/computed-attribute`; a literal `attrgetter` is checked
+  for every name and every part of a dotted name (`attrgetter("repo.save")` is
+  `forbidden/getattr-sink`). Findings stay one per site.
+
+Lock:
+
+- **`dict[str, Any]` to `dict[str, int]` is a tightening.** `additionalProperties` absent on a map (an
+  object schema with no `properties`: bare `dict`, `dict[str, Any]` read without pydantic, a free-form
+  OpenAPI object) to a value schema was **WEAKENED**. Absent there already let any value pass, so it
+  is now a tightening; on a model (the schema's root, a `$defs` entry, or an object with `properties`)
+  absent still means extras are ignored, and opening it stays a weakening. (`true` to a schema was
+  already judged a tightening.)
+- **Pins that were changes only are judged.** A `{field: type}` contract, an Enum contract, and a
+  dataclass or TypedDict a signature names are judged as the JSON Schema their pin describes: a field
+  widened (`int` to `Any`, to `int | None`), a field removed, or an Enum or `Literal` member added is
+  **WEAKENED**. A whole-file `openapi` contract (no rule names an operation) now pins every operation
+  beside the file digest, so a looser schema in one is judged (a lock change for such contracts). An
+  `Annotated` constraint on a target's or provider's parameter (`Field(gt=0)`, `MaxLen(3)`,
+  `annotated_types`) was only in the signature text; it is now pinned as that parameter's JSON Schema
+  under `param_schemas`, so removing or loosening it is **WEAKENED** (a lock change only for
+  signatures with such constraints).
+- **Prose never makes the lock stale.** A `statement`, `why`, `owner` or `class` edit failed
+  `inv lock --check` and `inv check` (it needed a re-pin), contradicting the handbook (section 7.2).
+  `--check` now lists it as `(not stale)` and passes; `inv lock` refreshes the digest.
+  `mediation.chokepoint` is not prose (`inv status` reads it to decide `held`): it stays stale, and a
+  new or edited one is **WEAKENED** (removing one is a change only). `Change.info` marks the
+  informational changes.
+- **A signature spelled differently is not stale.** The signature text was compared as text. Now,
+  when both sides pin resolved `types`, the text is compared by meaning: the same name and, in order,
+  the same parameters, kinds, defaults and annotation presence, with any `Annotated[...]` annotation
+  compared as written (its metadata, such as `Depends(...)`, is not in `types`). `account: 'str'` for
+  `account: str` is informational; a renamed parameter, a new default, a parameter made keyword-only
+  or a changed `Annotated` marker is stale. Text that does not parse is compared as text.
+
 ### Fix round 18: scan
 
 From a third review of `inv scan`. Regression tests: `tests/test_fix_round18_scan.py`; each failed

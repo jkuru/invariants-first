@@ -329,12 +329,19 @@ def cmd_lock(a: argparse.Namespace) -> int:
         changes, header = [], ""
     weak = [c for c in changes if c.weakened]
     if a.check:
-        if changes:
+        # a prose edit (statement, why, owner, class) or a signature spelled differently is recorded in
+        # the lock but changes no rule's meaning: reported, never stale on its own
+        if any(not c.info for c in changes):
             _err(f"stale: {lock_path} does not match {path}: {len(changes)} change(s)"
                  + (f", {len(weak)} WEAKENED" if weak else ""))
             _print_changes(changes, err=True)
             _err("review the changes, then run `inv lock" + (" --accept-weakening`" if weak else "`"))
             return FAILED
+        if changes:
+            _out(f"fresh: {lock_path} ({len(changes)} informational change(s), not stale; `inv lock` "
+                 f"refreshes them)")
+            _print_changes(changes)
+            return OK
         _out(f"fresh: {lock_path}")
         return OK
     if header and (changes or stored.get("lock_version") != fresh["lock_version"]):   # type: ignore[union-attr]

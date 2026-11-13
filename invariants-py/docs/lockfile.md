@@ -39,10 +39,10 @@ rewrite is itself a possible weakening).
 
 | Section | Pinned |
 |---|---|
-| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`, `mediation.chokepoint`). |
-| `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, `effects`, and a model-call target's reply schema. |
-| `providers` | `type`, `from`, `args`, `concurrent` (when set), and the function's signature and resolved types. |
-| `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations; a `python` module by reference only (its targets carry the pins); any other file by digest. |
+| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`) and of `mediation.chokepoint` (not prose: it decides `held`). |
+| `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, the JSON Schema of each parameter with an `Annotated` constraint (`param_schemas`), `effects`, and a model-call target's reply schema. |
+| `providers` | `type`, `from`, `args`, `concurrent` (when set), and the function's signature, resolved types and `param_schemas`. |
+| `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an Enum's values; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations (a file no rule names an operation of: its digest and every operation); a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
 | `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults and any `--root`/`--exclude`. |
 
@@ -61,21 +61,25 @@ what each rule's meaning depends on, entry by entry:
     `format_retries: 2`, `semantic_resamples` (0 with `compares_to: held_data`, else 1) and
     `feedback: {format: parser_error, semantic: none}`.
   - `doc` holds a digest of each of `statement`, `why`, `owner`, `class` and
-    `mediation.chokepoint`.
-- `targets.<key>`: `signature` (text), `types`, `effects` and, for a model-call
-  target, `reply_schema`.
+    `mediation.chokepoint`. The first four are prose: an edit to one is reported but never makes
+    the lock stale. `mediation.chokepoint` is not prose (`inv status` reads it to decide whether a
+    rule is `held`), so an edit to it is stale and judged.
+- `targets.<key>`: `signature` (text), `types`, `param_schemas` (when a parameter has an
+  `Annotated` constraint), `effects` and, for a model-call target, `reply_schema`.
 - `providers.<name>`: `type`, `from`, `args`, `concurrent` when the record sets it, and the
-  `from` function's `signature` and `types`.
+  `from` function's `signature`, `types` and `param_schemas`.
 - `contracts.<name>`: `{type, ref}` (or `{type, app}`) plus, by type:
   - `schema` for a pydantic model (`{name, pydantic: <model_json_schema()>}`), a dataclass or
     TypedDict (`{name, jsonschema: ...}`: pydantic's `TypeAdapter(cls).json_schema()` when pydantic is
     installed, else a JSON Schema built from the resolved annotations, with the bounds an
     `Annotated` metadata object carries as `gt`/`ge`/`lt`/`le`/`min_length`/`max_length`), or a
-    `{field: type}` mapping;
+    `{field: type}` mapping, or an Enum (`{name, type: {enum, values}}`);
   - `signature` and `types` for a function;
   - `operations` for an `openapi` file: each operation a rule names through `subject.operation`,
     as its method, path, `parameters`, `requestBody` and `responses` schemas (a file no rule names
-    an operation of is pinned by digest);
+    an operation of is pinned by digest, and every operation with an `operationId` is pinned
+    beside it, so a looser schema in any of them is judged; a file that is not JSON or YAML, or
+    has an unresolvable `$ref`, is pinned by digest alone);
   - `operations` for an `openapi` contract read from a live app, `{type: openapi, app:
     "myapi.main:app"}`: `inv lock` imports the app and calls `app.openapi()` (a FastAPI app has
     it). The operations rules (or the contract's `operation`) name are pinned, or every operation
@@ -104,7 +108,25 @@ at 64 nested classes or 24 levels (marked `truncated`). Pinned schemas have no p
 `description`, `summary`, `tags`, `examples` and `$comment` are stripped at every level. A property
 named `title` is kept, because it is a name, not a keyword.
 
-`inv lock --check` exits 1 when anything differs. It lists each change as
+`types` drop `Annotated` metadata, so a parameter whose annotation carries a constraint
+(`Annotated[int, Field(gt=0)]`, `Annotated[str, MaxLen(10)]`, an `annotated_types` object, also
+inside `Optional[...]` or `list[...]`) is pinned again under `param_schemas` as the annotation's
+JSON Schema (pydantic's `TypeAdapter` when installed, else the stdlib reading of `gt`/`ge`/`lt`/`le`/
+`min_length`/`max_length`/`pattern`/`multiple_of`). Other markers, such as FastAPI's `Depends(...)`,
+are not constraints; they stay in the signature text.
+
+`inv lock --check` exits 1 when anything that bears on a rule's meaning differs. Two kinds of change
+are recorded in the lock but are informational: an edit to a prose field (`statement`, `why`,
+`owner`, `class`), and a signature spelled differently with the same meaning. They are listed,
+marked `(not stale)`, and `--check` (and `inv check`) passes; the next `inv lock` refreshes them. A
+signature counts as the same when it has the same name and, in order, the same parameters with
+the same kinds (positional-only, keyword-only, `*args`, `**kwargs`), defaults and whether each is
+annotated, and the entry pins resolved `types` on both sides (which are compared on their own):
+`account: 'str'` for `account: str`, or an alias renamed. A renamed or reordered parameter, a new or
+changed default, a parameter made keyword-only, an annotation added or removed, and any change in an
+`Annotated[...]` annotation (its metadata, such as `Depends(get_repo)`, is not in `types`) are
+stale. Signature text that does not parse as Python (a repr such as `<object ...>`) is compared as
+text. It lists each change as
 `<where>: <what>: old -> new`, one line per changed key of a dict value, with values compared
 type-strictly (`1` and `true` differ). A schema change is reported once, as `schema <name>`, with
 the entries that use it.
@@ -140,7 +162,13 @@ These changes are marked **WEAKENED**:
   so removing it can raise the rule's standing);
 - a `bad` that now matches fewer cases;
 - a pinned schema (pydantic, dataclass, TypedDict or OpenAPI) that now accepts more input (see
-  below);
+  below); also a `{field: type}` contract, an Enum contract, and a dataclass or TypedDict a
+  signature names, judged as the JSON Schema the pin describes (a field type widened, `int` to
+  `Any` or to `int | None`, a field removed, a `Literal` or Enum member added);
+- a parameter constraint (`param_schemas`) removed or loosened: `Annotated[int, Field(gt=0)]` to
+  `int`, `lt=10` to `lt=100`, `MaxLen(3)` to `MaxLen(9)` (adding or tightening one is not);
+- a new or edited `mediation.chokepoint` (it can let the rule be `held`; removing it is a change
+  only);
 - a removed contract: a rule may name it, and a contract no rule names (the pydantic models
   `inv init` pins) is itself the pin of its constraints;
 - an added scan exclude or a removed scan root;
@@ -164,8 +192,12 @@ input. That covers:
 - a `$ref` removed (the value is now `{}`, Any) or pointed at a schema with a different body, and a
   `$defs` entry removed while the old schema referred to it;
 - `additionalProperties` relaxed: `false` to anything else (absent, `true`, `{}` or a schema), a
-  schema to absent or `true`, or absent to `true` (or to a schema), so extra properties now pass. A
-  schema changed into another schema is judged inside it, like any other subschema;
+  schema to absent or `true`, or, on a model (the schema's root, a `$defs` entry, or an object with
+  `properties`, where absent means extras are ignored), absent to `true` (or to a schema), so extra
+  properties now pass. On a map (an object schema with no `properties`: `dict`, or `dict[str, Any]`
+  read without pydantic, or a free-form OpenAPI object) absent already let any value pass, so
+  `dict[str, Any]` to `dict[str, int]` is a tightening. A schema changed into another schema is
+  judged inside it, like any other subschema;
 - `items`, `prefixItems`, `contains`, `allOf`, `not`, `propertyNames`, `dependentRequired`,
   `dependentSchemas`, `if`, `then`, `else`, `properties` or `unevaluatedProperties` removed (adding
   one is a tightening; a constraint removed inside `items` is judged where it was), a
@@ -250,9 +282,10 @@ change unless `--accept-weakening` is given.
 | analysed | `mediation.allow` | an entry is added |
 | analysed | rule `targets`, `applies_to` | a target is no longer covered |
 | analysed | `mediation.residual_paths` | an entry is removed (it can raise the rule's standing to `held`) |
+| analysed | `mediation.chokepoint` (by digest) | it is added or edited (it can raise the rule's standing to `held`); removing it is a change |
 | neutral | `rev`, `spec`, clause `message`, `falsified_by`, provider `concurrent` | never (recorded as a change) |
-| prose | `statement`, `why`, `owner`, `class`, `mediation.chokepoint` | never (digest only) |
-| pin | signatures, `types`, schemas, OpenAPI operations, file digests | never (a code change, shown old -> new), except a pinned schema constraint that now accepts more input (above) |
+| prose | `statement`, `why`, `owner`, `class` | never, and never stale (digest only; an edit is reported for information) |
+| pin | signatures, `types`, `param_schemas`, schemas, OpenAPI operations, file digests | never (a code change, shown old -> new), except a pinned schema or parameter constraint that now accepts more input (above). A signature spelled differently with the same meaning is informational, not stale |
 | computed | `evidence` | not pinned |
 
 ## How `bad` is compared
@@ -325,8 +358,9 @@ The full synopsis is `inv lock [file] [--check] [--accept-weakening] [--lock FIL
 ## Limitations
 
 - Signature text depends on how `inspect.signature` renders a signature, and a pydantic pin depends
-  on `model_json_schema()`. So a pydantic upgrade that renders schemas differently makes the lock
-  stale (not weakened).
+  on `model_json_schema()`. Annotation spelling alone is not stale (see `--check` above), but an
+  `Annotated[...]` repr that a pydantic upgrade renders differently is, and a pydantic upgrade that
+  renders schemas differently makes the lock stale (not weakened).
 - The direction of a `bad` edit is a syntactic analysis over canonical trees. Anything the analysis
   cannot decide is reported as a possible weakening, never as safe.
 - "Matches more cases" also requires that the edit adds no sub-expression that can raise where the

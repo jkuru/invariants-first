@@ -4,9 +4,11 @@ Lock version 3 pins, per entry, only what a rule's meaning depends on:
 
 - rules: the semantic content of each rule (bad, enforcers with their modes, on_violation, on_error and
   views, bind, scope, subject, mediation sink/door/allow, model_policy with its defaults filled in,
-  ...), its status, the expanded targets, and a digest per documentation field (statement, why, ...);
+  ...), its status, the expanded targets, and a digest per documentation field (statement, why, owner,
+  class: prose, never stale) and of mediation.chokepoint (judged: it decides `held`);
 - targets: each target's signature (unwrapped through its decorators) as text and as resolved types,
-  its declared effects, and the reply schema of a model-call target;
+  the JSON Schema of each parameter with an Annotated constraint, its declared effects, and the reply
+  schema of a model-call target;
 - providers: each provider's declared type, args, and its function's signature;
 - contracts: a pydantic model's JSON Schema, a dataclass or TypedDict as a JSON Schema too, a {field:
   type} schema, an openapi file (or a live app's `app.openapi()`, `app: module:app`) as the
@@ -31,6 +33,7 @@ The lock is JSON with sorted keys, so a change in coverage also shows up as a di
 """
 from __future__ import annotations
 
+import ast
 import collections
 import collections.abc
 import dataclasses
@@ -85,9 +88,11 @@ FEEDBACK_DEFAULT = {"format": "parser_error", "semantic": "none"}
 #              residual paths (a removal is WEAKENED: it can raise standing), target coverage,
 #              rule identity)
 #   neutral    recorded as a change, never a weakening (rev, falsified_by, messages)
-#   prose      pinned by digest only (statement, why, owner, class, chokepoint)
+#   prose      pinned by digest only, and never stale (statement, why, owner, class): a change is
+#              reported for information; mediation.chokepoint is digested too, but analysed
 #   computed   not pinned (evidence: computed from the tests)
-#   pin        a code pin taken by `inv lock` (signatures, types, schemas): a change, not a weakening
+#   pin        a code pin taken by `inv lock` (signatures, types, schemas): a change, not a weakening,
+#              except a pinned schema (or a parameter's Annotated constraints) that now accepts more input
 WEAKENING, RANKED, MORE_IS_WEAKER, PRESENCE, ANALYSED, NEUTRAL, PROSE, COMPUTED, PIN = (
     "weakening", "ranked", "more_is_weaker", "presence", "analysed", "neutral", "prose", "computed", "pin")
 FIELD_POLICY: dict[str, str] = {
@@ -96,12 +101,12 @@ FIELD_POLICY: dict[str, str] = {
     "file.rules": ANALYSED,
     "contract.type": WEAKENING, "contract.ref": WEAKENING, "contract.app": WEAKENING,
     "contract.schema": PIN, "contract.operations": PIN, "contract.hash": PIN, "contract.signature": PIN,
-    "contract.types": PIN,
+    "contract.types": PIN, "contract.param_schemas": PIN,
     # targets and providers
     "target.effects": RANKED,
-    "target.signature": PIN, "target.types": PIN, "target.reply_schema": PIN,
+    "target.signature": PIN, "target.types": PIN, "target.reply_schema": PIN, "target.param_schemas": PIN,
     "provider.type": WEAKENING, "provider.from": WEAKENING, "provider.args": WEAKENING,
-    "provider.signature": PIN, "provider.types": PIN,
+    "provider.signature": PIN, "provider.types": PIN, "provider.param_schemas": PIN,
     "provider.concurrent": NEUTRAL,     # how async providers are awaited, never what bad reads
     # rules
     # the short form (guard, tests) is expanded by loader.expand_short_forms before the lock reads the file:
@@ -116,7 +121,7 @@ FIELD_POLICY: dict[str, str] = {
     "rule.enforcers": ANALYSED, "rule.mediation": ANALYSED, "rule.model_policy": ANALYSED,
     "rule.compares_to": PRESENCE, "rule.falsified_by": NEUTRAL, "rule.evidence": COMPUTED,
     "rule.applies_to": ANALYSED,
-    "rule.mediation.chokepoint": PROSE, "rule.mediation.residual_paths": ANALYSED,
+    "rule.mediation.chokepoint": ANALYSED, "rule.mediation.residual_paths": ANALYSED,
     "rule.mediation.sink": ANALYSED, "rule.mediation.door": ANALYSED,
     "rule.mediation.allow": ANALYSED,
     "clause.when": ANALYSED, "clause.message": NEUTRAL,
@@ -511,7 +516,65 @@ def _signature_pin(obj: Any, label: str, pins: Schemas) -> dict[str, Any]:
     types = signature_types(obj, pins)
     if types:
         pin["types"] = types
+    bounds = param_schemas(obj)
+    if bounds:
+        pin["param_schemas"] = bounds
     return pin
+
+
+def _constrains(m: Any, depth: int = 0) -> bool:
+    """An Annotated metadata object that constrains the value: an annotated_types constraint (Gt,
+    Interval, Len, ...), a pydantic Field(...) or StringConstraints carrying one, or any object with a
+    gt/ge/lt/le/multiple_of/pattern/min_length/max_length attribute. FastAPI's Depends(...) and other
+    markers do not."""
+    if depth > 4:
+        return False
+    if type(m).__module__.split(".")[0] == "annotated_types":
+        return True
+    if any(getattr(m, a, None) is not None for a in (*_BOUND_ATTRS, *_LEN_ATTRS)):
+        return True
+    meta = getattr(m, "metadata", None)
+    return isinstance(meta, list) and any(_constrains(x, depth + 1) for x in meta)
+
+
+def _has_constraints(t: Any, depth: int = 0) -> bool:
+    """t is, or holds (in a union, a container, an alias), an Annotated type with a constraint."""
+    if depth > MAX_DEPTH:
+        return False
+    if type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__"):
+        return _has_constraints(t.__value__, depth + 1)
+    args = typing.get_args(t)
+    if typing.get_origin(t) is typing.Annotated:
+        return any(_constrains(m) for m in args[1:]) or _has_constraints(args[0], depth + 1)
+    return any(_has_constraints(a, depth + 1) for a in args if not isinstance(a, (str, int, float, bool)))
+
+
+def _annotation_schema(t: Any) -> Any:
+    """The JSON Schema of one annotation, constraints included: pydantic's TypeAdapter when pydantic is
+    installed and can describe it, else the stdlib reading (bounds from metadata attributes)."""
+    try:
+        import pydantic
+        return _plain(strip_prose(pydantic.TypeAdapter(t).json_schema()))
+    except Exception:
+        defs: dict[str, Any] = {}
+        top = _json_type(t, defs, 0)
+        return _plain(strip_prose({**top, "$defs": defs} if defs else top))
+
+
+def param_schemas(obj: Any) -> dict[str, Any]:
+    """{param: JSON Schema} for each parameter (and `return`) whose annotation carries a constraint
+    (`Annotated[int, Field(gt=0)]`, `Annotated[str, MaxLen(10)]`, also inside Optional or list). The
+    resolved `types` drop Annotated metadata, so these pins are what makes a constraint removed or
+    loosened in a signature a weakening (judged like any pinned schema). Empty when none has one."""
+    fn = inspect.unwrap(obj)
+    src = fn.__init__ if inspect.isclass(fn) else fn
+    try:
+        hints = typing.get_type_hints(src, include_extras=True)
+    except Exception:                                          # unresolvable: the signature text pins it
+        return {}
+    if inspect.isclass(fn):
+        hints.pop("return", None)
+    return {name: _annotation_schema(t) for name, t in sorted(hints.items()) if _has_constraints(t)}
 
 
 # --- contracts ----------------------------------------------------------------------------------
@@ -675,8 +738,20 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:
         entry["operations"] = _openapi_operations(name, f.name, _openapi_file(name, f), sorted(set(operations)), pins)
-    else:
-        entry["hash"] = _sha(f.read_bytes())
+        return entry
+    entry["hash"] = _sha(f.read_bytes())
+    if ctype == "openapi":
+        # a whole-file contract (no rule names an operation of it): any edit re-pins the digest, and
+        # every operation is pinned too, so a looser schema in one of them is judged a weakening
+        try:
+            spec = _openapi_file(name, f)
+            ids = _operation_ids(spec) if isinstance(spec, dict) else []
+            if ids:
+                trial = Schemas(inline=pins.inline)            # merged only when every operation reads
+                entry["operations"] = _openapi_operations(name, f.name, spec, ids, trial)
+                pins.table.update(trial.table)
+        except LoadError:
+            pass                                        # not a document it can read: the digest pins it
     return entry
 
 
@@ -942,13 +1017,16 @@ class Change:
     new: Any = None
     weakened: bool = False
     note: str = ""
+    # informational: the lock records it (a prose digest, a signature's spelling), but it changes no
+    # rule's meaning, so it alone never makes the lock stale; `inv lock` refreshes it
+    info: bool = False
 
     def __str__(self) -> str:
         if self.what in ("added", "removed") or (self.old is None and self.new is None):
             body = self.what
         else:
             body = f"{self.what}: {_short(self.old)} -> {_short(self.new)}"
-        tag = "  WEAKENED" if self.weakened else ""
+        tag = "  WEAKENED" if self.weakened else "  (not stale)" if self.info else ""
         note = f" ({self.note})" if self.note else ""
         return f"{self.where}: {body}{tag}{note}"
 
@@ -1859,7 +1937,16 @@ def _rule_changes(rid: str, a: dict[str, Any], b: dict[str, Any], typer: Typer |
     for f in sorted(set(da) | set(db)):
         if da.get(f) != db.get(f):
             verb = "added" if f not in da else "removed" if f not in db else "edited"
-            out.append(Change(where, f"{f} text {verb}", note="prose only; the rule file diff shows it"))
+            if f.startswith("mediation."):
+                # not prose: `inv status` reads the chokepoint to decide `held`, so a new or edited one
+                # can raise the rule's standing (a removed one can only lower it)
+                weak = verb != "removed"
+                out.append(Change(where, f"{f} {verb}", weakened=weak,
+                                  note="the chokepoint argument decides whether the rule can be held; "
+                                       "the rule file diff shows it" if weak else "the rule can no longer be held"))
+            else:
+                out.append(Change(where, f"{f} text {verb}", info=True,
+                                  note="prose only, so the lock is not stale; the rule file diff shows it"))
     return out
 
 
@@ -1905,6 +1992,15 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
         if same(x, y):
             continue
         loc = f"{kind}.{f}"
+        if f == "param_schemas":
+            out += _param_schema_changes(where, x, y)
+            continue
+        if f == "signature" and isinstance(x, str) and isinstance(y, str) and "types" in a and "types" in b \
+                and _signature_shape(x) is not None and _signature_shape(x) == _signature_shape(y):
+            out.append(Change(where, f, x, y, info=True,
+                              note="the same parameters, kinds and defaults, spelled differently; the "
+                                   "resolved types are pinned and compared on their own"))
+            continue
         if policy(loc) == PIN:
             found: list[tuple[str, str, str]] = []
             for p, xv, yv in _json_paths(x, y, f, found):
@@ -1926,6 +2022,69 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
                     c.note = (REMOVED_NOTE if x == "transactional" else
                               "declared pure, so the scan no longer needs a sink for it")
         out += cs
+    return out
+
+
+def _signature_shape(text: str) -> Any:
+    """What a pinned signature text means, without how its annotations are spelled: the name, each
+    parameter's name, kind (positional-only, keyword-only, *args, **kwargs), default and whether it is
+    annotated, and whether there is a return annotation. Annotation text is left out (the resolved
+    `types` pin carries the types), except an Annotated one, whose metadata (Depends(...), Field(...))
+    the types drop. None when the text does not parse as a Python signature (it is then compared as
+    text, so any change is stale)."""
+    head, paren, rest = text.partition("(")
+    if not paren:
+        return None
+    try:
+        tree = ast.parse(f"def f({rest}:\n    pass\n")
+    except (SyntaxError, ValueError):
+        return None
+    fn = tree.body[0] if tree.body else None
+    if not isinstance(fn, ast.FunctionDef):
+        return None
+
+    def ann(node: ast.expr | None) -> Any:
+        if node is None:
+            return None
+        src = ast.unparse(node)
+        return src if "Annotated" in src else True
+
+    def arg(a: ast.arg, kind: str, default: ast.expr | None = None) -> tuple[Any, ...]:
+        return (a.arg, kind, ann(a.annotation), ast.dump(default) if default is not None else None)
+
+    args = fn.args
+    pos = [*args.posonlyargs, *args.args]
+    defaults: list[ast.expr | None] = [None] * (len(pos) - len(args.defaults)) + list(args.defaults)
+    shape: list[Any] = [arg(a, "posonly" if i < len(args.posonlyargs) else "pos", d)
+                        for i, (a, d) in enumerate(zip(pos, defaults))]
+    if args.vararg is not None:
+        shape.append(arg(args.vararg, "*"))
+    shape += [arg(a, "kwonly", d) for a, d in zip(args.kwonlyargs, args.kw_defaults)]
+    if args.kwarg is not None:
+        shape.append(arg(args.kwarg, "**"))
+    return {"name": head, "params": shape, "return": ann(fn.returns)}
+
+
+def _param_schema_changes(where: str, old: Any, new: Any) -> list[Change]:
+    """The constraints Annotated metadata puts on a signature's parameters, judged like a pinned
+    schema: a constraint removed or loosened is WEAKENED, one added or tightened is not."""
+    a, b = (old if isinstance(old, dict) else {}), (new if isinstance(new, dict) else {})
+    out: list[Change] = []
+    for name in sorted(set(a) | set(b)):
+        x, y = a.get(name), b.get(name)
+        if same(x, y):
+            continue
+        what = f"param_schemas.{name}"
+        if y is None:
+            out.append(Change(where, what, x, None, True, f"the constraints on {name} were removed"))
+        elif x is None:
+            out.append(Change(where, what, None, y, note=f"constraints added on {name}"))
+        else:
+            ra, rb = {"jsonschema": x}, {"jsonschema": y}
+            for p, xv, yv in _json_paths(ra, rb):
+                why = constraint_weakening(p, xv, yv, ra, rb)
+                out.append(Change(where, f"param_schemas.{name}{p[len('jsonschema'):]}", xv, yv,
+                                  why is not None, why or ""))
     return out
 
 
@@ -2084,6 +2243,13 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
         # schema to a schema is compared inside it (_json_paths recurses), so here it is conservative.
         if old is True or new is False or same(old, new):
             return None
+        # absent on a map (`dict` with no value type: an object schema with no properties, not a model's
+        # root or $defs entry) already let any value pass, so a value schema only tightens it
+        # (`dict` / `dict[str, Any]` -> `dict[str, int]`). On a model, absent means extras are ignored.
+        model = len(segs) == 2 or (len(segs) >= 3 and segs[-3] in ("$defs", "definitions")) or (
+            isinstance(old_node, dict) and ("properties" in old_node or "patternProperties" in old_node))
+        if old is None and not model:
+            return None
         return f"additionalProperties {_short(old)} -> {_short(new)}: extra properties now pass"
     if key == "type":
         return _type_weakening(suffix, old, new)
@@ -2194,6 +2360,69 @@ def _def_removed(segs: typing.Sequence[str], key: str, old: Any, old_root: Any, 
     return f"schema {key} removed while it was referenced: what referred to it is no longer checked"
 
 
+_PIN_SCALARS = {"null": {"type": "null"}, "int": {"type": "integer"}, "float": {"type": "number"},
+                "str": {"type": "string"}, "bool": {"type": "boolean"}, "Any": {}, "object": {}}
+_PIN_ARRAYS = frozenset({"list", "set", "frozenset", "tuple", "Sequence", "MutableSequence", "Set",
+                         "AbstractSet", "MutableSet", "Iterable", "Collection", "deque"})
+_PIN_MAPS = frozenset({"dict", "Mapping", "MutableMapping", "defaultdict", "OrderedDict"})
+
+
+def pin_json_schema(entry: Any) -> Any:
+    """A schema-table entry pinned from Python annotations (a {field: type} mapping, a dataclass or
+    TypedDict a signature names, an Enum, a bare type) as the JSON Schema it describes, so it is judged
+    like a pydantic schema. None for an entry that is already a JSON Schema (pydantic, jsonschema,
+    OpenAPI) or that holds neither fields nor a type."""
+    if not isinstance(entry, dict) or any(k in entry for k in JUDGED_SCHEMAS):
+        return None
+    defs = {_pin_def(k): _pin_type(v) for k, v in (entry.get("$defs") or {}).items()} \
+        if isinstance(entry.get("$defs"), dict) else {}
+    if isinstance(entry.get("fields"), dict):
+        top = _pin_type({k: v for k, v in entry.items() if k in ("fields", "required")})
+    elif "type" in entry:
+        top = _pin_type(entry["type"])
+    else:
+        return None
+    return {**top, "$defs": defs} if defs else top
+
+
+def _pin_def(ref: str) -> str:
+    return ref.replace(".", ":")                       # a path segment of _json_paths holds no "."
+
+
+def _pin_type(t: Any, depth: int = 0) -> Any:
+    """One `_type_schema` value as JSON Schema; what has no JSON form is an x-python-type."""
+    if depth > MAX_DEPTH:
+        return {"x-python-type": "truncated"}
+    d = depth + 1
+    if isinstance(t, str):
+        return dict(_PIN_SCALARS[t]) if t in _PIN_SCALARS else {"x-python-type": t}
+    if not isinstance(t, dict):
+        return {"x-python-type": repr(t)}
+    if isinstance(t.get("fields"), dict):
+        out: dict[str, Any] = {"type": "object", "properties": {str(k): _pin_type(v, d) for k, v in t["fields"].items()}}
+        if isinstance(t.get("required"), list):
+            out["required"] = t["required"]
+        return out
+    if "literal" in t and isinstance(t["literal"], list):
+        return {"enum": t["literal"]}
+    if "enum" in t and isinstance(t.get("values"), list):
+        return {"enum": t["values"]}
+    if isinstance(t.get("anyOf"), list):
+        return {"anyOf": [_pin_type(x, d) for x in t["anyOf"]]}
+    if isinstance(t.get("$ref"), str) and "truncated" not in t:
+        return {"$ref": f"#/$defs/{_pin_def(t['$ref'])}"}
+    if isinstance(t.get("generic"), str) and isinstance(t.get("args"), list):
+        name, args = t["generic"], [_pin_type(x, d) for x in t["args"] if x != "Ellipsis"]
+        if name in _PIN_ARRAYS:
+            if name == "tuple" and len(args) > 1:
+                return {"type": "array", "prefixItems": args, "maxItems": len(args)}
+            return {"type": "array", **({"items": args[0]} if args else {})}
+        if name in _PIN_MAPS:
+            return {"type": "object", **({"additionalProperties": args[1]} if len(args) == 2 else {})}
+        return {"x-python-type": name, "x-args": args}
+    return {"x-python-type": canonical(t).decode()}
+
+
 def _local_refs(node: Any, found: list[str]) -> None:
     if isinstance(node, dict):
         if isinstance(node.get("$ref"), str):
@@ -2233,6 +2462,15 @@ def _schema_changes(refs: list[tuple[str, str, str, str]], old_tab: dict[str, An
             why = constraint_weakening(p, x, y, sa, sb)
             note = "; ".join(n for n in (why, used if i == 0 else "") if n)
             out.append(Change(where, p, x, y, weakened=why is not None, note=note))
+        ja, jb = pin_json_schema(sa), pin_json_schema(sb)
+        if diffs and ja is not None and jb is not None:
+            # a {field: type} mapping, a dataclass or TypedDict a signature names, an Enum: judged as the
+            # JSON Schema its pin describes, so a widened field type or a new enum member is WEAKENED
+            ra, rb = {"jsonschema": ja}, {"jsonschema": jb}
+            for p, x, y in _json_paths(ra, rb):
+                why = constraint_weakening(p, x, y, ra, rb)
+                if why is not None:
+                    out.append(Change(where, p, x, y, weakened=True, note=f"{why} (the pin judged as JSON Schema)"))
         for p, xa, xb in nested:
             work.append(((xa, xb), [f"{where} {p}"]))
         if not diffs and not nested:
@@ -2337,7 +2575,7 @@ def migrate_v1(old: dict[str, Any], doc: dict[str, Any]) -> list[Change]:
     return out
 
 
-_V3_ONLY = ("types", "reply_schema", "schema", "operations")
+_V3_ONLY = ("types", "reply_schema", "schema", "operations", "param_schemas")
 
 
 def _comparable(lock: dict[str, Any], v2: bool) -> dict[str, Any]:
