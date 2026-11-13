@@ -1016,7 +1016,7 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | `guard.py`, `providers.py`, `evaluate.py` | the decorators, provider binding, the evaluator and the actions |
 | `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime); `INV_CEL_BACKEND` picks one |
 | `scan.py` | the call graph and the path-law check |
-| `lockfile.py` | the pins, the semantic diff and the weakening gate |
+| `lock/` (`lockfile.py` is its old name) | the pins (`pinning`), the semantic diff and the weakening gate (`schema_diff`, `cel_mono`, `rule_diff`, composed in `lock`), over the shared tables in `contracts` |
 | `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
 | `cli.py` | the `inv` command |
 | `mcp.py` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`) |
