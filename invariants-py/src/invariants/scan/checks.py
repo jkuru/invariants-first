@@ -214,6 +214,10 @@ class _Idioms:
         if s.what == "ref" and s.detail in self.t.sinks:
             return self._found("unresolved", "unresolved/sink-escapes",
                                f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
+        if s.what == "attrpatch" and s.detail in self.sink_names:
+            return self._found("unresolved", "unresolved/unknown-receiver",
+                               f"assigns or deletes .{s.detail} on a receiver the scan cannot resolve, which may "
+                               f"replace the sink at run time", s)
         if s.what == "attrref" and s.detail in self.sink_names:
             return self._found("unresolved", "unresolved/sink-escapes",
                                f".{s.detail} on a receiver the scan cannot resolve is used as a value and may be "

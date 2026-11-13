@@ -11,6 +11,8 @@ d. A name a nested function or lambda takes as a parameter (in its body), an `ex
    types them; a string `-> "Self"` on an inherited `__enter__` is the receiver's class, not the base's.
 e. A sink's name read as a value on a receiver the scan cannot type (`cb = repo.save`) is
    unresolved/sink-escapes, matched by name as a call on an unknown receiver is.
+f. Assigning or deleting a sink's name on an object: unresolved/unknown-receiver on a receiver the scan
+   cannot type (by name), forbidden/monkeypatch on a typed one.
 """
 from __future__ import annotations
 
@@ -312,4 +314,63 @@ def test_other_reads_on_an_unknown_receiver_are_not_sink_escapes(tmp_path, body)
 def test_a_sink_name_read_inside_a_door_or_an_allowed_function_stays_frozen(tmp_path):
     rep = _scan(tmp_path, "def backfill(repo, x):\n    cb = repo.save\n    return cb\n", ["py:app.ops.backfill"])
     assert rep.findings == [], rep.findings
+
+
+# --- f. a sink's name assigned or deleted on a receiver ----------------------------------------------------
+@pytest.mark.parametrize("body", [
+    "def h(repo):\n    repo.save = print\n",
+    "def h(repo):\n    del repo.save\n",
+    "def h(repo):\n    repo.save += 1\n",
+    "def h(repo):\n    repo.save: int = 1\n",
+    "def h(repo):\n    repo.save, x = print, 1\n",
+    "def h(repo):\n    repo.inner.save = print\n",
+    "def h(repo):\n    for repo.save in []:\n        pass\n",
+    "def h(xs):\n    repo = SinkRepo()\n    for repo in xs:\n        pass\n    repo.save = print\n",
+], ids=["assign", "del", "augassign", "annassign", "unpack", "chain", "for-target", "rebound"])
+def test_rebinding_a_sink_name_on_an_unknown_receiver_is_reported(tmp_path, body):
+    rep = _scan(tmp_path, "from app.repo import SinkRepo\n" + body)
+    assert _codes(rep) == ["unresolved/unknown-receiver"], rep.findings
+    assert "assigns or deletes .save on a receiver the scan cannot resolve" in rep.findings[0].message
+
+
+@pytest.mark.parametrize("body", [
+    "def h():\n    repo = SinkRepo()\n    repo.save = print\n",
+    "def h():\n    repo = SinkRepo()\n    del repo.save\n",
+    "def h(repo: SinkRepo):\n    repo.save = print\n",
+    "import app.repo as r\ndef h():\n    del r.SinkRepo.save\n",
+], ids=["constructed", "del", "annotated", "del-class-attr"])
+def test_rebinding_the_sink_on_a_typed_receiver_is_a_monkeypatch(tmp_path, body):
+    rep = _scan(tmp_path, "from app.repo import SinkRepo\n" + body)
+    assert _codes(rep) == ["forbidden/monkeypatch"], rep.findings
+
+
+def test_a_base_init_that_sets_the_name_of_a_subclass_sink_is_a_monkeypatch(tmp_path):
+    files = {"app/__init__.py": "", "app/svc.py": textwrap.dedent(SVC), "app/ops.py": "",
+             "app/repo.py": "class Base:\n    def __init__(self):\n        self.save = print\n"
+                            "class SinkRepo(Base):\n    def save(self, x):\n        pass\n"}
+    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    assert _codes(rep) == ["forbidden/monkeypatch"], rep.findings
+
+
+@pytest.mark.parametrize("body", [
+    "def h(repo):\n    repo.other = print\n",                           # not a sink name
+    "def h():\n    repo = Other()\n    repo.save = print\n",              # a typed receiver that is not the sink
+    "def h():\n    repo = Other()\n    del repo.save\n",
+    "def h(d: dict):\n    d.save = 1\n",                                   # a builtin container
+    "def h():\n    repo = Other()\n    repo.flag = 1\n",
+], ids=["other-name", "typed-other", "typed-other-del", "container", "typed-other-name"])
+def test_other_rebindings_are_not_reported(tmp_path, body):
+    rep = _scan(tmp_path, "from app.repo import SinkRepo, Other\n" + body)
+    assert rep.findings == [], rep.findings
+
+
+@pytest.mark.parametrize("body,codes", [
+    ("        self.save = print\n", ["forbidden/monkeypatch"]),             # self is typed: the sink itself
+    ("        self.flag = 1\n", []),
+], ids=["sink", "other"])
+def test_assignments_in_the_sink_class_init_keep_their_typed_result(tmp_path, body, codes):
+    files = {"app/__init__.py": "", "app/svc.py": textwrap.dedent(SVC), "app/ops.py": "",
+             "app/repo.py": "class SinkRepo:\n    def __init__(self):\n" + body + "    def save(self, x):\n        pass\n"}
+    rep = scan.scan(_doc(), [write_project(tmp_path, files)], lockfile.DEFAULT_SCAN_EXCLUDE)
+    assert _codes(rep) == codes, rep.findings
 
