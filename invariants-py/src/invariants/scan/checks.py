@@ -252,7 +252,8 @@ def _excluded_finding(idx: _Index, rid: str, s: _Site) -> Finding:
     fq, mod, how = s.detail.split("|")
     path, glob = idx.excluded[mod]
     verb = {"call": "calls", "ref": "refers to", "star": "star-imports", "import": "imports"}[how]
-    why = (f"in a {glob!r} directory, which the scan always skips" if glob in SKIP_DIRS or
+    why = (glob[1:-1] if glob.startswith("<") else      # fix round 23: a module with no source
+           f"in a {glob!r} directory, which the scan always skips" if glob in SKIP_DIRS or
            glob.startswith(".") else f"excluded by {glob!r}")
     what = ("which runs code at import time that the scan does not read" if how == "import"
             else "which the scan does not read")
