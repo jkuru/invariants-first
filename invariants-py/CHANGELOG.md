@@ -321,6 +321,51 @@ Known limitations are listed in the README and in each reference page.
 The entries below record each review and certification round before the first release, newest
 first. They are kept for reviewers and for anyone tracing why a behaviour is the way it is.
 
+### Fix round 17: the lock and hook review
+
+From a review of `lockfile.py` and the `inv check --base` and `inv hook pretool` paths of `cli.py`.
+Regression tests: `tests/test_fix_round17.py` (each failed before its fix). The three example apps'
+CI passes unchanged; the lock format did not change.
+
+- **`--base` no longer takes a symlinked or moved lock for a first adoption (HIGH).** Replacing
+  `invariants.lock` with a symlink to a re-pinned file made `--base` resolve it, look for the
+  target at the base, find nothing and pass as "first adoption". The lock is now looked up at its
+  own repository path (`git ls-tree` at the base, which also tells a symlink or a directory from a
+  file); a lock that is a symlink, or sits under a symlinked directory, fails and cannot be
+  accepted; and when the base has an `invariants.lock` that the change moved or removed, the step
+  fails (a reviewer may accept it with `--allow-weakening`).
+- **`additionalProperties: false` to `{}` or a schema is WEAKENED again.** It fell through to "no
+  weakening". `false` to anything else is a weakening; a schema to absent or `true` too; a schema to
+  another schema is judged inside it.
+- **A renamed OpenAPI operation is compared with its old self.** Renaming an operation (FastAPI
+  derives the operationId from the function name) showed one operation removed and one added and
+  judged neither, so a looser body went through. Operations are now matched by method and path as
+  well as operationId: a rename is reported and compared field by field. An operation removed with
+  no counterpart is WEAKENED when a rule names it (`subject.operation`) and reported otherwise.
+- **The pretool hook reads shell words, not text.** `inv` takes no abbreviated options
+  (`allow_abbrev=False` on every parser), and the hook blocks an abbreviation of `--accept-weakening`
+  or `--allow-weakening` of five characters or more. `--output`, `--output=` and `-o` count as
+  writing on any command (grep's `-o` excepted), as do `git -c`, a `GIT_*` variable before `git`, and
+  `rg --pre`. Names are matched after shell unquoting and as globs (`"invariants".lock`,
+  `invariants\.lock`, `inv*.lock`, `*.lock`, `pyproject''.toml`). A command that does not parse, or
+  uses `$(`, backticks, `${`, `eval`, `sh -c`, `xargs` or `python -c`, is blocked when it mentions
+  `lock` or `pyproject`; a writing command with an expanded name is blocked when it mentions the
+  lock, `invariants`, `pyproject` or `toml`. `git add invariants.lock` stays allowed. The docs say
+  what the hook catches and that `inv check --base` in CI is the gate.
+- **The first scan pin is compared with the base's default roots.** A lock pinned before the scan
+  was pinned was compared as if its roots equalled the new ones, so narrowing the roots in the same
+  change passed. `inv check --base` now compares with the roots and excludes `[tool.invariants.scan]`
+  (else src/ and the rule file's directory) gave at the base, and `inv lock` with those of the
+  working tree.
+- **The integer slack of a bound and its twin needs integral bounds.** `minimum: 1.5` to
+  `exclusiveMinimum: 0.6` on an integer lets 1 through and is now WEAKENED; `ge=1` to `gt=0` is
+  still a tightening.
+- **Removing a structural keyword is WEAKENED.** `items`, `prefixItems`, `contains`, `allOf`, `not`,
+  `propertyNames`, `dependentRequired` (or one of its entries), `dependentSchemas`, `if`, `then`,
+  `else`, `properties` and `unevaluatedProperties` removed were not judged; adding one is a
+  tightening. Any change inside `not` or `if` is a possible weakening, since there a tighter
+  subschema can let more input through.
+
 ### Fix round 16: the scan review
 
 From a review of `inv scan` and `inv init`. Regression tests: `tests/test_fix_round16_scan.py`. The

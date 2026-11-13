@@ -858,7 +858,7 @@ pass".
 
 | Where | What runs | What it stops |
 |---|---|---|
-| the agent, before each tool call | `inv hook pretool` (a Claude Code `PreToolUse` hook) | a command that accepts or allows a weakening (`--accept-weakening`, `--allow-weakening`, `INV_ALLOW_WEAKENING`); any direct edit of `invariants.lock` (an Edit or Write tool on it, symlinks resolved, or a shell command naming it that is not clearly read-only); an edit of `[tool.invariants]` in `pyproject.toml` or a shell command that writes `pyproject.toml` |
+| the agent, before each tool call | `inv hook pretool` (a Claude Code `PreToolUse` hook) | a command that accepts or allows a weakening (`--accept-weakening`, `--allow-weakening`, `INV_ALLOW_WEAKENING`); any direct edit of `invariants.lock` (an Edit or Write tool on it, symlinks resolved, or a shell command naming it, quoted or as a glob, that is not clearly read-only; `--output`, `git -c` and `GIT_*` count as writing, and a command it cannot read is blocked when it mentions the lock); an edit of `[tool.invariants]` in `pyproject.toml` or a shell command that writes `pyproject.toml` |
 | the agent, when it tries to finish | `inv hook stop` (a `Stop` hook) | finishing while `inv check` fails: the agent is sent back once, with the failure |
 | each commit | `inv check --relock --fail-on-repin` (the pre-commit hook `inv-check`) | a commit that weakens a law; a tightening is re-pinned, and the commit fails once so the new lock is staged |
 | each pull request | the GitHub Action, or `inv check --base origin/main` | a weakening, even one the branch re-pinned itself; a missing base ref or an unreadable base lock fails too |
