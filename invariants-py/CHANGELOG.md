@@ -10,6 +10,14 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Refactor: cli/ package
+
+`invariants/cli.py` is now the package `invariants/cli/`: `common` (exit codes, output, the rule
+file), `project` (pyproject.toml, import and scan roots), `commands` (the `cmd_*` subcommands),
+`git_base` (`inv check --base`) and `hooks` (`inv hook`); `cli/__init__.py` builds the parser,
+dispatches and re-exports every name the module had. No behaviour change: `inv`, `inv-mcp` and
+`python -m invariants.cli` work as before, with the same arguments, help, output and exit codes.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed
