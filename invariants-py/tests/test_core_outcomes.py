@@ -1,4 +1,4 @@
-"""Outcomes and clause lists (prototype checks 25-27)."""
+"""Outcomes and clause lists."""
 from __future__ import annotations
 
 import jobs

@@ -1,6 +1,6 @@
 """Ablation (`pytest --inv-ablate`): disabling a rule's guard must make its falsifiers fail.
 
-Ports the prototype's INV_ABLATE table: each rule's falsifier catches with the guard on,
+Each rule's falsifier catches with the guard on,
 and stops catching with it off.
 """
 from __future__ import annotations

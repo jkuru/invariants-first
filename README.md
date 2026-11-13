@@ -12,7 +12,6 @@ around a service without someone saying yes.
 | [`apps/pool-service`](apps/pool-service) | Example app: a FastAPI and SQLite lease service with an LLM triage step. Uses only the library's public API. |
 | [`apps/fact-pipeline`](apps/fact-pipeline) | Example app: a batch pipeline that extracts cited facts with a model (a deterministic fake by default; `APP_MODEL` picks replay, record or Claude). |
 | [`apps/support-agent`](apps/support-agent) | Example app: a tool-calling support agent (planner, executor edge, billing doors) with 12 seeded agent defects, each caught. |
-| [`prototype/`](prototype) | The first prototype the library grew from. Kept for history; not maintained. |
 | [`Invariant_first.md`](Invariant_first.md) | Invariant-first, for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example and the limits. |
 | [`Invariants_what_how_when.md`](Invariants_what_how_when.md), [`makeInvariantSimple.md`](makeInvariantSimple.md) | The original concept notes. |
 | `action.yml`, `.pre-commit-hooks.yaml` | The GitHub Action and the pre-commit hook. They sit at the root so other repositories can use them as `jkuru/invariants-first`. |

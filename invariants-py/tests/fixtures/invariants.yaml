@@ -39,7 +39,7 @@ rules:
   subject: {contract: jobs_py, target: 'py:jobs.split_work'}
   scope: call
   bad:
-  - {when: size(result) != size(args.capacities), message: not one share per worker (prototype addition)}
+  - {when: size(result) != size(args.capacities), message: not one share per worker}
   - {when: inv.sum(result) != args.total_jobs, message: shares do not sum to total_jobs}
   - {when: 'result.exists(s, s < 0)', message: negative share}
   - {when: 'inv.zip(result, args.capacities).exists(p, p[0] > p[1])', message: share above capacity}
@@ -125,7 +125,7 @@ rules:
   status: enforce
   class: policy
   owner: team-pool
-  statement: (prototype-only example) A resize through the door never shrinks a pool without review. A shrink is
+  statement: (test-only example) A resize through the door never shrinks a pool without review. A shrink is
     routed to a person before the write.
   subject: {contract: pool_py, target: 'py:pool.PoolService.resize_door'}
   scope: call
@@ -138,7 +138,7 @@ rules:
   status: enforce
   class: policy
   owner: team-sre
-  statement: (prototype-only example) restart_job is never called with an empty job id.
+  statement: (test-only example) restart_job is never called with an empty job id.
   subject: {contract: jobs_py, target: 'py:jobs.restart_job'}
   scope: call
   bad: size(args.job_id) == 0

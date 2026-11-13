@@ -1,4 +1,4 @@
-"""Standing: a computed report (prototype checks 63-65)."""
+"""Standing: a computed report."""
 from __future__ import annotations
 
 import invariants as inv

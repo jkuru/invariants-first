@@ -1,4 +1,4 @@
-"""Load and verify (prototype checks 1-17), plus JSON/YAML loading."""
+"""Load and verify, plus JSON/YAML loading."""
 from __future__ import annotations
 
 import gc

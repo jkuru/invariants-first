@@ -1,4 +1,4 @@
-"""R-7: model call and edge (prototype checks 39-57)."""
+"""R-7: model call and edge."""
 from __future__ import annotations
 
 import triage

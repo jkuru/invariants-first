@@ -1,4 +1,4 @@
-"""Shared helpers for the core tests (ported from the prototype's demo.py)."""
+"""Shared helpers for the core tests."""
 from __future__ import annotations
 
 import copy

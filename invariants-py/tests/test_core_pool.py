@@ -1,4 +1,4 @@
-"""R-21 and P-1: providers, old_self, route (prototype checks 28-38)."""
+"""R-21 and P-1: providers, old_self, route."""
 from __future__ import annotations
 
 import pool

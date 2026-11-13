@@ -1,4 +1,4 @@
-"""R-1: pure target, post-effect guard (prototype checks 18-24)."""
+"""R-1: pure target, post-effect guard."""
 from __future__ import annotations
 
 import asyncio
