@@ -845,7 +845,7 @@ What will a smart coding agent try next?
 
 ## 9.2 The Four-Layer Defense: `pretool`, `stop`, `pre-commit`, and `--base origin/main`
 
-`invariants` closes every one of those escape hatches across four layers ([`cli.py`](invariants-py/src/invariants/cli.py)):
+`invariants` closes every one of those escape hatches across four layers ([`cli/`](invariants-py/src/invariants/cli/)):
 
 ```mermaid
 flowchart TD
@@ -855,7 +855,7 @@ flowchart TD
     D -->|"Compares PR against main's lock.<br/>Catches even a manually re-pinned weakening!"| E["Merge Allowed Only with Human PR Label<br/>(INV_ALLOW_WEAKENING=1) + CODEOWNERS"]
 ```
 
-Look at `cmd_hook` in [`cli.py`](invariants-py/src/invariants/cli.py) to see how `inv hook pretool` and `inv hook stop` work:
+Look at `cmd_hook` in [`cli/hooks.py`](invariants-py/src/invariants/cli/hooks.py) to see how `inv hook pretool` and `inv hook stop` work:
 - **`inv hook pretool`:** Reads Claude Code’s hook JSON from `stdin`.
   - If `tool_input` targets `invariants.lock` via `file_path`, `path`, or `notebook_path` (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`), or via a shell command matching `LOCK_WRITE` (`>`, `>>`, `tee`, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `truncate`, `dd`), it exits with code **`2`** (which blocks the tool call in Claude Code) and tells the agent: *"blocked a direct edit of invariants.lock. The lock is written only by `inv lock` or `inv check --relock`."*
   - If a `Bash` command contains `--accept-weakening`, `--allow-weakening`, or `INV_ALLOW_WEAKENING`, it exits with code **`2`** and tells the agent to explain the weakening to the human user instead.
