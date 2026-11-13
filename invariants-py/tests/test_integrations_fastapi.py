@@ -37,9 +37,14 @@ def client_for(doc: dict[str, Any], asgi_app: Any = None) -> tuple[TestClient, i
     return TestClient(InvariantMiddleware(asgi_app or app.app, registry=reg)), reg
 
 
+@pytest.fixture(autouse=True)
+def _no_orders() -> None:
+    """PLACED is module state: every test starts with no placed orders, whatever ran before it."""
+    app.PLACED.clear()
+
+
 @pytest.fixture
 def http() -> Iterator[tuple[TestClient, inv.Registry]]:
-    app.PLACED.clear()
     yield client_for(doc_with())
 
 
