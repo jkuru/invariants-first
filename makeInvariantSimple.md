@@ -448,7 +448,7 @@ When `loader.expand_short_forms()` ([loader.py](invariants-py/src/invariants/loa
 In Invariant-First, rules are always written as **prohibitions (`bad`)**: a [Common Expression Language (CEL)](https://cel.dev) expression that returns **`true` when the forbidden state occurs**.
 
 Why CEL instead of Python `eval()`?
-1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset.py`](invariants-py/src/invariants/cel/subset.py)).
+1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset/cost.py`](invariants-py/src/invariants/cel/subset/cost.py)).
 2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](invariants-py/src/invariants/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
 3. **Two Pluggable Backends (`cel/`):**
    - `subset` (default): Zero-dependency stdlib evaluator (`7.1 µs` per call).
