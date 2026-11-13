@@ -31,7 +31,7 @@ render, not that they are final), so a green build is not a sign that this list 
       Once the repository has its public URL, point the CI badge at the workflow's status badge
       (`.../actions/workflows/ci.yml/badge.svg`) and add a PyPI version badge.
 - [ ] **SARIF tool URL.** `inv scan --format sarif` reports `informationUri` as a placeholder
-      (`https://example.invalid/invariants`, in `src/invariants/scan.py`); set it to the project
+      (`https://example.invalid/invariants`, in `src/invariants/scan/sarif.py`); set it to the project
       URL.
 - [ ] **Authors and maintainers.** `authors` in `[project]` is the placeholder "The
       invariants-first authors". Replace it (and add `maintainers` if they differ) with the names

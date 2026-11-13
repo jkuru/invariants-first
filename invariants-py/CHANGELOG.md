@@ -10,6 +10,16 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Refactor: scan/ package
+
+`invariants/scan.py` is now the package `invariants/scan/`, split by stage: `sources` (which files),
+`indexer` (first pass), `inference` and `walker` (second pass: types, call edges, sites),
+`reachability` (path search), `checks` (findings per rule), `mediation` (rule-file fields), `sql`,
+`contracts` (shared types), `text` and `sarif` (output). `invariants.scan` re-exports the names
+`scan.py` had, so imports are unchanged; no behaviour changed. The scan no longer imports the
+registry: it reads ablation through `invariants._scan_hooks`, which `invariants/__init__.py` wires.
+`tests/test_layering_scan.py` checks that `scan/` never imports `guard`, `registry` or `cli`.
+
 ### Fix round 19 (CEL, CI, docs)
 
 Regression tests: `tests/test_fix_round19_cel.py`, run on every installed CEL backend; each failed
