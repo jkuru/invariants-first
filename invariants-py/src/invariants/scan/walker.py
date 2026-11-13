@@ -227,8 +227,7 @@ class _Walker(_Inference):
             self._site("wrapped", owner, node.func, self._unwrapped(node.func.value, local, me))
         elif isinstance(node.func, ast.Attribute) and _dunder(node.func.attr) \
                 and node.func.attr not in ("__call__", *_HARMLESS_DUNDERS):
-            for base in self._value_refs(node.func.value, owner, local, me):   # f.__get__(o)(...): f
-                self._site("ref", owner, node.func, base)                       # used as a value
+            self._escapes(node.func.value, owner, local, me, node.func)           # f.__get__(o)(...): f
         self._exprs([*node.args, *[k.value for k in node.keywords]], owner, local, me)
 
     def _load(self, node: ast.Name | ast.Attribute, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
@@ -237,8 +236,7 @@ class _Walker(_Inference):
         if isinstance(node, ast.Attribute) and node.attr == "__wrapped__":
             self._site("wrapped", owner, node, self._unwrapped(node.value, local, me))
         elif isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS:
-            for base in self._value_refs(node.value, owner, local, me):       # f.__call__, f.__get__,
-                self._site("ref", owner, node, base)                          # f.__func__ read as a value
+            self._escapes(node.value, owner, local, me, node)                 # f.__call__, f.__get__,
         fq = self._resolve(node, local, me) if _dotted(node) else None
         called = id(node) in self._called
         if fq in _REFLECTIVE and not called:                                  # g = getattr; g(obj, name)
@@ -248,10 +246,22 @@ class _Walker(_Inference):
         elif not called and fq and (ex := self.idx.excluded_module(fq)):
             self._site("excluded", owner, node, f"{fq}|{ex}|ref")             # cb = helpers.write
         elif not called:                                                      # cb = repo.save: escapes
-            for ref in self._value_refs(node, owner, local, me):
-                self._site("ref", owner, node, ref)
+            self._escapes(node, owner, local, me, node)
         if isinstance(node, ast.Attribute) and not _dotted(node):
             self._expr(node.value, owner, local, me)
+
+    def _escapes(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None,
+                 at: ast.AST) -> None:
+        """node is used as a value (at the site at): the scanned functions it names escape ("ref"); `recv.m`
+        on a receiver the scan cannot type, with m the name of a scanned function, may be one ("attrref")."""
+        refs = self._value_refs(node, owner, local, me)
+        for ref in refs:
+            self._site("ref", owner, at, ref)
+        if refs or not isinstance(node, ast.Attribute) or node.attr not in self.idx.short_names():
+            return
+        fq = self._resolve(node, local, me) if _dotted(node) else None
+        if (fq is None or self._via_function(node, local, me)) and self._typed(node, owner, local, me) == ([], None):
+            self._site("attrref", owner, at, node.attr)
 
     def _folded(self, node: ast.BinOp, owner: str, local: set[str], me: tuple[str, str] | None) -> bool:
         """'INSERT INTO ' + 'leases ...' (or + name): one text, one site; the non-literal parts are walked."""
@@ -272,7 +282,7 @@ class _Walker(_Inference):
             func = func.value
         fq = self._resolve(func, local, me) if _dotted(func) else None
         if func is not node.func and not (fq and self._known_callee(fq)) and not (
-                isinstance(func, ast.Attribute) and self._typed(func, owner, local, me)[0]):
+                isinstance(func, ast.Attribute) and (fq is None or self._typed(func, owner, local, me)[0])):
             func, fq = node.func, None                 # not a known function: an ordinary attribute call
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
             self._attr_builtin(node, fq, owner, local, me)

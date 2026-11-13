@@ -9,6 +9,8 @@ c. `type(call()).__dict__` and `call().__class__.__dict__`: the calls inside are
 d. A name a nested function or lambda takes as a parameter (in its body), an `except E as name` and a
    match capture are bindings the scan cannot type, so another binding of the same name no longer
    types them; a string `-> "Self"` on an inherited `__enter__` is the receiver's class, not the base's.
+e. A sink's name read as a value on a receiver the scan cannot type (`cb = repo.save`) is
+   unresolved/sink-escapes, matched by name as a call on an unknown receiver is.
 """
 from __future__ import annotations
 
@@ -273,4 +275,41 @@ def test_a_nested_parameter_does_not_untype_the_outer_name(tmp_path):
             return cb, inner
         """)
     assert _codes(rep) == ["unresolved/sink-escapes"], rep.findings
+
+
+# --- e. a sink name read as a value on a receiver the scan cannot type -------------------------------------
+@pytest.mark.parametrize("body", [
+    "def h(repo, x):\n    cb = repo.save\n    cb(x)\n",
+    "def h(xs, x):\n    repo = SinkRepo()\n    for repo in xs:\n        pass\n    cb = repo.save\n",
+    "def h(x):\n    try:\n        pass\n    except SinkErr as err:\n        cb = err.save\n",
+    "def h(y):\n    match y:\n        case SinkRepo() as repo:\n            cb = repo.save\n",
+    "def h(repo, x):\n    return [repo.save]\n",
+    "def h(repo, x):\n    return functools.partial(repo.save, x)\n",
+    "def h(repo, x, o):\n    return repo.save.__get__(o)(x)\n",
+    "def h(repo, x):\n    return repo.save.__func__\n",
+], ids=["param", "for", "except", "match", "list", "partial", "get", "func"])
+def test_a_sink_name_read_as_a_value_on_an_unknown_receiver_is_reported(tmp_path, body):
+    rep = _scan(tmp_path, "import functools\nfrom app.repo import SinkRepo, SinkErr\n" + body)
+    assert _codes(rep) == ["unresolved/sink-escapes"], rep.findings
+    assert ".save on a receiver the scan cannot resolve" in rep.findings[0].message
+
+
+def test_a_sink_method_called_through_dunder_call_on_an_unknown_receiver_is_name_matched(tmp_path):
+    rep = _scan(tmp_path, "def h(repo, x):\n    repo.save.__call__(x)\n")
+    assert sorted(_codes(rep)) == UNKNOWN, rep.findings
+
+
+@pytest.mark.parametrize("body", [
+    "def h(repo):\n    return repo.other\n",                     # not a sink name
+    "def h(repo, x):\n    repo.save(x)\n",                      # a call: unknown-receiver, as before
+    "def h(d):\n    d = {}\n    return d.update\n",              # a builtin container's own method
+], ids=["other-name", "call", "container"])
+def test_other_reads_on_an_unknown_receiver_are_not_sink_escapes(tmp_path, body):
+    rep = _scan(tmp_path, body)
+    assert "unresolved/sink-escapes" not in _codes(rep), rep.findings
+
+
+def test_a_sink_name_read_inside_a_door_or_an_allowed_function_stays_frozen(tmp_path):
+    rep = _scan(tmp_path, "def backfill(repo, x):\n    cb = repo.save\n    return cb\n", ["py:app.ops.backfill"])
+    assert rep.findings == [], rep.findings
 

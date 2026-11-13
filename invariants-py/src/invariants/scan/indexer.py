@@ -32,6 +32,7 @@ class _Index:
         self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
         self._subs: dict[str, list[str]] | None = None     # class -> its scanned subclasses (subclasses)
+        self._short: set[str] | None = None                # the last name of every scanned function
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
         self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
         self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
@@ -39,6 +40,12 @@ class _Index:
         self._effects: dict[str, bool] = {}               # excluded module -> runs code at import time
         # (first parameter name, class) -> how the methods naming it so use it: cm, plain, static
         self.first_params: collections.defaultdict[tuple[str, str], set[str]] = collections.defaultdict(set)
+
+    def short_names(self) -> set[str]:
+        """The last name of every scanned function (`save` for app.repo.Repo.save): what a sink may be named."""
+        if self._short is None:
+            self._short = {f.rpartition(".")[2] for f in self.funcs}
+        return self._short
 
     def class_param(self, me: tuple[str, str] | None) -> bool:
         """me's name is the class itself (a @classmethod's `cls`), never an instance, in every method of
