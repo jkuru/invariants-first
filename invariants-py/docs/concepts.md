@@ -469,6 +469,9 @@ inv.configure(
   counters are separate and exact. In tests, use `inv.capture()` or the pytest fixture `inv_events`.
   `inv.observe(fn)` sees every evaluation in every registry. An observer, exporter, store or pager
   that raises is logged, and never reaches the guarded call.
+  Exporters run inline, on the guarded call's thread: wrap a slow one in
+  `integrations.exporters.BufferedExporter`, which only queues the event (bounded, drops counted)
+  for a flusher thread your host starts and closes ([api.md](api.md#invariantsintegrationsexporters)).
 - **Error spikes.** A spike sets `Registry.demoted[rule_id]`, and the rule's effective mode stays
   `detect` until `Registry.restore(rule_id)`. It is off unless configured, on purpose: when request
   data can cause rule errors (a missing field, an oversized input past the cost budget), a default
