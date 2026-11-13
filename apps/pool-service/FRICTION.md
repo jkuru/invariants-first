@@ -1,107 +1,69 @@
 # Friction with the invariants library (0.1.0)
 
-> **Since this was written:** the library removed every feature that reached below the API
-> (storage enforcers, transactional targets and rollback, provider consistency, `tables:`, `.sql`
-> contracts). Entries about those features no longer apply; see the library's CHANGELOG.
+Found while building pool-service as an outside team: public API only, library unmodified. Each
+entry keeps its original number and ends with its current status.
 
-Found while building pool-service as an outside team: public API only, library unmodified.
+**Status as of 2026-11-12.** The library removed every feature that reached below the API (storage
+enforcers, transactional targets and rollback, provider consistency, `tables:`, `.sql` contracts):
+rules live on API boundaries only. The entries about those features are moot and are listed at the
+end, not kept. The schema's triggers stay as the store's own defence; their message is
+`pool lease capacity exceeded (db constraint)`, not a rule id, so a database refusal is never read as
+an API rule's. Of the rest, every entry is resolved except 12 and 15, which say why.
 
 1. **`inv scan` has no exclude setting.**
    - What I tried: keep a deliberate bypass module in the repo and leave it out of the clean scan "by config".
-   - What happened: a scan root is the only control, and the module name comes from the path relative to the root. The bypass file therefore lives in `bypass/pool_service/rogue.py`, a tree that mirrors the package with no `__init__.py`, so that `--root src --root bypass` names it `pool_service.rogue`. ci.sh chooses the roots.
-   - What the library should do: accept `scan: {roots, exclude}` in the rule file or in `[tool.invariants]`.
-
-2. **`mediation.tables` works per table, not per column.**
-   - What I tried: R-23 is about `pools.size`, so I set `tables: [pools]`.
-   - What happened: `INSERT INTO pools` in `store.insert_pool` is flagged too. I had to make `insert_pool` a second sink and `create_pool` a second door. A door applies to every sink, so a path `create_pool -> set_size` would now pass the scan. For R-20, `DELETE FROM leases` (release) would be flagged, so R-20 declares no tables.
-   - What the library should do: accept column-level tables (`{pools: [size]}`), filter by statement kind (UPDATE/INSERT/DELETE), and pair each door with its own sinks.
+   - What happened: a scan root was the only control, and the module name comes from the path relative to the root. The bypass file therefore lives in `bypass/pool_service/rogue.py`, a tree that mirrors the package with no `__init__.py`, so that `--root src --root bypass` names it `pool_service.rogue`.
+   - **Status (2026-11-12): resolved.** `inv scan --exclude` and `[tool.invariants.scan]` (roots and excludes, pinned in the lock) exist. `bypass/` keeps its mirror layout because the module name must still resolve as `pool_service.rogue`; that is how modules are named, not friction.
 
 3. **A scan-only rule has to be faked.**
    - What I tried: write R-23 as a structural rule.
-   - What happened: it needs a CEL `bad` (I wrote `'false'`), an enforcer (`point: structure`), and a `falsified_by` for `status: enforce`. A pytest falsifier that runs `inv scan` in a subprocess still passes under `--inv-ablate`, which reports "guard not load-bearing" and fails the session. So the falsifier is `ci.sh::scan-bypass`, which the plugin reports as "not collected / not checked". `inv status` still calls a rule whose `bad` is `false` "held".
-   - What the library should do: add a structural rule kind with no `bad`, falsifiers of type `scan:`, and ablation that skips them.
-
-4. **Storage-enforcer rejections are invisible to the library.**
-   - What I tried: let the R-20 triggers reject over-leases.
-   - What happened: a trigger raises `sqlite3.IntegrityError`, not an `InvariantError`. The app matches the trigger message (`R-20:`) and builds the 409 problem body by hand, copying the private body shape. The reach report counts only door evaluations, so the storage enforcer's catches during the race test show nowhere.
-   - What the library should do: provide something like `inv.storage_rejection(rule_id, exc)` that raises a `Rejected` carrying `point: storage`, counts it, and lets `install()` map it (with a configurable status, here 409).
+   - What happened: it needed a CEL `bad` (`'false'`), an enforcer (`point: structure`) and a `falsified_by`, and a pytest falsifier that ran `inv scan` in a subprocess passed under `--inv-ablate`.
+   - **Status (2026-11-12): resolved.** Ablation reaches a scan through `INV_ABLATE` (and the `inv_scan` fixture reads an ablated scan honestly), so `tests/test_scan.py` is R-23's falsifier. The rule file now has a door form (`door:`, `sink:`, `allow:`) that expands to the structure rule and may be `enforce` without `falsified_by`. R-23 keeps the full form because it carries its chokepoint text, owner and a falsifier test.
 
 5. **"held" needs `mediation.sink` even where no sink exists.**
-   - What happened: R-1 (a pure function, `effects: none`) and the HTTP input rules H-1/H-2 can never be held. `inv status` asks to "add mediation.sink", which means nothing for a pure function.
-   - What the library should do: skip the scan requirement for `effects: none` targets, or accept `sink: none` with a reason.
+   - **Status (2026-11-12): resolved** (fix round 1): an `effects: none` rule (R-1) needs no sink to be held. H-1/H-2 are middleware rules on a route and are reported as such.
 
 6. **Escalation opens no review.**
-   - What happened: an R-7 abstain, violation or exhausted retries gives 202 with no `review_id`. Only `on_violation: route` opens a review, but triage escalation is exactly where a person needs a handle.
-   - What the library should do: open a review on `escalate` and on abstain too.
+   - **Status (2026-11-12): resolved** (fix round 1): `escalate` and abstain open a review; the 202 body has `review_id`.
 
 7. **`inv.model_call` and `inv.edge` are sync only.**
-   - What happened: the triage route had to be a sync handler, which runs on the threadpool. A real model client is usually async.
-   - What the library should do: support `async def` the way `guard` does.
+   - **Status (2026-11-12): resolved** (fix round 1): both accept `async def`. The triage route stays sync because its SQLite connection comes from a sync dependency.
 
 8. **The CEL subset has no `matches()`.**
-   - What happened: H-2 (pool id shape) is written with `size()` and `contains()` instead of a regex.
+   - **Status (2026-11-12): resolved** (fix round 1): the subset has `matches()`. H-2 keeps its `size()`/`contains()` form.
 
 9. **The openapi contract is pinned as a file, but routes are checked against the live app.**
-   - What happened: `inv lock` hashes `ref` as a file beside the rule file, while `verify_routes` needs the app object. I export `openapi.json` with a script and test that it is current.
-   - What the library should do: accept `ref: 'pool_service.main:app'` and render and hash its OpenAPI.
+   - What happened: `inv lock` hashed `ref` as a file beside the rule file, while `verify_routes` needs the app object. I exported `openapi.json` with a script and tested that it was current.
+   - **Status (2026-11-12): resolved.** The contract is `pool_api: {type: openapi, app: "pool_service.openapi_app:app"}`: `inv lock` imports the app (the same routes as `pool_service.main:app`, on an in-memory database, rule file not loaded) and pins the operations H-1 and H-2 name from `app.openapi()`. `openapi.json` and its currency test are gone; `tests/test_api.py` checks that the contract app and the served app describe the same API, and `scripts/export_openapi.py` only prints the document for reading. Re-pinning showed the source change as WEAKENED (the document now comes from an app, not a file); the operation schemas pinned were unchanged (same digests), so it was accepted.
 
 10. **Where the rule file lives in an installed service.**
-    - What happened: artifact paths (`src/pool_service/schema.sql#sha256:`) and the CLI resolve relative to the rule file, so it sits at the project root, outside the package. The service finds it through `parents[2]` (which works only for an editable install) or `POOL_SERVICE_RULES`.
-    - What the library should do: support loading via `importlib.resources` and artifact paths relative to a package.
-
-11. **The storage artifact hash is updated by hand.**
-    - What happened: after editing `schema.sql`, the loader fails until someone pastes the new sha256 into `invariants.yaml`. `inv lock` does not offer to write it.
-    - What the library should do: provide `inv lock --update-artifacts` or similar.
+    - What happened: the CLI resolves paths relative to the rule file, so it sits at the project root, outside the package. The service finds it through `parents[2]` (which works only for an editable install) or `POOL_SERVICE_RULES`.
+    - **Status (2026-11-12): resolved in the library.** `inv.load_resource(package)` loads a rule file shipped in a package. This app keeps the rule file at the project root, beside its lock.
 
 12. **Scan findings repeat and are sometimes misattributed.**
-    - What happened: one `__wrapped__` site is reported under all five scanned rules, including R-7, which has nothing to do with resize. `DROP TRIGGER r20_lease` is reported only under R-23 (the rule with `tables`), not under R-20, whose storage enforcer it removes.
-    - What the library should do: report one finding per site with the list of affected rules, and attribute a dropped trigger to the rule whose artifact defines it.
+    - What happened: one `__wrapped__` site was reported under all five scanned rules, including R-7, which has nothing to do with resize.
+    - **Status (2026-11-12): open, partly fixed.** The scan now reports one finding per call site per rule (S-6 in the CHANGELOG), so no site repeats inside a rule. But the `ResizeService.resize_door.__wrapped__` at `bypass/pool_service/rogue.py:15` is still listed once under each of R-7, R-20, R-21, R-22 and R-23 (checked with `inv scan --root src --root bypass` on 2026-11-12): a `forbidden/unwrap` finding goes to every scanned rule, not only to the rules whose door or sink it unwraps. The library should attribute it to the rules of the function unwrapped (here R-21, R-22, R-23), or print one line per site with the rules affected. (The `DROP TRIGGER` half of this entry was about table mediation and is moot.)
 
 13. **Log volume.**
-    - What happened: every violation logs a WARNING with the full event on the `invariants` logger. Under hypothesis this means hundreds of lines per failing test, so ci.sh runs pytest with `-p no:logging`.
-    - What the library should do: provide a sampling setting or a quieter level for expected outcomes.
+    - **Status (2026-11-12): resolved** (fix round 1): `ok` logs at DEBUG and the violation level is configurable; `ci.sh` no longer needs `-p no:logging`.
 
 14. **No test helper for `Checked`.**
-    - What happened: testing the edge against a forged or non-ok `Checked` means calling `object.__new__` and `object.__setattr__` by hand.
-    - What the library should do: provide a public helper (for example `inv.testing.checked(value, verdict=...)`) that keeps forgery explicit.
+    - **Status (2026-11-12): resolved** (fix round 1): `invariants.testing.make_checked` replaces the hand-forged `Checked`.
 
 15. **Guard overhead on small functions.**
     - What happened: R-1's four clauses add about 42 µs to a 1 µs function (p50). That is fine at HTTP scale (noise next to about 2.5 ms per request), but heavy for tight loops.
-    - What the library should do: document the cost per clause and per comprehension, or offer a cheaper sampled mode for hot pure functions.
+    - **Status (2026-11-12): open by design.** The cost per clause and per backend is documented (docs/cel.md, the README's Performance section), and providers are now called only when a clause reads their name. A sampled mode is not offered in v0.1 (docs/cel.md: "There is no sampled mode in v0.1"); R-1 stays a full check because a rounding bug is exactly what a sample would miss.
 
+## Moot: features removed from the library
 
-## Library fix round 1: what changed for this app
+These entries were about features that reached below the API. The features are gone, so the entries
+no longer apply; their text is in the git history.
 
-The library was changed (not this app's workarounds) for these entries:
+- **2. `mediation.tables` works per table, not per column.** `tables:` is removed. R-23 names its sinks (`store.set_size`, `store.insert_pool`) and its doors.
+- **4. Storage-enforcer rejections are invisible to the library.** Storage enforcers and `inv.storage_rejection` are removed. The trigger refusal is the store's own business: `api.store_conflicts` turns it into a plain 409 the app answers itself.
+- **11. The storage artifact hash is updated by hand.** `.sql` artifacts are no longer pinned, so `schema.sql` has no digest in the rule file.
 
-- 3: R-23's falsifier is now a pytest test (`tests/test_scan.py`) that runs the bypass scan in a
-  subprocess; ablation reaches it through `INV_ABLATE`. `ci.sh::scan-bypass` is gone. The rule still
-  needs `bad: 'false'` and a `structure` enforcer (a first-class scan-only rule is not in 0.1).
-- 4: `inv.storage_errors` / `inv.storage_rejection` replace the hand-built 409 body; the storage
-  enforcer's refusals are counted.
-- 5: an `effects: none` rule (R-1) no longer needs `mediation.sink` to be held.
-- 6: `escalate` and abstain open a review; the 202 body has `review_id`.
-- 7: `model_call` and `edge` accept `async def`. The triage route stays sync here because its
-  SQLite connection comes from a sync dependency.
-- 8: the subset has `matches()`. H-2 keeps its `size()`/`contains()` form.
-- 11: `inv lock --update-artifacts` rewrites the `schema.sql` digest.
-- 13: `ok` logs at DEBUG and the violation level is configurable; `ci.sh` no longer needs `-p no:logging`.
-- 14: `invariants.testing.make_checked` replaces the hand-forged `Checked`.
-- 1 (partly): `inv scan --exclude` and `[tool.invariants.scan]` exist. `bypass/` keeps its mirror
-  layout because the module name must still resolve as `pool_service.rogue`.
-- 10 (partly): `inv.load_resource(package)` loads a rule file shipped in a package; this app keeps
-  the rule file at the project root, beside the artifacts it pins.
+## Changes in this app since the original entries
 
-Still open in the library: 2 (column-level tables), 9 (openapi from a live app), 12 (one finding per
-site), 15 (lazy providers; the env is now projected once per evaluation).
-
-
-## Library fix round 3: what changed for this app
-
-- `api.py` takes `PROBLEM_JSON` from `invariants.integrations.fastapi` (`inv_fastapi.PROBLEM_JSON`),
-  which now re-exports it with `StatusMap` and `problem` and documents them; the import of the
-  undocumented `invariants.integrations.asgi` constant is gone.
-- 15 (documented): the library README has a Performance section (about 7 µs per clause on subset
-  and cel-expr, about 85 µs per clause on celpy), with the advice to use cel-expr or subset on hot
-  paths. A sampled mode is still not offered.
-- New load-time type check: every R- and H-rule loads unchanged.
+- R-22 reads the pool's current size from the `current_size` provider (one `SELECT size FROM pools WHERE id = ?`), not from a `ResizeService.sizes` property that loaded every pool on each resize. `pool_size` serves both R-20 (`pool_size`) and R-22 (`current_size`) through `@inv.provider("pool_size", "current_size")`. The lock reported the rule change as WEAKENED (it cannot tell that `current` and `self.sizes[req.pool_id]` are the same value); it was reviewed and accepted. A missing pool is still a `rule_error` (fail closed), as the missing dict key was.
+- `api.py` takes `PROBLEM_JSON` from `invariants.integrations.fastapi` (fix round 3).

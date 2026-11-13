@@ -2,19 +2,19 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
-# The closed vocabulary (K-4). invariants.yaml repeats it in K-4's ingest clause;
-# tests/test_rules.py checks the two lists agree.
-PREDICATES: tuple[str, ...] = ("acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in")
-FUNCTIONAL: tuple[str, ...] = ("acquisition_price", "ceo_of", "headquartered_in")   # one value per subject (K-11)
 NO_MORE = "NONE"              # the model has no further fact in this chunk
 ABSTAIN = "CANNOT_COMPLY"     # the model cannot do the task: escalates at once
 
+# The closed vocabulary (K-4) is written once in Python, in this Literal; the fact_reply contract pins it.
+# K-4's list in invariants.yaml is the rule's own copy (a rule cannot read a contract's enum), and
+# tests/test_rules.py checks the two are equal. The functional predicates (K-11) live only in the rule.
 Predicate = Literal["acquired", "acquisition_price", "in_talks", "ceo_of", "headquartered_in",
                     "NONE", "CANNOT_COMPLY"]
+PREDICATES: tuple[str, ...] = tuple(p for p in get_args(Predicate) if p not in (NO_MORE, ABSTAIN))
 Polarity = Literal["ASSERTED", "DENIED", "HYPOTHETICAL", "REPORTED"]
 Qualifier = Literal["EXACT", "APPROX", "UPPER_BOUND", "LOWER_BOUND", "NONE"]
 

@@ -60,7 +60,7 @@ below the API.
 src/pool_service/    the package: store (raw SQL), service (doors), work, triage, fake_model, llm, api, main
 bypass/              deliberately bad code that the scan must flag; excluded from the clean scan
 bench/bench_guards.py  guard overhead, p50/p99
-scripts/export_openapi.py  regenerates openapi.json (the pool_api contract pinned in invariants.lock)
+scripts/export_openapi.py  prints the OpenAPI document (the pool_api contract reads the live app)
 tests/               functional, hypothesis property, concurrency, CLI, scan and replay tests
 ```
 
@@ -108,9 +108,9 @@ writing anything.
 `inv lock --check`, `inv verify`, the clean `inv scan --root src`, `inv status`, then
 `pytest --inv-verify --inv-ablate --inv-report`. R-23's falsifier, `tests/test_scan.py`, runs the bypass
 scan (`--root src --root bypass`) in a subprocess; under `--inv-ablate` the plugin sets `INV_ABLATE=R-23`,
-so the scan skips the rule and the falsifier fails, as it must. After you change `schema.sql`, run
-`inv lock --update-artifacts`; after a rule or target signature change, run `inv lock`. After an API change, run
-`python scripts/export_openapi.py`.
+so the scan skips the rule and the falsifier fails, as it must. After a rule, target signature or API
+change, run `inv lock`: the pool_api contract reads the live app (`pool_service.openapi_app:app`), so
+there is no exported file to keep current. `schema.sql` is the store's own business and is not pinned.
 
 ## Benchmark
 

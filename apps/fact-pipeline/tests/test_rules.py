@@ -1,12 +1,14 @@
 """The rule file itself: loads, covers every target, and agrees with the code's vocabulary."""
 from __future__ import annotations
 
+import json
+import re
 import typing
 
 import invariants as inv
 
 from fact_pipeline import rules_path
-from fact_pipeline.models import FUNCTIONAL, PREDICATES, FactReply
+from fact_pipeline.models import PREDICATES, FactReply
 
 REQUIRED = {"K-1", "K-2", "K-4", "K-7", "K-11", "K-12", "K-15", "K-18", "K-19"}
 
@@ -19,18 +21,25 @@ def test_verify_passes() -> None:
     assert inv.verify() == 10
 
 
-def test_k4_vocabulary_matches_the_schema() -> None:
+def _rule_list(rule_id: str) -> list[str]:
+    """The one list literal in the rule's bad (K-4's vocabulary, K-11's functional predicates)."""
     doc = inv.read_document(rules_path())
-    k4 = next(r for r in doc["rules"] if r["id"] == "K-4")
-    assert all(f'"{p}"' in k4["bad"] for p in PREDICATES)
-    literal = set(typing.get_args(FactReply.model_fields["predicate"].annotation))
-    assert set(PREDICATES) == literal - {"NONE", "CANNOT_COMPLY"}
+    bad = next(r for r in doc["rules"] if r["id"] == rule_id)["bad"]
+    (items,) = re.findall(r"\[([^\]]*)\]", bad)
+    return [json.loads(x) for x in items.split(",")]
 
 
-def test_k11_functional_list_matches_the_code() -> None:
-    doc = inv.read_document(rules_path())
-    k11 = next(r for r in doc["rules"] if r["id"] == "K-11")
-    assert all(f'"{p}"' in k11["bad"] for p in FUNCTIONAL)
+def test_k4_vocabulary_equals_the_schema_literal() -> None:
+    """K-4's list in the rule file equals the FactReply.predicate Literal (the pinned contract), in
+    order. PREDICATES is derived from the Literal, so Python holds one copy."""
+    literal = typing.get_args(FactReply.model_fields["predicate"].annotation)
+    assert tuple(_rule_list("K-4")) == PREDICATES == tuple(p for p in literal if p not in ("NONE", "CANNOT_COMPLY"))
+
+
+def test_k11_functional_predicates_are_in_the_vocabulary() -> None:
+    """K-11's functional list lives only in the rule file; each entry must be a known predicate."""
+    functional = _rule_list("K-11")
+    assert functional and len(set(functional)) == len(functional) and set(functional) <= set(PREDICATES)
 
 
 def test_detect_rule_is_capped_at_detect() -> None:

@@ -38,7 +38,9 @@ def fact_id(subject_id: str, predicate: str, obj: str, qualifier: str, valid_fro
 
 
 def ddl() -> str:
-    """The schema, with the store's own constraints and triggers."""
+    """The schema, with the store's own constraints and triggers. Their names and messages say "db
+    constraint", never a rule id: they are the database's own defence, below the API, and no rule names
+    them (the triggers once named k1_* and k8_* are dropped when the schema is applied)."""
     k7 = ",\n  CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from)"
     k9 = ",\n  UNIQUE (source_system, source_key)"
     parts = [f"""
@@ -67,7 +69,10 @@ CREATE TABLE IF NOT EXISTS evidence (
 CREATE TABLE IF NOT EXISTS fact_status (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, fact_id TEXT NOT NULL REFERENCES facts(id), status TEXT NOT NULL,
   reason TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS facts_by_subject ON facts (subject_id, predicate);
+-- (subject_id, predicate, id): contradiction() walks one subject's predicate in id order and stops at
+-- the first live row, instead of sorting every row of it (the K-11 provider reads it on every ingest).
+CREATE INDEX IF NOT EXISTS facts_by_subject_id ON facts (subject_id, predicate, id);
+DROP INDEX IF EXISTS facts_by_subject;
 CREATE INDEX IF NOT EXISTS status_by_fact ON fact_status (fact_id, seq);
 CREATE INDEX IF NOT EXISTS evidence_by_source ON evidence (source_id);
 CREATE TABLE IF NOT EXISTS claims (
@@ -81,15 +86,17 @@ CREATE TABLE IF NOT EXISTS reviews (
   state TEXT NOT NULL DEFAULT 'open');
 """]
     parts.append("""
-CREATE TRIGGER IF NOT EXISTS k1_fact_needs_evidence BEFORE INSERT ON facts
+DROP TRIGGER IF EXISTS k1_fact_needs_evidence;
+CREATE TRIGGER IF NOT EXISTS fact_needs_evidence BEFORE INSERT ON facts
 WHEN NOT EXISTS (SELECT 1 FROM evidence WHERE fact_id = NEW.id AND end_ > start AND length(quote) > 0)
-BEGIN SELECT RAISE(ABORT, 'K-1: a fact needs an evidence span'); END;
+BEGIN SELECT RAISE(ABORT, 'a fact needs an evidence span (db constraint)'); END;
 """)
     for table in ("facts", "evidence", "fact_status"):          # history is append-only
         for op in ("UPDATE", "DELETE"):
             parts.append(f"""
-CREATE TRIGGER IF NOT EXISTS k8_{table}_no_{op.lower()} BEFORE {op} ON {table}
-BEGIN SELECT RAISE(ABORT, 'K-8: {table} is append-only'); END;
+DROP TRIGGER IF EXISTS k8_{table}_no_{op.lower()};
+CREATE TRIGGER IF NOT EXISTS {table}_no_{op.lower()} BEFORE {op} ON {table}
+BEGIN SELECT RAISE(ABORT, '{table} is append-only (db constraint)'); END;
 """)
     return "".join(parts)
 
@@ -103,7 +110,7 @@ def insert_evidence_row(conn: sqlite3.Connection, fid: str, e: EvidenceSpan) -> 
 
 
 def insert_fact_row(conn: sqlite3.Connection, p: Proposal) -> None:
-    """Append a new fact with its evidence (evidence first: the K-1 trigger checks it exists)."""
+    """Append a new fact with its evidence (evidence first: the store's evidence trigger checks it exists)."""
     for e in p.evidence:
         insert_evidence_row(conn, p.id, e)
     conn.execute("INSERT INTO facts (id, subject_id, predicate, object, object_kind, qualifier, valid_from, "

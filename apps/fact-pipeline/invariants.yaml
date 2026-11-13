@@ -11,9 +11,9 @@ targets:
   "py:fact_pipeline.store.Store.promote_door": {effects: external}
   "py:fact_pipeline.store.Store.delete_source_door": {effects: external}
 providers:
-  subject_known: {type: bool, from: "py:fact_pipeline.providers.subject_known",
+  subject_known: {type: bool, from: "py:fact_pipeline.providers.entity_known",
                   args: {store: self, entity_id: args.proposal.subject_id}}
-  object_known: {type: bool, from: "py:fact_pipeline.providers.object_known",
+  object_known: {type: bool, from: "py:fact_pipeline.providers.entity_known",
                  args: {store: self, entity_id: args.proposal.object}}
   contradiction: {type: "py:fact_pipeline.models.Contradiction | null", from: "py:fact_pipeline.providers.contradiction",
                   args: {store: self, subject_id: args.proposal.subject_id, predicate: args.proposal.predicate,

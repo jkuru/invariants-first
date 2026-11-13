@@ -47,8 +47,8 @@
     },
     "object_known": {
       "args": {"entity_id": "args.proposal.object", "store": "self"},
-      "from": "py:fact_pipeline.providers.object_known",
-      "signature": "object_known(store: 'Store', entity_id: 'str') -> 'bool'",
+      "from": "py:fact_pipeline.providers.entity_known",
+      "signature": "entity_known(store: 'Store', entity_id: 'str') -> 'bool'",
       "type": "bool",
       "types": {"entity_id": "str", "return": "bool", "store": "Store"}
     },
@@ -75,8 +75,8 @@
     },
     "subject_known": {
       "args": {"entity_id": "args.proposal.subject_id", "store": "self"},
-      "from": "py:fact_pipeline.providers.subject_known",
-      "signature": "subject_known(store: 'Store', entity_id: 'str') -> 'bool'",
+      "from": "py:fact_pipeline.providers.entity_known",
+      "signature": "entity_known(store: 'Store', entity_id: 'str') -> 'bool'",
       "type": "bool",
       "types": {"entity_id": "str", "return": "bool", "store": "Store"}
     },

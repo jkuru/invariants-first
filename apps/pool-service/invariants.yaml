@@ -7,7 +7,7 @@ contracts:
   work_py: {type: python, ref: pool_service.work}
   triage_reply: {type: pydantic, ref: 'pool_service.triage:CauseReply'}
   store_py: {type: python, ref: pool_service.store}
-  pool_api: {type: openapi, ref: openapi.json}
+  pool_api: {type: openapi, app: "pool_service.openapi_app:app"}
 
 targets:
   "py:pool_service.work.split_work": {effects: none}
@@ -29,6 +29,10 @@ providers:
     type: int
     from: "py:pool_service.service.pool_size"
     args: {conn: args.conn, pool_id: args.pool_id}
+  current_size:
+    type: int
+    from: "py:pool_service.service.pool_size"
+    args: {conn: self.conn, pool_id: req.pool_id}
   approval:
     type: "py:pool_service.service.Approval | null"
     from: "py:pool_service.service.load_approval"
@@ -161,8 +165,8 @@ rules:
     statement: One resize never grows a pool to more than four times its current size.
     subject: {contract: pool_py, target: "py:pool_service.service.ResizeService.resize_door"}
     scope: call
-    bind: {req: args.req}
-    bad: 'self.sizes[req.pool_id] > 0 && req.new_size > 4 * self.sizes[req.pool_id]'
+    bind: {req: args.req, current: provider.current_size}
+    bad: 'current > 0 && req.new_size > 4 * current'
     enforcers:
       - {point: decorator, timing: pre_effect, mode: enforce, on_violation: reject, on_error: fail_closed}
     mediation:

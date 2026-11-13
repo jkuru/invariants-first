@@ -1,17 +1,18 @@
 {
   "contracts": {
     "pool_api": {
+      "app": "pool_service.openapi_app:app",
       "operations": {
         "createPool": {
           "method": "POST",
           "path": "/pools",
           "requestBody": {
-            "content": {"application/json": {"$ref": "sha256:2259d2f352b14f63ef439bbdcf6c0c54b04849a0c1b50f831ad06a89d392ec2f"}},
+            "content": {"application/json": {"$ref": "sha256:2eb0f14967a696d11b110ffde62305ec9c89dd2a04637f43c0444f96f677b559"}},
             "required": true
           },
           "responses": {
-            "201": {"application/json": {"$ref": "sha256:3de2fbae3e05e45bff1db5fc3502822aa74d3527e14559385d33d66e48c2d262"}},
-            "422": {"application/json": {"$ref": "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c"}}
+            "201": {"application/json": {"$ref": "sha256:6623b8cfd66cefd2f170116b0533c77f6333063b9d00177902acb2196bf8a0c3"}},
+            "422": {"application/json": {"$ref": "sha256:643bf287b6ecaa257a13ea622c08c49516c331577ad734287aa24c0ea30f52da"}}
           }
         },
         "leaseSlots": {
@@ -19,16 +20,15 @@
           "parameters": [{"in": "path", "name": "pool_id", "required": true, "schema": {"type": "string"}}],
           "path": "/pools/{pool_id}/leases",
           "requestBody": {
-            "content": {"application/json": {"$ref": "sha256:ce9e7936e4fbbaff82abfa8e0ad4ea0273eef9a2e3103dba2ed6c48401d7346c"}},
+            "content": {"application/json": {"$ref": "sha256:c1c073c9de6e8adda1bc867043de580e94a4fbf9b14927ed3cd357f908114b98"}},
             "required": true
           },
           "responses": {
-            "201": {"application/json": {"$ref": "sha256:c620176fc605fa0f3097a091f837c210f8630e8465a986074287224d76fe42a9"}},
-            "422": {"application/json": {"$ref": "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c"}}
+            "201": {"application/json": {"$ref": "sha256:9f32da5b7e763ceae417eb94a7ed2f9357e3a0702256c8b03408c66b6700f948"}},
+            "422": {"application/json": {"$ref": "sha256:643bf287b6ecaa257a13ea622c08c49516c331577ad734287aa24c0ea30f52da"}}
           }
         }
       },
-      "ref": "openapi.json",
       "type": "openapi"
     },
     "pool_py": {"ref": "pool_service.service", "type": "python"},
@@ -52,6 +52,13 @@
         "proposal_id": "int",
         "return": {"anyOf": ["null", {"$ref": "sha256:adfa941bdf7dcbb111141c2423fe7c7896c9cb7bf8b1e5bad03f1984238f776c"}]}
       }
+    },
+    "current_size": {
+      "args": {"conn": "self.conn", "pool_id": "req.pool_id"},
+      "from": "py:pool_service.service.pool_size",
+      "signature": "pool_size(conn: 'sqlite3.Connection', pool_id: 'str') -> 'int'",
+      "type": "int",
+      "types": {"conn": "Connection", "pool_id": "str", "return": "int"}
     },
     "job": {
       "args": {"conn": "args.conn", "job_id": "args.job_id"},
@@ -245,8 +252,8 @@
       },
       "rev": 1,
       "semantic": {
-        "bad": "self.sizes[req.pool_id] > 0 && req.new_size > 4 * self.sizes[req.pool_id]",
-        "bind": {"req": "args.req"},
+        "bad": "current > 0 && req.new_size > 4 * current",
+        "bind": {"current": "provider.current_size", "req": "args.req"},
         "enforcers": [
           {"mode": "enforce", "on_error": "fail_closed", "on_violation": "reject", "point": "decorator", "timing": "pre_effect"}
         ],
@@ -392,15 +399,6 @@
     "roots": [".", "src"]
   },
   "schemas": {
-    "sha256:2259d2f352b14f63ef439bbdcf6c0c54b04849a0c1b50f831ad06a89d392ec2f": {
-      "name": "openapi.json/components/schemas/PoolIn",
-      "schema": {
-        "additionalProperties": false,
-        "properties": {"name": {"type": "string"}, "pool_id": {"type": "string"}, "size": {"type": "integer"}},
-        "required": ["pool_id", "name", "size"],
-        "type": "object"
-      }
-    },
     "sha256:28ae06b3a0ce2102b446ce2709f4f5e81c1d6acbaa54da63b34e5b13690510c5": {
       "name": "pool_service.api.LeaseOut",
       "pydantic": {
@@ -415,14 +413,35 @@
         "type": "object"
       }
     },
+    "sha256:2eb0f14967a696d11b110ffde62305ec9c89dd2a04637f43c0444f96f677b559": {
+      "name": "pool_service.openapi_app:app/components/schemas/PoolIn",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {"name": {"type": "string"}, "pool_id": {"type": "string"}, "size": {"type": "integer"}},
+        "required": ["pool_id", "name", "size"],
+        "type": "object"
+      }
+    },
     "sha256:3b2e940795b9bb3f9bd276028b4d7d0d707f5aa0d0afbe186442ebfc6783e119": {
       "dataclass": "Remediation",
       "fields": {"action": "str", "cause": "str", "job_id": "str"},
       "name": "pool_service.triage.Remediation",
       "required": ["action", "cause", "job_id"]
     },
-    "sha256:3de2fbae3e05e45bff1db5fc3502822aa74d3527e14559385d33d66e48c2d262": {
-      "name": "openapi.json/components/schemas/PoolOut",
+    "sha256:643bf287b6ecaa257a13ea622c08c49516c331577ad734287aa24c0ea30f52da": {
+      "name": "pool_service.openapi_app:app/components/schemas/HTTPValidationError",
+      "schema": {
+        "properties": {
+          "detail": {
+            "items": {"$ref": "sha256:779198fc6c44897787adaf5beb8e8f0b846b51bf2291fa6a71beeb28a4b0765d"},
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "sha256:6623b8cfd66cefd2f170116b0533c77f6333063b9d00177902acb2196bf8a0c3": {
+      "name": "pool_service.openapi_app:app/components/schemas/PoolOut",
       "schema": {
         "additionalProperties": false,
         "properties": {
@@ -435,15 +454,17 @@
         "type": "object"
       }
     },
-    "sha256:4ad613b24ed74357222884bb0037c3462e299567693b9d920de0cbb456a8431c": {
-      "name": "openapi.json/components/schemas/HTTPValidationError",
+    "sha256:779198fc6c44897787adaf5beb8e8f0b846b51bf2291fa6a71beeb28a4b0765d": {
+      "name": "pool_service.openapi_app:app/components/schemas/ValidationError",
       "schema": {
         "properties": {
-          "detail": {
-            "items": {"$ref": "sha256:e0eeed634617bceabff74b282b3ecef23f6e4d3dbdce1b7648bb470dc646aa31"},
-            "type": "array"
-          }
+          "ctx": {"type": "object"},
+          "input": {},
+          "loc": {"items": {"anyOf": [{"type": "string"}, {"type": "integer"}]}, "type": "array"},
+          "msg": {"type": "string"},
+          "type": {"type": "string"}
         },
+        "required": ["loc", "msg", "type"],
         "type": "object"
       }
     },
@@ -478,6 +499,20 @@
         "type": "object"
       }
     },
+    "sha256:9f32da5b7e763ceae417eb94a7ed2f9357e3a0702256c8b03408c66b6700f948": {
+      "name": "pool_service.openapi_app:app/components/schemas/LeaseOut",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "holder": {"type": "string"},
+          "lease_id": {"type": "integer"},
+          "pool_id": {"type": "string"},
+          "slots": {"type": "integer"}
+        },
+        "required": ["lease_id", "pool_id", "holder", "slots"],
+        "type": "object"
+      }
+    },
     "sha256:adfa941bdf7dcbb111141c2423fe7c7896c9cb7bf8b1e5bad03f1984238f776c": {
       "dataclass": "Approval",
       "fields": {
@@ -491,22 +526,8 @@
       "name": "pool_service.service.Approval",
       "required": ["approved_by", "new_size", "pool_id", "proposal_id", "proposed_by", "state"]
     },
-    "sha256:c620176fc605fa0f3097a091f837c210f8630e8465a986074287224d76fe42a9": {
-      "name": "openapi.json/components/schemas/LeaseOut",
-      "schema": {
-        "additionalProperties": false,
-        "properties": {
-          "holder": {"type": "string"},
-          "lease_id": {"type": "integer"},
-          "pool_id": {"type": "string"},
-          "slots": {"type": "integer"}
-        },
-        "required": ["lease_id", "pool_id", "holder", "slots"],
-        "type": "object"
-      }
-    },
-    "sha256:ce9e7936e4fbbaff82abfa8e0ad4ea0273eef9a2e3103dba2ed6c48401d7346c": {
-      "name": "openapi.json/components/schemas/LeaseIn",
+    "sha256:c1c073c9de6e8adda1bc867043de580e94a4fbf9b14927ed3cd357f908114b98": {
+      "name": "pool_service.openapi_app:app/components/schemas/LeaseIn",
       "schema": {
         "additionalProperties": false,
         "properties": {"holder": {"minLength": 1, "type": "string"}, "slots": {"type": "integer"}},
@@ -525,20 +546,6 @@
           "size": {"type": "integer"}
         },
         "required": ["pool_id", "name", "size", "leased"],
-        "type": "object"
-      }
-    },
-    "sha256:e0eeed634617bceabff74b282b3ecef23f6e4d3dbdce1b7648bb470dc646aa31": {
-      "name": "openapi.json/components/schemas/ValidationError",
-      "schema": {
-        "properties": {
-          "ctx": {"type": "object"},
-          "input": {},
-          "loc": {"items": {"anyOf": [{"type": "string"}, {"type": "integer"}]}, "type": "array"},
-          "msg": {"type": "string"},
-          "type": {"type": "string"}
-        },
-        "required": ["loc", "msg", "type"],
         "type": "object"
       }
     },

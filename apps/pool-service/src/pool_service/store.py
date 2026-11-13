@@ -24,10 +24,6 @@ def size(conn: sqlite3.Connection, pool_id: str) -> int | None:
     return None if row is None else int(row[0])
 
 
-def all_sizes(conn: sqlite3.Connection) -> dict[str, int]:
-    return {r[0]: int(r[1]) for r in conn.execute("SELECT id, size FROM pools")}
-
-
 def leased(conn: sqlite3.Connection, pool_id: str) -> int:
     return int(conn.execute("SELECT COALESCE(SUM(slots), 0) FROM leases WHERE pool_id = ?",
                             (pool_id,)).fetchone()[0])
