@@ -115,3 +115,39 @@ def _single_types(seen: dict[str, set[str | None]]) -> dict[str, str]:
         if only is not None:
             out[name] = only
     return out
+
+
+def _lit(node: ast.AST | None) -> str | None:
+    """The text of a string literal, else None."""
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _attr_writes(node: ast.AST) -> list[tuple[ast.expr, str | None, bool]]:
+    """The attribute writes one node makes, as (object, attribute name or None when computed, reflective):
+    `o.x = v` / `del o.x` / `for o.x in ...` (not reflective), and `setattr(o, "x", v)`, `delattr`,
+    `object.__setattr__(o, "x", v)`, `o.__setattr__("x", v)`, `o.__dict__["x"] = v` and
+    `o.__dict__.update(x=v)` / `.setdefault("x", v)` (reflective: they write past any class-level rule)."""
+    if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [(node.value, node.attr, False)]
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) \
+            and isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+        return [(node.value.value, _lit(node.slice), True)]
+    if not isinstance(node, ast.Call):
+        return []
+    f, args = node.func, node.args
+    if _dotted(f) in ("setattr", "delattr", "builtins.setattr", "builtins.delattr") and args:
+        return [(args[0], _lit(args[1]) if len(args) > 1 else None, True)]
+    if isinstance(f, ast.Attribute) and f.attr in ("__setattr__", "__delattr__"):
+        if len(args) >= (3 if f.attr == "__setattr__" else 2):          # object.__setattr__(o, "x", v)
+            return [(args[0], _lit(args[1]), True)]
+        return [(f.value, _lit(args[0]) if args else None, True)]       # o.__setattr__("x", v)
+    if isinstance(f, ast.Attribute) and f.attr in ("update", "setdefault", "__setitem__") \
+            and isinstance(f.value, ast.Attribute) and f.value.attr == "__dict__":
+        obj = f.value.value
+        if f.attr == "update":
+            names: list[str | None] = [k.arg for k in node.keywords]
+            if args or any(n is None for n in names):
+                names.append(None)                                      # update(mapping), update(**kw)
+            return [(obj, n, True) for n in names]
+        return [(obj, _lit(args[0]) if args else None, True)]
+    return []

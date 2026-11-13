@@ -268,7 +268,7 @@ def test_a_with_target_the_scan_cannot_type_stays_unresolved(tmp_path):
             with session() as repo:
                 repo.save(x)
         """)
-    assert "unresolved/unknown-receiver" in codes and "bypass" not in codes
+    assert "unresolved/inferred-path" in codes and "bypass" not in codes
 
 
 # --- S-4: builtin containers ---------------------------------------------------------------------------
@@ -325,7 +325,7 @@ def test_an_unknown_receiver_and_a_dict_subclass_stay_fail_closed(tmp_path):
             d.update(x)
             other.add(x)
         """, {"app/repo.py": BUILTIN_SINKS, "app/svc.py": svc}, doc)
-    assert codes.count("unresolved/unknown-receiver") == 2
+    assert codes.count("unresolved/inferred-path") == 2      # one finding per call site (round 23)
 
 
 # --- S-5: reflection -----------------------------------------------------------------------------------
@@ -339,7 +339,7 @@ def test_an_unknown_receiver_and_a_dict_subclass_stay_fail_closed(tmp_path):
     ("import sys\ndef f(x):\n    sys.modules['app.repo'].Repo().save(x)\n", "unresolved/reflection"),
     ("import sys\ndef f(x):\n    sys.modules.get('app.repo').Repo().save(x)\n", "unresolved/reflection"),
     ("import sys\ndef f(fake):\n    sys.modules['app.repo'] = fake\n", "unresolved/reflection"),
-    ("from app import repo\ndef f(x):\n    repo.__dict__['Repo']().save(x)\n", "unresolved/unknown-receiver"),
+    ("from app import repo\ndef f(x):\n    repo.__dict__['Repo']().save(x)\n", "unresolved/inferred-path"),
     ("from app.repo import Repo\ndef f(r: Repo, x):\n    type(r).__dict__['save'](r, x)\n", "forbidden/getattr-sink"),
     ("from app.repo import Repo\ndef f(r: Repo, x):\n    r.__class__.__dict__.get('save')(r, x)\n",
      "forbidden/getattr-sink"),

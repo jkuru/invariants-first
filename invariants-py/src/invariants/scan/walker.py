@@ -5,14 +5,23 @@ import ast
 
 from typing import Any, Callable
 
-from .astutil import _HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _locals, _params
+from .astutil import _HARMLESS_DUNDERS, _add_leaves, _docstrings, _dotted, _dunder, _fold_str, _lit, _locals, _params
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Module, _Site
 from .indexer import _Index
 from .inference import _Inference
 
+# calls that run code the scan cannot read or look a callable up from data (a pickle names its
+# functions by module and name): unresolved/reflection
+_RUNS_DATA = frozenset({"pickle.loads", "pickle.load", "pickle.Unpickler", "_pickle.loads", "_pickle.load",
+                        "_pickle.Unpickler", "shelve.open", "logging.config.fileConfig", "logging.config.listen",
+                        "runpy.run_path", "runpy.run_module", "importlib.util.spec_from_file_location",
+                        "importlib.machinery.SourceFileLoader"})
+# a dotted name in a string, looked up (`pydoc.locate("pkg.mod.f")`): a getattr of it
+_NAME_LOOKUP = frozenset({"pydoc.locate", "pkgutil.resolve_name"})
 # reflective builtins and helpers taken as a value (`g = getattr`): calls through the name hide a lookup
 _REFLECTIVE = frozenset({*(f"builtins.{n}" for n in ("getattr", "setattr", "delattr", *REFLECTION)),
-                         *DYNAMIC_IMPORT, "operator.attrgetter", "operator.methodcaller"})
+                         *DYNAMIC_IMPORT, "operator.attrgetter", "operator.methodcaller", *_RUNS_DATA,
+                         *_NAME_LOOKUP, "logging.config.dictConfig", "inspect.unwrap", "inspect.getattr_static"})
 
 
 class _Walker(_Inference):
@@ -85,11 +94,13 @@ class _Walker(_Inference):
         finally:
             self._shadow = shadow
 
-    def _unwrapped(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str:
+    def _unwrapped(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None, how: str = "") -> str:
         """The detail of a `x.__wrapped__` site: "x as written|the scanned function x is" (empty when the
-        scan cannot tell which function x is)."""
-        fq = self._resolve(node, local, me) if _dotted(node) else None
-        return f"{_dotted(node) or ''}|{fq if fq in self.idx.funcs else ''}"
+        scan cannot tell which function x is), and how the guard is lifted when it is not `.__wrapped__`
+        (`inspect.unwrap(x)`, `x.__closure__`, `x.__dict__["__wrapped__"]`)."""
+        fq = self._resolve(node, local, me) if node is not None and _dotted(node) else None
+        shown = (_dotted(node) or "") if node is not None else ""
+        return f"{shown}|{fq if fq in self.idx.funcs else ''}" + (f"|{how.format(shown or 'an object')}" if how else "")
 
     def _site(self, what: str, owner: str, node: ast.AST, detail: str = "") -> None:
         self.sites.append(_Site(what, owner, getattr(node, "lineno", 0), getattr(node, "col_offset", 0), detail))
@@ -111,19 +122,62 @@ class _Walker(_Inference):
         for x in xs:
             self._expr(x, owner, local, me)
 
-    def _ns_dict(self, x: ast.AST, local: set[str], me: tuple[str, str] | None) -> tuple[str, list[ast.AST]] | None:
-        """For `m.__dict__` on a scanned module or class m, or `type(obj).__dict__` /
-        `obj.__class__.__dict__`: the namespace it is, and the expressions inside still to walk (obj)."""
-        if not (isinstance(x, ast.Attribute) and x.attr == "__dict__"):
+    def _ns_dict(self, x: ast.AST, local: set[str],
+                 me: tuple[str, str] | None) -> tuple[str, str, list[ast.AST]] | None:
+        """For `x.__dict__` (or `f.__globals__`): what kind of namespace it is, its name, and the expressions
+        inside still to walk. "ns": a scanned module or class `m.__dict__`, a class reached through an
+        object (`type(obj).__dict__`, `obj.__class__.__dict__`, `C.__mro__[i].__dict__`, `C.__base__`) or a
+        scanned function's module (`f.__globals__`); "func": a scanned function's own `__dict__` (where
+        `__wrapped__` is); "foreign": a module outside the scan (`builtins.__dict__`); "globals": the
+        `__globals__` of a function the scan cannot name; "value": an object's instance `__dict__`."""
+        if not (isinstance(x, ast.Attribute) and x.attr in ("__dict__", "__globals__")):
             return None
         v = x.value
-        if isinstance(v, ast.Attribute) and v.attr == "__class__":
-            return "type(...)", [v.value]
+        fq = self._resolve(v, local, me) if _dotted(v) else None
+        if x.attr == "__globals__":
+            return ("ns", self.idx.funcs[fq].module, []) if fq in self.idx.funcs else ("globals", "?", [v])
+        if isinstance(v, ast.Attribute) and v.attr in ("__class__", "__base__"):
+            return "ns", "type(...)", [v.value]
+        if isinstance(v, ast.Subscript) and isinstance(v.value, ast.Attribute) \
+                and v.value.attr in ("__mro__", "__bases__"):
+            return "ns", "type(...)", [v.value.value, v.slice]
         if isinstance(v, ast.Call) and len(v.args) == 1 and _dotted(v.func) \
                 and self._resolve(v.func, local, me) == "builtins.type":
-            return "type(...)", [v.args[0]]
+            return "ns", "type(...)", [v.args[0]]
         ns = self._namespace(v, local, me)
-        return (ns, []) if ns else None
+        if ns:
+            return "ns", ns, []
+        if fq in self.idx.funcs:
+            return "func", fq, []
+        if fq is not None and self._outside(fq):
+            return "foreign", fq, []
+        return "value", "?", [] if _dotted(v) else [v]
+
+    def _outside(self, fq: str) -> bool:
+        """fq names a module or object outside the scanned code (builtins, the standard library, a package)."""
+        return not fq.startswith("self:") and fq.split(".")[0] not in {m.split(".")[0] for m in self.idx.modules} \
+            and self.idx.excluded_module(fq) is None
+
+    def _dict_use(self, kind: str, ns: str, x: ast.Attribute, owner: str, node: ast.AST, key: ast.AST | None,
+                  how: str, whole: bool, local: set[str], me: tuple[str, str] | None) -> None:
+        """A use of the namespace _ns_dict found: a lookup of key (whole: the dict itself, `.items()`, ...)."""
+        lit = None if whole else _lit(key)
+        if kind == "ns":
+            if whole:
+                self._site("reflection", owner, node, f"{ns}.{how}")
+            else:
+                self._lookup(owner, node, ns, key, how)
+        elif kind == "func":
+            if lit is None or lit == "__wrapped__":       # the dict holds the function a guard wraps
+                self._site("wrapped", owner, node,
+                           self._unwrapped(x.value, local, me, "{}.__dict__ reaches __wrapped__, which"))
+        elif kind == "foreign":
+            if lit is None or f"{ns}.{lit}" in _REFLECTIVE or f"{ns}.{lit}" == "builtins.hasattr":
+                self._site("reflection", owner, node, f"{ns}.{x.attr}")
+        elif kind == "globals":
+            self._site("reflection", owner, node, "__globals__")
+        elif lit is not None:                             # obj.__dict__["save"]: a getattr of that name
+            self._site("getattr", owner, node, f"?|{lit}")
 
     def _reflect(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> bool:
         """Namespace reflection on a scanned module or class: `m.__dict__` in any use,
@@ -136,15 +190,16 @@ class _Walker(_Inference):
                 self._exprs([node.left, *rest], owner, local, me)
                 return True
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) and \
-                (d := self._ns_dict(node.value, local, me)):
-            self._lookup(owner, node, d[0], node.slice, "__dict__[...]")
-            self._exprs([*d[1], node.slice], owner, local, me)
+                isinstance(node.value, ast.Attribute) and (d := self._ns_dict(node.value, local, me)):
+            self._dict_use(d[0], d[1], node.value, owner, node, node.slice, f"{node.value.attr}[...]", False,
+                           local, me)
+            self._exprs([*d[2], node.slice], owner, local, me)
             return True
         if isinstance(node, ast.Call):
             return self._reflect_call(node, owner, local, me)
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and (d := self._ns_dict(node, local, me)):
-            self._site("reflection", owner, node, f"{d[0]}.__dict__")      # vars(m) by another name
-            self._exprs(d[1], owner, local, me)
+            self._dict_use(d[0], d[1], node, owner, node, None, node.attr, True, local, me)  # vars(m) by another name
+            self._exprs(d[2], owner, local, me)
             return True
         return False
 
@@ -152,12 +207,14 @@ class _Walker(_Inference):
         """`m.__dict__.get(k)` (a lookup) or `.items()`, `.values()`, ... (reflection), the
         `__getattribute__` forms and `inspect.getmembers(m)`."""
         f, kw = node.func, [k.value for k in node.keywords]
-        if isinstance(f, ast.Attribute) and (d := self._ns_dict(f.value, local, me)):
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Attribute) \
+                and (d := self._ns_dict(f.value, local, me)):
             if f.attr == "get":
-                self._lookup(owner, node, d[0], node.args[0] if node.args else None, "__dict__.get(...)")
+                self._dict_use(d[0], d[1], f.value, owner, node, node.args[0] if node.args else None,
+                               f"{f.value.attr}.get(...)", False, local, me)
             else:                                                       # .items(), .values(), ...
-                self._site("reflection", owner, node, f"{d[0]}.__dict__.{f.attr}()")
-            self._exprs([*d[1], *node.args, *kw], owner, local, me)
+                self._dict_use(d[0], d[1], f.value, owner, node, None, f"{f.value.attr}.{f.attr}()", True, local, me)
+            self._exprs([*d[2], *node.args, *kw], owner, local, me)
             return True
         if isinstance(f, ast.Attribute) and f.attr == "__getattribute__" and self._getattribute(node, f, owner, local, me):
             return True
@@ -230,7 +287,16 @@ class _Walker(_Inference):
         value, sys.modules, or a reference into an excluded module."""
         if isinstance(node, ast.Attribute) and node.attr == "__wrapped__":
             self._site("wrapped", owner, node, self._unwrapped(node.value, local, me))
-        elif isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS:
+        elif isinstance(node, ast.Attribute) and node.attr == "__closure__":     # its cells hold what it wraps
+            self._site("wrapped", owner, node,
+                       self._unwrapped(node.value, local, me, "{}.__closure__ reaches the function it wraps, which"))
+        elif isinstance(node, ast.Attribute) and node.attr == "__mro__" and not (
+                _dotted(node.value) and (v := self._resolve(node.value, local, me)) and self._outside(v)):
+            self._site("reflection", owner, node, "__mro__")                     # C.__mro__: its classes as values
+        elif isinstance(node, ast.Name) and node.id == "__builtins__":
+            self._site("reflection", owner, node, "__builtins__")
+        if isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS \
+                and node.attr != "__wrapped__" and not (node.attr == "__call__" and id(node) in self._called):
             self._escapes(node.value, owner, local, me, node)                 # f.__call__, f.__get__,
         fq = self._resolve(node, local, me) if _dotted(node) else None
         called = id(node) in self._called
@@ -249,7 +315,7 @@ class _Walker(_Inference):
         """`x.m = ...`, `x.m += ...`, `del x.m`, `for x.m in ...`: a scanned name x.m is patched ("patch"); on
         an instance whose class the scan knows, the methods x.m may be are; on a receiver the scan cannot
         type, with m the name of a scanned function, it may be one ("attrpatch")."""
-        fq = self._resolve(node, local, me)
+        fq = self._resolve(node, local, me, raw=True)                # what the assignment replaces
         if fq:
             self._site("patch", owner, node, fq)
             return
@@ -311,6 +377,22 @@ class _Walker(_Inference):
         if fq in DYNAMIC_IMPORT:
             self._site("dynimport", owner, node, fq)
             return
+        if fq in _RUNS_DATA:
+            self._site("reflection", owner, node, fq)
+            return
+        if fq in _NAME_LOOKUP:
+            self._name_lookup(node, fq, owner)
+            return
+        if fq == "logging.config.dictConfig":
+            self._dict_config(node, owner, local, me)
+            return
+        if fq == "inspect.unwrap":
+            self._site("wrapped", owner, node, self._unwrapped(node.args[0] if node.args else None, local, me,
+                                                               "inspect.unwrap({})"))
+            return
+        if fq == "inspect.getattr_static" and node.args:
+            self._attr_builtin(node, "builtins.getattr", owner, local, me)
+            return
         if fq and fq.startswith("sys.modules."):                   # sys.modules.get(name).Repo
             self._site("reflection", owner, node, fq)
             return
@@ -347,9 +429,13 @@ class _Walker(_Inference):
         lit = name.value if isinstance(name, ast.Constant) and isinstance(name.value, str) else None
         obj = self._resolve(node.args[0], local, me)
         self._site(fq.split(".")[1], owner, node, f"{obj or '?'}|{lit if lit is not None else ''}")
+        if lit is not None and obj and f"{obj}.{lit}" in _REFLECTIVE:       # getattr(builtins, "getattr")
+            self._site("reflection", owner, node, f"{lit} looked up by name")
         if lit is not None and obj and fq == "builtins.getattr":     # a literal name is an edge
             if obj in self.idx.funcs and lit == "__call__":          # getattr(f, "__call__") is f
                 self.edges.append(_Edge(owner, obj, node.lineno, node.col_offset, False))
+                if id(node) in self._called:                         # and called here: f is not a value
+                    self._called.add(id(node.args[0]))
                 return
             if obj in self.idx.funcs and _dunder(lit):              # __get__, __func__, ...: f as a value
                 self._site("ref", owner, node, obj)
@@ -366,6 +452,41 @@ class _Walker(_Inference):
             if not hits and container is None:
                 for m in sorted(self.idx.methods_by_name.get(lit, ())):
                     self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True, via_getattr=True))
+
+    def _name_lookup(self, node: ast.Call, fq: str, owner: str) -> None:
+        """pydoc.locate("pkg.mod.f"), pkgutil.resolve_name("pkg.mod:f"): a getattr of the name the string
+        ends in, on what the rest names (an edge when it is a scanned function); a computed string is
+        reflection."""
+        lit = _lit(node.args[0]) if node.args else None
+        if lit is None:
+            self._site("reflection", owner, node, fq)
+            return
+        hit = self.idx.canon(lit.replace(":", "."))
+        obj, _, name = hit.rpartition(".")
+        self._site("getattr", owner, node, f"{obj or '?'}|{name}")
+        if hit in self.idx.funcs:
+            self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False, via_getattr=True))
+
+    def _dict_config(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        """logging.config.dictConfig(config): it imports and calls the dotted names its strings give ("()"
+        factories, "class" handlers, "ext://" objects). A config the scan can read (a literal, or a
+        module-level name bound once to one) calls each scanned function or class it names: an edge; any
+        other config is reflection."""
+        texts = self._config_strings(node.args[0], local, me, 0) if node.args else None
+        if texts is None:
+            self._site("reflection", owner, node, "logging.config.dictConfig")
+            return
+        for t in texts:
+            t = (t[6:] if t.startswith("ext://") else t).replace(":", ".")
+            if not t or not all(p.isidentifier() for p in t.split(".")):
+                continue
+            hit = self.idx.canon(t)
+            target = hit if hit in self.idx.funcs else \
+                self.idx.method(hit, "__init__") if hit in self.idx.classes else None
+            if target:
+                self.edges.append(_Edge(owner, target, node.lineno, node.col_offset, False))
+            elif ex := self.idx.excluded_module(hit):
+                self._site("excluded", owner, node, f"{hit}|{ex}|call")
 
     def _attr_lookup(self, node: ast.Call, fq: str, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         """operator.attrgetter/methodcaller(...): a getattr site with every literal name (none: computed)."""
