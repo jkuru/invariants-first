@@ -1,15 +1,18 @@
 """What verify() and standing() check beyond the registry itself: chokepoint prose, ablation results,
-and whether a guard wraps a target."""
+whether a guard wraps a target, the targets and mediation of a rule, and WRAPPED (every guarded
+callable in the process, which verify reads)."""
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Mapping
+import threading
+import weakref
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping
 
-from ..model import Rule
+from ..model import GUARD_POINTS, Rule
 from ..resolve import resolve
 
 if TYPE_CHECKING:
-    from . import Registry
+    from . import Registry, _View
 
 
 def _edge_problem(rule: Rule, w: Any) -> str | None:
@@ -105,3 +108,102 @@ def _wraps(target: Any, w: Any) -> bool:
         obj = getattr(obj, "__func__", None) or getattr(obj, "__wrapped__", None)
         seen += 1
     return False
+
+
+def _scope(view: _View) -> set[str]:
+    """Top-level packages of one generation's targets, edge targets and python contracts."""
+    out: set[str] = set()
+    keys: list[Any] = list(view.targets)
+    for rule in view.rules.values():
+        keys.append(rule.target_key)
+        keys.extend(e.get("target") for e in rule.enforcers)
+    for key in keys:
+        if isinstance(key, str) and key.startswith("py:"):
+            out.add(key[3:].split(".")[0])
+    for c in view.contracts.values():
+        if isinstance(c, dict) and c.get("type") == "python" and isinstance(c.get("ref"), str):
+            out.add(c["ref"].split(":")[0].split(".")[0])
+    return out
+
+
+def _target_problems(rule: Rule) -> list[str]:
+    """Why a rule's target or edge targets do not carry its guard (verify's first check)."""
+    problems: list[str] = []
+    if rule.status == "retired" or rule.target is None:
+        return problems
+    points = {e["point"] for e in rule.enforcers} & GUARD_POINTS
+    if rule.policy or points:
+        keys = getattr(rule.target, "__inv_rules__", ())
+        kind = getattr(rule.target, "__inv_kind__", "")
+        if rule.id not in keys and rule.target_key not in keys:
+            problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
+        elif not rule.policy and kind != "guard":
+            problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
+                            f"@inv.guard: its decorator/middleware enforcers are never evaluated")
+        elif not rule.policy and points - set(getattr(rule.target, "__inv_points__", ("decorator",))):
+            missing = sorted(points - set(getattr(rule.target, "__inv_points__", ("decorator",))))
+            problems.append(f"{rule.id}: the guard on {rule.target_key} does not evaluate point "
+                            f"{', '.join(missing)}")
+        elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
+            problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
+        elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
+            problems.append(f"{rule.id}: decorator schema differs from model_policy.schema")
+    for e in rule.enforcers:
+        if e["point"] == "edge":
+            t = resolve(e["target"])
+            if getattr(t, "__inv_kind__", "") != "edge" or rule.id not in getattr(t, "__inv_rules__", ()):
+                problems.append(f"{rule.id}: edge target {e['target']} is not wrapped by @inv.edge({rule.id!r})")
+    return problems
+
+
+def _mediation_problems(rule: Rule) -> list[str]:
+    """Why a rule's mediation keeps it from held: no chokepoint, residual paths, live back doors."""
+    why: list[str] = []
+    med = rule.raw.get("mediation") or {}
+    if not med.get("chokepoint"):
+        why.append("mediation names no chokepoint")
+    else:
+        why.extend(_chokepoint_problems(rule, str(med["chokepoint"])))
+    residual = med.get("residual_paths") or []
+    if residual:
+        why.append(f"residual paths: {residual}")
+    allow = med.get("allow") or []
+    live = [a for a in ([allow] if isinstance(allow, str) else allow)
+            if isinstance(a, str) and a not in residual and _resolves(a)]
+    if live:
+        why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
+                   f"(remove them, or declare each in mediation.residual_paths)")
+    return why
+
+
+class _Wrapped(weakref.WeakSet[Callable[..., Any]]):
+    """A WeakSet whose adds and iteration take one lock: verify() iterating it while another thread
+    decorates a function would otherwise raise "Set changed size during iteration" (Python < 3.13)."""
+
+    def __init__(self, data: Iterable[Callable[..., Any]] | None = None) -> None:
+        self._lock = threading.Lock()
+        super().__init__(data)
+
+    def add(self, item: Callable[..., Any]) -> None:
+        with self._lock:
+            super().add(item)
+
+    def discard(self, item: Callable[..., Any]) -> None:
+        with self._lock:
+            super().discard(item)
+
+    def snapshot(self) -> list[Callable[..., Any]]:
+        """The live members now, copied under the lock."""
+        with self._lock:
+            return list(super().__iter__())
+
+    def __iter__(self) -> Iterator[Callable[..., Any]]:
+        return iter(self.snapshot())
+
+    def _after_fork_in_child(self) -> None:
+        self._lock = threading.Lock()
+
+
+# Every guarded callable in the process, for verify. Weak, so guards defined in a
+# function (tests) drop out once they are garbage.
+WRAPPED: _Wrapped = _Wrapped()

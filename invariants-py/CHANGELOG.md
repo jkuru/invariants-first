@@ -10,6 +10,21 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Refactor: registry and mcp split
+
+`invariants/registry/__init__.py` keeps the Registry class and the state its fork reset owns
+(`_GLOBAL_LOCK`, `OBSERVERS`, `_REGISTRIES`, with `observe` and `ablated_everywhere`, which take that
+lock); the rest moved to `events.py` (EventSink, ErrorSpike, the hook types, the sink and reply-size
+settings, the log), `ablation.py` (INV_ABLATE, `GLOBAL_ABLATED`, the context-local ablations),
+`context.py` (`current`, `using`, `isolated`, `ablated`, `capture`, `configure`, `is_ablated`, `verify`,
+`standing`) and `coverage.py` (verify's target and mediation checks, `WRAPPED`). `invariants/mcp.py`
+is now the package `invariants/mcp/`: `confine.py` (argument types and confinement to `--root`),
+`tools.py` (scan, check, status, explain), `propose.py` (propose_rules) and `protocol.py` (the tool
+table, Server, serve, main); `python -m invariants.mcp` runs `mcp/__main__.py`. Both packages
+re-export every name the modules had (not the standard-library modules they imported), and classes
+keep their `__module__`. No behaviour change. A test that patches `under_pytest` for env ablation
+patches `invariants.registry.ablation.under_pytest` now.
+
 ### Fix round 21 (lock)
 
 Regression tests: `tests/test_fix_round21_lock.py`; each failed on the code before this round, except
