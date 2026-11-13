@@ -90,8 +90,10 @@ what each rule's meaning depends on, entry by entry:
   pin from the roots and excludes it is about to scan with, so a `[tool.invariants.scan]` edit or
   an `inv check --exclude` shows up as a lock change. An added exclude or a removed root is
   **WEAKENED** (the scan reads less code); a removed exclude or an added root is a change only. A
-  lock taken before the scan was pinned is compared with the default excludes, so the first pin is
-  not a way to slip one in. To scan with an extra `--root` or `--exclude`, pin it with
+  lock taken before the scan was pinned is compared with what that configuration scanned by
+  default: `inv lock` reads `[tool.invariants.scan]` (else src/ and the rule file's directory) from
+  the working tree, and `inv check --base REF` reads them from `REF`. So the first pin is not a way
+  to slip in an exclude or narrow the roots in the same change. To scan with an extra `--root` or `--exclude`, pin it with
   `inv lock --root DIR --exclude GLOB`; prefer `[tool.invariants.scan]` in `pyproject.toml`.
 
 `types` maps each annotated parameter, and `return`, to its resolved type (`typing.get_type_hints`).
@@ -160,14 +162,25 @@ input. That covers:
   widened or removed;
 - a `$ref` removed (the value is now `{}`, Any) or pointed at a schema with a different body, and a
   `$defs` entry removed while the old schema referred to it;
-- `additionalProperties` relaxed: `false` to absent or `true`, or absent to `true` (or to a
-  schema), so extra properties now pass.
+- `additionalProperties` relaxed: `false` to anything else (absent, `true`, `{}` or a schema), a
+  schema to absent or `true`, or absent to `true` (or to a schema), so extra properties now pass. A
+  schema changed into another schema is judged inside it, like any other subschema;
+- `items`, `prefixItems`, `contains`, `allOf`, `not`, `propertyNames`, `dependentRequired`,
+  `dependentSchemas`, `if`, `then`, `else`, `properties` or `unevaluatedProperties` removed (adding
+  one is a tightening; a constraint removed inside `items` is judged where it was), a
+  `dependentRequired` entry dropped, and any change inside `not` or `if`, where a tighter
+  subschema can let more input through;
+- an OpenAPI operation removed while a rule names it (`subject.operation`). One that no rule names
+  is reported as a change. An operation renamed with the same method and path (FastAPI derives the
+  operationId from the function name) is reported as renamed and compared field by field with the
+  old one, so a rename cannot hide a looser body.
 
 Adding a constraint or tightening one is not a weakening. These count as tightenings, judged with
 the neighbouring keywords:
 
 - a bound replaced by its exclusive or inclusive twin at least as tight: `le=10` to `lt=10`, and
-  on an integer `ge=1` to `gt=0` or `le=9` to `lt=10` (for an integer `gt=k` is `ge=k+1`);
+  on an integer `ge=1` to `gt=0` or `le=9` to `lt=10` (for an integer `gt=k` is `ge=k+1`, when
+  both bounds are integral: `ge=1.5` to `gt=0.6` lets 1 through and is **WEAKENED**);
 - an `enum` replaced by a `const` that was one of its values (`Literal["a", "b"]` to `Literal["a"]`);
 - a `type` narrowed: `number` to `integer`, or a type dropped from a list;
 - a `pattern` given `^` or `$` anchors it did not have, with the rest unchanged (a pattern with a
@@ -183,9 +196,12 @@ only when `--allow-weakening` is given or `INV_ALLOW_WEAKENING=1` is set, which 
 example from a pull-request label), not the change's author. It fails closed: a `REF` that does not
 exist, a checkout that is not a git repository, and a lock at `REF` that cannot be read or compared
 (damaged, or a lock version other than this invariants writes) all fail. A reviewer may accept the
-last kind with the same switch; a missing ref cannot be accepted. Only a `REF` with no
-`invariants.lock` at all passes, reported as a first adoption, since the whole lock is then new and
-reviewed in that change.
+last kind with the same switch; a missing ref cannot be accepted. The lock is looked up at its own
+path in the repository: a lock that is a symlink (or sits under a symlinked directory) fails and
+cannot be accepted, and when `REF` has an `invariants.lock` that the change moved or removed, the
+check fails too (a reviewer may accept that). Only a `REF` with no `invariants.lock` at that path,
+and none the change moved away, passes, reported as a first adoption, since the whole lock is then
+new and reviewed in that change.
 
 Any change to a field that changes what `bad` reads, or how a check runs, is a possible
 weakening: `bind`, an enforcer's `view`, `artifact`, `conformance_test` or `generated`, a

@@ -1863,10 +1863,43 @@ def _rule_changes(rid: str, a: dict[str, Any], b: dict[str, Any], typer: Typer |
     return out
 
 
+def _operation_renames(a: Any, b: Any) -> dict[str, str]:
+    """OpenAPI operations whose operationId changed while their method and path did not: old -> new.
+    FastAPI derives an operationId from the function name, so renaming the function renames it."""
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return {}
+
+    def route(op: Any) -> tuple[str, str] | None:
+        return (str(op.get("method")).upper(), str(op.get("path"))) if isinstance(op, dict) else None
+    added = {route(b[k]): k for k in sorted(set(b) - set(a)) if route(b[k]) is not None}
+    return {k: added[r] for k in sorted(set(a) - set(b)) if (r := route(a[k])) is not None and r in added}
+
+
+def _named_operations(contract: str, rules: dict[str, Any] | None) -> dict[str, list[str]]:
+    """operationId -> the rules of the stored lock whose subject names it on this contract."""
+    out: dict[str, list[str]] = {}
+    for rid, e in sorted((rules or {}).items()):
+        subj = ((e.get("semantic") or {}).get("subject") or {}) if isinstance(e, dict) else {}
+        if subj.get("contract") == contract and isinstance(subj.get("operation"), str):
+            out.setdefault(subj["operation"], []).append(rid)
+    return out
+
+
 def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
-                   refs: list[tuple[str, str, str, str]]) -> list[Change]:
-    """A target, provider or contract entry, field by field, judged by FIELD_POLICY[kind.field]."""
+                   refs: list[tuple[str, str, str, str]], rules: dict[str, Any] | None = None) -> list[Change]:
+    """A target, provider or contract entry, field by field, judged by FIELD_POLICY[kind.field]. An
+    OpenAPI operation renamed with the same method and path is compared with its old self."""
     out: list[Change] = []
+    renames = _operation_renames(a.get("operations"), b.get("operations")) if kind == "contract" else {}
+    if renames:
+        ops = dict(a["operations"])
+        for old_id, new_id in renames.items():
+            ops[new_id] = ops.pop(old_id)
+            out.append(Change(where, f"operation {old_id} renamed to {new_id}", old_id, new_id,
+                              note=f"same method and path ({ops[new_id].get('method')} {ops[new_id].get('path')}); "
+                                   f"compared with the old operation"))
+        a = {**a, "operations": ops}
+    named = _named_operations(where.partition(" ")[2], rules) if kind == "contract" else {}
     for f in sorted(set(a) | set(b)):
         x, y = a.get(f), b.get(f)
         if same(x, y):
@@ -1876,6 +1909,13 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
             found: list[tuple[str, str, str]] = []
             for p, xv, yv in _json_paths(x, y, f, found):
                 why = constraint_weakening(p, xv, yv, a, b) if kind == "contract" else None
+                op = p.split(".")
+                if f == "operations" and len(op) == 2 and yv is None:
+                    users = named.get(op[1])
+                    why = (f"operation removed while rule {', '.join(users)} names it" if users else None)
+                    out.append(Change(where, f"{p} removed", xv, None, why is not None,
+                                      why or "operation removed; no rule names it"))
+                    continue
                 out.append(Change(where, p, xv, yv, why is not None, why or ""))
             refs += [(f"{where} {p}", p, da, db) for p, da, db in found]
             continue
@@ -1900,6 +1940,13 @@ EXACT_CONSTRAINTS = frozenset({"pattern", "format", "multipleOf", "const", "type
                                "additionalProperties", "decimal_places", "max_digits"})
 JUDGED_SCHEMAS = frozenset({"pydantic", "jsonschema", "schema", "operations"})
 _NAME_SEGMENTS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+# keywords that hold subschemas or field lists: removing one lets more input pass, adding one only
+# tightens. What changes inside them is judged where it changes (_json_paths recurses into a dict).
+STRUCTURAL = frozenset({"items", "prefixItems", "additionalItems", "unevaluatedItems", "contains", "allOf",
+                        "not", "propertyNames", "dependentRequired", "dependentSchemas", "if", "then", "else",
+                        "properties", "patternProperties", "unevaluatedProperties"})
+# inside these a tighter subschema can accept more input (not) or the direction is unknown (if)
+_FLIPPED = frozenset({"not", "if"})
 # a bound may be replaced by its exclusive or inclusive twin: removed -> (twin, is an upper bound)
 _TWIN_BOUNDS = {"minimum": ("exclusiveMinimum", False), "exclusiveMinimum": ("minimum", False),
                 "maximum": ("exclusiveMaximum", True), "exclusiveMaximum": ("maximum", True)}
@@ -1940,7 +1987,9 @@ def _twin_tightens(key: str, old: Any, node: Any) -> bool:
         return False
     if key.startswith("exclusive"):                    # x > old became x >= new (or x < old, x <= new)
         return new < old if upper else new > old
-    slack = 1 if node.get("type") == "integer" else 0  # an integer x > k is x >= k + 1
+    # an integer x > k is x >= k + 1, but only for an integral k: x >= 1.5 is x >= 2, not x > 0.5
+    integral = all(isinstance(v, int) or (isinstance(v, float) and v.is_integer()) for v in (old, new))
+    slack = 1 if node.get("type") == "integer" and integral else 0
     return new <= old + slack if upper else new >= old - slack
 
 
@@ -1984,6 +2033,16 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
         return None
     key, parent = segs[-1], segs[-2]
     new_node = _node(new_root, segs[:-1])
+    names = [x.partition("[")[0] for x in segs]
+    flipped = next((n for i, n in enumerate(names[1:-1], 1) if n in _FLIPPED and names[i - 1] not in _NAME_SEGMENTS),
+                   None)
+    if flipped is not None:
+        return f"changed inside {flipped}: there a tighter schema can accept more input"
+    if parent in ("dependentRequired", "dependentSchemas"):
+        if old is None or suffix == "added":
+            return None                                          # a new dependency only tightens
+        return f"{parent}.{key} {'removed' if new is None or suffix == 'removed' else 'changed'}: " \
+               f"the schema may accept more input"
     if parent in _NAME_SEGMENTS:                                 # a field (or model) entry itself
         if new is None and parent == "properties":
             return f"field {key} removed: its constraints no longer apply"
@@ -2011,11 +2070,11 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
     if key == "required":
         return _required_weakening(suffix, old, new)
     if key == "additionalProperties":
-        if old is True or new is False or same(old, new) or (isinstance(old, dict) and isinstance(new, dict)):
+        # false (closed) to anything else, or a schema (or pydantic's absent: ignored) opened up. A
+        # schema to a schema is compared inside it (_json_paths recurses), so here it is conservative.
+        if old is True or new is False or same(old, new):
             return None
-        if old is None or new is None or new is True:
-            return f"additionalProperties {_short(old)} -> {_short(new)}: extra properties now pass"
-        return None
+        return f"additionalProperties {_short(old)} -> {_short(new)}: extra properties now pass"
     if key == "type":
         return _type_weakening(suffix, old, new)
     if key == "pattern" and _pattern_narrower(old, new):
@@ -2027,6 +2086,15 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
             return None
         return f"{key} {'removed' if new is None else 'changed'}: the schema may accept more input"
     if key in ("anyOf", "oneOf") and old is not None:
+        return f"{key} changed: the schema may accept more input"
+    if key in STRUCTURAL and old is not None:
+        if new is None:
+            return f"{key} removed: what it checked no longer applies"
+        if key == "allOf" and isinstance(old, list) and isinstance(new, list) \
+                and all(any(same(x, y) for y in new) for x in old):
+            return None                                          # more schemas, all of which must hold
+        if key == "prefixItems" and isinstance(old, list) and isinstance(new, list) and same(old, new[:len(old)]):
+            return None
         return f"{key} changed: the schema may accept more input"
     return None
 
@@ -2123,9 +2191,12 @@ def _schema_changes(refs: list[tuple[str, str, str, str]], old_tab: dict[str, An
 
 
 def changes(old: dict[str, Any], new: dict[str, Any],
-            types: dict[str, Typer | None] | None = None) -> list[Change]:
+            types: dict[str, Typer | None] | None = None,
+            scan_default: dict[str, Any] | None = None) -> list[Change]:
     """Every semantic difference between a stored version-3 lock and a fresh one; empty when fresh.
-    types (clause_types of the loaded rule file) lets the `bad` comparison use declared types."""
+    types (clause_types of the loaded rule file) lets the `bad` comparison use declared types.
+    scan_default (a scan_pin) is what the old lock scanned when it pinned no scan: the roots and
+    excludes the base's configuration gave by default."""
     out: list[Change] = []
     for k in ("lock_version", "spec"):
         if not same(old.get(k), new.get(k)):
@@ -2150,9 +2221,9 @@ def changes(old: dict[str, Any], new: dict[str, Any],
             elif name not in sa:
                 out.append(Change(where, "added"))
             else:
-                out += _entry_changes(where, kind, sa[name], sb[name], refs)
+                out += _entry_changes(where, kind, sa[name], sb[name], refs, ra)
     out += _schema_changes(refs, old.get("schemas") or {}, new.get("schemas") or {})
-    out += _scan_changes(old.get("scan"), new.get("scan"))
+    out += _scan_changes(old.get("scan"), new.get("scan"), scan_default)
     return out
 
 
@@ -2166,14 +2237,15 @@ def _contract_users(name: str, rules: dict[str, Any]) -> str:
     return "its pinned schema or constraints are no longer checked"
 
 
-def _scan_changes(old: Any, new: Any) -> list[Change]:
+def _scan_changes(old: Any, new: Any, default: dict[str, Any] | None = None) -> list[Change]:
     """The pinned scan roots and excludes. An added exclude or a removed root scans less: WEAKENED.
-    A lock pinned before the scan was pinned is compared with the default excludes."""
+    A lock pinned before the scan was pinned is compared with `default`, what the old configuration
+    scanned by default; without one, with the new roots and the default excludes."""
     if same(old, new) or new is None:
         return []
     first = old is None
     if first:
-        old = {"roots": new["roots"], "exclude": list(DEFAULT_SCAN_EXCLUDE)}
+        old = default or {"roots": new["roots"], "exclude": list(DEFAULT_SCAN_EXCLUDE)}
     out: list[Change] = []
     for key, weak_when, why in (("exclude", "added", "files matching it are no longer scanned for back doors"),
                                 ("roots", "removed", "the scan no longer reads this source root")):
