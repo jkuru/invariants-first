@@ -134,6 +134,8 @@ def _load_enforcer(rule: Rule, reg: Registry, base_dir: pathlib.Path, names: set
                         f"value against that call's closed schema, and a rule without one has no schema")
     if ("target" in enf) != (point == "edge"):
         raise LoadError(f"{where}: exactly the edge enforcers name their own target")
+    if "target" in enf and not (isinstance(enf["target"], str) and enf["target"].startswith("py:")):
+        raise LoadError(f"{where}: target must be a py: name (py:package.module.function)")
     if view is not None:
         if not isinstance(view, dict) or point not in VIEW_POINTS:
             raise LoadError(f"{where}: view must be a name map")

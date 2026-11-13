@@ -180,7 +180,7 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     if ctype in PY_CONTRACTS or (ctype in SCHEMA_CONTRACTS and ":" in ref):
         return _python_contract_pin(name, ref, entry, pins)
     f = base_dir / ref
-    if not f.is_file():
+    if not f.is_file():                                        # is_file() itself returns False on an OSError
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:
         entry["operations"] = _openapi_operations(name, f.name, _openapi_file(name, f), sorted(set(operations)), pins)

@@ -66,6 +66,10 @@ class EventSink(collections.deque[dict[str, Any]]):
             return list(self) == other
         return super().__eq__(other)
 
+    def __ne__(self, other: object) -> bool:     # deque's own != would compare a list as unequal
+        eq = self.__eq__(other)
+        return eq if eq is NotImplemented else not eq
+
     __hash__ = None
 
     def __reduce__(self) -> Any:            # the owning registry's lock is not part of the events

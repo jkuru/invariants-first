@@ -109,6 +109,10 @@ def _load_provider(name: str, p: Any) -> Provider:
         raise LoadError(f"provider {name}: concurrent must be true or false, got {p['concurrent']!r}")
     if not isinstance(p["args"], dict):
         raise LoadError(f"provider {name}: args must be a mapping")
+    for a, path in p["args"].items():
+        if not isinstance(path, str) or not path:
+            raise LoadError(f"provider {name}: argument {a!r} must be a path string (e.g. args.account), "
+                            f"not {type(path).__name__}")
     fn = resolve(p["from"])
     got = provider_names(fn)
     if name not in got:

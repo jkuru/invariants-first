@@ -154,7 +154,11 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
     if not ident:
         raise ToolError("explain needs an id: a rule id (R-1) or a finding id from scan (R-1:bypass:app/x.py:12)")
     rule_id = ident.split(":", 1)[0]
-    raw = _rule_doc(rule_file, rule_id)
+    from ..errors import LoadError
+    try:
+        raw = _rule_doc(rule_file, rule_id)
+    except LoadError as e:
+        raise ToolError(str(e)) from e
     if raw is None:
         raise ToolError(f"no rule {rule_id!r} in {_rel(str(rule_file), root)}")
     rule = _rule_summary(raw)

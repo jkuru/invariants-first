@@ -10,6 +10,17 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 22
+
+- **`reg.sink != [...]` agrees with `==`** (deque's own `!=` treated any list as unequal).
+- **Provider arguments are path strings whether or not a live rule uses the provider**, and an edge
+  enforcer's `target` must be a `py:` name even on a retired rule.
+- **`typing.NewType` is pinned as its supertype** (`UserId = NewType("UserId", int)` is an integer
+  schema with its bounds), so a NewType in a signature or contract no longer hides its type. A lock
+  that pins a NewType re-pins once on upgrade.
+- **`inv mcp` `explain` on a rule file that does not load returns a tool error** instead of an
+  internal error.
+
 ### Fix round 21 (follow-up)
 
 - **Malformed rule files are a `LoadError`, never a raw Python error:** a provider argument that is

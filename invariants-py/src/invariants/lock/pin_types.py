@@ -240,6 +240,9 @@ def _unalias(t: Any) -> Any:
         if _is_alias(t):
             t = t.__value__
             continue
+        if isinstance(t, typing.NewType):                      # UserId = NewType("UserId", int): an int
+            t = t.__supertype__
+            continue
         origin = typing.get_origin(t)
         if not _is_alias(origin):
             return t
