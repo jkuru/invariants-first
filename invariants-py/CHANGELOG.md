@@ -10,6 +10,42 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fix round 18: hook, MCP, replay, schema
+
+- **The pretool hook compares file names in any letter case.** On a case-insensitive filesystem
+  (macOS's default) `Invariants.lock`, `INVARIANTS.LOCK` and `PyProject.toml` open the protected
+  files, and an edit tool on them, or a shell command naming them (also as a glob), passed. Tool
+  paths, shell words and globs are now compared casefolded.
+- **It expands braces** (`invariants{,}.lock`, `pyproject{,}.toml`, `inv{a..z}riants.lock`; comma
+  and range forms) before matching; an expansion too large to list matches when it holds a stem of
+  a protected name.
+- **It decodes `$'...'` quoting** (`$'\x69nvariants.\x6cock'`), and in a directory that holds
+  `invariants.lock` (or below one) it blocks a write-capable command (`cp`, `mv`, `tee`, `dd`, `rm`,
+  `ln`, `install`, `rsync`, `sed -i`, ...) or a redirect whose target file name the shell computes
+  (`"$f"`, a backtick), as `printf -v f ...; cp x "$f"` did. A read-only command with `$`, and a
+  target whose file name is literal (`"$TMPDIR/out.txt"`), stay allowed.
+- **It matches `INV_ALLOW_WEAKENING` after shell unquoting**, so `env INV_ALLOW_WEAK''ENING=1`,
+  `export INV_ALLOW_WEAKENIN\G=1` and quoted `X=1 cmd` forms are blocked. The hook stays an early
+  warning; `inv check --base` in CI is the gate.
+- **`inv-mcp` keeps the roots pyproject.toml names inside `--root`.** `[tool.invariants.scan]
+  roots = ["../secret"]` made `scan` read outside the server's root and `check` import from it.
+  Those roots and `[tool.setuptools.packages.find] where` are now resolved and refused with a tool
+  error naming the setting when they lie outside `--root`.
+- **Behaviour change: `ReplayModel` compares the whole request.** It matched only the keys the trace
+  recorded, so a trace with no system prompt replayed under any system prompt, and the model and
+  params were never compared. A `RecordingModel` now records `model`, `max_tokens`, the params,
+  `system` (when set) and the messages, and a `ReplayModel` takes the same configuration as the
+  `AnthropicModel` it stands in for (`model_for` passes it) and compares every field; a system
+  prompt on one side only is a mismatch. `ignore=["model", ...]` leaves named fields out. Traces
+  written before this record no `model` or `max_tokens` and now mismatch: the three apps' traces
+  have them added (the requests otherwise unchanged and still produced by the apps' prompt code;
+  the replies kept; still marked hand-written).
+- **Schema weakenings the lock missed**: `patternProperties` added (or a pattern added to it) to a
+  schema whose `additionalProperties` or `unevaluatedProperties` is `false` or a schema; any change
+  inside `oneOf` (a tightened branch can accept more); `prefixItems` extended past its old length
+  over an `items` schema that checked those positions; and OpenAPI `nullable` (or `x-nullable`)
+  turned on.
+
 ### Fix round 17: ablation, MCP, providers
 
 - **`--inv-ablate` no longer counts state carried between re-runs as caught.** The re-runs keep

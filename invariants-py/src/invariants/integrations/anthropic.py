@@ -21,7 +21,12 @@ ReplayModel answers from a JSON trace and fails loudly, with a diff, when a requ
 the recorded one. RecordingModel wraps a real model and writes such a trace. A trace is
 
     {"fixture": "recorded" | "hand-written", "model": "...",
-     "calls": [{"request": {"system": "...", "messages": [...]}, "reply": "..."}]}
+     "calls": [{"request": {"model": "...", "max_tokens": 16000, "system": "...", "messages": [...]},
+                "reply": "..."}]}
+
+A request records everything the adapter sends (model, max_tokens, every param, system when set,
+the messages), and a replay compares all of it, unless ReplayModel(..., ignore=[...]) names fields
+to leave out.
 
 The `anthropic` package is imported only when an AnthropicModel without a client makes its first
 request; ReplayModel and RecordingModel over a stub need nothing beyond the library.
@@ -187,6 +192,11 @@ class AnthropicModel(ChatModel):
                 self._async_client = self._sdk().AsyncAnthropic()
             return self._async_client
 
+    def shape(self, request: dict[str, Any]) -> dict[str, Any]:
+        """The request as a trace records it: model, max_tokens, the params, system (when set) and
+        the messages, assistant turns as text."""
+        return _request_shape(self.model, self.max_tokens, self.params, request)
+
     def _kwargs(self, request: dict[str, Any], wire: list[Any]) -> dict[str, Any]:
         kw: dict[str, Any] = {"model": self.model, "max_tokens": self.max_tokens, "messages": list(wire),
                               **self.params}
@@ -212,18 +222,41 @@ def _dump(obj: Any) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True)
 
 
-def _matches(expected: dict[str, Any], request: dict[str, Any]) -> bool:
-    """The recorded request's keys (messages, and system when recorded) equal this request's."""
-    return all(request.get(k) == v for k, v in expected.items())
+def _request_shape(model: str, max_tokens: int, params: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """Everything the adapter sends but the wire form of assistant turns, as JSON would read it back."""
+    shape = {"model": model, "max_tokens": max_tokens, **params, **request}
+    out: dict[str, Any] = json.loads(json.dumps(shape, ensure_ascii=False, default=repr))
+    return out
+
+
+_ABSENT = object()
+
+
+def _matches(expected: dict[str, Any], request: dict[str, Any], ignore: frozenset[str]) -> bool:
+    """The whole request shape is equal: every field either side has (a system prompt recorded on one
+    side only is a mismatch), except the fields in ignore."""
+    keys = (set(expected) | set(request)) - ignore
+    return all(expected.get(k, _ABSENT) == request.get(k, _ABSENT) for k in keys)
 
 
 class ReplayModel(ChatModel):
-    """Replies from a trace file, matched on the request. A request no unused recorded call matches
-    raises ReplayMismatch with a diff against the next unused call. Thread-safe."""
+    """Replies from a trace file, matched on the whole request: messages, system (absent on one side
+    and present on the other is a mismatch), model, max_tokens and every other param, as the
+    AnthropicModel it stands in for would send them. So give it the configuration that model would
+    have (model_for does). A request no unused recorded call matches raises ReplayMismatch with a
+    diff against the next unused call. Thread-safe.
 
-    def __init__(self, path: str | os.PathLike[str], *, system: str | None = None,
-                 feedback_template: str = FEEDBACK_TEMPLATE) -> None:
+    ignore names request fields left out of the comparison (for example ignore=["model"] to replay a
+    trace under another model); nothing is ignored by default."""
+
+    def __init__(self, path: str | os.PathLike[str], *, system: str | None = None, model: str = DEFAULT_MODEL,
+                 max_tokens: int = 16000, ignore: Sequence[str] = (), feedback_template: str = FEEDBACK_TEMPLATE,
+                 **params: Any) -> None:
         super().__init__(system=system, feedback_template=feedback_template)
+        if isinstance(ignore, str) or not all(isinstance(k, str) for k in ignore):
+            raise TypeError("ignore is a list of request field names, such as ['model']")
+        self.ignore: frozenset[str] = frozenset(ignore)
+        self.max_tokens, self.params = max_tokens, params
         self.path = pathlib.Path(path)
         try:
             trace = json.loads(self.path.read_text(encoding="utf-8"))
@@ -238,7 +271,8 @@ class ReplayModel(ChatModel):
                     and isinstance(c["request"].get("messages"), list) and isinstance(c.get("reply"), str)):
                 raise ValueError(f"{self.path}: call {i} needs a request with messages and a string reply")
         self.fixture: str = trace["fixture"]
-        self.model: str | None = trace.get("model")
+        self.model: str = model
+        self.trace_model: str | None = trace.get("model")
         self.calls: list[dict[str, Any]] = trace["calls"]
         self.used: list[bool] = [False] * len(self.calls)
         self._lock = threading.Lock()
@@ -255,17 +289,18 @@ class ReplayModel(ChatModel):
             raise ReplayMismatch(f"{self.path}: {len(left)} recorded call(s) never requested: {left}")
 
     def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
+        request = _request_shape(self.model, self.max_tokens, self.params, request)
         with self._lock:
             unused = [i for i, u in enumerate(self.used) if not u]
             for i in unused:
-                if _matches(self.calls[i]["request"], request):
+                if _matches(self.calls[i]["request"], request, self.ignore):
                     self.used[i] = True
                     reply = self.calls[i]["reply"]
                     return reply, reply
         if not unused:
             raise ReplayMismatch(f"{self.path}: no recorded call left for this request:\n{_dump(request)}")
-        expected = self.calls[unused[0]]["request"]
-        shown = {k: request.get(k) for k in expected}
+        expected = {k: v for k, v in self.calls[unused[0]]["request"].items() if k not in self.ignore}
+        shown = {k: v for k, v in request.items() if k not in self.ignore}
         diff = "\n".join(difflib.unified_diff(_dump(expected).splitlines(), _dump(shown).splitlines(),
                                               f"recorded call {unused[0]}", "this request", lineterm=""))
         raise ReplayMismatch(f"{self.path}: no recorded call matches this request (re-record the trace if the "
@@ -293,12 +328,12 @@ class RecordingModel(ChatModel):
 
     def _send(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
         text, back = self.inner._send(request, wire)
-        self._record(request, text)
+        self._record(self.inner.shape(request), text)
         return text, back
 
     async def _asend(self, request: dict[str, Any], wire: list[Any]) -> tuple[str, Any]:
         text, back = await self.inner._asend(request, wire)
-        self._record(request, text)
+        self._record(self.inner.shape(request), text)
         return text, back
 
 
@@ -306,7 +341,9 @@ def model_for(mode: str, trace: str | os.PathLike[str] | None = None, *, system:
               model: str = DEFAULT_MODEL, **kw: Any) -> ChatModel | None:
     """The model for a mode name: "replay" (ReplayModel(trace)), "record" (RecordingModel over an
     AnthropicModel, writing trace), "anthropic" (AnthropicModel) or "fake" (None: the caller keeps
-    its own fake). kw goes to AnthropicModel."""
+    its own fake). kw goes to AnthropicModel, and to ReplayModel, so a replay compares the model,
+    max_tokens and params the live model would send; ignore= goes to ReplayModel only."""
+    ignore = kw.pop("ignore", ())
     if mode not in MODES:
         raise ValueError(f"unknown model mode {mode!r}; pick from {', '.join(MODES)}")
     if mode == "fake":
@@ -316,5 +353,5 @@ def model_for(mode: str, trace: str | os.PathLike[str] | None = None, *, system:
     if trace is None:
         raise ValueError(f"model mode {mode!r} needs a trace path")
     if mode == "replay":
-        return ReplayModel(trace, system=system)
+        return ReplayModel(trace, system=system, model=model, ignore=ignore, **kw)
     return RecordingModel(AnthropicModel(model, system=system, **kw), trace)

@@ -160,6 +160,7 @@ input. That covers:
   `required: true`), or a property removed;
 - `pattern`, `format`, `multipleOf`, `const` or `anyOf`/`oneOf` changed or removed, and a `type`
   widened or removed;
+- OpenAPI 3.0 `nullable` (or Swagger's `x-nullable`) turned on: `false` to `true`, or `true` added;
 - a `$ref` removed (the value is now `{}`, Any) or pointed at a schema with a different body, and a
   `$defs` entry removed while the old schema referred to it;
 - `additionalProperties` relaxed: `false` to anything else (absent, `true`, `{}` or a schema), a
@@ -168,8 +169,15 @@ input. That covers:
 - `items`, `prefixItems`, `contains`, `allOf`, `not`, `propertyNames`, `dependentRequired`,
   `dependentSchemas`, `if`, `then`, `else`, `properties` or `unevaluatedProperties` removed (adding
   one is a tightening; a constraint removed inside `items` is judged where it was), a
-  `dependentRequired` entry dropped, and any change inside `not` or `if`, where a tighter
-  subschema can let more input through;
+  `dependentRequired` entry dropped, and any change inside `not`, `if` or `oneOf`, where a tighter
+  subschema can let more input through (a value that failed a `oneOf` because it matched two
+  branches passes once one of them is tightened);
+- `patternProperties` added, or a pattern added to it, while `additionalProperties` (or
+  `unevaluatedProperties`) was `false` or a schema: a property matching the pattern is no longer
+  checked by it. With extra properties allowed anyway (absent or `true`) it is a tightening;
+- `prefixItems` extended past its old length while the old schema had an `items` schema: those
+  positions were checked by `items` and are now checked only by the new entries (extending it with
+  entries equal to `items`, or with no `items`, is a tightening);
 - an OpenAPI operation removed while a rule names it (`subject.operation`). One that no rule names
   is reported as a change. An operation renamed with the same method and path (FastAPI derives the
   operationId from the function name) is reported as renamed and compared field by field with the

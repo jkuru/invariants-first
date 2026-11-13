@@ -759,6 +759,10 @@ READ_COMMANDS = frozenset({"cat", "less", "more", "head", "tail", "grep", "egrep
 READ_GIT = frozenset({"diff", "show", "log", "status", "blame", "add"})   # add stages the file as it is
 READ_INV = frozenset({"check", "status", "scan", "validate", "verify"})
 GREP_COMMANDS = frozenset({"grep", "egrep", "fgrep", "rg"})              # their -o is --only-matching
+# commands that write the files they name: with a computed name ($f) under the lock's directory, blocked
+WRITE_COMMANDS = frozenset({"cp", "mv", "tee", "dd", "rm", "ln", "install", "rsync", "unlink", "truncate", "shred",
+                            "touch", "sort", "patch", "sed", "gsed", "perl", "ruby", "awk", "gawk", "ditto", "scp",
+                            "curl", "wget", "tar", "unzip", "chmod", "chown"})
 # a command that runs other code the hook cannot read: blocked when it mentions the lock or pyproject
 OPAQUE = re.compile(r"\$\(|`|\$\{|<\(|>\(|\beval\b|\bpython[0-9.]*\s+-[c\s]|\bpython[0-9.]*\s+-$"
                     r"|\b(?:ba|z|da|k)?sh\s+-c\b|\bxargs\b|\b(?:perl|ruby|node)\s+-e\b|\bGIT_[A-Z_]*=|\bgit\s+config\b")
@@ -766,18 +770,113 @@ SUSPECT = re.compile(r"lock|pyproject|toml|invariants", re.IGNORECASE)
 _GLOB = re.compile(r"[*?\[{]")
 
 
+_BRACE_LIMIT = 256
+
+
+def _brace_alternatives(body: str) -> list[str] | None:
+    """What the inside of one {...} expands to: its top-level comma alternatives or an a..b range;
+    None when the braces stay literal."""
+    parts: list[str] = []
+    depth, cur = 0, ""
+    for c in body:
+        if c == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        depth += (c == "{") - (c == "}")
+        cur += c
+    if parts:
+        return [*parts, cur]
+    m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?", body)
+    if m:
+        a, b, step = int(m[1]), int(m[2]), abs(int(m[3] or 1)) or 1
+        if abs(b - a) // step > _BRACE_LIMIT:
+            return None
+        return [str(i) for i in range(a, b + (1 if b >= a else -1), step if b >= a else -step)]
+    m = re.fullmatch(r"(.)\.\.(.)", body)
+    if m:
+        lo, hi = sorted((ord(m[1]), ord(m[2])))
+        return [chr(i) for i in range(lo, hi + 1)] if hi - lo <= _BRACE_LIMIT else None
+    return None
+
+
+def _expand_braces(word: str) -> list[str] | None:
+    """The words a shell brace expansion makes of one word (invariants{,}.lock -> two, x{1..3} ->
+    three); None when that is more than the hook will list."""
+    todo, done = [word], []
+    while todo:
+        w = todo.pop()
+        expanded = False
+        start = 0
+        while not expanded and (i := w.find("{", start)) >= 0:
+            depth, j = 0, i
+            for j in range(i, len(w)):
+                depth += (w[j] == "{") - (w[j] == "}")
+                if depth == 0:
+                    break
+            if depth:
+                break                               # no closing brace: literal from here on
+            alts = _brace_alternatives(w[i + 1:j])
+            if alts is None:
+                start = i + 1                       # a literal {...}: look for the next one
+                continue
+            todo.extend(w[:i] + a + w[j + 1:] for a in alts)
+            expanded = True
+        if not expanded:
+            done.append(w)
+        if len(todo) + len(done) > _BRACE_LIMIT:
+            return None
+    return done
+
+
+def _ansi_c(command: str) -> str:
+    """The command with each $'...' (bash's ANSI-C quoting, $'\\x69nvariants.lock') decoded into a
+    plain single-quoted word."""
+    import codecs
+    import shlex
+
+    def decode(m: re.Match[str]) -> str:
+        body = re.sub(r"\\c(.)", lambda c: chr(ord(c[1].upper()) ^ 64), m[1])
+        body = re.sub(r"\\([0-7]{1,3})", lambda o: f"\\x{int(o[1], 8) & 0xFF:02x}", body)
+        body = re.sub(r"\\([eE])", r"\\x1b", body)
+        body = re.sub(r"\\(['\"?])", r"\1", body)
+        try:
+            text = codecs.decode(body.encode("latin-1", "backslashreplace"), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            text = body
+        return shlex.quote(text)
+    return re.sub(r"\$'((?:[^'\\]|\\.)*)'", decode, command)
+
+
 def _mentions(command: str, name: str) -> bool:
-    """The text names the file, or a glob that could match it (invariants.l*, pyproject.*)."""
-    stem = name.partition(".")[0]
-    return name in command or re.search(re.escape(stem) + r"\.\w*[*?\[{]", command) is not None
+    """The text names the file, or a glob that could match it (invariants.l*, pyproject.*), in any
+    letter case (a case-insensitive filesystem opens INVARIANTS.LOCK as the lock) and after brace
+    expansion (invariants{,}.lock)."""
+    text, stem = command.casefold(), name.partition(".")[0]
+    if name in text or re.search(re.escape(stem) + r"\.\w*[*?\[{]", text) is not None:
+        return True
+    for chunk in re.findall(r"\S*\{\S*", text):
+        words = _expand_braces(chunk)
+        if words is None:
+            if stem in chunk:
+                return True                         # too many to list: any word with the stem
+        elif words != [chunk] and any(_mentions(w, name) for w in words):
+            return True
+    return False
 
 
 def _names(word: str, name: str) -> bool:
-    """A shell word (unquoted) that may name the file: the name, a glob matching it, or text holding it."""
+    """A shell word (unquoted) that may name the file: the name, a glob matching it, or text holding it,
+    in any letter case and after brace expansion."""
     import fnmatch
-    base = word.rstrip("/").rsplit("/", 1)[-1]
-    return (name in word or _mentions(word, name)
-            or (bool(_GLOB.search(base)) and fnmatch.fnmatchcase(name, base)))
+    folded = word.casefold()
+    if _mentions(folded, name):
+        return True
+    for w in _expand_braces(folded) or [folded]:
+        base = w.rstrip("/").rsplit("/", 1)[-1]
+        if bool(_GLOB.search(base)) and fnmatch.fnmatchcase(name, base):
+            return True
+    return False
 
 
 def _tokens(command: str) -> list[str] | None:
@@ -847,10 +946,47 @@ def _reads_only(words: list[str], redirects: list[tuple[str, str]]) -> bool:
     return False
 
 
-def _shell_writes(command: str) -> str | None:
-    """The protected file a shell command may write: one it names (quoted, escaped or as a glob) in a
-    command that is not clearly read-only. A command the hook cannot read (it does not parse, runs
-    code from a string, or expands a name) is blocked when it mentions the lock or pyproject."""
+def _computed_target(words: list[str], redirects: list[tuple[str, str]]) -> bool:
+    """A simple command that writes a file whose name the shell computes ($f, `...`): a redirect, or
+    a write-capable command with $ or a backtick in a path it writes."""
+    if any(">" in op and any(c in t.rstrip("/").rsplit("/", 1)[-1] for c in "$`") for op, t in redirects):
+        return True
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words = words[1:]
+    while words and words[0] in ("env", "sudo", "command", "exec", "nice", "nohup", "time", "builtin"):
+        words = words[1:]
+        while words and (words[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+            words = words[1:]
+    if not words:
+        return False
+    cmd, args = pathlib.PurePath(words[0]).name, words[1:]
+    if cmd not in WRITE_COMMANDS:
+        return False
+    if cmd in ("sed", "gsed", "perl", "ruby") and not any(a.startswith("-i") or a == "--in-place" for a in args):
+        return False
+    paths = [a for a in args if not a.startswith("-") or "=" in a]
+    if cmd in ("sed", "gsed", "perl", "ruby", "awk", "gawk") and paths and not any(
+            a in ("-e", "-f", "--expression", "--file") for a in args):
+        paths = paths[1:]                           # the script, not a path
+    bases = [a.rstrip("/").rsplit("/", 1)[-1] for a in paths]    # "$TMPDIR/out.txt" names out.txt
+    return any("$" in b or "`" in b for b in bases)
+
+
+def _lock_dir(cwd: str | None) -> bool:
+    """The directory, or one above it, holds invariants.lock."""
+    if not cwd:
+        return False
+    here = pathlib.Path(cwd)
+    return any((d / lockfile.LOCK_NAME).exists() for d in (here, *here.parents))
+
+
+def _shell_writes(command: str, cwd: str | None = None) -> str | None:
+    """The protected file a shell command may write: one it names (quoted, escaped, as a glob, in any
+    letter case, behind a brace expansion or $'...') in a command that is not clearly read-only. A
+    command the hook cannot read (it does not parse, runs code from a string, or expands a name) is
+    blocked when it mentions the lock or pyproject, and, under a directory that holds the lock, so is
+    a write to a file whose name the shell computes ($f, a backtick)."""
+    command = _ansi_c(command)
     lowered = command.lower()
     named = [n for n, word in zip(PROTECTED, ("lock", "pyproject")) if word in lowered]
     tokens = _tokens(command)
@@ -871,6 +1007,8 @@ def _shell_writes(command: str) -> str | None:
             texts = [*words, *(t for _, t in redirects)]
             if any("$" in w for w in texts) and not _reads_only(words, redirects):
                 return named[0] if named else lockfile.LOCK_NAME
+    if _lock_dir(cwd) and any(_computed_target(words, redirects) for words, redirects in segments):
+        return lockfile.LOCK_NAME
     return None
 
 
@@ -880,8 +1018,13 @@ def _weakening_switch(command: str) -> str | None:
     hit = next((s for s in WEAKENING_SWITCHES if s in command), None)
     if hit:
         return hit
+    command = _ansi_c(command)
     runs_inv = re.search(r"\binv\b|invariants", command) is not None
-    for w in _tokens(command) or command.split():
+    words = _tokens(command) or command.split()
+    for w in words:                                 # after unquoting: env INV_ALLOW_WEAK''ENING=1, export, X=1 cmd
+        if any(s in w for s in WEAKENING_SWITCHES):
+            return next(s for s in WEAKENING_SWITCHES if s in w)
+    for w in words:
         flag = w.partition("=")[0]
         if len(flag) >= 5 and any(f.startswith(flag) for f in WEAKENING_FLAGS) and (flag != "--all" or runs_inv):
             return w
@@ -931,13 +1074,14 @@ def _pretool(event: dict[str, Any]) -> int:
     command = str(tool_input.get("command") or "")
     files = [pathlib.Path(os.path.realpath(os.path.join(cwd, str(tool_input[k]))))
              for k in ("file_path", "path", "notebook_path") if tool_input.get(k)]
-    written = _shell_writes(command)
-    if any(f.name == lockfile.LOCK_NAME for f in files) or written == lockfile.LOCK_NAME:
+    written = _shell_writes(command, cwd)
+    lock, pyproject = lockfile.LOCK_NAME.casefold(), "pyproject.toml"   # a case-insensitive filesystem
+    if any(f.name.casefold() == lock for f in files) or written == lockfile.LOCK_NAME:
         _err(f"invariants: blocked a direct edit of {lockfile.LOCK_NAME}. The lock is written only by "
              f"`inv lock` or `inv check --relock`, which refuse a weakening; edit invariants.yaml or the "
              f"code, then run one of them.")
         return 2
-    if written or any(f.name == "pyproject.toml" and _touches_invariants_table(f, tool_input) for f in files):
+    if written or any(f.name.casefold() == pyproject and _touches_invariants_table(f, tool_input) for f in files):
         _err("invariants: blocked an edit of the [tool.invariants] settings in pyproject.toml (or a shell "
              "command that writes pyproject.toml). The scan roots and excludes decide which code is checked "
              "for back doors; tell the user what you want to change and let them make the edit.")

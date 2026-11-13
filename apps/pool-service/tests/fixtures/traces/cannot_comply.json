@@ -4,6 +4,8 @@
   "calls": [
     {
       "request": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 16000,
         "system": "You triage failed batch jobs for a worker-pool service. You are given a job id and an excerpt of its log.\n\nReply with one JSON object and nothing else (no prose, no code fence), with exactly these fields:\n- \"cause\": one of \"OUT_OF_MEMORY\", \"TIMEOUT\", \"BAD_INPUT\", \"CANNOT_COMPLY\"\n- \"summary\": one sentence (at most 200 characters) on what in the log points to that cause\n\nAnswer CANNOT_COMPLY when the log does not show the cause.",
         "messages": [
           {
