@@ -63,10 +63,10 @@ cases:
 - {name: timestamp has no fields, expr: 't.year == 2024', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: rule_error}
 - {name: unknown timezone is error, expr: 't.getHours("Mars/Base") == 1', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: rule_error}
 # type() of computed values: the engines have type(), the subset does not
-- {name: type of a computed double, expr: 'type(x * 2.0) == double && type(x + x) == double && type(x - 1.0) == double', env: {x: 1.5}, expected: violation, backends: [cel-expr, celpy]}
-- {name: type of a computed int, expr: 'type(2 * 3) == int && type(i + 1) == int', env: {i: 2}, expected: violation, backends: [cel-expr, celpy]}
-- {name: type of a computed duration, expr: 'type(duration("2s") - duration("1s")) == type(duration("1s"))', expected: violation, backends: [cel-expr, celpy]}
-- {name: type of a computed timestamp, expr: 'type(t + duration("1s")) == type(t)', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: violation, backends: [cel-expr, celpy]}
+- {name: type of a computed double, expr: 'type(x * 2.0) == double && type(x + x) == double && type(x - 1.0) == double', env: {x: 1.5}, expected: violation, backends: [cel-expr]}
+- {name: type of a computed int, expr: 'type(2 * 3) == int && type(i + 1) == int', env: {i: 2}, expected: violation, backends: [cel-expr]}
+- {name: type of a computed duration, expr: 'type(duration("2s") - duration("1s")) == type(duration("1s"))', expected: violation, backends: [cel-expr]}
+- {name: type of a computed timestamp, expr: 'type(t + duration("1s")) == type(t)', env: {t: {$timestamp: "2024-01-01T00:00:00Z"}}, expected: violation, backends: [cel-expr]}
 # A timezone from data is checked by the shared rules on every backend (cel-expr read '' as UTC
 # and wrapped offsets of 24 hours or more); a constant one is checked at load.
 - {name: timezone from data at an offset, expr: 't.getHours(z)', env: {t: {$timestamp: "2024-03-10T23:30:15Z"}, z: "+05:30"}, value: 5}

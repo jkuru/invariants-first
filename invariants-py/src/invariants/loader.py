@@ -416,8 +416,8 @@ def _check_functions(rid: str, source: str, eng: cel.Backend) -> None:
     for name, method, nargs in _calls(tree):
         if name not in known:
             form = f"x.{name}()" if method else f"{name}()"
-            hint = (" (the subset backend has no uint, bytes or type; use the cel-expr or "
-                    "celpy backend)" if eng.name == "subset" and name in cel.ENGINE_FUNCTIONS else "")
+            hint = (" (the subset backend has no uint, bytes or type; use the cel-expr "
+                    "backend)" if eng.name == "subset" and name in cel.ENGINE_FUNCTIONS else "")
             raise LoadError(f"{rid}: bad calls {form}, which the {eng.name} CEL backend does not have, so every "
                             f"evaluation would be a rule_error{hint}. Functions on {eng.name}: "
                             f"{', '.join(sorted(known))}")

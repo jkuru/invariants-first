@@ -22,5 +22,5 @@ A minimal rule file and code:
 
 - invariants version:
 - Python version:
-- CEL backend (`INV_CEL_BACKEND`): subset / cel-expr / celpy
+- CEL backend (`INV_CEL_BACKEND`): subset / cel-expr
 - OS:

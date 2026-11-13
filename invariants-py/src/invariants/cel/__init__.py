@@ -4,9 +4,9 @@ A backend compiles rule text into a Program. A Program evaluates against an env 
 Python values and reports the static references it reads. Backends must raise
 CelSyntaxError at compile time and CelError at evaluation time.
 
-Built-in backends: subset (stdlib, the default), cel-expr (cel-expr-python) and celpy
-(cel-python). INV_CEL_BACKEND=subset|cel-expr|celpy|auto picks one; auto takes the first
-installed of cel-expr, celpy, subset.
+Built-in backends: subset (stdlib, the default) and cel-expr (cel-expr-python).
+INV_CEL_BACKEND=subset|cel-expr|auto picks one; auto takes cel-expr if it is installed, else
+subset. The celpy backend (cel-python) was removed; naming it is a ValueError.
 """
 from __future__ import annotations
 
@@ -64,17 +64,14 @@ def _cel_expr() -> Backend:
     return ExprPythonBackend()
 
 
-def _celpy() -> Backend:
-    from .celpy_backend import CelpyBackend
-    return CelpyBackend()
-
-
-_FACTORIES: dict[str, Callable[[], Backend]] = {"subset": SubsetBackend, "cel-expr": _cel_expr, "celpy": _celpy}
+_FACTORIES: dict[str, Callable[[], Backend]] = {"subset": SubsetBackend, "cel-expr": _cel_expr}
 _CACHE: dict[str, Backend] = {}
 _LOCK = threading.Lock()
 # The engine module each built-in backend needs; a backend whose module is missing is unavailable.
-_REQUIRES = {"cel-expr": "cel_expr_python", "celpy": "celpy"}
-AUTO_ORDER = ("cel-expr", "celpy", "subset")
+_REQUIRES = {"cel-expr": "cel_expr_python"}
+AUTO_ORDER = ("cel-expr", "subset")
+# Backends that no longer exist: naming one is an error that says what to use instead.
+_REMOVED = frozenset({"celpy", "cel-python"})
 
 
 def _importable(name: str) -> bool:
@@ -89,8 +86,11 @@ def _importable(name: str) -> bool:
 
 def resolve_name(name: str | None = None) -> str:
     """The backend name to use: name, else $INV_CEL_BACKEND, else 'subset'; 'auto' picks the
-    first importable of cel-expr, celpy, subset."""
+    first importable of cel-expr, subset. A removed backend (celpy) is a ValueError."""
     key = name or os.environ.get(ENV_VAR) or DEFAULT
+    if key in _REMOVED and key not in _FACTORIES:
+        raise ValueError(f"the {key!r} CEL backend (cel-python) was removed; use 'subset' or 'cel-expr' "
+                         f"(set {ENV_VAR} or backend= to one of them)")
     if key == "auto":
         return next(n for n in AUTO_ORDER if n in _FACTORIES and _importable(n))
     return key
@@ -110,7 +110,7 @@ def available_backends() -> list[str]:
 
 
 def get_backend(name: str | Backend | None = None) -> Backend:
-    """Return a backend by name (subset, cel-expr, celpy, auto, or a registered one).
+    """Return a backend by name (subset, cel-expr, auto, or a registered one).
 
     None means $INV_CEL_BACKEND, else 'subset'.
     """

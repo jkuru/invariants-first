@@ -1,7 +1,7 @@
 """Regression tests for fix round 11 (certification round 9): each test failed before its fix.
 
 1. R9-1: a NaN inside a list, map or record compared whole (==, !=, in) is a rule_error on the
-   subset too, as on cel-expr and celpy (the subset used Python's ==, where a shared NaN object
+   subset too, as on cel-expr (the subset used Python's ==, where a shared NaN object
    equals itself). With allow_non_finite it compares by CEL rules: NaN != NaN, never identity.
 2. R9-2: model_of(c) is a fresh instance validated from the reply's JSON attributes on each call,
    and an edge calls its consumer with a new Checked over the copy the rule judged: a received
@@ -34,7 +34,7 @@ from invariants.cel import available_backends, get_backend
 from invariants.cel.errors import CelError
 from invariants.integrations import pydantic as inv_pd
 
-BACKENDS = [b for b in ("subset", "cel-expr", "celpy") if b in available_backends()]
+BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 UTC = dt.timezone.utc
 NOW = dt.datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 NAN = float("nan")

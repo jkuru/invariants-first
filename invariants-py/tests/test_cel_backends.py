@@ -1,4 +1,4 @@
-"""The engine backends (cel-expr, celpy): selection, front end, value conversion, cost, threads."""
+"""The engine backend (cel-expr): selection, front end, value conversion, cost, threads."""
 from __future__ import annotations
 
 import dataclasses
@@ -14,11 +14,10 @@ from invariants.cel import _engine as ep
 from invariants.cel import subset
 from support import FIXTURES, RULES, raises
 
-ENGINES = [b for b in ("cel-expr", "celpy") if b in cel.available_backends()]
+ENGINES = [b for b in ("cel-expr",) if b in cel.available_backends()]
 ALL = ["subset", *ENGINES]
 # The engine tests skip, rather than fail, without the `cel` extra (pip install -e '.[dev,cel]').
-needs_engines = pytest.mark.skipif(len(ENGINES) < 2, reason="needs the cel extra (cel-expr-python, cel-python)")
-needs_celpy = pytest.mark.skipif("celpy" not in ENGINES, reason="needs cel-python (the cel extra)")
+needs_engines = pytest.mark.skipif(not ENGINES, reason="needs the cel extra (cel-expr-python)")
 needs_cel_expr = pytest.mark.skipif("cel-expr" not in ENGINES, reason="needs cel-expr-python (the cel extra)")
 
 
@@ -29,9 +28,9 @@ def ev(backend: str, src: str, **env):
 # ---- selection ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not __import__("os").environ.get("INV_REQUIRE_ENGINES"),
-                    reason="set INV_REQUIRE_ENGINES=1 (CI does) to require both engines")
+                    reason="set INV_REQUIRE_ENGINES=1 (CI does) to require the engine")
 def test_cel_engines_installed_here():
-    assert ENGINES == ["cel-expr", "celpy"]
+    assert ENGINES == ["cel-expr"]
     assert set(ALL) <= set(cel.available_backends())
 
 
@@ -47,17 +46,24 @@ def test_cel_auto_order(monkeypatch):
     monkeypatch.setenv(cel.ENV_VAR, "auto")
     assert cel.resolve_name() == "cel-expr" and cel.get_backend().name == "cel-expr"
     monkeypatch.setitem(cel._REQUIRES, "cel-expr", "no_such_module_xyz")
-    assert cel.resolve_name("auto") == "celpy"
-    monkeypatch.setitem(cel._REQUIRES, "celpy", "no_such_module_xyz")
     assert cel.resolve_name("auto") == "subset" and cel.get_backend("auto").name == "subset"
 
 
-@needs_celpy
 def test_cel_missing_engine_is_unavailable(monkeypatch):
-    monkeypatch.setitem(cel._REQUIRES, "celpy", "no_such_module_xyz")
-    assert "celpy" not in cel.available_backends()
-    e = raises(ValueError, cel.get_backend, "celpy")
+    monkeypatch.setitem(cel._REQUIRES, "cel-expr", "no_such_module_xyz")
+    assert "cel-expr" not in cel.available_backends()
+    e = raises(ValueError, cel.get_backend, "cel-expr")
     assert e is not None and "not installed" in str(e)
+
+
+@pytest.mark.parametrize("name", ["celpy", "cel-python"])
+def test_cel_celpy_backend_was_removed(monkeypatch, name):
+    for how in ("arg", "env"):
+        if how == "env":
+            monkeypatch.setenv(cel.ENV_VAR, name)
+        e = raises(ValueError, cel.get_backend, name if how == "arg" else None)
+        assert e is not None and "removed" in str(e) and "'subset'" in str(e) and "'cel-expr'" in str(e)
+    assert name not in cel.available_backends()
 
 
 def test_cel_register_backend_drops_engine_requirement(monkeypatch):
@@ -222,17 +228,6 @@ def test_cel_engine_results_are_plain_python(name):
 NESTED = "[1,2,3,4,5,6,7,8,9,10].map(a, [1,2,3,4,5,6,7,8,9,10].map(b, [1,2,3,4,5,6,7,8,9,10].map(c, c)))"
 
 
-@needs_celpy
-def test_cel_celpy_cost_budget():
-    from invariants.cel.celpy_backend import CelpyBackend
-    small = CelpyBackend(budget=50)
-    assert small.cost_limit is True
-    with pytest.raises(cel.CelError, match="cost limit"):
-        small.compile(NESTED).evaluate({})
-    assert small.compile("1 + 1 == 2").evaluate({}) is True                 # budget resets per call
-    assert len(cel.get_backend("celpy").compile(NESTED).evaluate({})) == 10
-
-
 @needs_cel_expr
 def test_cel_expr_has_no_configurable_cost_limit():
     b = cel.get_backend("cel-expr")
@@ -256,32 +251,3 @@ def test_cel_concurrent_evaluation(name):
     for t in threads:
         t.join()
     assert errors == []
-
-
-# --- celpy: a long clause evaluated deep in the caller's stack (Python 3.11's recursion limit) -----
-def _at_depth(n: int, fn):
-    return fn() if n <= 0 else _at_depth(n - 1, fn)
-
-
-def test_celpy_long_clause_deep_in_the_stack_is_retried_and_the_limit_restored():
-    import sys
-    celpy_backend = pytest.importorskip("invariants.cel.celpy_backend")
-    pytest.importorskip("celpy")
-    from invariants import cel
-    prog = cel.get_backend("celpy").compile(" + ".join(["args.a"] * 200) + " > 199.0")
-    limit = sys.getrecursionlimit()
-    depth = limit - 150                     # leave too little room for the clause at the old limit
-    assert _at_depth(depth, lambda: prog.evaluate({"args": {"a": 1.0}})) is True
-    assert sys.getrecursionlimit() == limit
-
-
-def test_celpy_clause_too_deep_even_after_retry_names_the_cause(monkeypatch):
-    import sys
-    celpy_backend = pytest.importorskip("invariants.cel.celpy_backend")
-    pytest.importorskip("celpy")
-    from invariants import cel
-    from invariants.cel.errors import CelError
-    monkeypatch.setattr(celpy_backend, "DEEP_RECURSION_LIMIT", sys.getrecursionlimit())   # no headroom
-    prog = cel.get_backend("celpy").compile(" + ".join(["args.a"] * 200) + " > 199.0")
-    with pytest.raises(CelError, match="nested too deeply"):
-        _at_depth(sys.getrecursionlimit() - 150, lambda: prog.evaluate({"args": {"a": 1.0}}))

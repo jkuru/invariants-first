@@ -23,7 +23,7 @@ from invariants.testing import make_checked
 
 pytest_plugins = ["pytester"]
 
-BACKENDS = [b for b in ("subset", "cel-expr", "celpy") if b in available_backends()]
+BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 NAN, INF = float("nan"), float("inf")
 
 
@@ -293,7 +293,7 @@ def test_rule_error_text_is_redacted(backend, bad, args, in_detail, caplog):
         inv.configure(debug=True)                  # debug shows the engine's own text
         e = rejected(r7.lookup, args["m"], args["k"], args["s"], args["p"])
         assert e is not None and e.outcome.kind == "rule_error"
-        if in_detail and backend != "celpy":       # celpy's own texts for these hold no value either
+        if in_detail:
             assert "SECRET" in (e.outcome.error or ""), e.outcome.error
 
 

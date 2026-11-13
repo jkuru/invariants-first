@@ -18,7 +18,7 @@ duration values anywhere in the data. That needs the protobuf package (in the ce
 
 NUL characters: cel-cpp reads a Python string or bytes value as C text, which ends at the first
 NUL, so a value holding one would be cut short ('ab\\x00cd' == 'ab'). Such a value is refused: a
-clause that reads one is a rule_error on cel-expr (the subset and celpy read it whole).
+clause that reads one is a rule_error on cel-expr (the subset reads it whole).
 
 Nesting: cel-cpp refuses an expression nested more than RECURSION_LIMIT (32) levels deep at
 compile time. The non-finite check adds one level per arithmetic tree, and a long +/- chain is
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import re
 from typing import Any, Callable
 
 from ._engine import ENGINE_FUNCTIONS, FrontEnd, engine_error, ext_sum, ext_unique, ext_zip, project
@@ -85,8 +86,8 @@ def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
     def impl(*args: Any) -> Any:
         try:
             return to_engine(fn(*args))
-        except CelError as e:
-            raise ValueError(str(e)) from None   # the engine turns a raised exception into an error value
+        except CelError as e:            # the engine turns a raised exception into an error value; the
+            raise ValueError(f"{e} ({e.detail})" if e.detail else str(e)) from None   # detail is redacted
     return impl
 
 
@@ -140,7 +141,7 @@ class ExprProgram:
 
 
 NUL_TEXT = ("a string or bytes value holding a NUL character cannot be read on cel-expr (its C++ runtime "
-            "would end the text there); use the subset or celpy backend, or strip NUL characters first")
+            "would end the text there); use the subset backend, or strip NUL characters first")
 
 
 def _no_nul(v: Any) -> None:
@@ -162,8 +163,11 @@ def _no_nul(v: Any) -> None:
             _no_nul(x)
 
 
+_BUDGET = re.compile(r"(?:[A-Z][A-Z_]*: )*" + re.escape(_BUDGET_TEXT))
+
+
 def _cost(msg: str) -> str:
-    if _BUDGET_TEXT in msg:
+    if _BUDGET.match(msg):                  # at the start: a key or value holding the text is not it
         return (f"cost limit exceeded (cel-expr: {ITERATION_LIMIT:,} comprehension iterations per clause, "
                 f"nested comprehensions multiply)")
     return msg

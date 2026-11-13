@@ -1,7 +1,7 @@
 # CEL
 
 Rules are written in [CEL](https://cel.dev), the Common Expression Language. This page covers the
-three engines, how Python values reach a rule, and where the engines still differ.
+two engines, how Python values reach a rule, and where the engines still differ.
 
 - [Backends](#backends)
 - [Cost limits](#cost-limits)
@@ -22,11 +22,11 @@ three engines, how Python values reach a rule, and where the engines still diffe
 |---|---|---|
 | `subset` (default) | stdlib | A safe tree-walking evaluator with a cost budget. No extra dependency. |
 | `cel-expr` | cel-expr-python | The CEL C++ runtime. Needs the `cel` extra (it brings `protobuf` too). |
-| `celpy` | cel-python | A pure-Python interpreter, with a per-call cost budget. Needs the `cel` extra. |
 
-Pick a backend with `INV_CEL_BACKEND=subset|cel-expr|celpy|auto`, or with
-`inv.load(..., backend=...)`. `auto` picks the first one installed, in the order cel-expr, celpy,
-subset.
+Pick a backend with `INV_CEL_BACKEND=subset|cel-expr|auto`, or with
+`inv.load(..., backend=...)`. `auto` picks cel-expr if it is installed, else subset. The `celpy`
+backend (cel-python) was removed: naming it is a `ValueError` that says to use `subset` or
+`cel-expr`.
 
 Every backend uses the same front end, so a rule parses the same way everywhere. Rule text must
 stay within that grammar: `1e3`, `1u` and `b"..."` are parse errors. The loader checks every
@@ -44,7 +44,9 @@ Every backend passes the conformance suite in `tests/conformance/cel/`.
 An integer outside int64 is a `rule_error` on every backend. Past a cost limit, the clause is a
 `rule_error` "cost limit exceeded", never a hung worker.
 
-- **subset:** 10,000 units per evaluation, absorbed by `||` and `&&`.
+- **subset:** 10,000 units per evaluation. A spent budget is never absorbed: `false && x`,
+  `true || x` and an `exists` or `all` that has already decided are still a `rule_error` when `x`
+  runs out of budget, as on cel-expr.
 - **cel-expr:** fixed, not settable: at most 9,999 comprehension iterations per clause evaluation,
   summed over every `all`, `exists`, `exists_one`, `map` and `filter` in the clause. Nested ones
   multiply: `xs.exists(x, ys.exists(y, ...))` costs |xs|·|ys|. Work outside comprehensions (string
@@ -52,7 +54,6 @@ An integer outside int64 is a `rule_error` on every backend. Past a cost limit, 
   clause reads, so bound input sizes for untrusted data. cel-cpp also has a fixed nesting limit of
   32 levels (about 30 nested parentheses or calls, or a sum of more than about 250 terms); a deeper
   clause is a `LoadError` that says so.
-- **celpy:** 100,000 tree nodes per call, not absorbed by `||` and `&&`.
 
 **Regular expressions on the subset.** The subset has `matches()` with RE2 syntax (ASCII `\d \w \s`,
 `$` only at the end of text, general-category `\p{..}` classes but not scripts, no lookaround or
@@ -60,27 +61,29 @@ backreferences). It runs on a linear-time matcher, not Python `re`, so no patter
 backtrack exponentially, and its steps count against the cost budget: a huge input ends in
 `rule_error`, never a hung worker. The matches() step bound is 16 matcher steps per unit of the
 10,000-unit evaluation budget, shared with the rest of the clause. So a small pattern on an input of
-roughly 10,000 to 100,000 characters or more is a `rule_error` on the subset, where cel-expr and
-celpy return a result. The bound is not scaled with input length, since that would let a caller buy
-CPU time with input size. Use cel-expr or celpy, or bound the input size first, for rules that match
+roughly 10,000 to 100,000 characters or more is a `rule_error` on the subset, where cel-expr
+returns a result. The bound is not scaled with input length, since that would let a caller buy
+CPU time with input size. Use cel-expr, or bound the input size first, for rules that match
 long text. A constant pattern the subset matcher does not support but full RE2 may (a script class
-like `\p{Greek}`) still loads; on the subset it is a `rule_error` at run time.
+like `\p{Greek}`) still loads; on the subset it is a `rule_error` at run time. `(?i)` folds case
+one character at a time, as RE2 does: `s`, `S` and `ſ` match each other, but `ß` matches neither
+`SS` nor `[A-Z]`, and `ı` does not match `I`.
 
 ## Functions per backend
 
 Standard functions per backend (global `f(x)` or receiver `x.f()` form as CEL defines them; the macros `all`, `exists`, `exists_one`, `map`, `filter` and `has()` are on every backend):
 
-| Function | `subset` | `cel-expr` | `celpy` |
-|---|---|---|---|
-| `size`, `contains`, `startsWith`, `endsWith`, `matches` | yes | yes | yes |
-| `int`, `double`, `string`, `bool`, `dyn` | yes (see below) | yes | yes |
-| `timestamp`, `duration`, `getFullYear` and the other timestamp and duration getters | yes | yes | yes |
-| `uint`, `bytes`, `type` | no (`LoadError`) | yes | yes |
-| string extensions (`split`, `lowerAscii`, `substring`, ...), math and list extensions | no | no | no |
+| Function | `subset` | `cel-expr` |
+|---|---|---|
+| `size`, `contains`, `startsWith`, `endsWith`, `matches` | yes | yes |
+| `int`, `double`, `string`, `bool`, `dyn` | yes (see below) | yes |
+| `timestamp`, `duration`, `getFullYear` and the other timestamp and duration getters | yes | yes |
+| `uint`, `bytes`, `type` | no (`LoadError`) | yes |
+| string extensions (`split`, `lowerAscii`, `substring`, ...), math and list extensions | no | no |
 
 ## Conversions
 
-The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a double (truncated toward zero; NaN, ±Infinity and values outside int64 are errors) or base-10 text (`"42"`, `" +5 "`; not `"4.2"`, `"0x10"` or `"1_000"`); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on celpy); compare the number instead. On cel-expr and celpy the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
+The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a double (truncated toward zero; NaN, ±Infinity and values outside int64 are errors) or base-10 text (`"42"`, `" +5 "`; not `"4.2"`, `"0x10"` or `"1_000"`); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on other engines); compare the number instead. On cel-expr the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
 duration, `int()` of a timestamp and the getters follow one set of rules on every backend too
 (`cel/values.py`; conformance suite `time.yaml`).
 
@@ -184,14 +187,14 @@ whole (`==`, `!=`, `in`) is a `rule_error` on every backend.
 
 - **NUL characters on cel-expr.** cel-cpp reads a Python string or bytes value as C text, which ends
   at the first NUL, so `"ab\x00cd"` would reach a rule as `"ab"`. On cel-expr, a clause that reads a
-  string or bytes value holding a NUL is a `rule_error`. The subset and celpy read it whole.
+  string or bytes value holding a NUL is a `rule_error`. The subset reads it whole.
 - **Map keys and indexes.** Map keys follow CEL on every backend: a numeric index matches an int key
   across int and double (`{1: 'a'}[1.0] == 'a'`; `1.5` matches nothing), a bool is never a number
   key (`{1: 'a'}[true]` is no such key, though Python's `dict` calls `True` and `1` one key), a list
   index may be an integral double (`[7, 8][1.0] == 8`), and a map literal key must be an int, bool
   or string (`{1.0: 'a'}`, `{null: 1}` and a repeated key are `rule_error`s). Python cannot hold `1`
-  and `true` as two keys of one map, so a map literal with both is a `rule_error` on the subset and
-  celpy (cel-expr evaluates it).
+  and `true` as two keys of one map, so a map literal with both is a `rule_error` on the subset
+  (cel-expr evaluates it).
 
 ## The load-time type check
 
@@ -217,24 +220,23 @@ durations (`timedelta`) are families of their own, and `UUID` is a string.
 
 These are the cases where the backends still answer differently. None of them is in the conformance suite's `expected_failures.yaml`, which is empty: the suite pins down the behaviour that must agree (conversions, non-finite arithmetic, `string(null)`), and the rows below are differences of capability or of budget rather than of meaning.
 
-| Case | `subset` | `cel-expr` | `celpy` |
-|---|---|---|---|
-| `string(2.0)` | `rule_error` (refused) | `"2"` | `"2.0"` |
-| `uint`, `bytes`, `type` | `LoadError` | yes | yes |
-| `type(x) == google.protobuf.Timestamp` (protobuf type names) | `LoadError` | yes | `rule_error` |
-| Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 250 terms) | yes | `LoadError` naming cel-cpp's limit | yes |
-| An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` | `rule_error` |
-| `matches()` on a very long input | `rule_error` past the step budget | result | result |
-| Cost limit | 10,000 units, absorbed by `\|\|`/`&&` | 9,999 comprehension iterations | 100,000 tree nodes, not absorbed |
-| An error on both sides of `\|\|` | first error | first error | "no matching overload for _\|\|_" (still `rule_error`) |
+| Case | `subset` | `cel-expr` |
+|---|---|---|
+| `string(2.0)` | `rule_error` (refused) | `"2"` |
+| `uint`, `bytes`, `type` | `LoadError` | yes |
+| `type(x) == google.protobuf.Timestamp` (protobuf type names) | `LoadError` | yes |
+| Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 250 terms) | yes | `LoadError` naming cel-cpp's limit |
+| An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
+| `matches()` on a very long input | `rule_error` past the step budget | result |
+| Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
 
-Keep rules off `string()` of a double, and away from the budgets, if they must run on every backend. These used to differ and now agree: celpy's computed values are celtypes again (`type(x * 2.0) == double`, `string(duration('2s') - duration('1s')) == '1s'` and `.getSeconds()` of a computed duration agree with cel-expr), and so are celpy's `duration.getMilliseconds()` (the millisecond part, not the total), `string(timestamp)` with an offset (now UTC), `int(timestamp)` before 1970 (rounded down) and `-duration`/`duration * n` (no overload, as in CEL). Also fixed, and now the same on every backend: celpy's `string(null) == "None"`, `string(true) == "True"`, `bool(1)`, lenient `int()`/`double()` text, `int(-2^63 as a double)`; cel-expr's hex `double("0x10")`; and, with `allow_non_finite=True`, celpy's `x / 0.0` (it gave +Infinity for any `x`, `0.0` and negatives included).
+Keep rules off `string()` of a double, and away from the budgets, if they must run on every backend. These used to differ and now agree: cel-expr's hex `double("0x10")` is a `rule_error` as on the subset, and `has()` on a value with no fields (`has(x.f)` with `x` null, a number, a string or a list) is a `rule_error` on the subset as on cel-expr (on a map it tests the key; a null field is present).
 
 ## Performance
 
 Guard overhead per call, measured on an Apple M4 Max laptop, Python 3.14.7, one `pre_effect`
 decorator enforcer on a pure function with no providers, with the bare call (0.04 µs) subtracted.
-There were 20,000 samples per row (3,000 for celpy), and two runs whose p50s agreed within 3%; the
+There were 20,000 samples per row, and two runs whose p50s agreed within 3%; the
 table shows the mean p50 and the larger p99. The 1-clause rule is `args.total < 0`. The 4-clause
 rule is `args.total < 0`, `args.total > 1000000`, `args.caps.exists(c, c < 0)` and
 `size(args.caps) > 64`, called with an 8-element `caps` list (the `exists` cost grows with the list
@@ -244,11 +246,8 @@ length).
 |---|---|---|---|---|
 | `subset` | 7.1 µs | 8.4 µs | 22.7 µs | 28.3 µs |
 | `cel-expr` | 9.6 µs | 10.7 µs | 22.0 µs | 27.9 µs |
-| `celpy` | 86 µs | 100 µs | 830 µs | 892 µs |
 
-- Each clause costs a few microseconds on `subset` and `cel-expr`, and tens to a hundred and more on
-  `celpy`. Use `cel-expr` (or `subset`) on hot paths and keep `celpy` for conformance runs. Keep the
-  clause count low on tight loops. At HTTP scale (milliseconds per request) the overhead is noise.
+- Each clause costs a few microseconds on `subset` and `cel-expr`. Keep the clause count low on tight loops. At HTTP scale (milliseconds per request) the overhead is noise.
 - Providers add their own cost on top: every provider an enforcer reads is called on every call.
 - There is no sampled mode in v0.1.
 - The table's rules do no arithmetic. A clause that does arithmetic pays for the non-finite check

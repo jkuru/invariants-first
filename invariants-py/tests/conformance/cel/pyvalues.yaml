@@ -30,5 +30,5 @@ cases:
 - {name: nested comprehensions read only qty, expr: 'os.exists(o, o.items.exists(i, i.qty < 0))', env: {os: [{items: [{qty: -1, price: {$decimal: "1.10"}}]}]}, expected: violation}
 - {name: reading the decimal field is error, expr: 'items.exists(i, i.price == null)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error}
 # The engines convert an element read whole (the subset reads lazily; the type checker refuses both at load).
-- {name: reading an element whole is error, expr: 'items.exists(i, i == null)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr, celpy]}
-- {name: filter reads elements whole, expr: 'size(items.filter(i, i.qty > 0)) == 1', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr, celpy]}
+- {name: reading an element whole is error, expr: 'items.exists(i, i == null)', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr]}
+- {name: filter reads elements whole, expr: 'size(items.filter(i, i.qty > 0)) == 1', env: {items: [{qty: 1, price: {$decimal: "1.10"}}]}, expected: rule_error, backends: [cel-expr]}

@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13", "3.14"]
-        backend: [subset, cel-expr, celpy]
+        backend: [subset, cel-expr]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

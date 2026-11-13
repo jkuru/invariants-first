@@ -42,7 +42,7 @@ to PyPI, then delete this section.
 1. Run the suite on every CEL backend and under `-O`, mypy, and both example apps' `ci.sh`:
 
    ```
-   for b in subset cel-expr celpy; do INV_CEL_BACKEND=$b python -m pytest tests -q; done
+   for b in subset cel-expr; do INV_CEL_BACKEND=$b python -m pytest tests -q; done
    python -O -m pytest tests -q
    python -m mypy
    ../apps/pool-service/ci.sh && ../apps/fact-pipeline/ci.sh

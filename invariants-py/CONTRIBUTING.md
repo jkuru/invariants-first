@@ -32,7 +32,7 @@ Run the suite on each CEL backend before you send a change to CEL behaviour, and
 examples before any change:
 
 ```
-for b in subset cel-expr celpy; do INV_CEL_BACKEND=$b python -m pytest tests -q; done
+for b in subset cel-expr; do INV_CEL_BACKEND=$b python -m pytest tests -q; done
 python -O -m pytest tests -q        # asserts must not carry behaviour
 python -m mypy
 PYTHON=$(command -v python) ../apps/pool-service/ci.sh

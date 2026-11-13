@@ -374,7 +374,6 @@ Guard overhead per call: one `pre_effect` decorator enforcer, no providers, Appl
 |---|---|---|---|---|
 | `subset` (default, stdlib) | 7.1 µs | 8.4 µs | 22.7 µs | 28.3 µs |
 | `cel-expr` (CEL C++) | 9.6 µs | 10.7 µs | 22.0 µs | 27.9 µs |
-| `celpy` (pure Python) | 86 µs | 100 µs | 830 µs | 892 µs |
 
 Use `subset` or `cel-expr` on hot paths. At HTTP scale the overhead is noise. Providers add their own
 cost on every call. The method and the per-operation costs are in [docs/cel.md](docs/cel.md#performance).
@@ -434,7 +433,7 @@ that extracts cited facts with a model (a deterministic fake). Each is a standal
 ## Contributing
 
 `pip install -e '.[dev,cel]'`, then run the suite on each CEL backend
-(`INV_CEL_BACKEND=subset|cel-expr|celpy python -m pytest tests -q`) and `python -m mypy`. The library
+(`INV_CEL_BACKEND=subset|cel-expr python -m pytest tests -q`) and `python -m mypy`. The library
 never rewrites your code's AST and never calls `eval` or `exec` on rule text, and a test checks both.
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [RELEASING.md](RELEASING.md).
 Licensed under [Apache-2.0](LICENSE).

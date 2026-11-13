@@ -450,10 +450,9 @@ In Invariant-First, rules are always written as **prohibitions (`bad`)**: a [Com
 Why CEL instead of Python `eval()`?
 1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset.py`](invariants-py/src/invariants/cel/subset.py)).
 2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](invariants-py/src/invariants/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
-3. **Three Pluggable Backends (`cel/`):**
+3. **Two Pluggable Backends (`cel/`):**
    - `subset` (default): Zero-dependency stdlib evaluator (`7.1 µs` per call).
    - `cel-expr`: Google’s C++ CEL runtime (`9.6 µs` per call).
-   - `celpy`: Pure-Python full CEL reference engine.
 
 ### Built-In Collection Helpers: Rule `R-1` in `pool-service`
 Look at how [`apps/pool-service/invariants.yaml`](apps/pool-service/invariants.yaml) checks `split_work(total_jobs, capacities) -> list[int]` using four `{when, message}` clauses and the built-in `inv.sum` and `inv.zip` helpers:

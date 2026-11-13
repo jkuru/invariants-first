@@ -21,7 +21,7 @@ These are security issues:
 - A way for rule text, or a value reaching a rule, to execute code. The evaluator must never `eval` or `exec`.
 - A way past a guard in enforce mode that the documentation does not list as a limitation.
 - HTTP problem responses leaking error text, provider failures or evaluated values.
-- A rule escaping its cost budget on the `subset` or `celpy` backend, or the fixed comprehension
+- A rule escaping its cost budget on the `subset` backend, or the fixed comprehension
   iteration budget (9,999 per clause) on `cel-expr`.
 - A model reply that makes `@inv.model_call` raise anything other than its documented outcomes
   (`Rejected`, `Halted`, `Escalation`, `Routed`, `ReviewNotOpened`) or a returned `Checked`, or makes

@@ -10,6 +10,30 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Two CEL backends: subset and cel-expr
+
+- **Removed: the `celpy` backend** (cel-python). `cel-python` is no longer in the `cel` extra, and
+  `auto` now picks `cel-expr`, else `subset`. `INV_CEL_BACKEND=celpy` (or `backend="celpy"`) is a
+  `ValueError` that says to use `subset` or `cel-expr`. The backend's process-wide
+  `sys.setrecursionlimit` change and its `__inv_*` call renames went with it.
+- **`has()` on a value with no fields is a `rule_error` on the subset**, as on cel-expr:
+  `has(x.f)` with `x` null (or a number, a string or a list) gave `false`. On a map it still tests
+  the key, and a null field is present.
+- **A spent cost budget is never absorbed on the subset.** `false && <costly>`, `true || <costly>`
+  and an `exists`/`all`/`exists_one` that had already decided returned a result once the budget ran
+  out inside the other branch; they are now a `rule_error` "cost limit exceeded".
+- **`(?i)` in the subset's `matches()` folds case as RE2 does**, one character at a time. It used
+  `upper()`/`lower()`, so `'ß'.matches('(?i)[A-Z]')` and `'ﬁ'.matches('(?i)[A-Z]')` were true and
+  `'ſ'.matches('(?i)s')` and the Kelvin sign against `k` were false; all now agree with cel-expr.
+- **Engine error text never carries request data unless debug.** The redaction of cel-expr's
+  messages matched some kinds ("cost limit exceeded", "non-finite number", `timestamp():`) anywhere
+  in the text and before the specific kinds, and returned such a message raw, so a missing map key
+  or a bad regex from the request that held one of those phrases reached the outcome error. Each
+  kind is now matched at the start of the message, the specific kinds first, and reported as a
+  fixed text; the raw message stays in `CelError.detail` (shown with `inv.configure(debug=True)`).
+  `inv.zip()`'s length mismatch no longer names the two lengths outside `detail`, on either
+  backend. A modulus by zero on cel-expr is now reported as "division by zero".
+
 ### Nothing below the API
 
 Every layer is an API, and the rules stay on API boundaries: value laws on an API's inputs and

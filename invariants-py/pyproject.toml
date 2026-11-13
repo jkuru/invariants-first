@@ -32,7 +32,7 @@ classifiers = [
 [project.optional-dependencies]
 pydantic = ["pydantic>=2"]
 fastapi = ["fastapi", "pydantic>=2", "httpx"]   # httpx: fastapi.testclient needs it
-cel = ["cel-expr-python>=0.1.4", "cel-python>=0.5", "protobuf>=4.21"]
+cel = ["cel-expr-python>=0.1.4", "protobuf>=4.21"]
 otel = ["opentelemetry-api>=1.20"]
 schema = ["jsonschema>=4"]
 dev = ["pytest>=8", "hypothesis", "httpx", "fastapi", "pydantic>=2", "jsonschema>=4", "mypy==2.4.1"]
@@ -59,6 +59,6 @@ warn_unused_ignores = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["celpy.*", "cel_expr_python.*", "yaml.*", "jsonschema.*", "pytest.*", "_pytest.*", "fastapi.*",
+module = ["cel_expr_python.*", "yaml.*", "jsonschema.*", "pytest.*", "_pytest.*", "fastapi.*",
           "pydantic.*", "opentelemetry.*", "starlette.*", "google.*"]
 ignore_missing_imports = true

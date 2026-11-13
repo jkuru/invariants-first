@@ -8,7 +8,7 @@
 2. A timezone argument: a constant offset of 24 h or more is a LoadError (not a raw ValueError);
    a timezone from data is checked the same way on every backend (cel-expr took '' and '+99:00').
 3. CEL has no int-double arithmetic and no double %: a LoadError that says how to convert; the
-   engines agree at run time (celpy computed double * int, the subset computed double % double).
+   engines agree at run time (the subset computed double % double).
 4. A list read only through a comprehension's element fields (or size()) converts just those fields:
    an Item with a Decimal price loads when the rule reads only qty.
 
@@ -30,7 +30,7 @@ from invariants.cel import available_backends, get_backend
 from invariants.cel.errors import CelError
 from invariants.integrations import pydantic as inv_pd
 
-BACKENDS = [b for b in ("subset", "cel-expr", "celpy") if b in available_backends()]
+BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 UTC = dt.timezone.utc
 NOW = dt.datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 

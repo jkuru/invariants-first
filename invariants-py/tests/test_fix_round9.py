@@ -5,7 +5,7 @@
    the annotation shows them; the type checker knows timestamps and durations.
 2. cel-expr: long arithmetic chains and deep nesting load (the non-finite check no longer nests
    per operation); past cel-cpp's limit, a LoadError names it.
-3. celpy: computed values are celtypes again (type(), string(), the duration getters).
+3. engine computed values keep their CEL types (type(), string(), the duration getters).
 
 The tests run on every installed CEL backend (parametrised), whatever INV_CEL_BACKEND says.
 """
@@ -23,7 +23,7 @@ import round9 as r9
 from invariants.cel import available_backends, get_backend
 from invariants.cel.errors import CelError
 
-BACKENDS = [b for b in ("subset", "cel-expr", "celpy") if b in available_backends()]
+BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 UTC = dt.timezone.utc
 NOW = dt.datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 PLUS5 = dt.timezone(dt.timedelta(hours=5))
@@ -269,7 +269,7 @@ def test_cel_expr_text_stays_small():
     assert text.count("inv.__fin") == 1 and len(text) < 3 * len(src)
 
 
-# --- 3. minor: celpy computed values ---------------------------------------------------------------
+# --- 3. minor: engine computed values --------------------------------------------------------------
 ENGINE_ONLY = [
     ("type(args.a * 2.0) == double", True), ("type(args.a + args.a) == double", True),
     ("type(args.a - 1.0) == double", True), ("type(2 * 3) == int", True),

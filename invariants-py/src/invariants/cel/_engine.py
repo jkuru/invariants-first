@@ -1,4 +1,4 @@
-"""Helpers the engine backends (cel-expr, celpy) share.
+"""Helpers for the engine backend (cel-expr), kept apart from it so another engine can share them.
 
 Every engine backend uses the subset parser as its front end: it checks the rule's syntax and
 inv.* shapes, computes `references()` and `negated_membership()`, and rewrites the inv.*
@@ -20,13 +20,14 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from . import subset, values
-from .errors import CelError, CelSyntaxError, check_finite, check_result, raised
+from .errors import (NON_FINITE, NON_FINITE_RESULT, CelError, CelSyntaxError, check_finite, check_result,
+                     raised)
 
 Node = tuple
 INV_FUNCS = ("inv.sum", "inv.zip", "inv.unique_by")
-# The CEL standard functions both engine backends evaluate (global or receiver form), plus the
+# The CEL standard functions the engine backend evaluates (global or receiver form), plus the
 # macros and the inv.* extensions. The loader refuses a clause that calls any other name: the
-# string extensions (split, lowerAscii, ...) and math/list extensions are not in either engine here.
+# string extensions (split, lowerAscii, ...) and math/list extensions are not in the engine here.
 ENGINE_FUNCTIONS = frozenset({
     "size", "contains", "startsWith", "endsWith", "matches", "has",
     "all", "exists", "exists_one", "map", "filter",
@@ -36,45 +37,74 @@ ENGINE_FUNCTIONS = frozenset({
 
 
 # ---- shared: engine error text without request data --------------------------------------
-# (pattern, the error kind reported in its place). Engine messages quote map keys, regex
-# patterns and values from the request; by default only the kind is reported, the raw text is
-# kept in CelError.detail (shown with inv.configure(debug=True)).
+# Engine messages quote map keys, regex patterns and values from the request. By default only a
+# fixed text for the error's kind is reported; the raw text is kept in CelError.detail (shown with
+# inv.configure(debug=True)). Every pattern is matched at the start of the message, after the
+# engine's status codes (NOT_FOUND: ...), never anywhere in it: request data comes later in a
+# message, so a key or pattern that reads "cost limit exceeded" cannot pick the kind. The specific
+# kinds come first, and a kind whose text is reported is reported as the pattern matched it, which
+# holds no request data.
+_STATUS = re.compile(r"(?:[A-Z][A-Z_]*: )*")
+_OWN = re.compile("|".join((                # the library's own texts, raised inside the engine
+    r"cost limit exceeded(?: \(cel-expr: [0-9,]+ comprehension iterations per clause, nested comprehensions "
+    r"multiply\))?",
+    re.escape(NON_FINITE), re.escape(NON_FINITE_RESULT),
+    r"(?:timestamp|duration)\(\): (?:not an RFC 3339 timestamp \(e\.g\. 2024-01-31T09:30:00Z\)|not a duration "
+    r"\(e\.g\. '1h30m', '90s', '1\.5s'\)|sub-microsecond precision is not supported|out of range or not a "
+    r"valid date and time)",
+    r"(?:timestamp|duration) out of range",
+    r"unknown timezone(?: \(an offset must be between -23:59 and \+23:59\))?|timezone must be a string",
+    r"inv\.sum\(\) needs a list of numbers|inv\.zip\(\) needs two lists|inv\.zip\(\): length mismatch|"
+    r"inv\.unique_by\(\) needs a list or map",
+)))
 _KINDS: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), k) for p, k in (
-    (r"cost limit exceeded|iteration budget", ""),             # keep: no data in it
-    (r"non-finite number", ""),
-    (r"(timestamp|duration)\(\): |is not a CEL type|naive datetime|protobuf package|unknown timezone", ""),
-    (r"inv\.(sum|zip|unique_by)\(\)", ""),
-    (r"key not found|no such key", "no such key"),
-    (r"no such member|no such field", "no such field"),
-    (r"regular expression|match error|bad pattern", "invalid regular expression"),
-    (r"divide by zero|division by zero|modulus or divide", "division by zero"),
-    (r"no (matching|such) overloads?", ""),                     # keep: function and type names only
-    (r"undeclared reference to '([A-Za-z_][A-Za-z0-9_.]*)'", "undeclared reference to '{0}'"),
-    (r"index", "index out of range"),
-    (r"select|field selection", "field selection on a value that has no fields"),
-    (r"out of (int64 )?range|overflow", "value out of range"),
-    (r"conver", "conversion failed"),
+    (r"(?:key not found|no such key)\b", "no such key"),
+    (r"no such (?:member|field)\b", "no such field"),
+    (r"(?:invalid )?regular expression|match error|bad pattern|matches\(\): bad pattern",
+     "invalid regular expression"),
+    (r"(?:divide|division|modulus)(?: or divide)? by zero", "division by zero"),
+    (r"no (?:matching|such) overloads?(?: found)?\b", "no such overload"),
+    (r"undeclared reference to '([A-Za-z_][A-Za-z0-9_.]*)'", "undeclared reference"),
+    (r'no value with name "([A-Za-z_][A-Za-z0-9_.]*)"', "undeclared reference"),
+    (r"index\b", "index out of range"),
+    (r"(?:applying )?select\b|field selection", "field selection on a value that has no fields"),
+    (r"integer overflow|(?:[a-z0-9]+ )?out of (?:int64 |uint64 )?range|[a-z0-9]+ overflow", "value out of range"),
+    (r"cannot convert|type conversion error|[a-z]+\(\): cannot convert", "conversion failed"),
+    (r"non-finite number", "non-finite number (NaN or Infinity)"),
 ))
+# A signature such as _+_(string, int64) or size(list(dyn)): function and type names only.
+_TYPE = r"[\w.]+(?:\([\w., ]*\))?"
+_SIGNATURE = re.compile(rf"\s*:?\s*([\w.+\-*/%<>=!@&|?\[\]]+\((?:{_TYPE}(?:, {_TYPE})*)?\))\s*")
 
-
-_QUOTED = re.compile(r"""['"]([A-Za-z_][A-Za-z0-9_]{0,99})['"]""")
+# The key or field a "no such key" message names, as the whole rest of it (cel-expr: Key not found in map : "f").
+_QUOTED = re.compile(r"""(?:\s+in map)?\s*:?\s*(['"])([A-Za-z_][A-Za-z0-9_]{0,99})\1\s*""")
 
 
 def redact(msg: str, names: frozenset[str] = frozenset()) -> str:
-    """The kind of an engine error, without the request values its text may quote.
+    """A fixed text for the kind of an engine error, without the request values its text may quote.
 
-    names: identifiers of the rule text. A missing key or field that is one of them is rule
-    text, not request data, so it is named ("no such key 'zz'").
+    names: identifiers of the rule text. A missing key or field, or an undeclared name, that is one
+    of them is rule text, not request data, so it is named ("no such key 'zz'").
     """
+    st = _STATUS.match(msg)          # always matches (possibly the empty string)
+    at = st.end() if st else 0
+    m = _OWN.match(msg, at)
+    if m:
+        return m.group(0)
     for pat, kind in _KINDS:
-        m = pat.search(msg)
-        if m:
-            if not kind:
-                return msg
-            if kind in ("no such key", "no such field"):
-                q = _QUOTED.search(msg[m.end():])
-                return f"{kind} '{q.group(1)}'" if q and q.group(1) in names else kind
-            return kind.format(*m.groups()) if "{0}" in kind else kind
+        m = pat.match(msg, at)
+        if not m:
+            continue
+        if kind in ("no such key", "no such field"):
+            q = _QUOTED.fullmatch(msg, m.end())
+            return f"{kind} '{q.group(2)}'" if q and q.group(2) in names else kind
+        if kind == "undeclared reference":
+            name = m.group(1)
+            return f"undeclared reference to '{name}'" if name.split(".")[0] in names else kind
+        if kind == "no such overload":
+            sig = _SIGNATURE.fullmatch(msg, m.end())
+            return f"{kind}: {sig.group(1)}" if sig else kind
+        return kind
     return "evaluation error"
 
 
@@ -104,8 +134,15 @@ def ext_zip(a: Any, b: Any) -> list[list[Any]]:
     if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
         raise CelError("inv.zip() needs two lists")
     if len(a) != len(b):
-        raise CelError(f"inv.zip(): length mismatch {len(a)} vs {len(b)}")
+        raise zip_mismatch(len(a), len(b))
     return [[x, y] for x, y in zip(a, b)]
+
+
+def zip_mismatch(n: int, m: int) -> CelError:
+    """inv.zip()'s length error: the lengths come from the request, so they are only in .detail."""
+    err = CelError("inv.zip(): length mismatch")
+    err.detail = f"{n} vs {m}"
+    return err
 
 
 def ext_unique(vals: Any) -> bool:
@@ -482,7 +519,6 @@ class FrontEnd:
         """Source to hand the engine: original text unless a non-native extension needs a rewrite,
         or (with fin) the rule has arithmetic or double() whose results must be checked finite."""
         rest = tuple(f for f in INV_FUNCS if f not in native)
-        rest += tuple(k for k in rename if not k.startswith("inv."))     # other calls the backend renames
         if fin is not None and (needs_finite(self.ast) or conv_calls(self.ast, frozenset(fin) & _TIME_CONV)
                                 or ("zone" in fin and zone_calls(self.ast))):
             return unparse(mark_finite(self.ast), rename, fin, self.names)

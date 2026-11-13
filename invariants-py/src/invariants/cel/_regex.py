@@ -57,6 +57,44 @@ def _category(name: str) -> Pred:
     return lambda c: unicodedata.category(c).startswith(name)
 
 
+# ---- (?i): RE2's simple case folding ------------------------------------------------------------
+# RE2 folds case one character at a time: two characters match under (?i) when they share a simple
+# (one-character) case folding, so 's', 'S' and 'ſ' match each other, and 'K' (Kelvin) matches 'k',
+# but 'ß' never matches 'SS' and 'ı' does not match 'I'. str.upper()/lower() are not that: 'ß'.upper()
+# is 'SS' and 'ﬁ'.upper() is 'FI', which a range such as [A-Z] would take. The orbits are built once,
+# on the first (?i) pattern, from the characters up to _FOLD_TOP (the last cased one is below it).
+_FOLD_TOP = 0x1F000
+_ORBITS: dict[str, tuple[str, ...]] | None = None
+
+
+def _simple_fold(c: str) -> str:
+    """c's simple case folding: casefold() where that is one character, else its one-character lower
+    case (U+1E9E 'ẞ' -> 'ß'), else c itself (a character whose only folding is several characters)."""
+    f = c.casefold()
+    if len(f) == 1:
+        return f
+    lo = c.lower()
+    return lo if len(lo) == 1 else c
+
+
+def _orbits() -> dict[str, tuple[str, ...]]:
+    global _ORBITS
+    if _ORBITS is None:
+        groups: dict[str, list[str]] = {}
+        for i in range(_FOLD_TOP):
+            c = chr(i)
+            f = _simple_fold(c)
+            if f != c:
+                groups.setdefault(f, [f]).append(c)
+        _ORBITS = {c: tuple(x for x in g if x != c) for g in groups.values() for c in g}
+    return _ORBITS
+
+
+def fold_orbit(c: str) -> tuple[str, ...]:
+    """The other characters c matches under (?i) (RE2's case-folding orbit), or () if none."""
+    return _orbits().get(c, ())
+
+
 class _Set:
     """A character class: ranges and predicates, maybe negated, maybe case-folded."""
 
@@ -69,7 +107,7 @@ class _Set:
         return any(lo <= c <= hi for lo, hi in self.ranges) or any(p(c) for p in self.preds)
 
     def __call__(self, c: str) -> bool:
-        hit = self._has(c) or (self.fold and (self._has(c.lower()) or self._has(c.upper())))
+        hit = self._has(c) or (self.fold and any(self._has(x) for x in fold_orbit(c)))
         return hit != self.neg
 
 
@@ -181,7 +219,7 @@ class _Parser:
         return self.lit(c)
 
     def lit(self, c: str) -> tuple:
-        if self.flags["i"] and c.lower() != c.upper():
+        if self.flags["i"] and fold_orbit(c):
             return ("char", _Set([(c, c)], [], False, True))
         return ("char", _Set([(c, c)], [], False, False))
 

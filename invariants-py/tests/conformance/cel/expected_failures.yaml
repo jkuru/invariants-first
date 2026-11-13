@@ -1,6 +1,6 @@
 # Known backend disagreements with the conformance cases (guide section 4.5).
 # backend -> {case id ("suite/name"): reason}. Run as strict xfail: a fixed case fails the
 # run until its entry is removed. Spec 1.0 needs two SDK backends at zero entries.
-# All three backends (subset, cel-expr, celpy) currently have no entries.
+# Both backends (subset, cel-expr) currently have no entries.
 
 subset: {}

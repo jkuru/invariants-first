@@ -21,7 +21,7 @@ from invariants import cel
 from invariants.cel import available_backends, get_backend
 from invariants.integrations import pydantic as inv_pd
 
-BACKENDS = [b for b in ("subset", "cel-expr", "celpy") if b in available_backends()]
+BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -325,14 +325,6 @@ def test_string_of_bool_agrees(backend):
     assert get_backend(backend).compile("string(true) == 'true' && string(false) == 'false'").evaluate({}) is True
 
 
-def test_celpy_type_names_still_work_after_conversion_override():
-    if "celpy" not in BACKENDS:
-        pytest.skip("celpy not installed")
-    prog = get_backend("celpy").compile("type(1) == int && type(1.0) == double && type('a') == string "
-                                        "&& type(true) == bool && int('3') == 3")
-    assert prog.evaluate({}) is True
-
-
 # --- 7. minor: CHANGELOG has the Unreleased section CONTRIBUTING points to --------------------------
 def test_changelog_has_unreleased_section_named_by_contributing():
     changelog = (ROOT / "CHANGELOG.md").read_text()
@@ -341,7 +333,7 @@ def test_changelog_has_unreleased_section_named_by_contributing():
     assert '"Unreleased"' in contributing or "[Unreleased]" in contributing
 
 
-# --- found during this round: celpy compared computed durations and timestamps as unequal ------------
+# --- found during this round: computed durations and timestamps compare equal on the engine --------
 @pytest.mark.parametrize("expr", [
     "duration('2s') - duration('1s') == duration('1s')",
     "timestamp('2024-01-01T00:00:01Z') - duration('1s') == timestamp('2024-01-01T00:00:00Z')",

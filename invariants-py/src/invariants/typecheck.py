@@ -56,7 +56,7 @@ _ARITH: dict[tuple[str, str, str], str] = {
     ("-", "timestamp", "duration"): "timestamp", ("-", "duration", "duration"): "duration",
 }
 _DURATION_GETTERS = frozenset({"getHours", "getMinutes", "getSeconds", "getMilliseconds"})
-# subset-matcher refusals that a full RE2 (cel-expr, celpy) may accept: not load errors
+# subset-matcher refusals that a full RE2 (cel-expr) may accept: not load errors
 _RE2_MAYBE_OK = ("unsupported", "pattern too large", "invalid escape", "bad flag group")
 _NAMES = {"int": "int", "uint": "uint", "double": "double", "string": "string", "bool": "bool", "bytes": "bytes", "null": "null",
           "list": "list", "map": "map", "timestamp": "timestamp", "duration": "duration"}

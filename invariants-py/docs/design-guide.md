@@ -978,7 +978,7 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | `loader.py`, `typecheck.py`, `schema/` | reads the rule file, expands the short forms, refuses what cannot hold, type-checks every clause |
 | `registry.py` | loaded rules, modes, ablation, reviews, standing, `verify` |
 | `guard.py`, `providers.py`, `evaluate.py` | the decorators, provider binding, the evaluator and the actions |
-| `cel/` | three CEL engines behind one parser: `subset` (the default, standard library only), `cel-expr` (Google's C++ runtime), `celpy` (pure Python); `INV_CEL_BACKEND` picks one |
+| `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime); `INV_CEL_BACKEND` picks one |
 | `scan.py` | the call graph and the path-law check |
 | `lockfile.py` | the pins, the semantic diff and the weakening gate |
 | `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
@@ -1040,7 +1040,6 @@ Python 3.14:
 |---|---|---|---|---|
 | `subset` (default) | 7.1 µs | 8.4 µs | 22.7 µs | 28.3 µs |
 | `cel-expr` | 9.6 µs | 10.7 µs | 22.0 µs | 27.9 µs |
-| `celpy` | 86 µs | 100 µs | 830 µs | 892 µs |
 
 Providers add their own cost on every call. `inv scan` reads about 1,850 functions in about a
 second.
@@ -1065,7 +1064,7 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 5. **Door discovery is a heuristic.** It needs a layer to lock, and it reads names. Review what
    `inv init` proposes.
 6. **`Checked` values can be forged in Python.** That is why every edge checks again.
-7. **CEL is a common subset.** Rules use the grammar all three engines share, and a few functions
+7. **CEL is a common subset.** Rules use the grammar both engines share, and a few functions
    exist only on some engines; the loader tells you.
 8. **The lock reads rules, not behaviour.** It judges what a rule says, conservatively. A behaviour
    change inside a function body does not change the lock; that is what the runtime guards and tests
@@ -1097,7 +1096,7 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 
 | Path | Holds |
 |---|---|
-| `invariants-py/` | the library, its test suite (about 3,950 tests, run on all three CEL engines) and its docs |
+| `invariants-py/` | the library, its test suite (about 3,200 tests, run on both CEL engines) and its docs |
 | `invariants-py/docs/` | `start.md` (the ten-minute start), `rule-file.md` (every field), `concepts.md`, `scan.md`, `lockfile.md`, `api.md`, `cel.md`, `cookbook.md`, `evaluation.md` |
 | `apps/support-agent/` | the tool-calling agent and its twelve defects |
 | `apps/pool-service/`, `apps/fact-pipeline/` | the other two apps |

@@ -23,6 +23,11 @@ from .errors import ALLOW_NON_FINITE, CelError, CelSyntaxError, check_finite, ch
 
 Node = tuple
 DEFAULT_BUDGET = 10_000
+
+
+class CostExceeded(CelError):
+    """The cost budget is spent. Never absorbed: && || all exists exists_one re-raise it at once, so a
+    clause that runs out of budget is a rule_error whatever its other branches say."""
 INT_MIN, INT_MAX = -2**63, 2**63 - 1
 INV_ARITY = {"inv.sum": 1, "inv.zip": 2, "inv.unique_by": 3}
 
@@ -459,6 +464,9 @@ _NO_FIELDS = (str, bytes, int, float, list, tuple, *values.SCALARS)
 
 
 def _select(o: Any, f: str, test: bool = False) -> Any:
+    if test and (o is None or isinstance(o, _NO_FIELDS)):
+        # CEL has() needs a map or message: on null, a number, a string or a list it is an error (cel-expr)
+        raise CelError(f"has() on {_ty(o)}: field selection on a value that has no fields")
     if isinstance(o, dict):
         ok, v = f in o, o.get(f)
     elif o is None or f.startswith("_") or isinstance(o, _NO_FIELDS) or f in values.api_names(type(o)):
@@ -547,7 +555,7 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
     budget = budget if budget is not None else [DEFAULT_BUDGET]
     budget[0] -= 1
     if budget[0] < 0:
-        raise CelError("cost limit exceeded")
+        raise CostExceeded("cost limit exceeded")
 
     def ev(x: Node, e: dict[str, Any] = env) -> Any:
         return evaluate(x, e, budget)
@@ -606,6 +614,8 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
             for side in (n[2], n[3]):
                 try:
                     res.append(_bool(ev(side), op))
+                except CostExceeded:
+                    raise
                 except CelError as e:
                     res.append(e)
             decider = op == "||"
@@ -671,6 +681,8 @@ def _call(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], bu
         for x in items:
             try:
                 hits.append(_bool(ev(body, {**env, var: x}), name))
+            except CostExceeded:
+                raise
             except CelError as e:
                 hits.append(e)
         errs = [h for h in hits if isinstance(h, CelError)]
@@ -705,7 +717,9 @@ def _call(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], bu
         if len(vals) != 2 or not all(isinstance(v, (list, tuple)) for v in vals):
             raise CelError("inv.zip() needs two lists")
         if len(vals[0]) != len(vals[1]):
-            raise CelError(f"inv.zip(): length mismatch {len(vals[0])} vs {len(vals[1])}")
+            err = CelError("inv.zip(): length mismatch")      # the lengths are request data: only in .detail
+            err.detail = f"{len(vals[0])} vs {len(vals[1])}"
+            raise err
         return [[a, b] for a, b in zip(*vals)]
     if name in CONVERSIONS:
         if tgt is not None or len(vals) != 1:
@@ -737,7 +751,7 @@ def _convert(name: str, v: Any) -> Any:
     int(): int, bool, double (truncated toward zero; NaN, +-Infinity and values outside int64 are
     errors) and base-10 text. double(): int, double and decimal text (NaN and Infinity text are
     errors unless non-finite numbers are allowed). string(): string, int, bool, bytes (UTF-8);
-    string(double) is refused because CEL engines print doubles differently (cel-expr '2', celpy
+    string(double) is refused because CEL engines print doubles differently (cel-expr '2', others
     '2.0'); string(timestamp) and string(duration) print as CEL does (values.format_*).
     timestamp(): RFC 3339 text or int seconds; duration(): text such as '1h30m'; int(timestamp):
     Unix seconds, rounded down. bool(): bool and the text 1, t, true, TRUE, True, 0, f, false, FALSE, False. dyn(): any value.
@@ -826,7 +840,7 @@ def _matches(text: str, pattern: str, budget: list[int] | None = None) -> bool:
     """CEL matches(): an unanchored search with RE2 syntax, in linear time (see _regex).
 
     Its steps are charged to the cost budget, so no pattern or input can run past it. That is
-    stricter than cel-expr and celpy: an input past about STEPS_PER_COST * DEFAULT_BUDGET VM
+    stricter than cel-expr: an input past about STEPS_PER_COST * DEFAULT_BUDGET VM
     steps (some tens of thousands of characters for a small pattern) is a rule_error here and a
     result there. The bound is deliberate: free steps per input character would let a caller
     buy CPU time with input size, once per matches() in a loop.
@@ -847,7 +861,7 @@ def _matches(text: str, pattern: str, budget: list[int] | None = None) -> bool:
     except _regex.StepLimit:
         if budget is not None:
             budget[0] = -1
-        raise CelError("cost limit exceeded (matches)") from None
+        raise CostExceeded("cost limit exceeded (matches)") from None
     if budget is not None:
         budget[0] -= steps // STEPS_PER_COST
     return found
@@ -901,5 +915,5 @@ class SubsetBackend:
         return SubsetProgram(expr, parse(expr), self.budget)
 
 
-__all__ = ["parse", "evaluate", "references", "reads", "ELEM", "SIZE", "free_names", "SubsetProgram", "SubsetBackend", "FUNCTIONS",
+__all__ = ["CostExceeded", "parse", "evaluate", "references", "reads", "ELEM", "SIZE", "free_names", "SubsetProgram", "SubsetBackend", "FUNCTIONS",
            "ARITY", "arity_error"]
