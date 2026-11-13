@@ -10,6 +10,16 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+### Fixes after the layered refactor
+
+- **`inv mcp` confines the project it imports from.** `check` and `status` refuse a rule file whose
+  nearest `pyproject.toml` sits above the server's `--root`, or whose default `src/` resolves outside
+  it (a symlink): either would put code outside `--root` on `sys.path`. `propose_rules` now checks
+  the `pyproject.toml` settings (`[tool.invariants.scan] roots`, setuptools `where`), every source root
+  it reads, and the default `graphify-out/graph.json` (a symlink outside `--root` is refused).
+- **A non-UTF-8 OpenAPI contract file is a `LoadError`,** so `inv lock` pins it by digest instead of
+  crashing with `UnicodeDecodeError`.
+
 ### Refactor: guard/ package
 
 `invariants/guard.py` is now the package `invariants/guard/`: `checked.py` (inv.Checked,

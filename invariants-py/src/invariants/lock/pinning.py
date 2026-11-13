@@ -441,7 +441,10 @@ _PARAM_KEYS = ("name", "in", "required", "schema", "content", "style", "explode"
 
 
 def _openapi_file(name: str, path: pathlib.Path) -> Any:
-    text = path.read_text()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise LoadError(f"contract {name}: {path.name} cannot be read as UTF-8 text ({type(e).__name__})") from e
     try:
         return json.loads(text)
     except json.JSONDecodeError:

@@ -112,6 +112,10 @@ def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None
         if proj in seen or not py.is_file():
             continue
         seen.add(proj)
+        for d, what in ((proj, "the project root (nearest pyproject.toml)"), (proj / "src", "the default src/")):
+            if d.exists() and not d.resolve().is_relative_to(server_root):
+                raise ToolError(f"{what} {d} resolves to {d.resolve()}, outside the server's --root {server_root}; "
+                                f"`check` and `status` import from it (start inv-mcp with a wider --root)")
         try:
             tool = cli._pyproject(proj).get("tool") or {}
         except cli.Usage as e:
@@ -335,14 +339,19 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
     graph_path = (str(_inside(server_root, root, graph_arg, "graphify")) if isinstance(graph_arg, str) and graph_arg
                   else None)
     exclude = _strs(args, "exclude")
+    _settings_inside(server_root, target)
     try:
         roots = [pathlib.Path(r) for r in given] or cli.source_dirs(target) or [root]
         for r in roots:
             if not r.exists():
                 raise ToolError(f"source root {r} does not exist")
+        scan_roots = cli._roots(argparse.Namespace(root=given), target)
+        for r in [*roots, *map(pathlib.Path, scan_roots)]:
+            _inside(server_root, root, str(r), "source root")
         found = bootstrap.discover(root, roots, exclude)
         graph = None if args.get("no_graphify") else graphify.find(root, graph_path)
-        scan_roots = cli._roots(argparse.Namespace(root=given), target)
+        if graph is not None:                            # the default graphify-out/graph.json may be a symlink
+            _inside(server_root, root, str(graph), "graphify graph")
         scan_exclude = cli._exclude(argparse.Namespace(exclude=exclude), target)
         found.doors = doors.discover(scan_roots, scan_exclude, limit=limit, graph=graph, project=root)
         text = bootstrap.render(found)
