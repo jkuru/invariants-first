@@ -323,7 +323,7 @@ def _entry(rep, why="plugins never import payments"):
 def test_a_reviewed_unresolved_site_is_accepted_and_shown(tmp_path):
     root = _project(tmp_path, {"plugins.py": PLUGINS})
     rep = scan.scan(_doc(), [root])
-    assert rep.rule_result("PAY-1") == "unresolved" and rep.findings[0].sha and len(rep.findings[0].sha) == 10
+    assert rep.rule_result("PAY-1") == "unresolved" and rep.findings[0].sha and len(rep.findings[0].sha) == 16
     assert "[sha" not in scan.to_text(rep)                 # shown only where the rule opts in
     assert f"[sha {rep.findings[0].sha}]" in scan.to_text(scan.scan(_doc([]), [root]))
     e = _entry(rep)
@@ -373,19 +373,19 @@ def test_an_entry_that_matches_nothing_is_missing(tmp_path):
     rep = scan.scan(_doc([e]), [root])
     # a column that is not the finding's: the nearest finding with the same sha still matches
     assert rep.findings == [] and len(rep.accepted) == 1
-    e = {**e, "sha": "0" * 10}
+    e = {**e, "sha": "0" * 16}
     rep = scan.scan(_doc([e]), [root])
     assert _codes(rep) == ["missing/allow-unresolved-unused", "unresolved/reflection"]
 
 
 @pytest.mark.parametrize("entry, why", [
-    ({"at": "ops.py:3", "code": "bypass", "sha": "0" * 10, "why": "x"}, "only an unresolved finding"),
-    ({"at": "ops.py:3", "code": "forbidden/getattr-sink", "sha": "0" * 10, "why": "x"}, "only an unresolved finding"),
+    ({"at": "ops.py:3", "code": "bypass", "sha": "0" * 16, "why": "x"}, "only an unresolved finding"),
+    ({"at": "ops.py:3", "code": "forbidden/getattr-sink", "sha": "0" * 16, "why": "x"}, "only an unresolved finding"),
     ({"at": "ops.py:3", "code": "unresolved/reflection", "why": "x"}, "missing sha"),
-    ({"at": "ops.py", "code": "unresolved/reflection", "sha": "0" * 10, "why": "x"}, "path:line"),
-    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "xyz", "why": "x"}, "10 hex digits"),
-    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "0" * 10, "why": " "}, "why must say"),
-    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "0" * 10, "why": "x", "glob": "*"}, "unknown field"),
+    ({"at": "ops.py", "code": "unresolved/reflection", "sha": "0" * 16, "why": "x"}, "path:line"),
+    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "xyz", "why": "x"}, "16 hex digits"),
+    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "0" * 16, "why": " "}, "why must say"),
+    ({"at": "ops.py:3", "code": "unresolved/reflection", "sha": "0" * 16, "why": "x", "glob": "*"}, "unknown field"),
 ])
 def test_a_bypass_or_forbidden_finding_can_never_be_accepted(tmp_path, entry, why):
     with pytest.raises(scan.ScanConfigError, match=why):
@@ -394,11 +394,11 @@ def test_a_bypass_or_forbidden_finding_can_never_be_accepted(tmp_path, entry, wh
 
 def test_the_short_form_and_the_loader_accept_the_field():
     from invariants.loader import expand_short_forms
-    entry = {"at": "plugins.py:5", "code": "unresolved/reflection", "sha": "0" * 10, "why": "x"}
+    entry = {"at": "plugins.py:5", "code": "unresolved/reflection", "sha": "0" * 16, "why": "x"}
     doc = expand_short_forms({"rules": [{"id": "D", "door": "py:payments.refund", "sink": "py:payments.send_to_gateway",
                                          "allow_unresolved": [entry]}]})
     assert doc["rules"][0]["mediation"]["allow_unresolved"] == [entry]
-    assert scan.mediations(doc)[0]["D"].accept[0].sha == "0" * 10
+    assert scan.mediations(doc)[0]["D"].accept[0].sha == "0" * 16
 
 
 def test_status_names_accepted_sites_and_withholds_held(tmp_path):

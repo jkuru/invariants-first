@@ -342,33 +342,55 @@ finding in the rule:
   allow_unresolved:                     # mediation.allow_unresolved in the long form
     - at: "app/extensions.py:46:28"     # path:line or path:line:col, as the scan reports it
       code: unresolved/reflection
-      sha: 7d0a79b865                   # the finding's sha (inv scan --format json)
+      sha: 5452f77c9ad1d679             # the finding's sha (inv scan --format json)
       why: "loads the extensions listed in config; none of them imports app.sessions"
 ```
 
-`inv scan --format json` gives every unresolved finding its `sha`: a short hash of its code, the
-function it is in and its source line with the spacing normalized. A rule that declares
-`allow_unresolved` (an empty list is enough) also shows the sha at the end of each unresolved line of
-the text output, and the MCP `explain` tool gives the entry. An entry matches an unresolved finding of
-that rule in the same file, with the same code and sha: the one at its line (and column) first, else
-the nearest one. So:
+`inv scan --format json` gives every unresolved finding its `sha`, 16 hex digits: a hash of its code,
+the function it is in and the whole statement it is in, every line of it (for a compound statement
+such as `if`, `for`, `with` or `def`, its header up to the colon: the statements of its body are
+their own). The statement is compared token by token, so a reformat (line breaks, spacing, comments)
+keeps the sha and a change of any token does not. An `unresolved/inferred-path` finding's sha also
+covers what reaches its site: the entrypoints from which its function is reached without a door, and
+every name-matched call on those paths (`ops.go -> .refund`), which `--format json` lists as
+`reached_by` (the first 50) and the text output summarizes after the sha. A rule that declares
+`allow_unresolved` (an empty list is enough) shows the sha at the end of each unresolved line of the
+text output, and the MCP `explain` tool gives the entry. A sha from before the statement hash (10
+hex digits) is refused when the rule file is read: review the site again and write the new one.
+
+An entry matches an unresolved finding of that rule in the same file, with the same code and sha:
+first every entry whose finding is at its line (and column), then each other entry takes the nearest
+finding left with its sha. So:
 
 - an edit above the site that moves it keeps the entry: the finding is shown as accepted, with "moved
   from line N: update its at";
-- an edit of the site itself (or a rename of its function) changes the sha: the finding fails again,
-  and the entry is `missing/allow-unresolved-unused`, as is an entry whose finding is gone (delete it:
-  a tightening);
-- each entry accepts one finding; a second site with the same text needs its own entry;
+- an edit of any line of the statement (the second line of a call split over two, say), or a rename
+  of its function, changes the sha: the finding fails again, and the entry is
+  `missing/allow-unresolved-unused`, as is an entry whose finding is gone (delete it: a tightening);
+- for an inferred path, a new caller that reaches the site (an untyped `def nuke(obj): obj.refund()`
+  called as `nuke(Legacy())`, or a new entrypoint into the reviewed function) changes the sha too: the
+  finding is reported again, with what now reaches it, for a person to review;
+- each entry accepts one finding; a second site with the same statement in the same function has the
+  same sha and needs its own entry, and the lock counts them (below);
+- when the reviewed statement is deleted and the same statement is somewhere else in the same
+  function, the entry follows it and reports it as moved. This is deliberate: the scan has no record
+  of the code around a site, so it cannot tell that copy from the reviewed statement moved down by an
+  edit above it, just as it cannot see an edit of the lines before an unmoved site (`obj = Store()`
+  inserted above a reviewed `getattr(obj, name)`). The key ties an entry to its statement text and
+  its function, not to its neighbours; a review of the diff is what catches a changed context, and
+  the output names every move;
 - only `unresolved/*` codes can be accepted: an entry for `bypass` or `forbidden/*` is refused when the
   rule file is read.
 
 An accepted finding is `accepted` in the text output, under `accepted` in `--format json`, a SARIF
 result with an accepted external suppression (its justification is the entry's `why`), and counted in
 the rule's summary (`pass (13 accepted)`). It never fails `inv scan` or `inv check`. `inv status` says
-the rule passes with accepted sites and does not call it `held`. The lock reports a new entry (a site
-no entry named before) and an entry that drops its column as a weakening, which needs `inv lock
---accept-weakening`, a person's decision; removing an entry is a tightening, and a new line or `why`
-for the same site is neither.
+the rule passes with accepted sites and does not call it `held`. The lock compares the entries as a
+multiset of sites (file, code, sha): a site named by more entries than before is a weakening (a new
+site, or a second entry for a sha one entry named, which accepts one more copy of that statement), as
+is a site named by more entries without a column than before (such an entry matches any column of
+its line). A weakening needs `inv lock --accept-weakening`, a person's decision. A site named by fewer
+entries is a tightening, and a new line or `why` for the same site is neither.
 
 ## Allowed back doors
 

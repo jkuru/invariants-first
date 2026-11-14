@@ -139,13 +139,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   line instead of a bare "no path skips a door or guard".
 - Reviewed exceptions: `mediation.allow_unresolved` (short form `allow_unresolved:`) accepts an
   unresolved finding a person has read, one site at a time: `{at: "path:line[:col]", code, sha,
-  why}`, where `sha` (in `--format json`) hashes the finding's code, function and source line. An
-  accepted finding is shown (`accepted` in text, JSON, a SARIF suppression with the `why`, `inv
-  status`, MCP `explain`) and never fails the rule; an edit above the site keeps the entry (reported
-  as moved), an edit of the site does not; an entry that matches nothing is
-  `missing/allow-unresolved-unused`. `bypass` and `forbidden/*` findings can never be accepted. A new
-  entry, or one that drops its column, is a lock weakening (`--accept-weakening`); removing one is a
-  tightening.
+  why}`, where `sha` (16 hex digits, in `--format json`) hashes the finding's code, function and
+  whole statement (every line of it, token by token, so a reformat keeps it; a compound statement's
+  header), and for an `unresolved/inferred-path` finding also the entrypoints and name-matched calls
+  that reach its site (listed as `reached_by`), so a new untyped caller of an accepted helper is a
+  new, unaccepted finding. An accepted finding is shown (`accepted` in text, JSON, a SARIF
+  suppression with the `why`, `inv status`, MCP `explain`) and never fails the rule; an edit above
+  the site keeps the entry (reported as moved), an edit of any line of the statement does not; an
+  entry that matches nothing is `missing/allow-unresolved-unused`; entries at their own line are
+  matched before moved ones. `bypass` and `forbidden/*` findings can never be accepted. The lock
+  compares entries as a multiset: a site named by more entries than before (a second entry for a
+  copied statement included), or by more entries without a column, is a weakening
+  (`--accept-weakening`); fewer is a tightening. The SARIF fingerprint is `invSite/v2`.
 - Narrowing the scan can prove: a `getattr` with a computed name on an instance (or the class) of a
   class whose whole family the scan sees, where no attribute is named like a sink or door and none
   can reach a sink without a door, or on an object outside the scanned code (`getattr(logging,

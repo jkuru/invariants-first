@@ -4,6 +4,7 @@ model_policy and other fields, each judged by FIELD_POLICY), a target, provider 
 from __future__ import annotations
 
 import ast
+import collections
 import json
 from typing import Any
 
@@ -232,32 +233,47 @@ def _accept_key(e: Any) -> tuple[str, str, str, str | None] | None:
 
 
 def _accept_changes(where: str, old: Any, new: Any) -> list[Change]:
-    """mediation.allow_unresolved: an entry for a site no old entry names (a new file, code or sha), or
-    one that drops its column (it then matches any column of the line), is a weakening; a removed entry
-    is a tightening, and a new line or reason for the same site is neither (the code above it moved,
-    or the reviewer reworded it)."""
+    """mediation.allow_unresolved, compared as a multiset of sites (file, code, sha): each entry accepts
+    one finding, and identical statements in one function share a sha, so a site named by more entries
+    than before is a weakening (one more finding of that statement is accepted: a new copy of a reviewed
+    line), as is one named by more entries without a column than before (such an entry matches any
+    column of the line). A site named by fewer entries is a tightening, and a new line or reason for the
+    same site is neither (the code above it moved, or the reviewer reworded it)."""
     la = old if isinstance(old, list) else [] if old is None else [old]
     lb = new if isinstance(new, list) else [] if new is None else [new]
     ka, kb = [_accept_key(e) for e in la], [_accept_key(e) for e in lb]
     if None in ka or None in kb:
         return [Change(where, "mediation.allow_unresolved", old, new, True,
                        "a malformed entry; treated as a possible weakening")]
-    had = {k[:3]: k[3] for k in ka if k is not None}
+    na = collections.Counter(k[:3] for k in ka if k is not None)
+    nb = collections.Counter(k[:3] for k in kb if k is not None)
+    ca = collections.Counter(k[:3] for k in ka if k is not None and k[3] is None)
+    cb = collections.Counter(k[:3] for k in kb if k is not None and k[3] is None)
     out = []
+    seen: set[tuple[str, str, str]] = set()
     for e, k in zip(lb, kb):
-        if k is None:
+        if k is None or k[:3] in seen:
             continue
-        if k[:3] not in had:
+        seen.add(k[:3])
+        site = k[:3]
+        if nb[site] > na[site]:
+            more = (f" ({nb[site]} entries for it instead of {na[site]}: each accepts one finding of that "
+                    f"statement)" if na[site] else "")
             out.append(Change(where, "mediation.allow_unresolved", None, e, True,
-                              f"an unresolved site is now accepted without the scan's proof: {e['at']} ({e['code']})"))
-        elif had[k[:3]] is not None and k[3] is None:
+                              f"an unresolved site is now accepted without the scan's proof: {e['at']} "
+                              f"({e['code']}){more}"))
+        elif cb[site] > ca[site]:
             out.append(Change(where, "mediation.allow_unresolved", None, e, True,
                               f"the entry for {e['at']} ({e['code']}) no longer names a column, so it matches more"))
-    kept = {x[:3] for x in kb if x is not None}
+    seen = set()
     for e, k in zip(la, ka):
-        if k is not None and k[:3] not in kept:
-            out.append(Change(where, "mediation.allow_unresolved", e, None, False,
-                              f"{e['at']} ({e['code']}) is no longer accepted: the scan reports it again"))
+        if k is None or k[:3] in seen or nb[k[:3]] >= na[k[:3]]:
+            continue
+        seen.add(k[:3])
+        msg = (f"{e['at']} ({e['code']}) has {nb[k[:3]]} entries instead of {na[k[:3]]}: fewer findings of "
+               f"that statement are accepted" if nb[k[:3]] else
+               f"{e['at']} ({e['code']}) is no longer accepted: the scan reports it again")
+        out.append(Change(where, "mediation.allow_unresolved", e, None, False, msg))
     if not out:                                        # the same sites: moved lines or a new why
         out.append(Change(where, "mediation.allow_unresolved", old, new, False,
                           "the same sites are accepted (a new line or reason)"))

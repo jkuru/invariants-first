@@ -39,10 +39,13 @@ class Finding:
     sha: str | None = None
     why: str | None = None         # accepted: the reason its allow_unresolved entry gives
     moved_from: int | None = None  # accepted at another line than its entry says (the code above moved)
+    # an unresolved/inferred-path finding: what reaches its site, which its sha covers too (the entrypoints
+    # and the name-matched calls on the paths through it)
+    reached_by: list[str] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out = dataclasses.asdict(self)
-        for k in ("sha", "why", "moved_from"):     # only where they say something
+        for k in ("sha", "why", "moved_from", "reached_by"):     # only where they say something
             if out[k] is None:
                 del out[k]
         return out

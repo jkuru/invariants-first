@@ -19,7 +19,7 @@
       "properties": {
         "at": {"type": "string", "pattern": "^[^:]+:[1-9][0-9]*(:[1-9][0-9]*)?$", "description": "path:line or path:line:col, the file relative to its source root as the scan reports it"},
         "code": {"type": "string", "pattern": "^unresolved/", "description": "the finding's code; only unresolved findings can be accepted"},
-        "sha": {"type": "string", "pattern": "^[0-9a-f]{10}$", "description": "the sha the scan gives the finding (inv scan --format json)"},
+        "sha": {"type": "string", "pattern": "^[0-9a-f]{16}$", "description": "the sha the scan gives the finding (inv scan --format json)"},
         "why": {"type": "string", "minLength": 1, "description": "why the reviewed site cannot reach the sink"}}}}]},
     "path": {"type": "string", "pattern": "^(args|result|reply|self|old_self|provider)(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
     "nameMap": {"type": "object", "additionalProperties": {"$ref": "#/$defs/path"}},

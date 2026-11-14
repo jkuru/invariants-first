@@ -8,6 +8,17 @@ def _where(f: Finding) -> str:
     return f"{f.file}:{f.line}:{f.col}" if f.file else "-"
 
 
+def _covers(f: Finding) -> str:
+    """What an accepted inferred path would cover besides its site (its sha covers it): the entrypoints
+    and name-matched calls that reach it, which a reviewer reads before accepting it."""
+    if not f.reached_by:
+        return ""
+    tops = [x for x in f.reached_by if x.startswith("entrypoint ")]
+    calls = [x for x in f.reached_by if not x.startswith("entrypoint ")]
+    shown = "; ".join(calls[:5]) + (f"; and {len(calls) - 5} more (--format json)" if len(calls) > 5 else "")
+    return f"; covers {len(tops)} entrypoint(s) and {len(calls)} name-matched call(s): {shown}"
+
+
 def to_text(report: Report) -> str:
     """Human-readable report, one finding per line. A rule that declares mediation.allow_unresolved shows,
     on each unresolved finding still failing, the sha an entry accepting it names; an accepted finding
@@ -15,7 +26,7 @@ def to_text(report: Report) -> str:
     lines = []
     opted = {rid for rid, m in report.scanned.items() if m.accept is not None}
     for f in report.findings:
-        key = f"  [sha {f.sha}]" if f.rule in opted and f.kind == "unresolved" and f.sha else ""
+        key = f"  [sha {f.sha}{_covers(f)}]" if f.rule in opted and f.kind == "unresolved" and f.sha else ""
         lines.append(f"{f.kind:<10} {f.rule:<8} {_where(f)}  {f.message}{key}")
     for f in report.accepted:
         moved = (f"; moved from line {f.moved_from}: update its at to {f.file}:{f.line}"
