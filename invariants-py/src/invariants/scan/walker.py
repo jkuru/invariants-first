@@ -66,6 +66,11 @@ _RUNNERS = frozenset({"subprocess.run", "subprocess.Popen", "subprocess.call", "
                       *(f"os.spawn{x}" for x in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe"))})
 # a dotted name in a string, looked up (`pydoc.locate("pkg.mod.f")`): a getattr of it
 _NAME_LOOKUP = frozenset({"pydoc.locate", "pkgutil.resolve_name"})
+_ANNOTATED = frozenset({"typing.Annotated", "typing_extensions.Annotated"})
+_LITERAL = frozenset({"typing.Literal", "typing_extensions.Literal"})
+# a FastAPI dependency marker: with no dependency, FastAPI calls the parameter's annotated class
+_DEPENDS = frozenset({"fastapi.Depends", "fastapi.Security", "fastapi.params.Depends", "fastapi.params.Security",
+                      "fastapi.param_functions.Depends", "fastapi.param_functions.Security"})
 # reflective builtins and helpers taken as a value (`g = getattr`): calls through the name hide a lookup
 _REFLECTIVE = frozenset({*(f"builtins.{n}" for n in ("getattr", "setattr", "delattr", *REFLECTION)),
                          *DYNAMIC_IMPORT, "operator.attrgetter", "operator.methodcaller", *_RUNS_DATA,
@@ -103,6 +108,7 @@ class _Walker(_Inference):
                 fid = f"{prefix}.{stmt.name}"
                 for d in [*stmt.decorator_list, *stmt.args.defaults, *[k for k in stmt.args.kw_defaults if k]]:
                     self._expr(d, owner, local, self_cls)
+                self._signature(stmt, owner, local, self_cls)
                 func = self.idx.funcs[fid]
                 self._defined(stmt, fid, func.cls, owner, local, self_cls)
                 me = None
@@ -123,6 +129,7 @@ class _Walker(_Inference):
                 cid = f"{prefix}.{stmt.name}"
                 for b in stmt.bases:                   # a base is inherited, not called
                     self._type_use(b)
+                self._signature(stmt, owner, local, self_cls)
                 for d in [*stmt.decorator_list, *stmt.bases, *[k.value for k in stmt.keywords]]:
                     self._expr(d, owner, local, self_cls)
                 if not all(self._keeps_value(d, local, self_cls) for d in stmt.decorator_list):
@@ -179,7 +186,8 @@ class _Walker(_Inference):
                 full = a.name if isinstance(stmt, ast.Import) and a.asname else \
                     a.name.split(".")[0] if isinstance(stmt, ast.Import) else \
                     f"{self.idx._absolute(self.mod, stmt)}.{a.name}"
-                hit = self.idx.canon(self.idx.real(full))
+                hit = self.idx.canon(self.idx.imported(self.mod, full) if isinstance(stmt, ast.Import)
+                                     else self.idx.real(full))
                 for ref in self._held_by(hit):
                     self._held_ref(owner, stmt, ref, hit)
                 scope[(a.asname or a.name).split(".")[0]] = None
@@ -245,7 +253,99 @@ class _Walker(_Inference):
         elif isinstance(node, (ast.Name, ast.Attribute)):
             self._type_uses.add(id(node))
 
+    def _signature(self, stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, owner: str, local: set[str],
+                   me: tuple[str, str] | None) -> None:
+        """The annotations of a def (fix round 28), evaluated where it is defined (or later, by a framework
+        reading them: FastAPI, pydantic, typing.get_type_hints): each is an expression (_annotation), and a
+        default `Depends()` with no dependency builds the class its parameter is annotated with."""
+        for tp in getattr(stmt, "type_params", None) or ():
+            for x in (getattr(tp, "bound", None), getattr(tp, "default_value", None)):
+                self._annotation(x, owner, local, me)
+        if isinstance(stmt, ast.ClassDef):
+            return
+        a = stmt.args
+        for arg in [*a.posonlyargs, *a.args, a.vararg, *a.kwonlyargs, a.kwarg]:
+            if arg is not None:
+                self._annotation(arg.annotation, owner, local, me)
+        self._annotation(stmt.returns, owner, local, me)
+        positional = [*a.posonlyargs, *a.args]
+        pairs = [*zip(positional[len(positional) - len(a.defaults):], a.defaults),
+                 *((k, d) for k, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None)]
+        for arg, default in pairs:
+            if arg.annotation is not None and self._empty_depends(default, local, me):
+                self._built(arg.annotation, owner, default, local, me)
+
+    def _empty_depends(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> bool:
+        """`Depends()` (or `Security()`) with no dependency: FastAPI calls the parameter's annotated class."""
+        return isinstance(node, ast.Call) and _dotted(node.func) is not None and not node.args \
+            and not any(k.arg == "dependency" for k in node.keywords) \
+            and self._resolve(node.func, local, me) in _DEPENDS
+
+    def _built(self, ann: ast.AST, owner: str, at: ast.AST, local: set[str], me: tuple[str, str] | None) -> None:
+        """The class (or function) ann names, called by a framework: its constructors are used as values."""
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            ann = _parsed_annotation(ann) or ann
+        if isinstance(ann, ast.Subscript) and _dotted(ann.value) and \
+                self._resolve(ann.value, local, me) in _ANNOTATED and isinstance(ann.slice, ast.Tuple):
+            ann = ann.slice.elts[0]
+        if not _dotted(ann):
+            return
+        fq = self.idx.canon(self._resolve(ann, local, me) or "")
+        for ref in self._held_by(fq) if fq in self.idx.classes or fq in self.idx.funcs else []:
+            self._held_ref(owner, at, ref, fq)
+
+    def _annotation(self, node: ast.AST | None, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        """An annotation, walked as the expression it is: a name of a class or module in it (`list[C]`,
+        `C | None`, a string forward reference) names a type, never called; a call in it runs; a scanned
+        function named in it is a value; `Annotated[T, meta...]` metadata are values a framework may call
+        (`Depends(f)`, `AfterValidator(h)`), and an empty `Depends()` there builds T; Literal[...] strings
+        are data."""
+        if node is None:
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            parsed = _parsed_annotation(node)
+            if parsed is not None:
+                self._annotation(parsed, owner, local, me)
+            return
+        if isinstance(node, (ast.Name, ast.Attribute)) and _dotted(node):
+            if self.idx.canon(self._resolve(node, local, me) or "") in self.idx.funcs:
+                self._expr(node, owner, local, me)        # a function named as a type: a value
+            else:
+                self._type_use(node)                      # a type: nothing runs (an excluded or foreign one too)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            self._annotation(node.left, owner, local, me)
+            self._annotation(node.right, owner, local, me)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for e in node.elts:
+                self._annotation(e, owner, local, me)
+        elif isinstance(node, ast.Subscript) and _dotted(node.value):
+            fq = self._resolve(node.value, local, me)
+            self._annotation(node.value, owner, local, me)
+            elts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            if fq in _LITERAL:
+                return
+            if fq in _ANNOTATED and elts:
+                self._annotation(elts[0], owner, local, me)
+                for m in elts[1:]:
+                    self._expr(m, owner, local, me)
+                    if self._empty_depends(m, local, me):
+                        self._built(elts[0], owner, m, local, me)
+                return
+            for e in elts:
+                self._annotation(e, owner, local, me)
+        else:
+            self._expr(node, owner, local, me)
+
+    def _evaluated_here(self, owner: str) -> bool:
+        """A variable annotation here is evaluated (a module or class body), not a function's local one."""
+        if self._scopes:
+            return isinstance(self._scopes[-1], ast.ClassDef)
+        return owner.endswith(".<module>")
+
     def _node(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        if isinstance(node, ast.arg):
+            self._annotation(node.annotation, owner, local, me)    # a nested def's parameter
+            return
         if isinstance(node, ast.expr):
             self._expr(node, owner, local, me)
             return
@@ -268,10 +368,22 @@ class _Walker(_Inference):
                    if self.idx.excluded_module(p) == p and self.idx.import_effects(p)]
             if run:
                 self._site("excluded", owner, node, f"{run[0]}|{run[0]}|import")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            positional = [*a.posonlyargs, *a.args]
+            for arg, default in [*zip(positional[len(positional) - len(a.defaults):], a.defaults),
+                                 *((k, d) for k, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None)]:
+                if arg.annotation is not None and self._empty_depends(default, local, me):
+                    self._built(arg.annotation, owner, default, local, me)
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.AnnAssign) and child is node.annotation:
-                continue                                       # `h: Helper = x` names a type, runs nothing
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.body:
+                # fix round 28: a module or class body evaluates `x: <annotation>` (a function body does not)
+                if self._evaluated_here(owner):
+                    self._annotation(child, owner, local, me)
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child is node.returns:
+                self._annotation(child, owner, local, me)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.body:
                 self._shadowed(node, node.args, self._node, child, owner, local, me)
             elif isinstance(node, ast.ClassDef) and child in node.body:
                 self._shadowed(node, None, self._node, child, owner, local, me)
@@ -317,10 +429,24 @@ class _Walker(_Inference):
             self._site("reflection", owner, node, f"{ns}.{how}")
             return
         self._site("getattr", owner, node, f"{ns}|{lit}")
-        hit = self.idx.canon(f"{ns}.{lit}")
-        if hit and hit in self.idx.funcs:
-            self.edges.append(_Edge(owner, hit, getattr(node, "lineno", 0), getattr(node, "col_offset", 0),
-                                    False, via_getattr=True))
+        self._looked_up(owner, node, self.idx.canon(f"{ns}.{lit}"))
+
+    def _looked_up(self, owner: str, node: ast.AST, hit: str | None) -> None:
+        """A literal lookup (getattr, a namespace's __dict__, pydoc.locate, ...) that names hit: a scanned
+        function is an edge; a scanned class (fix round 28) is its constructors, an edge when the lookup is
+        called (`getattr(m, "K")()`) and values otherwise; a scanned module's functions and constructors
+        are values (`m = getattr(pkg, "sub")`)."""
+        if not hit:
+            return
+        line, col = getattr(node, "lineno", 0), getattr(node, "col_offset", 0)
+        if hit in self.idx.funcs:
+            self.edges.append(_Edge(owner, hit, line, col, False, via_getattr=True))
+        elif hit in self.idx.classes and id(node) in self._called:
+            for init in self.idx.constructors(hit):
+                self.edges.append(_Edge(owner, init, line, col, False, via_getattr=True))
+        elif hit in self.idx.classes or hit in self.idx.modules:
+            for ref in self._held_by(hit):
+                self._held_ref(owner, node, ref, hit)
 
     def _exprs(self, xs: list[ast.AST], owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         for x in xs:
@@ -714,6 +840,15 @@ class _Walker(_Inference):
         `dataclasses.replace(x, ...)`, `copy.copy(x)` (which runs `__new__`). The constructors of x's class
         (and of its subclasses, unless x was built here), or, when the scan cannot type x, of any class."""
         f = node.func
+        if isinstance(f, ast.Name) and me and f.id == me[0] and f.id not in self._shadow and self._cls_param(owner, me):
+            # fix round 28: `cls(...)` in a @classmethod builds the class or a subclass, as type(x)(...) does
+            if me[1] in self.idx.classes and me[1] not in self._untrusted:
+                for c in [me[1], *self.idx.subclasses(me[1])]:
+                    for init in self.idx.constructors(c):
+                        self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
+            elif ctors := self.idx.all_constructors():
+                self.edges.append(_Fan(owner, ctors, node.lineno, node.col_offset))
+            return
         if isinstance(f, ast.Call) and len(f.args) == 1 and _dotted(f.func) and \
                 self._resolve(f.func, local, me) == "builtins.type":
             x: ast.AST = f.args[0]
@@ -731,6 +866,19 @@ class _Walker(_Inference):
                     self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
         elif ctors := self.idx.all_constructors():
             self.edges.append(_Fan(owner, ctors, node.lineno, node.col_offset))
+
+    def _cls_param(self, owner: str, me: tuple[str, str]) -> bool:
+        """me names the class itself where owner runs: a @classmethod's first parameter (whatever it is
+        called: `klass`), or of an implicit one (`__init_subclass__`, `__class_getitem__`)."""
+        if self.idx.class_param(me):
+            return True
+        f = self.idx.funcs.get(owner)
+        fn = f.node if f is not None else None
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args \
+                or fn.args.args[0].arg != me[0]:
+            return False
+        return fn.name in ("__init_subclass__", "__class_getitem__") or any(
+            _dotted(d) in ("classmethod", "builtins.classmethod") for d in fn.decorator_list)
 
     def _code_string(self, node: ast.Call, names: tuple[str, ...], positions: int, local: set[str],
                      me: tuple[str, str] | None) -> bool:
@@ -784,8 +932,7 @@ class _Walker(_Inference):
                 self._site("ref", owner, node, obj)
                 return
             hit = self.idx.method(obj[5:], lit) if obj.startswith("self:") else self.idx.canon(f"{obj}.{lit}")
-            if hit and hit in self.idx.funcs:
-                self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False, via_getattr=True))
+            self._looked_up(owner, node, hit)
         elif lit is not None and fq == "builtins.getattr" and not _dunder(lit):
             # getattr(repo, "save") on a runtime value: the methods it may name, as for repo.save
             # (typed: the class's method and its overrides; otherwise name-matched)
@@ -822,8 +969,7 @@ class _Walker(_Inference):
         hit = self.idx.canon(lit.replace(":", "."))
         obj, _, name = hit.rpartition(".")
         self._site("getattr", owner, node, f"{obj or '?'}|{name}")
-        if hit in self.idx.funcs:
-            self.edges.append(_Edge(owner, hit, node.lineno, node.col_offset, False, via_getattr=True))
+        self._looked_up(owner, node, hit)
 
     def _dict_config(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         """logging.config.dictConfig(config): it imports and calls the dotted names its strings give ("()"
@@ -865,6 +1011,20 @@ class _Walker(_Inference):
                     self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
         for a in [*node.args, *[k.value for k in node.keywords]]:
             self._expr(a, owner, local, me)
+
+
+def _parsed_annotation(node: ast.Constant) -> ast.expr | None:
+    """A string annotation (a forward reference: what a framework or typing.get_type_hints evaluates)
+    parsed, its nodes placed at the string."""
+    try:
+        got = ast.parse(str(node.value).strip(), mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+    for n in ast.walk(got):
+        if isinstance(n, (ast.expr, ast.arg, ast.keyword)):
+            n.lineno, n.col_offset = node.lineno, node.col_offset
+            n.end_lineno, n.end_col_offset = node.end_lineno, node.end_col_offset
+    return got
 
 
 def _generic(fq: str | None) -> bool:

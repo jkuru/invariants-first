@@ -13,6 +13,7 @@ from .contracts import _Edge, _Fan, _Site
 from .indexer import _Index
 
 _Call = Union[_Edge, _Fan]
+_MODULE = ".<module>"                            # a module body: never a frozen back door of its own
 
 
 def _flat(calls: Iterable[_Call]) -> Iterator[_Edge]:
@@ -109,8 +110,9 @@ def _paths(start: str, goals: set[str], succ: dict[str, list[_Call]], inferred_o
                 continue
             for callee in (e.callees if type(e) is _Fan else (e.callee,)):  # type: ignore[union-attr]
                 if callee in goals:
-                    if not out:
-                        continue                 # allowed functions all the way: frozen
+                    if not out and not n.endswith(_MODULE):
+                        continue                 # allowed functions all the way: frozen (a module body's
+                        # own call into the sink never is: fix round 28)
                     names = [callee]
                     cur: State | None = st
                     while cur is not None:
@@ -239,7 +241,7 @@ class _Pass:
             while stack:
                 n, out = stack.pop()
                 es = self.succ.get(n, ())
-                if out and n not in first and any(self.into_goal(e) for e in es):
+                if (out or n.endswith(_MODULE)) and n not in first and any(self.into_goal(e) for e in es):
                     first[n] = i
                 for e in es:
                     for callee in (e.callees if type(e) is _Fan else (e.callee,)):  # type: ignore[union-attr]

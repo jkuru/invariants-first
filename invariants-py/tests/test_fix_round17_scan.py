@@ -212,5 +212,6 @@ def test_an_unwrap_of_an_unknown_object_still_goes_to_every_rule(tmp_path):
         def f(fn, x):
             fn.__wrapped__(x)
         """, {"app/two.py": TWO}, _two_doc())
-    # fix round 25: neither door has a decorator, so fn.__wrapped__ cannot lift one's guard: unresolved
-    assert sorted((f.rule, f.code) for f in rep.findings) == [("A", "unresolved/unwrap"), ("B", "unresolved/unwrap")]
+    # fix round 25: neither door has a decorator, so fn.__wrapped__ cannot lift one's guard: unresolved.
+    # fix round 28: and no decorated function reaches either sink, so it can unwrap nothing that does
+    assert rep.findings == []

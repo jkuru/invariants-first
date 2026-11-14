@@ -157,8 +157,10 @@ def test_the_sha_is_16_hex_and_stable():
 def test_a_reformat_keeps_the_sha_and_a_token_change_does_not():
     one = 'mod = __import__(name, fromlist=["default_handlers"])'
     wrapped = 'mod = __import__(\n        name,  # the package\n        fromlist=["default_handlers"],\n)'
-    assert accept._normalized(one) != accept._normalized(wrapped)          # the trailing comma is a token
+    # fix round 28: black's magic trailing comma is a reformat too (a one-element tuple's comma is not)
+    assert accept._normalized(one) == accept._normalized(wrapped)
     assert accept._normalized(one) == accept._normalized(wrapped.replace(",\n)", "\n)"))
+    assert accept._normalized("x = (a,)") != accept._normalized("x = (a)")
     assert accept._normalized("if not x: y()") != accept._normalized("if notx: y()")
     assert accept._normalized('s = "a  b"') != accept._normalized('s = "a b"')
 
@@ -224,7 +226,8 @@ def test_an_entry_moves_with_its_statement_and_the_move_is_reported(tmp_path):
     (root / "app/svc.py").write_text("# a comment\n" + ML)
     rep = scan.scan(_doc([e]), [root])
     assert rep.findings == [] and [(f.line, f.moved_from) for f in rep.accepted] == [(10, 9)]
-    assert "moved from line 9: update its at to app/svc.py:10" in scan.to_text(rep)
+    # fix round 28: an entry written with a column is told to keep one
+    assert "moved from 9:" in scan.to_text(rep) and ": update its at to app/svc.py:10:" in scan.to_text(rep)
 
 
 def test_an_entry_at_its_own_line_is_matched_before_a_moved_one(tmp_path):

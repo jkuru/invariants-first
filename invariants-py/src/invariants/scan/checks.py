@@ -146,7 +146,10 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
     trusted = t.sinks | t.doors | t.allowed
     # a function used as a value by its own definition (a decorator that may keep it, a dunder name) is an
     # entrypoint; an allowed back door is frozen as one, so that is no new caller
-    refs = [s for s in sites if s.what == "ref" and s.owner not in trusted and s.detail in idx.funcs
+    # an allowed module body (`pkg.mod.<module>`) excuses only its values of allowed functions (fix round 28)
+    refs = [s for s in sites if s.what == "ref" and (s.owner not in trusted or (
+                s.owner.endswith(".<module>") and s.owner not in t.sinks | t.doors and s.detail not in t.allowed))
+            and s.detail in idx.funcs
             and idx.funcs[s.detail].node is not None and s.detail not in t.sinks and s.detail not in t.doors
             and not (s.recv == "own" and s.detail in t.allowed)]
     if not live or not refs:
@@ -253,13 +256,15 @@ class _Idioms:
         self._unwraps: set[str] | None = None
         self._safe: dict[tuple[str, bool], bool] = {}
         self._hidden: bool | None = None
+        self._decorated_fns: list[str] | None = None
 
     def findings(self, sites: list[_Site]) -> list[Finding]:
         return [f for s in sites if (f := self._at(s)) is not None]
 
     def _at(self, s: _Site) -> Finding | None:
-        if s.owner in self.trusted and s.what in ("ref", "attrcall", "attrref"):
-            return None
+        if s.owner in self.trusted and s.what in ("ref", "attrcall", "attrref") and not (
+                s.owner.endswith(".<module>") and s.owner not in self.t.sinks | self.t.doors):
+            return None                                # (an allowed module body's sink value is reported)
         if s.owner in self.dominated and s.what in ("attrcall", "attrref"):
             return None                                # reached only through a door or sink
         if s.what in ("getattr", "setattr", "delattr", "hasattr"):
@@ -296,14 +301,36 @@ class _Idioms:
                                f"{what} reaches the function {fn} wraps, which can reach the sink without a "
                                f"door: the scan cannot follow that call", s)
         liftable = [f for f in self.liftable if f in self.trusted or f in self._reaches()]
-        if liftable:
+        # fix round 28: reading the cells of an object the scan cannot name (`fn.__closure__`) is inspection
+        # until a cell's contents are called, which the scan cannot follow: unresolved, never forbidden
+        if liftable and "__closure__" not in what:
             shown = ", ".join(liftable[:3]) + (", ..." if len(liftable) > 3 else "")
             return self._found("forbidden", "forbidden/unwrap",
                                f"{what} may call a guarded function ({shown}) without its guard: the scan cannot "
                                f"tell which object it unwraps", s)
+        if not self._hidden_values() and not any(
+                f in self.trusted or f in self._reaches() for f in self._decorated()):
+            # fix round 28: only a decorated function has a __wrapped__ (or a wrapper whose closure holds
+            # it), and a closure cell holds a value taken somewhere (an escape the checks see, unless taken
+            # inside a door, sink or allowed function: _hidden_values). No decorated function here bears on
+            # the rule, so whatever this unwraps cannot reach the sink
+            return None
+        if liftable:
+            shown = ", ".join(liftable[:3]) + (", ..." if len(liftable) > 3 else "")
+            return self._found("unresolved", "unresolved/unwrap",
+                               f"{what}: the scan cannot tell whose cells it reads; calling what one holds may run "
+                               f"a guarded function ({shown}) without its guard, a call the scan cannot follow", s)
         return self._found("unresolved", "unresolved/unwrap",
                            f"{what}: the scan cannot tell which function it unwraps, so it cannot follow the call "
-                           f"(no decorated door or guarded function here reaches the sink)", s)
+                           f"(a decorated function here can reach the sink without a door)", s)
+
+    def _decorated(self) -> list[str]:
+        """Every scanned function with a decorator (what has a __wrapped__ to lift), and every method
+        named __wrapped__ (what `x.__wrapped__()` may call), found once."""
+        if self._decorated_fns is None:
+            self._decorated_fns = [f for f, fn in self.idx.funcs.items()
+                                   if getattr(fn.node, "decorator_list", None) or f.endswith(".__wrapped__")]
+        return self._decorated_fns
 
     # ---- fix round 25: a computed getattr that provably cannot reach the sink -------------------------
     def _narrowed(self, s: _Site, obj: str) -> bool:
@@ -366,7 +393,8 @@ class _Idioms:
         if s.what in ("setattr", "delattr") and lit in self.guarded_names:
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"{s.what} on {lit!r} replaces the sink or door at run time", s)
-        if s.what in ("setattr", "delattr") and lit.startswith("__") and obj in self.trusted and obj in self.idx.funcs:
+        if s.what in ("setattr", "delattr") and lit.startswith("__") and lit not in _DESCRIPTIVE \
+                and obj in self.trusted and obj in self.idx.funcs:
             return self._found("forbidden", "forbidden/monkeypatch",    # setattr(door, "__code__", ...)
                                f"{s.what} on {lit!r} of {obj} replaces what the sink or door runs at run time", s)
         if s.what in ("setattr", "delattr") and lit in CODE_ATTRS and obj.startswith("?"):
@@ -375,6 +403,9 @@ class _Idioms:
                                f"sink or a door runs at run time", s)
         if not lit and s.what == "getattr" and obj not in ("?attrgetter", "?methodcaller") and self._narrowed(s, obj):
             return None                                # provably cannot reach the sink (docs/scan.md)
+        if not lit and s.what == "setattr" and s.recv and self._narrowed(s, obj) \
+                and _plain_sets(self.idx, s.recv.rstrip("!"), s.recv.endswith("!")):
+            return None                                # fix round 28: the same proof, and no code runs on a set
         if not lit and s.what != "hasattr":
             how = f"operator.{obj[1:]}" if obj in ("?attrgetter", "?methodcaller") else s.what
             recv = "" if obj in ("?attrgetter", "?methodcaller") else f" on {obj}"
@@ -397,7 +428,7 @@ class _Idioms:
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"assigns over {s.detail}, which holds the sink or door, replacing it at run time", s)
         fn, _, attr = s.detail.rpartition(".")
-        if fn in self.trusted and fn in self.idx.funcs and attr.startswith("__"):
+        if fn in self.trusted and fn in self.idx.funcs and attr.startswith("__") and attr not in _DESCRIPTIVE:
             return self._found("forbidden", "forbidden/monkeypatch",   # door.__code__ = other.__code__
                                f"assigns over {s.detail}, replacing what the sink or door runs at run time", s)
         return None
@@ -482,6 +513,11 @@ def _unused_allows(idx: _Index, med: Mediation, edges: list[_Call], sites: list[
             for a in sorted(t.allowed - t.sinks - t.doors - used) if a not in on]
 
 
+# a function's attributes that only describe it (fix round 28): writing one (`door.__doc__ = ...`) changes
+# no code that runs; __code__, __defaults__, __kwdefaults__, __wrapped__, __call__, __class__, __dict__ do
+_DESCRIPTIVE = frozenset({"__doc__", "__name__", "__qualname__", "__module__", "__annotations__"})
+
+
 def _holds(idx: _Index, name: str, trusted: set[str]) -> bool:
     """name is a scanned module or class that holds a sink, door or allowed function: rebinding it
     (`pkg.repo.Repo = Fake`) replaces them all."""
@@ -536,6 +572,40 @@ def _made_by(idx: _Index, home: object, func: ast.AST) -> set[str] | None:
     if made is not None:
         out.update(m for m in (idx.method(made, n) for n in ("__init__", "__new__", "__call__", "__get__")) if m)
     return out
+
+
+_SETTERS = frozenset({"__setattr__", "__delattr__", "__set__", "__delete__", "__set_name__"})
+
+
+def _plain_sets(idx: _Index, cls: str, exact: bool) -> bool:
+    """A setattr with a computed name on an instance of cls (exact: of cls itself) runs no code of its own:
+    no class the instance may be (cls, its scanned subclasses unless exact, and their method resolution
+    orders, all seen) defines __setattr__, __delattr__, a descriptor's __set__ / __delete__ or
+    __set_name__, a decorated method (a property or other descriptor), or a class attribute made by a call
+    (a descriptor) other than dataclasses.field(). Together with _family_safe (nothing in the family is
+    named like the sink or a door, or can reach the sink), the name set cannot change what the rule
+    checks: docs/scan.md, "Computed getattr on a known receiver"."""
+    from .inference import _Inference
+    family: set[str] = set()
+    for k in [cls] if exact else [cls, *idx.subclasses(cls)]:
+        order = idx.strict_mro(k)
+        if order is None:
+            return False
+        family.update(order)
+    for c in family:
+        info = idx.classes[c]
+        if _SETTERS & set(info["methods"]):
+            return False
+        home = _Inference(idx, idx.modules[info["module"]])
+        for st in info["node"].body:
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    _dotted(d) not in ("staticmethod", "classmethod") for d in st.decorator_list):
+                return False
+            value = getattr(st, "value", None) if isinstance(st, (ast.Assign, ast.AnnAssign)) else None
+            if isinstance(value, ast.Call) and not (
+                    _dotted(value.func) and home._resolve(value.func, set(), None) == "dataclasses.field"):
+                return False
+    return True
 
 
 def _held(idx: _Index, fq: str) -> set[str]:
@@ -626,7 +696,7 @@ def _family_safe(idx: _Index, cls: str, exact: bool, guarded_names: set[str], re
                 for a in st.names:                     # a class attribute bound to a module, class or function
                     src = idx._absolute(idx.modules[info["module"]], st) if isinstance(st, ast.ImportFrom) else ""
                     full = f"{src}.{a.name}" if src else a.name if a.asname else a.name.split(".")[0]
-                    members.update(_held(idx, idx.canon(idx.real(full))))
+                    members.update(_held(idx, idx.canon(idx.imported(idx.modules[info["module"]], full))))
             targets = st.targets if isinstance(st, ast.Assign) else [st.target] \
                 if isinstance(st, (ast.AnnAssign, ast.AugAssign)) else []
             for t in targets:

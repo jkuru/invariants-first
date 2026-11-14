@@ -316,6 +316,29 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   (`setattr(door, "__code__", ...)`) is `forbidden/monkeypatch`, as the assignment was; a write of
   `__code__`, `__defaults__` or `__kwdefaults__` on a function the scan cannot name is
   `unresolved/unknown-receiver`.
+- Fix round 28 (false passes, then adoption on real codebases). An absolute import found through the
+  importing file's own directory (a script's `from pay import sink`) or a deeper `sys.path` entry
+  (`import fleet.store` for `cli/fleet/store.py`) is followed, where it used to resolve to nothing so
+  even a direct sink call passed; a name several such modules match is `unresolved/unknown-module`.
+  `cls(...)` in a `@classmethod` builds the class or a subclass. Annotations of module-level defs,
+  methods and module or class bodies are walked: a call in one runs, `Annotated` metadata
+  (`Depends(f)`, `AfterValidator(h)`) are values, string and postponed annotations are parsed, and an
+  empty FastAPI `Depends()` builds the annotated class. A literal lookup naming a scanned class
+  (`getattr(svc, "K")()`, `svc.__dict__["K"]()`, `pydoc.locate("svc.K")()`) builds it, and one naming
+  a class or module is a value. An allowed `pkg.mod.<module>` entry (which `inv init` writes) no
+  longer excuses a new module-level sink call or sink value in that file.
+- Fewer false findings: writing a door's `__doc__`, `__name__`, `__qualname__`, `__module__` or
+  `__annotations__` is not a monkeypatch; a computed `setattr` on a plain class the scan sees whole
+  (no property, descriptor or `__setattr__` in its family) is narrowed like a computed `getattr`; an
+  unwrap of an unknown object is reported only when a decorated function (or a method named
+  `__wrapped__`) can reach the sink, and an unknown `fn.__closure__` read is `unresolved/unwrap`, not
+  `forbidden/unwrap`. The sha ignores black's magic trailing comma (not a one-element tuple's), so the
+  sha of a statement written with one changed once; a moved `allow_unresolved` entry with a column is
+  told its new column. Shas are worked out only when shown (JSON, SARIF, a rule with
+  `allow_unresolved`), from the index's own parsed trees. `inv init` counts back doors and unresolved
+  sites apart, and lists the unresolved ones for review as drafted `allow_unresolved` entries (an
+  empty `why` the rule file refuses until a reviewer writes it) instead of dropping the draft. A
+  relative import naming no module is reported under the indexed package name.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

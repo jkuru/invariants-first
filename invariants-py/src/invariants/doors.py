@@ -204,6 +204,9 @@ class Door:
     callers: list[str]                       # the doors' callers (the paths that do go through them)
     allow: list[str] = dataclasses.field(default_factory=list)
     back_doors: list[str] = dataclasses.field(default_factory=list)   # "file:line message"
+    # fix round 28: the unresolved sites the scan could not follow, apart from the back doors: (at, code,
+    # sha, message), listed for review as allow_unresolved entries to write once each is read
+    unresolved: list[tuple[str, str, str, str]] = dataclasses.field(default_factory=list)
     active: bool = True                      # written as a rule (False: commented out, with the reason)
     why_inactive: str = ""
     score: int = 0
@@ -397,11 +400,13 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     """Run the real scan on the proposed rule; freeze what it finds in allow, and confirm it then passes."""
     report = _check(d, g, roots, exclude)
     found = report.for_rule(d.rid)
-    d.back_doors = [f"{f.file}:{f.line} {f.message}" if f.file else f.message for f in found]
-    unowned = [f for f in found if not f.owner]
-    if unowned:
+    # fix round 28: a bypass (or forbidden idiom) is a back door; an unresolved site is not, and is listed
+    # for review on its own (one at module level no longer drops the draft)
+    d.back_doors = [f"{f.file}:{f.line} {f.message}" if f.file else f.message for f in found if f.kind != "unresolved"]
+    d.unresolved = _unresolved(found)
+    if any(not f.owner for f in found if f.kind != "unresolved"):
         d.active = False
-        d.why_inactive = ("a finding is not inside a function (module-level code or a missing name), so it "
+        d.why_inactive = ("a back door is not inside a function (module-level code or a missing name), so it "
                           "cannot be frozen in allow")
         return
     # a back door is frozen with the call chain that reaches it today: allow lets a path through only
@@ -409,17 +414,31 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     keep = {*d.doors, *d.sinks}
     frozen: set[str] = set()
     for _ in range(MAX_FREEZE_ROUNDS):
-        frozen |= ({n for f in found for n in [f.owner, *f.path] if n} | report.on_paths.get(d.rid, set())) - keep
+        # (an unresolved site is reviewed, not frozen: fix round 28)
+        frozen |= ({n for f in found if f.kind != "unresolved" for n in [f.owner, *f.path] if n}
+                   | report.on_paths.get(d.rid, set())) - keep
         d.allow = sorted(frozen)
         report = _check(d, g, roots, exclude)
         found = report.for_rule(d.rid)
-        if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found) or not d.allow:
+        if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found if f.kind != "unresolved") \
+                or not d.allow:
             break
-    if report.rule_result(d.rid) != "pass":
+    d.unresolved = _unresolved(found)
+    if found and all(f.kind == "unresolved" for f in found):
+        d.active = False
+        d.why_inactive = (f"{len(found)} unresolved site(s) need review first: read each one; when it cannot "
+                          f"reach the sink, accept it in allow_unresolved (drafted below: write why), else fix "
+                          f"it; then uncomment the rule")
+    elif report.rule_result(d.rid) != "pass":
         d.active = False
         d.why_inactive = ("the scan still fails with the back doors frozen; review the findings by hand" if d.allow
                           else "every finding is inside a door or sink, which allow cannot freeze; review the "
                                "findings by hand")
+
+
+def _unresolved(found: list[scanner.Finding]) -> list[tuple[str, str, str, str]]:
+    return [(f"{f.file}:{f.line}:{f.col}" if f.file else "", f.code, f.sha or "", f.message)
+            for f in found if f.kind == "unresolved"]
 
 
 def _yaml_list(xs: list[str]) -> str:
@@ -448,6 +467,14 @@ def render(found: DoorsFound) -> list[str]:
         if d.allow:
             body.append("  allow:")
             body += [f"    - {json.dumps(a)}" for a in r["allow"]]
+        if d.unresolved:
+            lines.append(f"  # {len(d.unresolved)} unresolved site(s) to review (the scan cannot follow them):")
+            lines += [f"  #   {at} {msg}" if at else f"  #   {msg}" for at, _, _, msg in d.unresolved]
+            sites = [u for u in d.unresolved if u[0] and u[2]]
+            if sites:                              # why is empty: the rule does not load until each says why
+                body.append("  allow_unresolved:   # once its site is read, write why it cannot reach the sink")
+                body += [f"    - {{at: {json.dumps(at)}, code: {code}, sha: {json.dumps(sha)}, why: \"\"}}"
+                         for at, code, sha, _ in sites]
         if d.active:
             lines += [f"  {x}" for x in body]
         else:
@@ -476,6 +503,10 @@ def summary(found: DoorsFound) -> list[str]:
             files = sorted({b.split(":", 1)[0] for b in d.back_doors})
             out.append(f"  found {len(d.back_doors)} back door(s) in {', '.join(files)}"
                        + ("; frozen in allow, so check passes and a new one fails" if d.active else ""))
+        if d.unresolved:
+            files = sorted({u[0].split(":", 1)[0] for u in d.unresolved if u[0]})
+            out.append(f"  found {len(d.unresolved)} unresolved site(s) to review"
+                       + (f" in {', '.join(files)}" if files else ""))
     if not found.doors:
         # the rule _doors_for applies: a service-layer caller, a layer between two others in the graph,
         # a caller only route handlers call, else one at least MIN_CALLERS callers go through
