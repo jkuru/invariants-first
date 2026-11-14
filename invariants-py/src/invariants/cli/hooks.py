@@ -15,7 +15,7 @@ from .. import lock
 from ..scan.contracts import SKIP_DIRS
 from .commands import cmd_check
 from .common import ALLOW_WEAKENING_ENV, DEFAULT_FILES, OK, _captured, _err
-from .project import scan_inputs
+from ..project import scan_inputs
 
 
 WEAKENING_FLAGS = ("--accept-weakening", "--allow-weakening")

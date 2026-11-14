@@ -8,13 +8,20 @@ import collections
 import json
 from typing import Any
 
+from ..scan import anywhere
 from .cel_canon import Typer, _clause_key, _disjuncts, _unique
 from .cel_mono import judge_bad
-from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER,
+from .contracts import (ANALYSED, COMPUTED, FIELD_POLICY, MORE_IS_WEAKER,
                         NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, Change, _json_paths,
                         policy, same)
 from .schema_diff import (POS, _param_schema_changes, aligned_parameters, constraint_weakening,
                           parameter_flag_weakening, ref_polarity)
+
+# Test code and migrations are not production paths: by default the scan skips them (at any depth), so
+# a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
+# this list (exclude = [] scans them too).
+DEFAULT_SCAN_EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
+                                "migrations", "alembic")
 
 
 # --- bad: canonical trees and polarity -----------------------------------------------------------

@@ -12,11 +12,11 @@ from typing import Any, Iterator, Sequence
 
 from .. import lock, scan as scanner
 from ..errors import LoadError
-from ..loader import load, read_document
+from ..loader import _type_env, load, read_document
 from ..registry import isolated
 from .commands import cmd_verify, contract_problem, contract_problems
 from .common import Usage, _captured, _describe
-from .project import _import_path, outside_roots
+from ..project import _import_path, outside_roots
 
 
 @contextlib.contextmanager
@@ -108,7 +108,7 @@ def _build(path: pathlib.Path, extra: Sequence[str], spec: dict[str, Any], olds:
                         raise
                     raise LoadError("; ".join(unpinnable) + f" (comment out or delete it in {path.name}, or fix "
                                     f"the model, then run `inv lock` again)") from e
-                types = lock.clause_types(reg)
+                types = lock.clause_types(reg, _type_env)
                 out["warnings"] = outside_roots(path, doc, extra)
             out["fresh"] = json.loads(json.dumps(fresh))
             out["types"] = _record(types, olds, out["fresh"])

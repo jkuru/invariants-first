@@ -29,15 +29,15 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
     """What `inv scan --format json` computes, with the roots and excludes it would use. For a rule file
     inside server_root, the walk is confined to it (as `check` is): a symlink under the roots that
     resolves outside is not followed, and is an unresolved finding naming only the link."""
-    from .. import cli, scan as scanner
+    from .. import project, scan as scanner
     from ..errors import LoadError
     try:
-        doc = cli.read_document(rule_file)
+        doc = project.read_document(rule_file)
         ns_root = argparse.Namespace(root=[str((root / r).resolve()) for r in source_roots])
         with confined_scan(server_root, rule_file):
-            report = scanner.scan(doc, cli._roots(ns_root, rule_file),
-                                  cli._exclude(argparse.Namespace(exclude=list(exclude)), rule_file))
-    except (LoadError, scanner.ScanConfigError, cli.Usage) as e:
+            report = scanner.scan(doc, project._roots(ns_root, rule_file),
+                                  project._exclude(argparse.Namespace(exclude=list(exclude)), rule_file))
+    except (LoadError, scanner.ScanConfigError, project.Usage) as e:
         raise ToolError(str(e)) from e
     data = report.as_dict()
     for f in [*data["findings"], *data.get("accepted", [])]:
@@ -45,13 +45,13 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
         f["id"] = finding_id(f)
     kinds = {f["kind"] for f in data["findings"]}
     if kinds & {"bypass", "forbidden", "missing"}:
-        verdict, code = "fail", cli.FAILED
+        verdict, code = "fail", project.FAILED
     elif report.ablated_enforce:
-        verdict, code = "ablated", cli.ABLATED
+        verdict, code = "ablated", project.ABLATED
     elif "unresolved" in kinds:
-        verdict, code = "unresolved", cli.UNRESOLVED
+        verdict, code = "unresolved", project.UNRESOLVED
     else:
-        verdict, code = "pass", cli.OK
+        verdict, code = "pass", project.OK
     return {"rule_file": _rel(str(rule_file), root), "verdict": verdict, "passed": verdict == "pass",
             "exit_code": code, **data}
 
@@ -172,8 +172,8 @@ def _accept_entry(f: dict[str, Any]) -> str:
 
 
 def _rule_doc(rule_file: pathlib.Path, rule_id: str) -> dict[str, Any] | None:
-    from .. import cli
-    doc = cli.read_document(rule_file)
+    from .. import project
+    doc = project.read_document(rule_file)
     return next((r for r in doc.get("rules") or [] if isinstance(r, dict) and r.get("id") == rule_id), None)
 
 

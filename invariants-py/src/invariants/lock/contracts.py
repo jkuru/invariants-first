@@ -2,15 +2,13 @@
 rule-file field is judged (FIELD_POLICY, RANKS, NOTES), canonical JSON and its digests, and Change (one
 explained difference) with the leaf-level JSON diff the stages report through. The stages import these
 from here, never from one another, so pinning, the schema and CEL judgements and the orchestrator stay
-apart."""
+apart. Pure: it imports nothing of the package (the scan's default exclude is in rule_diff)."""
 from __future__ import annotations
 
 import dataclasses
 import hashlib
 import json
 from typing import Any
-
-from ..scan import anywhere
 
 
 LOCK_NAME = "invariants.lock"
@@ -19,11 +17,6 @@ PY_CONTRACTS = frozenset({"python", "pydantic"})
 SCHEMA_CONTRACTS = frozenset({"pydantic", "dataclass", "schema"})
 
 # rule fields that are prose, pinned by digest only; everything else is semantic
-# Test code and migrations are not production paths: by default the scan skips them (at any depth), so
-# a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
-# this list (exclude = [] scans them too).
-DEFAULT_SCAN_EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py",
-                                "migrations", "alembic")
 DOC_FIELDS = ("statement", "why", "owner", "class")
 MEDIATION_DOC = ("chokepoint",)
 STATUS_RANK = {"retired": 0, "candidate": 1, "contested": 1, "detect": 2, "enforce": 3}

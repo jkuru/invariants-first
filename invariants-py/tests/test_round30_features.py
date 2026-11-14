@@ -386,7 +386,7 @@ def test_init_without_root_or_exclude_leaves_pyproject_alone(tmp_path):
 
 
 def test_scan_table_text_unit():
-    from invariants.cli.project import add_scan_settings
+    from invariants.project import add_scan_settings
     assert add_scan_settings("", {"roots": ["src"]}) == '[tool.invariants.scan]\nroots = ["src"]\n'
     assert add_scan_settings("x = 1", {"roots": ["a"], "extend_exclude": ["b"]}) == \
         'x = 1\n\n[tool.invariants.scan]\nroots = ["a"]\nextend_exclude = ["b"]\n'
@@ -560,7 +560,7 @@ def test_init_drafts_a_site_seen_under_several_rules_once(tmp_path):
 
 
 def test_a_scan_header_inside_a_string_is_not_edited():
-    from invariants.cli.project import add_scan_settings
+    from invariants.project import add_scan_settings
     text = '[tool.invariants]\nscan.extend_exclude = ["b"]\nx = """\n[tool.invariants.scan]\n"""\n'
     assert add_scan_settings(text, {"roots": ["a"]}) is None
 

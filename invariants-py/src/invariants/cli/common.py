@@ -11,17 +11,12 @@ from .. import lock, scan as scanner
 from ..errors import LoadError
 from ..scan.text import safe_output
 
-OK, FAILED, USAGE, UNRESOLVED, ABLATED = 0, 1, 2, 3, 4
+# the exit codes, the usage error and the --site directories live with the project (invariants.project),
+# which the MCP server shares
+from ..project import ABLATED, FAILED, OK, SITE, UNRESOLVED, USAGE, Usage  # noqa: F401
+
 DEFAULT_FILES = ("invariants.yaml", "invariants.yml", "invariants.json")
 ALLOW_WEAKENING_ENV = "INV_ALLOW_WEAKENING"
-# --site DIRs: the site-packages of the environment that holds the app's dependencies, when `inv`
-# runs from an interpreter of its own (the GitHub Action). Read after this interpreter's own path,
-# and only where the app is imported; their .pth files are not run.
-SITE: list[str] = []
-
-
-class Usage(Exception):
-    """A usage error (exit 2)."""
 
 
 def _out(text: str) -> None:

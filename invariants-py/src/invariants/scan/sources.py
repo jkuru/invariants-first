@@ -12,7 +12,7 @@ A symlinked directory is followed, as Python's import system follows it: its fil
 link's path (`pkg/admin -> ../.vendor/admin` gives `pkg.admin.tasks`), a link back into its own
 ancestry is not followed twice, and a target outside every root is still scanned and noted. A link
 inside an always-skipped directory is not followed (a virtualenv's `lib64`, pnpm's node_modules).
-Confined (`inv mcp`: confinement.confine_root()), a symlink to a directory or file that resolves
+Confined (`inv mcp`: confinement.confine_root(), through _scan_hooks), a symlink to a directory or file that resolves
 outside the confinement root is not followed either: it is collected as refused, and the scan reports
 it as unresolved, naming only the link."""
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pathlib
 import zipfile
 from typing import Iterable, Iterator
 
-from ..confinement import confine_root
+from .. import _scan_hooks
 from .contracts import SKIP_DIRS
 
 # the directories the scan always skips, as the lock pins them: SKIP_DIRS and every dot-directory
@@ -106,7 +106,7 @@ def _files(root: pathlib.Path, found: Found | None = None) -> list[pathlib.Path]
     one back into the link's own ancestry). A zip archive is collected into found. Confined, a symlink
     (to a directory or a file) that resolves outside the confinement root is not followed, and is
     collected into found.refused."""
-    top = confine_root()
+    top = _scan_hooks.confine_root()
     if root.is_file():
         return [root]
     out: list[pathlib.Path] = []

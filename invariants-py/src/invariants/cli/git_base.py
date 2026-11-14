@@ -10,7 +10,7 @@ from typing import Any, Sequence
 from .. import lock
 from ..errors import LoadError
 from .common import ALLOW_WEAKENING_ENV, FAILED, OK, _compare, _out, _print_changes
-from .project import _setuptools_where, _str_list, effective_exclude
+from ..project import _setuptools_where, _str_list, effective_exclude
 from .worker import Imported
 
 

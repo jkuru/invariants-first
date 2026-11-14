@@ -4,7 +4,9 @@ Layering: no module of invariants/lock/ imports the runtime (invariants.guard, i
 the CLI (invariants.cli), lazily or not, and the stages import one another in one direction only:
 contracts <- pin_types <- pin_jsonschema <- pin_signatures <- pin_contracts <- pinning, and
 cel_canon <- cel_sites <- cel_mono; contracts <- schema_diff; schema_diff, cel_mono <- rule_diff <-
-the package (the orchestrator)."""
+the package (the orchestrator). schema_diff, cel_canon, cel_sites, cel_mono and contracts are the
+schema-diff core, which imports nothing of invariants but the CEL engine (cel/, typecheck, _typeinfo):
+test_layering_packages.py checks it; the loader's type environments are passed in (clause_types)."""
 from __future__ import annotations
 
 import ast
@@ -83,7 +85,7 @@ def test_every_stage_is_listed_and_the_order_has_no_cycle() -> None:
 
 def test_the_import_reader_resolves_relative_imports(tmp_path: pathlib.Path) -> None:
     p = LOCK_DIR / "cel_canon.py"
-    assert {"invariants.typecheck", "invariants.loader._type_env", "invariants.cel.subset"} <= _imports(p)
+    assert {"invariants.typecheck", "invariants.cel.subset"} <= _imports(p)
     bad = tmp_path / "bad.py"
     bad.write_text("from ..guard import guard\ndef f():\n    from .. import registry\n    import invariants.cli\n"
                    "from .contracts import Change\n")

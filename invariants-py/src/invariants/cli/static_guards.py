@@ -25,7 +25,7 @@ from typing import Any, Sequence
 
 from ..model import GUARD_POINTS
 from .common import SITE
-from .project import import_roots
+from ..project import import_roots
 
 # what each decorator is, by the dotted name it is imported as, and the points a guard evaluates
 _GUARD = ("decorator",)

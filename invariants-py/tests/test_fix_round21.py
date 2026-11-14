@@ -20,7 +20,8 @@ import pytest
 import invariants as inv
 from cli_support import run_inv, write_project
 from invariants import mcp
-from invariants.cli import commands, project
+from invariants import project
+from invariants.cli import commands
 from invariants.integrations.exporters import BufferedExporter
 from invariants.registry import Registry
 

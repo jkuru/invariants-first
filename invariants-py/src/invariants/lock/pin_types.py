@@ -9,6 +9,7 @@ import typing
 from typing import Any
 
 from .. import _typeinfo as ti
+from ..errors import LoadError
 from .contracts import MAX_DEFS, MAX_DEPTH, _plain, _sha, canonical
 
 
@@ -178,9 +179,18 @@ def resolved_schema(schema: Any, defs: dict[str, Any] | None = None, seen: set[i
     return _plain(strip_prose(out)) if top else _plain(out)
 
 
+def class_shape(cls: type) -> ti.ClassShape:
+    """_typeinfo.class_shape, its TypeCheckError (an annotation that does not resolve) raised as the
+    LoadError the lock reports, with the same message and cause."""
+    try:
+        return ti.class_shape(cls)
+    except ti.TypeCheckError as e:
+        raise LoadError(str(e)) from e.__cause__
+
+
 def _class_fields(schema: type, defs: dict[str, Any], seen: set[int]) -> dict[str, Any]:
     """A dataclass or TypedDict as its resolved field types and its required fields."""
-    shape = ti.class_shape(schema)
+    shape = class_shape(schema)
     return {shape.kind: schema.__qualname__,
             "fields": {n: _type_schema(t, defs, seen) for n, t in shape.fields.items()},
             "required": shape.required}

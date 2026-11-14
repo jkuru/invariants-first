@@ -48,7 +48,7 @@ from ..errors import LoadError
 # the public names of the stages, re-exported (with the private ones this module composes)
 from .cel_canon import Typer, canon_tree, clause_types, make_typer
 from .cel_mono import compare_bad
-from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, LOCK_NAME, LOCK_VERSION, MORE_IS_WEAKER,
+from .contracts import (ANALYSED, COMPUTED, FIELD_POLICY, LOCK_NAME, LOCK_VERSION, MORE_IS_WEAKER,
                         NEUTRAL, PIN, PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, WEAKENING, Change,
                         _is_ref, _sha, canonical, policy, same)
 from .pin_contracts import contract_hash
@@ -57,7 +57,7 @@ from .pin_signatures import signature_types
 from .pin_types import Schemas, resolved_schema, strip_prose
 from .pinning import (build, expand_applies_to, imports_code, mediated, rule_semantics, scan_pin, scan_skip,
                       static_pins, with_static)
-from .rule_diff import _entry_changes, _rule_changes, _scan_changes
+from .rule_diff import DEFAULT_SCAN_EXCLUDE, _entry_changes, _rule_changes, _scan_changes
 from .schema_diff import _schema_changes, constraint_weakening
 
 DUMP_WIDTH = 128

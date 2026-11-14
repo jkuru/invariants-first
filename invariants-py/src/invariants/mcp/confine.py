@@ -107,11 +107,11 @@ def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None
     setuptools packages.find.where) stay inside the server's --root, like a source_roots argument:
     `scan` reads them and `check` puts them on sys.path. A rule file outside --root is the operator's
     own --rules, and its settings are theirs."""
-    from .. import cli
+    from .. import project
     if not rule_file.resolve().is_relative_to(server_root):
         return
     seen: set[pathlib.Path] = set()
-    for proj in (rule_file.resolve().parent, cli.project_root(rule_file)):
+    for proj in (rule_file.resolve().parent, project.project_root(rule_file)):
         py = proj / "pyproject.toml"
         if proj in seen or not py.is_file():
             continue
@@ -124,12 +124,12 @@ def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None
                 raise ToolError(f"{what} {d} resolves to {d.resolve()}, outside the server's --root {server_root}; "
                                 f"`check` and `status` import from it (start inv-mcp with a wider --root)")
         try:
-            tool = cli._pyproject(proj).get("tool") or {}
-        except cli.Usage as e:
+            tool = project._pyproject(proj).get("tool") or {}
+        except project.Usage as e:
             raise ToolError(str(e)) from e
         for setting, values in (("[tool.invariants.scan] roots", ((tool.get("invariants") or {}).get("scan") or {})
-                                 .get("roots")), ("[tool.setuptools.packages.find] where", cli._setuptools_where(tool))):
-            for r in cli._str_list(values):
+                                 .get("roots")), ("[tool.setuptools.packages.find] where", project._setuptools_where(tool))):
+            for r in project._str_list(values):
                 path = (proj / r).resolve()
                 if not path.is_relative_to(server_root):
                     raise ToolError(f"{py}: {setting} names {r!r}, which resolves to {path}, outside the "

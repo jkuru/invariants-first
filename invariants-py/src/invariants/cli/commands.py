@@ -18,7 +18,7 @@ from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
                      _describe, _err, _out, _print_changes, _rule_file)
 from .git_base import _base_step, base_read, base_scan_default
-from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
+from ..project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
                       source_dirs, write_scan_settings)
 from .static_guards import guard_problems
 from .worker import Imported, emit, imported, reraise

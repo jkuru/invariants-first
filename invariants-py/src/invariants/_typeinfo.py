@@ -13,8 +13,6 @@ import types
 import typing
 from typing import Any
 
-from .errors import LoadError
-
 MAX_UNWRAP = 24                         # alias / NewType / Annotated layers followed (lock.contracts.MAX_DEPTH)
 
 
@@ -130,6 +128,12 @@ def is_schema_class(t: Any) -> bool:
     return isinstance(t, type) and (dataclasses.is_dataclass(t) or is_pydantic_model(t) or is_typeddict(t))
 
 
+class TypeCheckError(Exception):
+    """A type the CEL group cannot read (an annotation that does not resolve). Its own error, so this
+    module and typecheck import nothing else of the package: the callers that pin types (lock.pin_types)
+    raise it again as the LoadError users see, with the same message."""
+
+
 class ClassShape(typing.NamedTuple):
     kind: str                       # "dataclass" | "typeddict"
     fields: dict[str, Any]          # field name -> resolved annotation (Annotated kept), in field order
@@ -138,11 +142,11 @@ class ClassShape(typing.NamedTuple):
 
 def class_shape(cls: type) -> ClassShape:
     """A dataclass or TypedDict's resolved fields and its required ones (the lock's resolved schema and
-    its stdlib JSON Schema are read from it)."""
+    its stdlib JSON Schema are read from it); TypeCheckError when its annotations do not resolve."""
     try:
         hints = typing.get_type_hints(cls, include_extras=True)
     except Exception as e:                                 # an unresolvable forward reference
-        raise LoadError(f"schema {cls.__qualname__}: cannot resolve its annotations ({e})") from e
+        raise TypeCheckError(f"schema {cls.__qualname__}: cannot resolve its annotations ({e})") from e
     if dataclasses.is_dataclass(cls):
         fields = dataclasses.fields(cls)
         return ClassShape("dataclass", {f.name: hints[f.name] for f in fields},

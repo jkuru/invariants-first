@@ -17,6 +17,15 @@ if TYPE_CHECKING:
     from . import Registry, _View
 
 
+def _unwired(rule: Rule, reg: Registry, i: Any, target: Any, tk: str) -> str | None:
+    raise RuntimeError("invariants.registry.coverage.binding_problem is not wired (the package wires it on import)")
+
+
+# loader.binding_problem (the load-time binding checks), wired by the package (invariants/__init__.py),
+# so the registry never imports the loader above it
+binding_problem: Callable[[Rule, Registry, Any, Any, str], str | None] = _unwired
+
+
 def _edge_problem(rule: Rule, w: Any) -> str | None:
     """Why an @inv.edge(rule.id) wrapper w is misplaced: no edge enforcer of the rule targets it (at
     run time it would borrow the rule's only edge enforcer, which names another function)."""
@@ -36,7 +45,6 @@ def _targetless_problems(reg: Registry, rule: Rule, w: Any) -> list[str]:
     """A guard on a rule without subject.target: the load-time binding checks, against the function
     the guard wraps (the only target there is), and the guard evaluates every guard point (decorator,
     middleware) the rule has an enforcer at: one it does not is never evaluated there."""
-    from ..loader import binding_problem
     points = set(getattr(w, "__inv_points__", ("decorator",)))
     out = []
     if getattr(w, "__inv_kind__", "") == "guard" and (missing := _unevaluated(rule, points)):

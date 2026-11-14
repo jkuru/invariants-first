@@ -1,7 +1,8 @@
 """Layering of the scan package, and unit tests on its pure functions (no mocks, no files).
 
 The scan is static analysis: it must not import the runtime enforcement layer (guard, registry) or the
-CLI that drives it. It reads ablation through invariants._scan_hooks, which the package wires.
+CLI that drives it. It reads ablation and the confinement root through invariants._scan_hooks, which
+the package wires; scan/ and _scan_hooks import nothing else of invariants (test_layering_packages.py).
 """
 import ast
 import pathlib
@@ -45,6 +46,7 @@ def test_scan_does_not_import_guard_registry_or_cli():
 
 def test_ablation_hooks_are_wired_by_the_package():
     assert _scan_hooks.ablated is not _scan_hooks._none and _scan_hooks.reached is not _scan_hooks._ignore
+    assert _scan_hooks.confine_root is invariants.confinement.confine_root
     assert invariants._registry is invariants.registry
 
 

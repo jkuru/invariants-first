@@ -4,8 +4,8 @@ Exit codes: 0 ok; 1 a check failed (invalid rule file, stale lock, verify or sca
 2 usage error; 3 scan found nothing failing but some calls are unresolved (not a pass);
 4 scan skipped an enforce rule because it is ablated (INV_ABLATE; not a pass).
 
-The package: common (exit codes, output, the rule file), project (pyproject.toml, import and scan
-roots), commands (the cmd_* subcommands), git_base (`inv check --base`), hooks (`inv hook`); this
+The package: common (output, the rule file, with the exit codes it re-exports from invariants.project),
+invariants.project (pyproject.toml, import and scan roots; shared with the MCP server), commands (the cmd_* subcommands), git_base (`inv check --base`), hooks (`inv hook`); this
 module builds the parser and dispatches.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from ..loader import read_document
 from .commands import cmd_check, cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify
 from .common import ABLATED, ALLOW_WEAKENING_ENV, FAILED, OK, UNRESOLVED, USAGE, Usage, _describe, _err
 from .hooks import cmd_hook
-from .project import (DEFAULT_SCAN_EXCLUDE, _exclude, _pyproject, _roots, _setuptools_where, _str_list, import_roots,
+from ..project import (DEFAULT_SCAN_EXCLUDE, _exclude, _pyproject, _roots, _setuptools_where, _str_list, import_roots,
                       project_root, scan_inputs, source_dirs)
 
 _Subparser = Callable[[argparse.ArgumentParser], None]

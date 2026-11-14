@@ -1,4 +1,6 @@
-"""The project around a rule file: its pyproject.toml, import roots, source directories and scan settings."""
+"""The project around a rule file: its pyproject.toml, import roots, source directories and scan settings,
+with the exit codes, the usage error and the --site directories of `inv`. Shared by the CLI (invariants.cli)
+and the MCP server (invariants.mcp), so the server never imports the CLI."""
 from __future__ import annotations
 
 import argparse
@@ -10,12 +12,21 @@ import re
 import sys
 from typing import Any, Iterator, Sequence
 
-from .. import lock
-from ..confinement import import_module
-from ..errors import LoadError
-from ..loader import load, read_document
-from ..registry import Registry
-from .common import SITE, Usage
+from . import lock
+from .confinement import import_module
+from .errors import LoadError
+from .loader import load, read_document
+from .registry import Registry
+
+OK, FAILED, USAGE, UNRESOLVED, ABLATED = 0, 1, 2, 3, 4
+# --site DIRs: the site-packages of the environment that holds the app's dependencies, when `inv`
+# runs from an interpreter of its own (the GitHub Action). Read after this interpreter's own path,
+# and only where the app is imported; their .pth files are not run.
+SITE: list[str] = []
+
+
+class Usage(Exception):
+    """A usage error (exit 2)."""
 
 
 def project_root(rule_file: pathlib.Path) -> pathlib.Path:

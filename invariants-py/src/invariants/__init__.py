@@ -43,10 +43,26 @@ from .registry import (ErrorSpike, Handoff, JsonlReviews, MemoryReviews, Registr
                        verify, verify_coverage)
 from .snapshot import check_snapshot
 
-from . import _scan_hooks, registry as _registry   # the scan reads ablation through these hooks
+# The layers below the package import nothing above them; it wires what they read from above here.
+from . import _scan_hooks, confinement as _confinement, registry as _registry
+from .loader import binding_problem as _binding_problem, schemas as _schemas
+from .registry import coverage as _coverage
 
+# the scan reads ablation and the confinement root through these hooks
 _scan_hooks.ablated = lambda: _registry.env_ablated() | set(_registry.GLOBAL_ABLATED)
 _scan_hooks.reached = lambda rule_id: _registry.note_ablation_reached(rule_id, via="scan")
+_scan_hooks.confine_root = _confinement.confine_root
+# verify_coverage checks a guard's bindings with the loader's check
+_coverage.binding_problem = _binding_problem
+
+
+def _pydantic_closed(model: type) -> type:
+    """The loader closes a pydantic schema with the pydantic integration, imported only when one is met."""
+    from .integrations.pydantic import closed
+    return closed(model)
+
+
+_schemas.pydantic_closed = _pydantic_closed
 
 try:
     __version__ = _metadata.version("invariants-first")

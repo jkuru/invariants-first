@@ -1,8 +1,8 @@
 """CEL `bad` conditions in a canonical form: canon_tree writes a subset parse tree so that equal
 trees are equivalent (literals tagged with their type, chains flattened and sorted, ! pushed
 inward, macro variables named by depth), and a typer (make_typer, clause_types) gives the static
-kinds the rule's declared types allow. Pure, apart from the typer, which is built from the loader's
-static type environments."""
+kinds the rule's declared types allow. Pure: the typer is built from the static type environments
+the caller gives (the loader's), and it imports nothing of the package but the CEL engine and typecheck."""
 from __future__ import annotations
 
 import math
@@ -93,13 +93,13 @@ def make_typer(envs: Any) -> Typer | None:
     return typer
 
 
-def clause_types(reg: Any) -> dict[str, Typer | None]:
-    """Rule id -> a typer for its clauses, from a loaded registry's static type environments."""
-    from ..loader import _type_env
+def clause_types(reg: Any, type_env: typing.Callable[[Any, Any, Any, Any], Any]) -> dict[str, Typer | None]:
+    """Rule id -> a typer for its clauses, from a loaded registry's static type environments, which
+    type_env(rule, reg, enforcer index, names) builds (the caller passes the loader's _type_env)."""
     out: dict[str, Typer | None] = {}
     for rid, rule in reg.rules.items():
         try:
-            envs = [_type_env(rule, reg, i, names) for i, names in rule.names_for.items()]
+            envs = [type_env(rule, reg, i, names) for i, names in rule.names_for.items()]
         except Exception:
             envs = []
         out[rid] = make_typer(envs)

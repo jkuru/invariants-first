@@ -24,7 +24,7 @@ import pytest
 import invariants as inv
 from cli_support import run_inv, write_project
 from invariants import bootstrap, cli, doors, lock
-from invariants.cli import project
+from invariants import project
 
 pytest_plugins = ["pytester"]
 

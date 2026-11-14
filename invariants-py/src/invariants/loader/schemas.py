@@ -7,7 +7,7 @@ import enum
 import functools
 import inspect
 import typing
-from typing import Any
+from typing import Any, Callable
 
 from .. import _typeinfo as ti
 from ..errors import LoadError
@@ -46,11 +46,19 @@ def _params(obj: Any) -> set[str]:
         return set()
 
 
+def _no_pydantic(model: type) -> type:
+    raise RuntimeError("invariants.loader.schemas.pydantic_closed is not wired (the package wires it on import)")
+
+
+# integrations.pydantic.closed, wired by the package (invariants/__init__.py), so the loader never
+# imports the integration that builds on it
+pydantic_closed: Callable[[type], type] = _no_pydantic
+
+
 def closed_schema(schema: Any) -> Any:
     """A pydantic model becomes its closed dataclass (integrations.pydantic.closed); others are unchanged."""
     if ti.is_pydantic_model(schema):
-        from ..integrations.pydantic import closed
-        return closed(schema)
+        return pydantic_closed(schema)
     return schema
 
 

@@ -34,6 +34,7 @@ from typing import Any, Iterable
 
 from . import _typeinfo as ti
 from .cel import subset, values
+from ._typeinfo import TypeCheckError
 from .cel.errors import CelError
 
 Node = tuple
@@ -544,4 +545,4 @@ def signature_types(fn: Any) -> tuple[dict[str, T], T]:
     return params, from_py(hints.get("return", inspect.Parameter.empty))
 
 
-__all__ = ["T", "DYN", "TypeMismatch", "check_clause", "from_py", "infer", "signature_types"]
+__all__ = ["T", "DYN", "TypeCheckError", "TypeMismatch", "check_clause", "from_py", "infer", "signature_types"]

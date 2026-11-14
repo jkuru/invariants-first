@@ -10,7 +10,7 @@ from typing import Any
 
 from .. import _typeinfo as ti
 from .contracts import MAX_DEPTH, _plain
-from .pin_types import strip_prose
+from .pin_types import class_shape, strip_prose
 
 
 def json_schema(cls: type) -> Any:
@@ -136,7 +136,7 @@ def _json_object(cls: type, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     if isinstance(defs, _Defs):
         defs.owners[name] = cls
     defs[name] = {}                                            # placeholder: cuts recursion
-    shape = ti.class_shape(cls)
+    shape = class_shape(cls)
     defs[name] = {"type": "object", "properties": {n: _json_type(t, defs, depth) for n, t in shape.fields.items()},
                   "required": shape.required}
     return ref
