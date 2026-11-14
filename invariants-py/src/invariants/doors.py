@@ -385,8 +385,10 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
     taken: set[str] = set()
     for d in kept + dropped:
         d.rid = _rule_id(d, taken)
-    for d in kept:
-        _freeze(d, g, roots, exclude)
+    progress = scanner._Progress()                 # a line now and then on a large tree (fix round 29)
+    for k, d in enumerate(kept):
+        progress(f"freezing the back doors of drafted rule {d.rid}, rule", k, len(kept))
+        _freeze(d, g, roots, exclude, progress)
     return DoorsFound(kept, dropped, no_door, len(g.idx.modules), hint.summary() if hint else None)
 
 
@@ -396,7 +398,8 @@ def _check(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[s
     return scanner.scan(doc, roots, exclude, g=g)
 
 
-def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str]) -> None:
+def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str],
+            progress: Any = None) -> None:
     """Run the real scan on the proposed rule; freeze what it finds in allow, and confirm it then passes."""
     report = _check(d, g, roots, exclude)
     found = report.for_rule(d.rid)
@@ -413,10 +416,16 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     # when every function on it is allowed, so a new caller of a frozen back door is still caught
     keep = {*d.doors, *d.sinks}
     frozen: set[str] = set()
-    for _ in range(MAX_FREEZE_ROUNDS):
+    for r in range(MAX_FREEZE_ROUNDS):
+        if progress is not None:
+            progress(f"freezing the back doors of drafted rule {d.rid}, round", r + 1, MAX_FREEZE_ROUNDS)
         # (an unresolved site is reviewed, not frozen: fix round 28)
-        frozen |= ({n for f in found if f.kind != "unresolved" for n in [f.owner, *f.path] if n}
-                   | report.on_paths.get(d.rid, set())) - keep
+        more = ({n for f in found if f.kind != "unresolved" for n in [f.owner, *f.path] if n}
+                | report.on_paths.get(d.rid, set())) - keep - frozen
+        if r and not more:
+            break                        # the same allow scans the same (fix round 29: unresolved sites
+            # left kept a rule from passing, so every round re-ran the same scan)
+        frozen |= more
         d.allow = sorted(frozen)
         report = _check(d, g, roots, exclude)
         found = report.for_rule(d.rid)

@@ -196,16 +196,25 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
     door_txt = ", ".join(sorted(t.doors)) or "(no door found)"
     out: list[Finding] = []
     seen: set[tuple[str, int, int]] = set()
+    via_name: dict[str, tuple[list[str], bool] | None] = {}
+
+    def first_path(f: str) -> tuple[list[str], bool] | None:
+        """The path the search finds first from f, and whether it takes a name-matched call: once per
+        function (fix round 29: a function taken as a value at many sites was searched from at each)."""
+        if f not in via_name:
+            via_name[f] = None
+            for ok, ps in zip((False, True), passes):
+                if (got := ps.first_path(f)) is not None:
+                    via_name[f] = (got, ok)
+                    break
+        return via_name[f]
     for s in refs:
         if s.owner not in free or s.detail in covered or (s.owner, s.line, s.col) in seen:
             continue
-        found = None
-        for inferred_ok, ps in zip((False, True), passes):
-            found = next(ps.paths(s.detail), None)
-            if found is not None:
-                break
+        found = first_path(s.detail)
         if found is None:
             continue
+        inferred_ok = found[1]
         seen.add((s.owner, s.line, s.col))
         names = [s.owner, *found[0]]
         if on_paths is not None:
@@ -222,7 +231,6 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
                                 f"passing {door_txt} ({' -> '.join(names[1:])}{via}): whoever holds the value "
                                 f"can call it, and the scan cannot trace those calls; call it through the "
                                 f"door, or keep it inside the door", s.owner, s.line, s.col, names))
-    via_name: dict[str, tuple[list[str], bool] | None] = {}
     for s in named:
         if s.owner not in free or (s.owner, s.line, s.col) in seen:
             continue
@@ -230,13 +238,7 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
         for m in idx.fan(s.detail):
             if m in t.sinks or m in t.doors or m in covered:
                 continue
-            if m not in via_name:
-                via_name[m] = None
-                for inferred_ok, ps in zip((False, True), passes):
-                    if (got := next(ps.paths(m), None)) is not None:
-                        via_name[m] = (got[0], inferred_ok)
-                        break
-            if (hit := via_name[m]) is not None:
+            if (hit := first_path(m)) is not None:
                 break
         if hit is None:
             continue

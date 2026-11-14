@@ -2,8 +2,17 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import collections
 import dataclasses
+import datetime
+import decimal
+import fractions
+import functools
+import ipaddress
+import pathlib
+import types
+import uuid
 import weakref
 
 from .astutil import (
@@ -30,6 +39,35 @@ _CONTAINERS = {"builtins.dict": "builtins.dict", "typing.Dict": "builtins.dict",
                "builtins.frozenset": "builtins.frozenset", "typing.FrozenSet": "builtins.frozenset"}
 _LITERALS = ((ast.Dict, "builtins.dict"), (ast.DictComp, "builtins.dict"), (ast.Set, "builtins.set"),
              (ast.SetComp, "builtins.set"), (ast.List, "builtins.list"), (ast.ListComp, "builtins.list"))
+# fix round 29: value classes of the standard library, as receivers: an instance holds data of its own, and
+# no method of one calls a method of an object it was given by name (pathlib.Path(f) keeps os.fspath(f)), so
+# `pathlib.Path(__file__).resolve()` is pathlib's resolve, never a scanned method named resolve. Any other
+# class outside the scan stays untyped: a wrapper delegates (io.TextIOWrapper(f).write calls f.write), and
+# a third-party class is not read.
+_VALUE_CLASSES = frozenset({
+    *(f"builtins.{n}" for n in ("str", "bytes", "bytearray", "int", "float", "complex", "bool", "tuple", "range")),
+    *(f"pathlib.{n}" for n in ("Path", "PurePath", "PosixPath", "WindowsPath", "PurePosixPath", "PureWindowsPath")),
+    *(f"datetime.{n}" for n in ("date", "time", "datetime", "timedelta", "timezone")),
+    "decimal.Decimal", "fractions.Fraction", "uuid.UUID",
+    *(f"ipaddress.{n}" for n in ("IPv4Address", "IPv6Address", "IPv4Network", "IPv6Network", "IPv4Interface",
+                                 "IPv6Interface"))})
+_VALUE_MODULES = {m.__name__: m for m in (builtins, pathlib, datetime, decimal, fractions, uuid, ipaddress)}
+_CONSTANTS: dict[type, str] = {str: "builtins.str", bytes: "builtins.bytes"}     # "x".join(...), b"x".decode()
+_METHODS = (types.FunctionType, types.BuiltinFunctionType, types.MethodDescriptorType, types.WrapperDescriptorType,
+            types.ClassMethodDescriptorType, classmethod, staticmethod)
+
+
+@functools.cache
+def _value_method(cls: str, attr: str) -> bool:
+    """attr is a method a _VALUE_CLASSES class defines (in its own class or a base, as Python looks it up)."""
+    mod, _, name = cls.rpartition(".")
+    got = getattr(_VALUE_MODULES[mod], name, None)
+    for k in getattr(got, "__mro__", ()):
+        if attr in vars(k):
+            return isinstance(vars(k)[attr], _METHODS)
+    return False
+
+
 _OPTIONAL = frozenset({"typing.Optional", "typing_extensions.Optional"})
 _UNION = frozenset({"typing.Union", "typing_extensions.Union"})
 _SELF = frozenset({"typing.Self", "typing_extensions.Self"})
@@ -122,10 +160,16 @@ class _Inference:
         for kind, name in _LITERALS:
             if isinstance(node, kind):
                 return name
+        if isinstance(node, ast.Constant) and type(node.value) in _CONSTANTS:
+            return _CONSTANTS[type(node.value)]
+        if isinstance(node, ast.JoinedStr):
+            return "builtins.str"
         if isinstance(node, ast.Call) and _dotted(node.func):
             fq = self._resolve(node.func, local, me)
             if fq in _CONTAINERS and fq.startswith("builtins."):
                 return fq
+            if fq in _VALUE_CLASSES and self.idx.outside(fq):
+                return fq                                 # pathlib.Path(...): exactly a pathlib class
             return fq if fq in self.idx.classes and fq not in self._untrusted else None
         return None
 
@@ -566,6 +610,10 @@ class _Inference:
             return [hit, *([] if rcv[1] else self._subclasses_overriding(rcv[0], node.attr))], None
         if rcv[0] in _CONTAINERS.values() and (rcv[1] or not self._subclasses_overriding(rcv[0], node.attr)):
             return [], rcv[0]                                  # a scanned subclass overriding it stays unknown
+        if rcv[0] in _VALUE_CLASSES and _value_method(rcv[0], node.attr) and (
+                rcv[1] or not self._subclasses_overriding(rcv[0], node.attr)) \
+                and node.attr not in self._foreign_attrs():   # (`p.resolve = f` on an instance shadows it)
+            return [], rcv[0]
         return [], None
 
     def _via_function(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> bool:

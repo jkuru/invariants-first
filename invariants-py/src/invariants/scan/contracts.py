@@ -183,33 +183,30 @@ class _Module:
 
 class _OnPaths:
     """The functions on a path that reaches the sink without the door, for one rule: those a finding
-    shows are known as the checks run; the rest come from the path searches, run only when asked."""
+    shows are known as the checks run; the rest, every function on any door-free path to a reported call
+    (what `inv init` freezes, and what makes an allow entry in use), come from one search, run when first
+    asked (fix round 29: `inv init` asks for each allowed function, and searching again per name cost
+    minutes on a large tree)."""
 
     def __init__(self) -> None:
         self.known: set[str] = set()
-        self._later: list[Callable[[str | None], set[str]]] = []
+        self._later: list[tuple[list[_Pass], list[str], set[str]]] = []
 
     def update(self, names: Iterable[str]) -> None:
         self.known.update(names)
 
     def defer(self, passes: list[_Pass], starts: list[str], allowed: set[str]) -> None:
-        from .reachability import _every_path_node
-        self._later.append(lambda only: _every_path_node(passes, starts, allowed, only))
+        self._later.append((passes, starts, allowed))
 
     def __contains__(self, name: object) -> bool:
         if name in self.known:
             return True
-        if not isinstance(name, str):
-            return False
-        for later in self._later:
-            self.known |= later(name)
-            if name in self.known:
-                return True
-        return False
+        return isinstance(name, str) and bool(self._later) and name in self.all()
 
     def all(self) -> set[str]:
+        from .reachability import _every_path_node
         for later in self._later:
-            self.known |= later(None)
+            self.known |= _every_path_node(*later)
         self._later = []
         return self.known
 

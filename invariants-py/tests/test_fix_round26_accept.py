@@ -148,10 +148,10 @@ def test_the_sha_is_16_hex_and_stable():
     sha = accept.site_sha("unresolved/reflection", "app.svc.export", "  return  eval(x)")
     assert sha == accept.site_sha("unresolved/reflection", "app.svc.export", "return eval(x)")
     assert len(sha) == 16 and int(sha, 16) >= 0
-    assert sha == "34385c1591d27b48"          # pinned: a change of the hash input breaks every entry
-    # an f-string is one token on every Python version (3.12+ tokenizes its parts): the same sha on 3.11
+    assert sha == "a8db5023856fa020"          # pinned: a change of the hash input breaks every entry (round 29: the tree)
+    # an f-string has the same syntax tree on every Python version (3.12+ tokenizes it): the same sha on 3.11
     fs = 'x = getattr(o, f"{n!r:>{w}} " f"""a\n  {b}""")  # c'
-    assert accept.site_sha("c", "o", fs) == "72d54884f935f6a7"
+    assert accept.site_sha("c", "o", fs) == "bb432c2775caa27f"
 
 
 def test_a_reformat_keeps_the_sha_and_a_token_change_does_not():

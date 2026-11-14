@@ -199,7 +199,7 @@ except when the function's own body visibly returns an instance of another scann
 visibly does (`def get() -> Safe: return mk()` with `def mk(): return Repo()`, followed up to three
 calls deep; a type checker reads `mk()` as `Any` and would not flag it): then the call gives no type
 and its method calls are name-matched. What stays trusted, and so needs a type checker in CI: a
-parameter annotation (`def go(s: Safe)` called with a `Repo`), a dataclass field or `__init__`
+parameter annotation (`def go(s: Safe)` called with a `Repo`), a dataclass or `NamedTuple` field or `__init__`
 parameter given another class (`H(r=Repo())`, `dataclasses.replace(h, r=Repo())`), a return
 annotation over an expression the scan does not type (`-> Safe: return [Repo()][0]`), and a class
 annotation (`r: Safe`) over a value set in the class's own methods with a plain assignment.
@@ -313,6 +313,14 @@ A receiver known to be a builtin container (a dict, set or list literal or compr
 container's own method, so `d.update(x)` or `s.add(x)` is not `unresolved/unknown-receiver` when a
 sink happens to be called `update` or `add`. When a scanned class subclasses that builtin and
 overrides the method, a call through an annotation (which may hold the subclass) stays unresolved.
+So does a value class of the standard library, built here: `pathlib.Path(__file__).resolve()`,
+`p = Path(f); p.resolve()`, `datetime.date(...)`, `Decimal(...)`, `uuid.UUID(...)`, an `ipaddress`
+address, `str(x)`, `int(x)`, `tuple(x)` and a string literal or f-string (`", ".join(xs)`) call that
+class's own method (one it defines: any other name, or one some code assigns on an object, stays
+name-matched), never a scanned method of that name. An instance of one holds its own data and no
+method of one calls a method of an object it was given by name. Any other class outside the scan
+is not typed: a wrapper delegates (`io.TextIOWrapper(f).write(s)` calls `f.write`,
+`types.SimpleNamespace(save=f).save()` calls `f`), and third-party code is not read.
 
 A sink taken as a value through a typed receiver (`cb = repo.save`, `add_task(self.repo.save)`,
 `functools.partial(repo.save, x)`) is `unresolved/sink-escapes`, as for a sink named directly;
@@ -498,11 +506,16 @@ finding in the rule:
 `inv scan --format json` gives every unresolved finding its `sha`, 16 hex digits: a hash of its code,
 the function it is in and the whole statement it is in, every line of it (for a compound statement
 such as `if`, `for`, `with` or `def`, its header up to the colon: the statements of its body are
-their own). The statement is compared token by token, so a reformat (line breaks, spacing, comments,
-and the trailing comma black adds before a closing bracket when it splits a call or a literal over
-lines) keeps the sha and a change of any token does not; the comma of a one-element tuple, `(x,)` or
-`t[x,]`, is a token like any other. (So the sha of a statement written with such a trailing comma
-changed in fix round 28: its entry is reported unused once, with the finding's new sha.) The shas
+their own; an `except` clause and a `case` are hashed by theirs). What is hashed is the statement's
+syntax tree, without positions, so a reformat never changes the sha: line breaks, spacing, comments,
+quotes (`'x'` or `"x"`, in an f-string too), redundant parentheses (`if (x):`, `for (x) in`) or the
+ones a formatter adds to split a long expression, the trailing comma black adds before a closing
+bracket, a number's case (`0XAB`, `1E5`) or a `u` prefix. A change of what the statement means does
+change it: another name, number or string, `(x,)` for `(x)`, `a + (b - c)` for `a + b - c`. The tree
+is written out the same way on Python 3.11 to 3.14 (Python's own `ast.dump` differs between them), so
+the sha does too. (The sha hashed the statement's tokens before fix round 29, so a reformat by black
+or `ruff format` broke entries: every sha changed once then. An entry that still names its old sha is
+`missing/allow-unresolved-unused` with the new sha of the same site to write, then `inv lock`.) The shas
 are worked out when they are shown: in `--format json` and SARIF always, and in the text output for
 a rule that declares `allow_unresolved`. An `unresolved/inferred-path` finding's sha also
 covers what reaches its site: the entrypoints from which its function is reached without a door, and
@@ -549,7 +562,7 @@ inv check: invariants.yaml
   ok    lock: invariants.lock matches
   skip  guards: nothing to import (no target, edge target or python contract; a guard on a targetless rule is checked with --import MODULE)
   ok    scan: no path skips a door or guard; 1 reviewed unresolved site(s) accepted by allow_unresolved
-        accepted   R        pkg/svc.py:9:5  getattr with a computed name on ?: the scan cannot tell whether it reaches the sink (allow_unresolved: d is only called with a fixed table of field names)
+        accepted   R        pkg/svc.py:9:5  unresolved/computed-attribute: getattr with a computed name on ?: the scan cannot tell whether it reaches the sink (allow_unresolved: d is only called with a fixed table of field names)
 pass
 ```
 
@@ -586,16 +599,18 @@ receiver the scan cannot type, `unresolved/inferred-path`). `forbidden/unwrap`, 
 are still reported.
 
 `inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
-`goodwill_refund` it calls, say), from every entrypoint that reaches it (not only the path a finding
-shows), re-scanning up to five rounds until nothing new is found. It counts the back doors (bypass
+`goodwill_refund` it calls, say): every function on a door-free path from an entrypoint to the sink
+(not only the path a finding shows, nor only the shortest one from each entrypoint), re-scanning up
+to five rounds until nothing new is found. A long freeze prints a progress line now and then on
+stderr. It counts the back doors (bypass
 and forbidden findings) apart from the unresolved sites, which `allow` does not freeze: when only
 unresolved sites are left, the rule is written commented out with each one listed and drafted as an
 `allow_unresolved` entry (its at, code and sha, and an empty `why`, which the rule file refuses until
 a reviewer says why the site cannot reach the sink; fix the site instead where it can). When the
 scan still fails otherwise, the rule is written commented out with the reason, including when every
 finding is inside a door or sink (which `allow` cannot freeze) or a back door is at module level. An
-entry that no longer reaches the sink without a door is `missing/allow-unused` and fails the check
-until it is deleted. Deleting it is a tightening; adding one is a weakening the lock reports.
+entry that is on no door-free path to the sink any more (through extracted or name-matched calls) is
+`missing/allow-unused` and fails the check until it is deleted. Deleting it is a tightening; adding one is a weakening the lock reports.
 
 ## Configuration and output
 
@@ -643,7 +658,10 @@ root is a weakening that a person accepts, like any other. The agent hook `inv h
 blocks an agent's edit of `[tool.invariants]`.
 
 `--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
-`--format sarif` gives SARIF 2.1.0 for code-scanning tools. The text output prints a path or message
+`--format sarif` gives SARIF 2.1.0 for code-scanning tools. The text output gives one finding per
+line: its kind, rule, place, code (`unresolved/reflection: ...`; not for a bypass, whose code is its
+kind) and message, and for a rule with unresolved findings that declares no `allow_unresolved`, a note
+that `allow_unresolved: []` shows each one's sha on its line. It prints a path or message
 from the tree on one line: a control character in it (a newline in a file name, `\r`, a terminal
 escape) is shown escaped (`\n`, `\r`, `\x1b`), and a line that would start a GitHub Actions workflow
 command (`::error::`) is printed with a backslash first, so a file name cannot write to a CI log's
@@ -717,7 +735,9 @@ kept as one record for every method of that name, however many there are.
   module or package there, holding the names a from-import takes, and not the package the importing
   file is in (`from django import forms` in `lib/extra/django/fields.py` is the installed django). A
   unique match is that module; several (`a/fleet/store.py` and `b/fleet/store.py`) are
-  `unresolved/unknown-module`; none is third-party code. When the importing file's own directory holds
+  `unresolved/unknown-module`, and the message says first that if the name is a dependency, the scan
+  should run where it is installed (an installed package of that name is third-party code, looked for
+  on `sys.path` before any of them); none is third-party code. When the importing file's own directory holds
   the module and it is also a top-level module under the roots (`import fleet.store` in `cli/main.py`
   with both `fleet/store.py` and `cli/fleet/store.py`) or a standard-library module (`import json`
   beside `cli/json.py`), which one Python imports depends on how the program starts (`python

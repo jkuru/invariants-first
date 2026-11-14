@@ -259,7 +259,7 @@ def test_a_lazy_sha_is_the_eager_one(tmp_path):
     eager = _scan(tmp_path / "b", UNRES, {"rules": [{"id": "R", "mediation": {
         "sink": "py:payments.send_to_gateway", "door": ["py:payments.refund"], "allow_unresolved": []}}]})
     assert [f.sha for f in lazy.findings] == [f.sha for f in eager.findings] and lazy.findings[0].sha
-    assert scan.to_sarif(lazy, "X")["runs"][0]["results"][0]["partialFingerprints"]["invSite/v2"] == lazy.findings[0].sha
+    assert scan.to_sarif(lazy, "X")["runs"][0]["results"][0]["partialFingerprints"]["invSite/v3"] == lazy.findings[0].sha
 
 
 # --- B. descriptive dunders ------------------------------------------------------------------------------------

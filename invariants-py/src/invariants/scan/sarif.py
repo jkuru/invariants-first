@@ -35,7 +35,7 @@ def _result(f: Finding, codes: list[str]) -> dict[str, Any]:
         "properties": {"invRule": f.rule, "kind": f.kind, "path": f.path},
     }
     if f.sha:
-        res["partialFingerprints"] = {"invSite/v2": f.sha}
+        res["partialFingerprints"] = {"invSite/v3": f.sha}     # v3: the syntax-tree sha (fix round 29)
     if f.file:
         res["locations"] = [{"physicalLocation": {
             "artifactLocation": {"uri": f.file},
