@@ -266,7 +266,8 @@ def _scan(tmp_path, body):
     ("operator.methodcaller('__call__', c)(store.sink)", ("unresolved/sink-escapes", "app/bypass.py")),
     ("store.sink.__wrapped__(c)", ("unresolved/unwrap", "app/bypass.py")),
     ("getattr(store.sink, '__wrapped__')(c)", ("unresolved/unwrap", "app/bypass.py")),
-    ("operator.methodcaller('__wrapped__')", ("unresolved/unwrap", "app/bypass.py")),
+    # fix round 28: no decorated function here reaches the sink: nothing an unwrap lifts can
+    ("operator.methodcaller('__wrapped__')", None),
 ])
 def test_dunder_spellings_of_a_call_are_seen(tmp_path, body, want):
     got = _scan(tmp_path, body)

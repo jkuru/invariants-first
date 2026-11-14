@@ -110,8 +110,21 @@ Some values are not written as a name being read:
   a call of that class: `type(x)(...)`, `x.__class__(...)`, `dataclasses.replace(x, ...)` and
   `copy.copy(x)` (which runs `__new__`) are edges to the constructors of x's class (and its
   subclasses', unless x was built here), or, when the scan cannot type x, name-matched edges to every
-  class's. `C.__subclasses__()` (any class's, `object`'s too) hands out classes the scan cannot name:
-  `unresolved/reflection`.
+  class's. So is `cls(...)` (and `x = cls()`) in a `@classmethod`, whatever its first parameter is
+  called (`klass`), and in `__init_subclass__` or `__class_getitem__`: an edge to the constructors of
+  the class and of each scanned subclass. `C.__subclasses__()` (any class's, `object`'s too) hands out
+  classes the scan cannot name: `unresolved/reflection`.
+- **Annotations are expressions.** Python evaluates the annotations of a def's parameters and return,
+  and of `x: T` in a module or class body, where they are written (and a framework evaluates the rest:
+  FastAPI, pydantic and `typing.get_type_hints` read string annotations and those under `from
+  __future__ import annotations` too), so the scan walks them all, a string one parsed: a call in one
+  runs (`def r(x: payments._send())`), and a scanned function named in one is a value. A class or
+  module named as a type is not (`k: Repo`, `list[Repo]`, `Repo | None`, `"Repo"`), nor is a string in
+  `Literal[...]`. The metadata of `Annotated[T, ...]` are values a framework may call
+  (`Annotated[int, Depends(payments._send)]`, `AfterValidator(h)`), and an empty FastAPI `Depends()`
+  (or `Security()`), as metadata or as the default of a parameter annotated `T` (`k: Repo =
+  Depends()`), builds `T`: its constructors are used as values. The annotation of a variable inside a
+  function body is never evaluated, so it is not walked.
 
 Names resolve by the object they are bound to, not by their spelling. A module-level name that its
 imports, top-level definitions and star imports bind to more than one object (`if ...: from payments
@@ -152,7 +165,13 @@ guarded door: a door or target of a rule in the file, or a function with an inv 
 `unresolved/unwrap`: the call it makes cannot be followed. An unwrap of something the scan cannot name
 (`fn.__wrapped__` on a parameter) is listed under every rule: `forbidden/unwrap` when a guarded door
 that bears on the rule has a decorator (only a decorated function has a `__wrapped__` to lift, and a
-module function or method has no closure), else `unresolved/unwrap`. An unwrap of an object outside
+module function or method has no closure), else `unresolved/unwrap` when a decorated function (or a
+method named `__wrapped__`) can reach the sink without a door, or a function that can is taken as a
+value inside a door, sink or allowed function (a closure cell holds a value taken somewhere, which
+the checks see everywhere else). With neither, whatever it unwraps cannot reach the sink, and it is
+not reported. Reading the cells of an object the scan cannot name (`fn.__closure__`) is inspection
+until what a cell holds is called, which the scan cannot follow: `unresolved/unwrap`, never
+`forbidden/unwrap` (`f.__closure__` of a guarded door the scan names is still forbidden). An unwrap of an object outside
 the scanned code (`getattr(genai.Models.generate_content, "__wrapped__")`) and `hasattr(f,
 "__wrapped__")`, which only asks, are neither.
 
@@ -312,7 +331,11 @@ was reported where it was taken as a value (writes through it are described abov
 Names looked up from strings are lookups too. `pydoc.locate("pkg.mod.f")` and
 `pkgutil.resolve_name("pkg.mod:f")` with a literal are a getattr of that name (naming the sink is
 `forbidden/getattr-sink`), `inspect.getattr_static(obj, "name")` is `getattr(obj, "name")`, and
-`getattr(builtins, "getattr")` is reflection. `logging.config.dictConfig(config)` imports and calls
+`getattr(builtins, "getattr")` is reflection. A literal lookup of any kind (these, `getattr(m, "K")`,
+`m.__dict__["K"]`, `f.__globals__["K"]`, `getattr(m.Outer, "K")`) that names a scanned class builds
+it when called (`getattr(svc, "K")()`: an edge to its constructors) and is a value of its
+constructors otherwise (`C = getattr(svc, "K")`); one that names a scanned module is a value of its
+functions and constructors (`m = getattr(pkg, "sub")`), as the logging config's names are. `logging.config.dictConfig(config)` imports and calls
 the dotted names in its strings (`"()"` factories, `"class"` handlers, `ext://` objects): on a config
 the scan can read (a literal, or a module-level name bound once to one) each scanned function or
 class it names is a call edge (so a `"()": "pkg.store.sink"` is a bypass); any other config, and
@@ -333,7 +356,9 @@ reported). A subprocess that runs Python (`subprocess.run`, `Popen`, `call`, `ch
 the child process runs code the scan does not follow from that call; other commands are not reported. `copy.copy` and `copy.deepcopy` are not reported themselves: what a
 `__reduce__` returns is (`pickle.loads` or the sink as a value, `getattr`, ...). Assigning a
 dunder of a sink or door (`door.__code__ = other.__code__`, `setattr(door, "__code__", c)`,
-`delattr(door, "__defaults__")`) is `forbidden/monkeypatch`; writing `__code__`, `__defaults__` or
+`delattr(door, "__defaults__")`) is `forbidden/monkeypatch`, except one that only describes it and
+runs nothing (`__doc__`, `__name__`, `__qualname__`, `__module__`, `__annotations__`:
+`door.__doc__ = shared_doc` is not reported); writing `__code__`, `__defaults__` or
 `__kwdefaults__` on a function the scan cannot name (`f = door; f.__code__ = c`, a parameter) is
 `unresolved/unknown-receiver`. Reflective
 builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
@@ -408,9 +433,17 @@ can return and why none of it reaches the sink around a door.
   `getattr(sys, attr)[key]` are reflection the scan reports only when it can name them. The scan cannot
   list a foreign module's attributes without importing it, so no object outside the scan is narrowed.
 
-A computed `setattr` / `delattr` is still reported: the name may be `__class__` (which retypes the
-object) or an attribute the scan uses to type calls (`self.repo`), and the scan types through both.
-A computed `hasattr` only asks and is never reported.
+A computed `setattr` on a receiver of the same kind is narrowed by the same proof (the family seen
+whole, nothing in it named like a sink or door or able to reach the sink), when in addition no code
+runs on a set: no class in the family defines `__setattr__`, `__delattr__`, a descriptor's `__set__`
+or `__delete__`, or `__set_name__`, has a decorated method (a property or another descriptor), or a
+class attribute made by a call other than `dataclasses.field()`. Then the name set can only bind an
+instance attribute, which retypes nothing the rule checks: a method it shadows cannot reach the sink,
+and a value stored there was taken as a value where it was made (`for f in fields(self):
+setattr(self, f.name, getattr(other, f.name))` on a plain dataclass passes). Any other computed
+`setattr`, and every computed `delattr`, is still reported: the name may be `__class__` (which
+retypes the object) or an attribute the scan uses to type calls (`self.repo`). A computed `hasattr`
+only asks and is never reported.
 
 Reading only the names of a namespace (`globals().keys()`, `name in globals()`, `vars(m).keys()`,
 `m.__dict__.keys()`, `len(...)`) gives strings, never a value: it is not reflection.
@@ -441,8 +474,13 @@ finding in the rule:
 `inv scan --format json` gives every unresolved finding its `sha`, 16 hex digits: a hash of its code,
 the function it is in and the whole statement it is in, every line of it (for a compound statement
 such as `if`, `for`, `with` or `def`, its header up to the colon: the statements of its body are
-their own). The statement is compared token by token, so a reformat (line breaks, spacing, comments)
-keeps the sha and a change of any token does not. An `unresolved/inferred-path` finding's sha also
+their own). The statement is compared token by token, so a reformat (line breaks, spacing, comments,
+and the trailing comma black adds before a closing bracket when it splits a call or a literal over
+lines) keeps the sha and a change of any token does not; the comma of a one-element tuple, `(x,)` or
+`t[x,]`, is a token like any other. (So the sha of a statement written with such a trailing comma
+changed in fix round 28: its entry is reported unused once, with the finding's new sha.) The shas
+are worked out when they are shown: in `--format json` and SARIF always, and in the text output for
+a rule that declares `allow_unresolved`. An `unresolved/inferred-path` finding's sha also
 covers what reaches its site: the entrypoints from which its function is reached without a door, and
 every name-matched call on those paths (`ops.go -> .refund`), which `--format json` lists as
 `reached_by` (the first 50) and the text output summarizes after the sha. A rule that declares
@@ -455,7 +493,8 @@ first every entry whose finding is at its line (and column), then each other ent
 finding left with its sha. So:
 
 - an edit above the site that moves it keeps the entry: the finding is shown as accepted, with "moved
-  from line N: update its at";
+  from line N: update its at to F:L" (for an entry written with a column, "moved from N:C: update its
+  at to F:L:C", since an entry without its column matches more and is a weakening);
 - an edit of any line of the statement (the second line of a call split over two, say), or a rename
   of its function, changes the sha: the finding fails again, and the entry is
   `missing/allow-unresolved-unused`, as is an entry whose finding is gone (delete it: a tightening);
@@ -507,7 +546,12 @@ through only when every function on it is in `allow`. So these are a `bypass`:
 - a new caller of an allowed function (a new script that calls `admin_goodwill`), including one that
   takes it as a value (`g = admin_goodwill; g()`, `Thread(target=admin_goodwill)`): reported where
   the value is taken;
-- new code that an allowed function calls and that reaches the sink.
+- new code that an allowed function calls and that reaches the sink;
+- in a module body allowed as `py:pkg.mod.<module>` (which `inv init` freezes when a module-level
+  statement starts a frozen chain, `main()` at the bottom of a script), a call into the sink or the
+  sink used as a value at module level, new or old: the entry excuses only the module body's calls
+  into the other allowed functions, never its own sink call, so a new `Repo().save()` at the bottom
+  of the file fails.
 
 Inside an allowed function, the ways it reaches the sink are excused with it: a direct call, a
 `getattr` of the sink name, or the sink used as a value. They are excused only for the frozen chain:
@@ -519,9 +563,13 @@ are still reported.
 
 `inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
 `goodwill_refund` it calls, say), from every entrypoint that reaches it (not only the path a finding
-shows), re-scanning up to five rounds until nothing new is found. When the scan still fails, the rule
-is written commented out with the reason, including when every finding is inside a door or sink
-(which `allow` cannot freeze). An
+shows), re-scanning up to five rounds until nothing new is found. It counts the back doors (bypass
+and forbidden findings) apart from the unresolved sites, which `allow` does not freeze: when only
+unresolved sites are left, the rule is written commented out with each one listed and drafted as an
+`allow_unresolved` entry (its at, code and sha, and an empty `why`, which the rule file refuses until
+a reviewer says why the site cannot reach the sink; fix the site instead where it can). When the
+scan still fails otherwise, the rule is written commented out with the reason, including when every
+finding is inside a door or sink (which `allow` cannot freeze) or a back door is at module level. An
 entry that no longer reaches the sink without a door is `missing/allow-unused` and fails the check
 until it is deleted. Deleting it is a tightening; adding one is a weakening the lock reports.
 
@@ -633,6 +681,15 @@ kept as one record for every method of that name, however many there are.
   prints a note naming the link. The scan `inv mcp` runs is confined to its `--root`: a symlink
   there that resolves outside it is not followed, and is `unresolved/outside-root` under every rule,
   with the link's path only.
+- **An import is looked for as Python finds it.** An absolute import whose first name is no top-level
+  module under the roots, the standard library or an installed package is looked for first in the
+  importing file's own directory (`sys.path[0]` when it runs as a script: `from pay import sink` in
+  `ops/run.py` is `ops/pay.py`), then below any directory under a root (a deeper `sys.path` entry:
+  `import fleet.store` in `cli/main.py` is `cli/fleet/store.py`). The whole dotted name must be a
+  module or package there, holding the names a from-import takes, and not the package the importing
+  file is in (`from django import forms` in `lib/extra/django/fields.py` is the installed django). A
+  unique match is that module; several (`a/fleet/store.py` and `b/fleet/store.py`) are
+  `unresolved/unknown-module`; none is third-party code.
 - **An unknown submodule of a scanned package is not third-party.** An import of a module under a
   package the roots hold that no file under the roots is (`import pkg.admin.tasks` with no
   `pkg/admin`, a dangling symlink, `from pkg import admin` where `pkg/__init__.py` binds no `admin`,

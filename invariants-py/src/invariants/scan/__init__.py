@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import functools
 import os
 import pathlib
 import re
@@ -209,6 +210,7 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
                              f"{rel} is an archive holding {count} Python module(s), which Python imports once it "
                              f"is on sys.path (zipimport): what they run and call is not checked; keep their "
                              f"source in the root, or delete it"))
+    idx.deep_imports()
     idx.unresolved_imports()
     idx.import_path_writes()
     return idx
@@ -264,7 +266,7 @@ def _skipped_imports(idx: _Index, root: pathlib.Path, file: pathlib.Path) -> lis
             for t in n.targets if isinstance(t, ast.Name)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names += [(node.lineno, idx.real(a.name)) for a in node.names]
+            names += [(node.lineno, idx.imported(mod, a.name)) for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             src = idx._absolute(mod, node)
             names += [(node.lineno, src), *((node.lineno, f"{src}.{a.name}") for a in node.names)]
@@ -357,7 +359,7 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     entries = g.entries
     progress = _Progress()
     guarded = _guarded(idx, doc)
-    lines = accept._Lines()
+    lines = accept._Lines({m.file: m.tree for m in idx.modules.values()})
     for k, med in enumerate(scanned.values()):
         progress("checking rule", k, len(scanned))
         on = _OnPaths()                                # worked out when read (inv init), not here
@@ -366,10 +368,12 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
         found += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                           str(r)) for r, f, line, code, msg in idx.problems]
         found += _skipped_importers(idx, med)
-        accept.fill_sha(found, lines, _inferred_basis(idx, med, edges, entries, found))
         if med.accept is not None:                     # reviewed sites: shown as accepted, never failing
+            accept.fill_sha(found, lines, _inferred_basis(idx, med, edges, entries, found))
             found, ok = accept.apply(med.rule, med.accept, found)
             report.accepted += ok
+        else:                                          # hashed only when asked (JSON, SARIF, the API)
+            accept.defer_sha(found, lines, functools.partial(_inferred_basis, idx, med, edges, entries, found))
         report.findings += found
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))

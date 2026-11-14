@@ -29,8 +29,9 @@ def to_text(report: Report) -> str:
         key = f"  [sha {f.sha}{_covers(f)}]" if f.rule in opted and f.kind == "unresolved" and f.sha else ""
         lines.append(f"{f.kind:<10} {f.rule:<8} {_where(f)}  {f.message}{key}")
     for f in report.accepted:
-        moved = (f"; moved from line {f.moved_from}: update its at to {f.file}:{f.line}"
-                 if f.moved_from is not None else "")
+        moved = "" if f.moved_from is None else \
+            f"; moved from line {f.moved_from}: update its at to {f.file}:{f.line}" if f.moved_col is None else \
+            f"; moved from {f.moved_from}:{f.moved_col}: update its at to {f.file}:{f.line}:{f.col}"
         lines.append(f"{'accepted':<10} {f.rule:<8} {_where(f)}  {f.message} (allow_unresolved: {f.why}{moved})")
     for rid in report.scanned:
         c = report.counts(rid)

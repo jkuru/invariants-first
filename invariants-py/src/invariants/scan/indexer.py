@@ -203,8 +203,96 @@ class _Index:
         """The module an import from names. A relative one resolves by the file's directory: from its name
         under the shallowest root that holds it, so `from ..payments import x` in src/app/sub/ops.py is
         app.payments whichever root names the file; one that climbs above every root names nothing."""
+        if not node.level:
+            return self.imported(mod, node.module or "")
         got = self._relative(mod, node)
         return self.real(got) if got is not None else _NOWHERE
+
+    def imported(self, mod: _Module, name: str) -> str:
+        """The module an absolute import of name in mod names, as the scan indexes it (deep_imports())."""
+        if mod.rebase and (new := mod.rebase.get(name.partition(".")[0])):
+            name = ".".join(filter(None, [new, name.partition(".")[2]]))
+        return self.real(name)
+
+    def deep_imports(self) -> None:
+        """An absolute import whose first name is no top-level module under the roots, nor the standard
+        library or an installed package, is looked for as Python finds it on sys.path: first in the
+        importing file's own directory (sys.path[0] for a script: ops/run.py's `from pay import sink` is
+        ops/pay.py), then under any directory below a root (a deeper sys.path entry: `import fleet.store`
+        is cli/fleet/store.py). A unique match aliases the import to that module; a name several modules
+        match is unresolved/unknown-module: never dropped (an import resolved to nothing hides its calls).
+        The whole dotted name must match (a module or package): `import mysql.connector` beside a project
+        package named mysql that has no connector is the installed driver, as it is for Python."""
+        tops = {n.split(".")[0] for n in self.files_named}
+        tails: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+        for n in {*self.modules, *self.excluded}:        # (not a skipped tree's: a virtualenv's packages)
+            p = n.split(".")
+            for i in range(1, len(p)):
+                for j in range(i + 1, len(p) + 1):
+                    tails[".".join(p[i:j])].add(".".join(p[:i]))
+        known = {".".join(n.split(".")[:i]) for n in {*self.modules, *self.excluded} for i in range(1, n.count(".") + 2)}
+        changed = False
+
+        def fits(mod: _Module, node: ast.stmt, prefix: str, name: str) -> bool:
+            """prefix.name can be what the import names: not the package the importing file is in (a
+            module never imports its own package by a bare name: hypothesis/extra/django/_fields.py's
+            `from django import forms` is the installed django), and holding every name a from-import
+            takes from it (a submodule, or a name its source binds)."""
+            pkg = f"{prefix}.{name.split('.')[0]}"
+            if mod.name == pkg or mod.name.startswith(pkg + "."):
+                return False
+            target = f"{prefix}.{name}"
+            if not isinstance(node, ast.ImportFrom) or target in self.excluded:
+                return True
+            bound = self._bound(target) if target in self.modules else set()
+            return all(a.name == "*" or f"{target}.{a.name}" in known or bound is None or a.name in bound
+                       for a in node.names)
+        for mod in self.modules.values():
+            own = mod.name if mod.file.name == "__init__.py" else mod.name.rpartition(".")[0]
+            for node in _walk_of(mod.tree, *IMPORTS):
+                if isinstance(node, ast.ImportFrom):
+                    if node.level or not node.module:
+                        continue
+                    names = [node.module]
+                elif isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                else:
+                    continue
+                for name in names:
+                    name = self.real(name)
+                    head = name.split(".")[0]
+                    if head in tops or head in mod.rebase or head in sys.stdlib_module_names or head not in tails:
+                        continue
+                    if own and f"{own}.{name}" in known and fits(mod, node, own, name):
+                        mod.rebase[head] = f"{own}.{head}"     # the script's own directory: sys.path[0]
+                        changed = True
+                        continue
+                    if self.installed_portion(head):
+                        continue                         # an installed package of that name: third-party
+                    found = {p for p in tails.get(name, ()) if fits(mod, node, p, name)}
+                    if not found:
+                        continue                         # (`mysql.connector` beside a package named mysql)
+                    if len(found) == 1:
+                        mod.rebase[head] = f"{next(iter(found))}.{head}"
+                        changed = True
+                        continue
+                    shown = ", ".join(sorted(f"{p}.{name}" for p in found)[:4])
+                    self.problems.append((mod.root, mod.file, node.lineno, "unresolved/unknown-module",
+                                          f"imports {name}, which is no top-level module under the source roots "
+                                          f"but which several modules below a root may be ({shown}): which one "
+                                          f"Python imports depends on sys.path, so calls through it cannot be "
+                                          f"traced; import it by its full name"))
+            if mod.rebase:
+                for into in (mod.aliases, mod.nested):
+                    for k, v in into.items():
+                        if v.partition(".")[0] in mod.rebase:
+                            into[k] = self.imported(mod, v)
+                mod.star[:] = [self.imported(mod, s) if s.partition(".")[0] in mod.rebase else s for s in mod.star]
+        if changed:
+            self._bases.clear()
+            self._methods.clear()
+            self._mros.clear()
+            self._class_names = None
 
     def _relative(self, mod: _Module, node: ast.ImportFrom) -> str | None:
         if not node.level:
@@ -230,11 +318,12 @@ class _Index:
         for mod in self.modules.values():
             for node in _walk_of(mod.tree, *IMPORTS):
                 if isinstance(node, ast.Import):
-                    self._unknown_at(mod, node, next(filter(None, (self._unknown(a.name) for a in node.names)), None))
+                    self._unknown_at(mod, node, next(filter(None, (self._unknown(self.imported(mod, a.name))
+                                                                   for a in node.names)), None))
                 if not isinstance(node, ast.ImportFrom):
                     continue
                 if not node.level:
-                    self._unknown_at(mod, node, self._unknown_from(node.module or "", node))
+                    self._unknown_at(mod, node, self._unknown_from(self._absolute(mod, node), node))
                     continue
                 got = self._relative(mod, node)
                 text = "." * node.level + (node.module or "")
@@ -242,13 +331,22 @@ class _Index:
                     why = f"from {text} import ... climbs above the top of every source root"
                 elif not (got and found(got)) and not any(
                         found(f"{got}.{a.name}" if got else a.name) for a in node.names if a.name != "*"):
-                    why = f"from {text} import ... names no module under the source roots ({got or '.'})"
+                    why = f"from {text} import ... names no module under the source roots ({self._shown(mod, node, got)})"
                 else:
                     self._unknown_at(mod, node, self._unknown_from(self.real(got), node) if got else None)
                     continue
                 self.problems.append((mod.root, mod.file, node.lineno, "unresolved/relative-import",
                                       f"{why}: the names it imports are not followed, so calls through them "
                                       f"cannot be traced; fix the import or add the missing root"))
+
+    def _shown(self, mod: _Module, node: ast.ImportFrom, got: str) -> str:
+        """The module a relative import names, as the scan names the importing file's package (fix round 28:
+        `google.adk.platform.internal`, not the deeper root's `src.google.adk.platform.internal`)."""
+        base = mod.package.split(".") if mod.package else []
+        if node.level - 1 > len(base):
+            return got or "."
+        base = base[: len(base) - (node.level - 1)]
+        return ".".join([*base, *([node.module] if node.module else [])]) or "."
 
     def _unknown(self, name: str) -> str | None:
         """The first module along a dotted name that lies in a package under the roots but that no file

@@ -39,13 +39,22 @@ class Finding:
     sha: str | None = None
     why: str | None = None         # accepted: the reason its allow_unresolved entry gives
     moved_from: int | None = None  # accepted at another line than its entry says (the code above moved)
+    moved_col: int | None = None   # and the column the entry gave, when it gave one (fix round 28)
     # an unresolved/inferred-path finding: what reaches its site, which its sha covers too (the entrypoints
     # and the name-matched calls on the paths through it)
     reached_by: list[str] | None = None
 
+    def __getattribute__(self, name: str) -> Any:
+        # sha and reached_by are worked out when first read (accept.defer_sha; fix round 28)
+        if name == "sha" or name == "reached_by":
+            fill = object.__getattribute__(self, "__dict__").get("_fill")
+            if fill is not None:
+                fill()
+        return object.__getattribute__(self, name)
+
     def as_dict(self) -> dict[str, Any]:
         out = dataclasses.asdict(self)
-        for k in ("sha", "why", "moved_from", "reached_by"):     # only where they say something
+        for k in ("sha", "why", "moved_from", "moved_col", "reached_by"):     # only where they say something
             if out[k] is None:
                 del out[k]
         return out
@@ -166,6 +175,10 @@ class _Module:
     # imports inside a function or class body: they bind there, not in the module (fix round 27); a name
     # the module scope does not bind resolves through them, and alternatives() counts every binding
     nested: dict[str, str] = dataclasses.field(default_factory=dict)
+    # fix round 28: an absolute import found through the importing file's own directory or a deeper
+    # sys.path entry (`import fleet.store` in cli/main.py is cli/fleet/store.py): its first name -> the
+    # name the scan indexes it under (`fleet` -> `cli.fleet`)
+    rebase: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 class _OnPaths:

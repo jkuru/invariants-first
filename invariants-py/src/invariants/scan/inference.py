@@ -1048,7 +1048,7 @@ def alternatives(idx: _Index, mod: _Module) -> dict[str, frozenset[str]]:
         if isinstance(node, ast.Import):
             for a in node.names:
                 if a.asname:
-                    cands[a.asname].add(idx.canon(idx.real(a.name)))
+                    cands[a.asname].add(idx.canon(idx.imported(mod, a.name)))
         elif isinstance(node, ast.ImportFrom):
             src = idx._absolute(mod, node)
             for a in node.names:
@@ -1125,7 +1125,8 @@ def scoped_import_names(idx: _Index, mod: _Module) -> frozenset[str]:
                 continue
             for a in node.names:
                 if isinstance(node, ast.Import):
-                    name, what = (a.asname, idx.real(a.name)) if a.asname else (a.name.split(".")[0],) * 2
+                    name, what = (a.asname, idx.imported(mod, a.name)) if a.asname else \
+                        (a.name.split(".")[0], idx.imported(mod, a.name.split(".")[0]))
                 elif a.name != "*":
                     src = idx._absolute(mod, node)
                     name, what = a.asname or a.name, f"{src}.{a.name}" if src else a.name

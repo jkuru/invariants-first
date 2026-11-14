@@ -26,9 +26,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import keyword
 import pathlib
 import tokenize
-from typing import Callable
+from typing import Any, Callable
 
 from .contracts import Accept, Finding, _Edge, _Fan
 
@@ -38,16 +39,21 @@ SHA_HEX = 16            # the length of a site's sha
 class _Lines:
     """The source of the files findings are in, read and parsed once each."""
 
-    def __init__(self) -> None:
+    def __init__(self, trees: dict[pathlib.Path, ast.Module] | None = None) -> None:
         self._files: dict[pathlib.Path, list[str]] = {}
         self._stmts: dict[pathlib.Path, list[tuple[int, int, int, int, int]] | None] = {}
+        self._trees = trees or {}                  # the index's own trees (fix round 28: not parsed again)
+        self._plain: set[pathlib.Path] = set()     # files whose lines are the parser's lines
 
     def _read(self, path: pathlib.Path) -> list[str]:
         if path not in self._files:
             try:
-                self._files[path] = path.read_bytes().decode("utf-8", "replace").splitlines()
+                text = path.read_bytes().decode("utf-8", "replace")
             except OSError:
-                self._files[path] = []
+                text = ""
+            self._files[path] = text.splitlines()
+            if len(self._files[path]) == text.count("\n") + (0 if text.endswith("\n") or not text else 1):
+                self._plain.add(path)              # no \r, form feed or other separator splitlines() splits on
         return self._files[path]
 
     def line(self, root: str | None, file: str, line: int) -> str:
@@ -61,11 +67,13 @@ class _Lines:
         the body starts on the header's last line (`if x: y()`). None: the file does not parse."""
         if path not in self._stmts:
             lines = self._read(path)
-            try:
-                tree = ast.parse("\n".join(lines))
-            except (SyntaxError, ValueError):
-                self._stmts[path] = None
-                return None
+            tree = self._trees.get(path) if path in self._plain else None
+            if tree is None:
+                try:
+                    tree = ast.parse("\n".join(lines))
+                except (SyntaxError, ValueError):
+                    self._stmts[path] = None
+                    return None
             out = []
             for n in ast.walk(tree):
                 if not isinstance(n, ast.stmt) or n.end_lineno is None or n.end_col_offset is None:
@@ -114,7 +122,7 @@ def _normalized(text: str) -> str:
     version (3.12 splits it into parts). Text that does not tokenize: its words, one space apart."""
     src = text.strip() + "\n"
     rows = src.splitlines(keepends=True)
-    out: list[str] = []
+    out: list[tuple[int, str]] = []
     depth, start = 0, (0, 0)
     try:
         for t in tokenize.generate_tokens(io.StringIO(src).readline):
@@ -127,13 +135,39 @@ def _normalized(text: str) -> str:
                 depth -= 1
                 if depth == 0:                   # the source of the whole string
                     (r0, c0), (r1, c1) = start, t.end
-                    out.append(rows[r0 - 1][c0:] + "".join(rows[r0:r1 - 1]) + rows[r1 - 1][:c1]
-                               if r1 > r0 else rows[r0 - 1][c0:c1])
+                    out.append((tokenize.STRING, rows[r0 - 1][c0:] + "".join(rows[r0:r1 - 1]) + rows[r1 - 1][:c1]
+                                if r1 > r0 else rows[r0 - 1][c0:c1]))
             elif depth == 0 and t.type not in _LAYOUT:
-                out.append(t.string)
+                out.append((t.type, t.string))
     except (tokenize.TokenError, SyntaxError):
         return " ".join(text.split())
-    return " ".join(out)
+    return " ".join(_without_magic_commas(out))
+
+
+def _without_magic_commas(toks: list[tuple[int, str]]) -> list[str]:
+    """The token strings, without a trailing comma right before a closing bracket (`f(a,)` is `f(a)`: black
+    adds one when it splits a call over lines; fix round 28), except where the comma makes a tuple: the
+    only comma in a parenthesized tuple `(x,)` or in a subscript `a[x,]`, which differ from `(x)` and
+    `a[x]`."""
+    out: list[str] = []
+    stack: list[list[Any]] = []                    # [tuple-like bracket, commas in it]
+    prev: tuple[int, str] | None = None
+    for typ, s in toks:
+        if typ == tokenize.OP and s in ("(", "[", "{"):
+            after_value = prev is not None and (prev[1] in (")", "]", "}") or prev[0] == tokenize.STRING or (
+                prev[0] == tokenize.NAME and not keyword.iskeyword(prev[1])))
+            called = after_value or (prev is not None and prev[1] == "import")
+            stack.append([(s == "(" and not called) or (s == "[" and after_value), 0])
+        elif typ == tokenize.OP and s == "," and stack:
+            stack[-1][1] += 1
+        elif typ == tokenize.OP and s in (")", "]", "}"):
+            if prev == (tokenize.OP, ",") and stack and not (stack[-1][0] and stack[-1][1] == 1):
+                out.pop()
+            if stack:
+                stack.pop()
+        out.append(s)
+        prev = (typ, s)
+    return out
 
 
 def site_sha(code: str, owner: str | None, text: str, basis: list[str] | None = None) -> str:
@@ -148,6 +182,22 @@ Basis = Callable[[Finding], list[str]]
 
 
 SHOWN = 50              # the most of what reaches an inferred path a finding lists (its sha covers all)
+
+
+def defer_sha(findings: list[Finding], lines: _Lines, basis: Callable[[], Basis | None]) -> None:
+    """fill_sha, run when a finding's sha (or reached_by) is first read (fix round 28): a scan whose
+    output shows no sha (text, for a rule with no allow_unresolved) never hashes a statement."""
+    todo = [f for f in findings if f.kind == "unresolved" and f.file and f.line > 0
+            and f.__dict__.get("sha") is None]
+    if not todo:
+        return
+
+    def fill() -> None:
+        for f in todo:
+            f.__dict__.pop("_fill", None)
+        fill_sha(todo, lines, basis())
+    for f in todo:
+        f.__dict__["_fill"] = fill
 
 
 def fill_sha(findings: list[Finding], lines: _Lines, basis: Basis | None = None) -> None:
@@ -318,7 +368,8 @@ def apply(rule: str, entries: list[Accept], findings: list[Finding]) -> tuple[li
             continue
         pick = picks[i]
         pick.why = e.why
-        if pick.line != e.line:
+        if pick.line != e.line or (e.col is not None and pick.col != e.col):
             pick.moved_from = e.line
+            pick.moved_col = e.col               # an entry with a column keeps one (a dropped column weakens it)
         accepted.append(pick)
     return [f for f in findings if id(f) not in taken] + unused, accepted

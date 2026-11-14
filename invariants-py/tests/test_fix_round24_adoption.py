@@ -288,8 +288,13 @@ def test_reflection_is_not_narrowed_by_what_a_module_imports(tmp_path):
 
 
 def test_a_computed_setattr_is_still_reported(tmp_path):
-    rep = scan.scan(DOC, [_project(tmp_path, {"web.py": DISPATCH.replace("getattr(self, verb)()", "1")
-                                              + "        def put(self, k, v):\n            setattr(self, k, v)\n"})])
+    # fix round 28: a computed setattr on a plain class the scan sees whole is narrowed like a getattr; one
+    # on a class with a property (code that runs on a set) is still reported
+    body = DISPATCH.replace("getattr(self, verb)()", "1") + "        def put(self, k, v):\n            setattr(self, k, v)\n"
+    rep = scan.scan(DOC, [_project(tmp_path / "plain", {"web.py": body})])
+    assert _computed(rep) == [], rep.findings
+    prop = body + "        @property\n        def size(self):\n            return 0\n"
+    rep = scan.scan(DOC, [_project(tmp_path / "prop", {"web.py": prop})])
     assert [f.message.split(" ")[0] for f in _computed(rep)] == ["setattr"], rep.findings
 
 
@@ -498,7 +503,12 @@ def test_an_unwrap_that_lifts_nothing_from_the_scanned_code_is_not_reported(tmp_
 
 
 def test_an_unknown_unwrap_is_unresolved_when_no_guarded_door_has_a_decorator(tmp_path):
-    rep = scan.scan(_doc(), [_project(tmp_path, {"ops.py": "def f(fn):\n    return fn.__closure__\n"})])
+    # fix round 28: a decorated function that can reach the sink is what it may unwrap (with none, the
+    # unwrap is not reported: test_fix_round28_scan)
+    deco = ("import functools\nimport payments\n@functools.lru_cache\ndef h():\n"
+            "    payments.send_to_gateway(1, 2)\n")
+    rep = scan.scan(_doc(), [_project(tmp_path, {"ops.py": "def f(fn):\n    return fn.__closure__\n",
+                                                 "deco.py": deco})])
     assert [c for c, _ in _unwraps(rep)] == ["unresolved/unwrap"]
     assert "calls a guarded function" not in _unwraps(rep)[0][1]
 
