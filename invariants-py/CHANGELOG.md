@@ -133,6 +133,10 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   lines) scans in 3 s instead of 16 s; PyTorch (1M lines; it did not finish in 18 minutes before) in
   20 s and 1.6 GB; transformers in 30 s and 1.6 GB (it did not finish in 20 minutes before). A scan
   that runs past 5 seconds prints a progress line on stderr (`INV_PROGRESS=0` turns it off).
+- A portion of a namespace package installed outside the roots (`google.genai` beside an app's own
+  `google.adk`) is third-party, not `unresolved/unknown-module` (google-adk: 258 findings to 0 with its
+  dependencies installed). `inv check` lists each accepted `allow_unresolved` site under its `ok scan`
+  line instead of a bare "no path skips a door or guard".
 - Reviewed exceptions: `mediation.allow_unresolved` (short form `allow_unresolved:`) accepts an
   unresolved finding a person has read, one site at a time: `{at: "path:line[:col]", code, sha,
   why}`, where `sha` (in `--format json`) hashes the finding's code, function and source line. An

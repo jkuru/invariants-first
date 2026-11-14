@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import builtins
 import collections
+import importlib.machinery
 import pathlib
 import re
 import sys
@@ -72,6 +73,8 @@ class _Index:
         self.files_named: set[str] = set()
         self.module_files: set[str] = set()              # names with a file of their own (not namespace)
         self.package_names: set[str] = set()
+        self.roots: list[pathlib.Path] = []              # the source roots, resolved
+        self._installed: dict[str, bool] = {}            # namespace portion -> installed outside the roots
         self.scanned_real: set[pathlib.Path] = set()     # the real path of every scanned module's file
         self.skipped_words: re.Pattern[bytes] | None = None   # a word a skipped file reaching scanned code has
         self.third_party: dict[pathlib.Path, pathlib.Path | None] = {}   # directory -> its third-party tree
@@ -229,8 +232,38 @@ class _Index:
             if parent not in self.package_names:
                 return None
             if child not in self.files_named:
+                if parent not in self.module_files and self.installed_portion(child):
+                    return None                          # a namespace package's portion installed elsewhere
                 return child
         return None
+
+    def installed_portion(self, name: str) -> bool:
+        """name, a submodule of a namespace package under the roots (one with no __init__.py), is a module
+        installed outside the roots: a file or directory for it on sys.path that lies outside every root,
+        or in a site-packages or dist-packages directory (`google.genai` next to an app's own `google.adk`).
+        It is third-party code, like any other installed import. Read from the file system only: nothing
+        is imported. A file for it under a root that the scan did not read (a dangling symlink, an
+        excluded tree) is not installed, so it stays unknown."""
+        got = self._installed.get(name)
+        if got is None:
+            got = self._installed[name] = any(self._portion_at(pathlib.Path(e or "."), name.split("."))
+                                              for e in sys.path)
+        return got
+
+    def _portion_at(self, entry: pathlib.Path, parts: list[str]) -> bool:
+        base = entry.joinpath(*parts)
+        try:
+            hits = [base] if base.is_dir() else []
+            hits += [base.with_name(base.name + sfx) for sfx in (".py", *importlib.machinery.EXTENSION_SUFFIXES)
+                     if base.with_name(base.name + sfx).is_file()]
+        except OSError:
+            return False
+        for hit in hits:
+            real = hit.resolve()
+            if not any(real.is_relative_to(r) for r in self.roots) or \
+                    any(d in ("site-packages", "dist-packages") for d in real.parts):
+                return True
+        return False
 
     def _unknown_from(self, src: str, node: ast.ImportFrom) -> str | None:
         """_unknown() for `from src import a, b`: src itself, or a name that is neither a module under the
@@ -244,7 +277,8 @@ class _Index:
         if bound is None:
             return None
         return next((f"{src}.{a.name}" for a in node.names if a.name != "*"
-                     and f"{src}.{a.name}" not in self.files_named and a.name not in bound), None)
+                     and f"{src}.{a.name}" not in self.files_named and a.name not in bound
+                     and not (src not in self.module_files and self.installed_portion(f"{src}.{a.name}"))), None)
 
     def _bound(self, module: str) -> set[str] | None:
         """Every name a scanned module binds anywhere (an over-approximation), or None when it may bind

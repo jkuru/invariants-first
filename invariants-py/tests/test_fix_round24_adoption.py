@@ -446,6 +446,8 @@ def test_inv_lock_refuses_an_added_entry_without_accept_weakening(tmp_path):
     assert r.returncode == 0 and "PAY-DOOR: pass (1 accepted)" in r.stdout, r.stdout
     r = run_inv("check", cwd=root)
     assert r.returncode == 0 and "ok    scan" in r.stdout, r.stdout + r.stderr
+    assert "1 reviewed unresolved site(s) accepted by allow_unresolved" in r.stdout, r.stdout
+    assert "        accepted   PAY-DOOR" in r.stdout and "plugins only" in r.stdout, r.stdout
 
 
 def test_mcp_explain_shows_accepted_sites_and_the_entry_to_write(tmp_path):
@@ -561,3 +563,81 @@ def test_a_name_that_may_be_a_file_under_the_roots_is_not_foreign(tmp_path):
     rep = scan.scan(DOC, [_project(tmp_path, {"cli/fleet/__init__.py": "", "cli/fleet/store.py": "def put():\n    pass\n",
                                               "ops.py": "import fleet.store\ndef f(n):\n    return getattr(fleet.store, n)()\n"})])
     assert [f.file for f in _computed(rep)] == ["ops.py"], rep.findings
+
+
+# --- a nested scope's bindings never type the enclosing function's names -----------------------------------
+NESTED_DOC = {"rules": [{"id": "REPO-1", "subject": {"target": "py:repo.Repo.door"},
+                         "mediation": {"sink": "py:repo.Repo.save"}}]}
+NESTED_REPO = """
+    class Repo:
+        def save(self, x):
+            pass
+
+        def door(self, x):
+            self.save(x)
+
+    class Other:
+        def save(self, x):
+            pass
+"""
+
+
+def test_a_nested_def_binding_the_same_name_does_not_retype_the_outer_local(tmp_path):
+    root = write_project(tmp_path, {"repo.py": textwrap.dedent(NESTED_REPO), "app.py": textwrap.dedent("""
+        from repo import Other, Repo
+
+        def handler(x):
+            r = Other()
+            def helper():
+                r = Repo()
+                return r
+            r.save(x)
+    """)})
+    rep = scan.scan(NESTED_DOC, [root])
+    assert rep.rule_result("REPO-1") == "pass", _codes(rep)
+
+
+def test_the_outer_binding_alone_still_types_the_call(tmp_path):
+    root = write_project(tmp_path, {"repo.py": textwrap.dedent(NESTED_REPO), "app.py": textwrap.dedent("""
+        from repo import Repo
+
+        def handler(x):
+            r = Repo()
+            def helper():
+                r = 1
+                return r
+            r.save(x)
+    """)})
+    rep = scan.scan(NESTED_DOC, [root])
+    assert "bypass" in {f.kind for f in rep.findings}, _codes(rep)
+
+
+# --- a namespace package's portion installed outside the roots is third-party ------------------------------
+@pytest.mark.parametrize("ops", ["import nspkg.lib\n", "import nspkg.lib.types\n", "from nspkg import lib\n",
+                                 "from nspkg.lib import types\n", "import nspkg.ext\n"])
+def test_an_installed_portion_of_a_namespace_package_is_third_party(tmp_path, monkeypatch, ops):
+    site = tmp_path / "site" / "site-packages"
+    (site / "nspkg" / "lib").mkdir(parents=True)
+    (site / "nspkg" / "lib" / "__init__.py").write_text("")
+    (site / "nspkg" / "lib" / "types.py").write_text("")
+    (site / "nspkg" / "ext.py").write_text("")
+    monkeypatch.syspath_prepend(str(site))
+    root = _project(tmp_path / "app", {"nspkg/mine.py": "", "ops.py": ops})
+    assert scan.scan(DOC, [root]).findings == []
+
+
+@pytest.mark.parametrize("ops", ["import nspkg.gone\n", "from nspkg import gone\n"])
+def test_a_namespace_portion_installed_nowhere_or_under_a_root_stays_unknown(tmp_path, monkeypatch, ops):
+    root = _project(tmp_path / "app", {"nspkg/mine.py": "", "ops.py": ops, "elsewhere/nspkg/gone.py": ""})
+    monkeypatch.syspath_prepend(str(root / "elsewhere"))      # a file under the root the scan reads as elsewhere.*
+    rep = scan.scan(DOC, [root])
+    assert _codes(rep) == ["unresolved/unknown-module"], rep.findings
+
+
+def test_a_regular_package_never_gets_its_missing_submodule_from_site_packages(tmp_path, monkeypatch):
+    site = tmp_path / "site" / "site-packages"
+    (site / "pkg").mkdir(parents=True)
+    (site / "pkg" / "admin.py").write_text("")
+    monkeypatch.syspath_prepend(str(site))
+    root = _project(tmp_path / "app", {"pkg/__init__.py": "", "ops.py": "import pkg.admin\n"})
+    assert _codes(scan.scan(DOC, [root])) == ["unresolved/unknown-module"]

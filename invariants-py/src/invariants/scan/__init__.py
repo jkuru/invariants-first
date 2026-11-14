@@ -129,7 +129,9 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
     progress = progress or _Progress()
     skipped: list[_Source] = []
     walked = Found()
-    found = _layout((pathlib.Path(r) for r in roots), exclude, walked)
+    paths = [pathlib.Path(r) for r in roots]
+    idx.roots = [r.resolve() for r in paths]
+    found = _layout(paths, exclude, walked)
     names = {s.name for s in found}
     for s in found:                                    # what a file under the roots is named, from any root
         for n in (s.name, *s.aliases):

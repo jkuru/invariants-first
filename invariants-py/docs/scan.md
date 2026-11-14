@@ -504,8 +504,13 @@ kept as one record for every method of that name, however many there are.
 - **An unknown submodule of a scanned package is not third-party.** An import of a module under a
   package the roots hold that no file under the roots is (`import pkg.admin.tasks` with no
   `pkg/admin`, a dangling symlink, `from pkg import admin` where `pkg/__init__.py` binds no `admin`,
-  any missing module of a namespace package there) is `unresolved/unknown-module` under every rule. A
-  module made at build time (a `_version.py` written by the build) counts: commit it or exclude the
+  any missing module of a namespace package there) is `unresolved/unknown-module` under every rule.
+  The one exception is a namespace package (no `__init__.py`, such as `google` next to an app's own
+  `google/adk`): a portion of it installed outside the roots (`google/genai` in site-packages, found on
+  `sys.path` by looking at files, never by importing) is third-party code like any other installed
+  import. So run the scan where the project's dependencies are installed. A regular package never
+  takes a missing submodule from outside the roots, and a portion found only under a root the scan
+  did not read stays unknown. A module made at build time (a `_version.py` written by the build) counts: commit it or exclude the
   importer. A package whose `__init__.py` star-imports, defines a module `__getattr__` or writes
   `globals()` may bind any name, so `from pkg import x` from it stays quiet.
 - **Archives and import-path writes are reported.** A zip archive in a root (`.zip`, `.egg`, `.whl`,

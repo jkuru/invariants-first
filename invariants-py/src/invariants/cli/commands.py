@@ -492,7 +492,14 @@ def cmd_check(a: argparse.Namespace) -> int:
     if mediated:
         code, text = _captured(cmd_scan, argparse.Namespace(rulefile=str(path), root=a.root, exclude=a.exclude,
                                                             format="text", output=None))
-        step("scan", code, text, "no path skips a door or guard" if code == OK else None)
+        accepted = [line for line in text.splitlines() if line.startswith("accepted ")]
+        ok_line = "no path skips a door or guard"
+        if accepted:      # reviewed sites pass, but the reader sees each one, never a bare "no path skips"
+            ok_line += f"; {len(accepted)} reviewed unresolved site(s) accepted by allow_unresolved"
+        step("scan", code, text, ok_line if code == OK else None)
+        if code == OK:
+            for line in accepted:
+                _out(f"        {line}")
     else:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")
