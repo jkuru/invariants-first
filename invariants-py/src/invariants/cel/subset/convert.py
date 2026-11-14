@@ -11,8 +11,12 @@ from ..errors import CelError, check_result
 from .data import Uint, _int_range, _ty, check_int, check_uint, type_of
 from .lexer import INT_MAX
 
-_INT_TEXT = re.compile(r"\s*[+-]?[0-9]+\s*")
-_FLOAT_TEXT = re.compile(r"\s*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\s*")
+# absl's SimpleAtoi / SimpleAtod (what cel-expr's int(), uint() and double() call) strip ASCII
+# whitespace only: Python's Unicode \s would take '1\xa0' and '1\x85', and int() refuses '1\x1c'
+_WS = "[ \t\n\v\f\r]*"
+_INT_TEXT = re.compile(_WS + r"[+-]?[0-9]+" + _WS)
+_FLOAT_TEXT = re.compile(_WS + r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?" + _WS)
+_NONFINITE_TEXT = re.compile(_WS + r"[+-]?(?:nan|inf|infinity)" + _WS, re.IGNORECASE)
 _BOOL_TEXT = {"1": True, "t": True, "true": True, "TRUE": True, "True": True,
               "0": False, "f": False, "false": False, "FALSE": False, "False": False}
 
@@ -30,7 +34,10 @@ def _convert(name: str, v: Any) -> Any:
     """
     fn = _CONVERTERS.get(name)
     if fn is not None:
-        out = fn(v)
+        try:
+            out = fn(v)
+        except (ValueError, OverflowError):              # a guard above missed a case: still a CEL error
+            raise CelError(f"{name}(): conversion failed") from None
         if out is not _NO_OVERLOAD:
             return out
     raise CelError(f"no such overload: {name}({_ty(v)})")
@@ -87,8 +94,8 @@ def _to_double(v: Any) -> Any:
     if isinstance(v, str):
         if _FLOAT_TEXT.fullmatch(v):
             return check_result(float(v))      # '1e999' is Infinity
-        if v.strip().lower().lstrip("+-") in ("nan", "inf", "infinity"):
-            return check_result(float(v.strip()))
+        if _NONFINITE_TEXT.fullmatch(v):
+            return check_result(float(v.strip(" \t\n\v\f\r")))
         raise CelError("double(): cannot convert string to double")
     return _NO_OVERLOAD
 

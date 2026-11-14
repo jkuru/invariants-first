@@ -255,6 +255,16 @@ def needs_finite(n: Node) -> bool:
     return any(needs_finite(c) for c in subset.kids(n))
 
 
+def doubled_unary(n: Node) -> bool:
+    """True if the tree has a unary ! or - applied straight to the same operator (`!!x`, `- -x`,
+    `-(-x)`). cel-cpp's parser drops an even run of them without checking the operand, so
+    `!!args.s == "x"` would be true on a string there and is an error on the subset; the printed
+    text, `!(!(x))`, keeps each operator."""
+    if n[0] == "un" and n[2][0] == "un" and n[2][1] == n[1]:
+        return True
+    return any(doubled_unary(c) for c in subset.kids(n))
+
+
 def _is_text(x: Node) -> bool:
     return x[0] == "lit" and isinstance(x[1], str)
 
@@ -613,14 +623,15 @@ class FrontEnd:
     def text_for(self, native: tuple[str, ...], rename: Mapping[str, str],
                  fin: Mapping[str, str] | None = None) -> str:
         """Source to hand the engine: original text unless a non-native extension needs a rewrite,
-        or (with fin) the rule has arithmetic or double() whose results must be checked finite."""
+        (with fin) the rule has arithmetic or double() whose results must be checked finite, or it
+        has a doubled unary operator (doubled_unary) the engine's parser would drop."""
         rest = tuple(f for f in INV_FUNCS if f not in native)
         if fin is not None and (needs_finite(self.ast) or conv_calls(self.ast, frozenset(fin) & _TIME_CONV)
                                 or ("getter" in fin and zone_calls(self.ast, every=True))
                                 or ("zone" in fin and zone_calls(self.ast))
                                 or ("text" in fin and uses_inv(self.ast, TEXT_FUNCS))):
             return unparse(mark_finite(self.ast), rename, fin, self.names)
-        if not uses_inv(self.ast, rest):
+        if not uses_inv(self.ast, rest) and not doubled_unary(self.ast):
             return self.source
         return unparse(self.ast, rename)
 

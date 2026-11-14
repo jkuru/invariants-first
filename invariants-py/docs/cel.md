@@ -89,7 +89,11 @@ CPU time with input size. Use cel-expr, or bound the input size first, for rules
 long text. A constant pattern the subset matcher does not support but full RE2 may (a script class
 like `\p{Greek}`) still loads; on the subset it is a `rule_error` at run time. `(?i)` folds case
 one character at a time, as RE2 does: `s`, `S` and `ſ` match each other, but `ß` matches neither
-`SS` nor `[A-Z]`, and `ı` does not match `I`.
+`SS` nor `[A-Z]`, and `ı` does not match `I`. A class (`\w`, `\d`, `\s`, `\pL`, `\p{Lu}`, `[:upper:]`)
+is closed under that folding first and negated after, as RE2 builds it: `(?i)\p{Lu}` matches `a`,
+`(?i)\w` matches `K` (the Kelvin sign, which folds to `k`) and `(?i)\W` does not. An escaped ASCII
+punctuation mark is that character (`\_` too); an escaped non-ASCII character (`\é`) is not RE2
+syntax.
 
 **The pattern limit, on both.** A `matches()` pattern may be at most 4,096 characters, nest groups
 at most 64 deep, and expand (every `{n,m}` written out) to at most 5,000 instructions. A constant
@@ -125,7 +129,9 @@ byte, `+` concatenates, and `==`, `!=` and `in` compare bytes with bytes (never 
 
 ## Conversions
 
-The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a double (truncated toward zero; NaN, ±Infinity and values outside int64 are errors) or base-10 text (`"42"`, `" +5 "`; not `"4.2"`, `"0x10"` or `"1_000"`); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on other engines); compare the number instead. On cel-expr the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
+The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a double (truncated toward zero; NaN, ±Infinity and values outside int64 are errors) or base-10 text (`"42"`, `" +5 "`; not `"4.2"`, `"0x10"` or `"1_000"`; the space around it is ASCII
+space, tab, newline, vertical tab, form feed or carriage return, as absl reads it on cel-expr, so
+`int("500\u00a0")` is a `rule_error` on both); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on other engines); compare the number instead. On cel-expr the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
 duration, `int()` of a timestamp and the getters follow one set of rules on every backend too
 (`cel/values.py`; conformance suite `time.yaml`).
 
@@ -342,7 +348,13 @@ backslash escape CEL does not have (`'\d'`) is a parse error on both (the subset
 and the rewritten text cel-expr evaluated then had `d` too); an int and a double past 2^53 compare exactly
 ([Numbers](#numbers)); a string holding a surrogate code point is a `rule_error` on both
 ([Strings, maps and keys](#strings-maps-and-keys)); and a constant timezone the subset refuses
-(`t.getHours('+25:00')`, which cel-cpp read as a 25-hour offset) is a `rule_error` on both.
+(`t.getHours('+25:00')`, which cel-cpp read as a 25-hour offset) is a `rule_error` on both; text with
+Unicode space around the number (`int("500\u00a0")`, `double("\u30001")`) is a `rule_error` on both
+(the subset took it, and `"1\u001c"` escaped as a Python error); under `(?i)` a class such as `\w`,
+`\W` or `\p{Lu}` folds case on the subset as RE2 does; and an even run of `!` or unary `-`
+(`!!args.s == "x"`, `--args.s`) is a `rule_error` on a non-bool (non-number) operand on both
+(cel-cpp's parser drops such a run unchecked, so the front end sends the clause re-printed as
+`!(!(args.s))` whenever it has one).
 
 **A cel-cpp defect the backend works around.** cel-cpp evaluates `cel.bind` lazily, and a
 comprehension that stops early (`exists` at its first true element, `all` at its first false one)

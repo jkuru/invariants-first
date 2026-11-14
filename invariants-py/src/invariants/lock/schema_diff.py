@@ -33,6 +33,18 @@ STRUCTURAL = frozenset({"items", "prefixItems", "additionalItems", "unevaluatedI
 # one branch may pass as matching exactly one) or the direction is unknown (if)
 _FLIPPED = frozenset({"not", "if", "oneOf"})
 
+# JSON Schema 2020-12's unevaluatedProperties / unevaluatedItems judge what no other keyword evaluated,
+# looking into the in-place applicators of the same schema: a property or item evaluated by an
+# applicator added there is no longer refused (or checked) by them. So while one of them is false or
+# a schema, adding or changing any of these is a possible weakening, not a tightening:
+# {properties: {a}, unevaluatedProperties: false} plus allOf: [{properties: {b: {}}}] accepts {"a": 1, "b": "x"}.
+_UNEVALUATED = ("unevaluatedProperties", "unevaluatedItems")
+APPLICATORS = frozenset({"allOf", "anyOf", "oneOf", "if", "then", "else", "dependentSchemas", "$ref",
+                         "$dynamicRef", "contains", "prefixItems", "items", "properties", "patternProperties",
+                         "additionalProperties", "unevaluatedProperties", "unevaluatedItems"})
+_IN_PLACE = frozenset({"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependentSchemas"})
+_KEYED = frozenset({"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"})
+
 # a bound may be replaced by its exclusive or inclusive twin: removed -> (twin, is an upper bound)
 _TWIN_BOUNDS = {"minimum": ("exclusiveMinimum", False), "exclusiveMinimum": ("minimum", False),
                 "maximum": ("exclusiveMaximum", True), "exclusiveMaximum": ("maximum", True)}
@@ -79,6 +91,68 @@ def _twin_tightens(key: str, old: Any, node: Any) -> bool:
     return new <= old + slack if upper else new >= old - slack
 
 
+def _closes(v: Any) -> bool:
+    """An unevaluated* (or additionalProperties) value that refuses or checks what it judges."""
+    return v is not None and v is not True and not same(v, {})
+
+
+def _own_unevaluated(n: Any) -> tuple[str, Any] | None:
+    if isinstance(n, dict):
+        for k in _UNEVALUATED:
+            if _closes(n.get(k)):
+                return k, n[k]
+    return None
+
+
+def unevaluated_scope(root: Any, segs: typing.Sequence[str], inherited: bool = False) -> tuple[str, Any] | None:
+    """The unevaluatedProperties or unevaluatedItems keyword, false or a schema, that judges the instance
+    of the schema at `segs` (a _json_paths path): on that schema or on one it is an in-place subschema
+    of (allOf, anyOf, oneOf, not, if, then, else, dependentSchemas). Inside $defs, which a $ref can
+    reach from anywhere, any such keyword in the whole schema counts. inherited: not the schema's own."""
+    node = _node(root, segs[:1])
+    scope: list[Any] = [node]
+    i = 1
+    while i < len(segs) and isinstance(node, dict):
+        name = segs[i].partition("[")[0]
+        step = 2 if name in _KEYED and i + 1 < len(segs) else 1
+        if name in ("$defs", "definitions"):
+            return _unevaluated_anywhere(_node(root, segs[:1]))
+        if name not in _IN_PLACE:
+            scope = []                                           # a property or an item: another instance
+        node = _node(node, segs[i:i + step])
+        scope.append(node)
+        i += step
+    for n in reversed(scope[:-1] if inherited else scope):
+        if (got := _own_unevaluated(n)) is not None:
+            return got
+    return None
+
+
+def _unevaluated_anywhere(node: Any, depth: int = 0) -> tuple[str, Any] | None:
+    if depth > MAX_DEPTH:
+        return None
+    got = _own_unevaluated(node)
+    for v in (node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()):
+        if got is not None:
+            break
+        got = _unevaluated_anywhere(v, depth + 1)
+    return got
+
+
+def _evaluates_more(segs: typing.Sequence[str], what: str, old: Any, new: Any, old_root: Any,
+                    inherited: bool = False) -> str | None:
+    """An applicator (what) added or changed in the schema at `segs` while an unevaluated* keyword that
+    is false or a schema judges it (unevaluated_scope in the old schema): what the applicator now
+    evaluates is no longer refused or checked by that keyword. A false subschema evaluates nothing."""
+    if new is None or new is False or old_root is None:
+        return None
+    got = unevaluated_scope(old_root, segs, inherited)
+    if got is None:
+        return None
+    return (f"{what} {'added' if old is None else 'changed'} while {got[0]} is {_short(got[1])}: what it "
+            f"evaluates is no longer refused or checked by {got[0]}")
+
+
 def _types(v: Any) -> set[str] | None:
     if isinstance(v, str):
         return {v}
@@ -123,6 +197,8 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
                    None)
     if flipped is not None:
         return f"changed inside {flipped}: there a tighter schema can accept more input"
+    if parent == "dependentSchemas" and old is None and new is not None:
+        return _evaluates_more(segs[:-2], f"dependentSchemas {key!r}", None, new, old_root)
     if parent in ("dependentRequired", "dependentSchemas"):
         if old is None or suffix == "added":
             return None                                          # a new dependency only tightens
@@ -130,9 +206,11 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
                f"the schema may accept more input"
     if parent in _NAME_SEGMENTS:                                 # a field (or model) entry itself
         if parent == "patternProperties" and old is None and new is not None:
-            return _opens_closed(_node(old_root, segs[:-2]), f"patternProperties {key!r} added")
+            return _opens_closed(_node(old_root, segs[:-2]), f"patternProperties {key!r} added") \
+                or _evaluates_more(segs[:-2], f"patternProperties {key!r}", None, new, old_root, inherited=True)
         if parent == "properties" and old is None and new is not None:
-            return _property_opens(_node(old_root, segs[:-2]), _node(new_root, segs[:-2]), key, new)
+            return _property_opens(_node(old_root, segs[:-2]), _node(new_root, segs[:-2]), key, new,
+                                   unevaluated_scope(old_root, segs[:-2], inherited=True))
         if new is None and parent == "properties":
             return f"field {key} removed: its constraints no longer apply"
         if new is None and parent in ("$defs", "definitions"):
@@ -144,6 +222,14 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
 def _keyword_weakening(segs: list[str], suffix: str, old: Any, new: Any, old_root: Any, new_root: Any) -> str | None:
     """constraint_weakening for a change to a schema keyword (segs[-1]: a bound, enum, required, type,
     $ref, ...) of the object schema at segs[:-1]."""
+    why = _keyword_rules(segs, suffix, old, new, old_root, new_root)
+    key = segs[-1]
+    if why is not None or key not in APPLICATORS or (key == "$ref" and old is not None):
+        return why                                               # a $ref to the same body: _ref_changed
+    return _evaluates_more(segs[:-1], key, old, new, old_root)
+
+
+def _keyword_rules(segs: list[str], suffix: str, old: Any, new: Any, old_root: Any, new_root: Any) -> str | None:
     key = segs[-1]
     new_node = _node(new_root, segs[:-1])
     old_node = _node(old_root, segs[:-1])
@@ -195,6 +281,9 @@ def _bound_weakening(key: str, old: Any, new: Any, new_node: Any) -> str | None:
     """A numeric, length or count bound raised (an upper one) or lowered (a lower one), or removed
     unless its exclusive or inclusive twin now holds at least as tightly."""
     upper = key in UPPER_BOUNDS
+    if old is True and new is not True and key in ("exclusiveMaximum", "exclusiveMinimum"):
+        # Draft 4 / OpenAPI 3.0: a boolean that makes maximum (minimum) exclusive, now inclusive
+        return f"{key} true -> {_short(new)}: the bound itself now passes"
     if new is None:
         if key in _TWIN_BOUNDS and _twin_tightens(key, old, new_node):
             return None                                          # ge=1 -> gt=0 on an integer
@@ -245,16 +334,18 @@ def _opens_closed(node: Any, what: str) -> str | None:
     return None
 
 
-def _property_opens(old_node: Any, new_node: Any, key: str, schema: Any) -> str | None:
-    """A property added to an object schema whose additionalProperties (or unevaluatedProperties)
-    was false or a schema: the property was rejected (or checked by that schema) and now passes by
-    its own schema. Not a weakening when other properties were allowed anyway, when the old schema
-    for extras was the same, or, for a closed schema, when the new property is required and its
-    schema constrains its value (every old instance lacked it, so none of them passes now)."""
+def _property_opens(old_node: Any, new_node: Any, key: str, schema: Any,
+                    inherited: tuple[str, Any] | None = None) -> str | None:
+    """A property added to an object schema whose additionalProperties (or unevaluatedProperties, its
+    own or `inherited` from a schema it is an in-place subschema of: unevaluated_scope) was false or
+    a schema: the property was rejected (or checked by that schema) and now passes by its own schema.
+    Not a weakening when other properties were allowed anyway, when the old schema for extras was the
+    same, or, for a closed schema, when the new property is required and its schema constrains its
+    value (every old instance lacked it, so none of them passes now)."""
     if not isinstance(old_node, dict):
         return None
-    for k in ("additionalProperties", "unevaluatedProperties"):
-        v = old_node.get(k)
+    own = [(k, old_node.get(k)) for k in ("additionalProperties", "unevaluatedProperties")]
+    for k, v in own + ([inherited] if inherited is not None and inherited[0] == "unevaluatedProperties" else []):
         if v is None or v is True or same(v, {}) or same(v, schema):
             continue
         required = isinstance(new_node, dict) and isinstance(new_node.get("required"), list) \

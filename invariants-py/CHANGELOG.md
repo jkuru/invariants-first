@@ -131,6 +131,16 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   "undeclared name".
 - `inv.evaluate(rule, base)` (the rule-level names, `"rule"`) binds auto-bound providers when an
   enforcer has a `view:`; it was a `rule_error` ("undeclared reference") there.
+- Under `(?i)` the subset's regex classes (`\w`, `\W`, `\d`, `\s`, `\pL`, `\p{Lu}`, `[:upper:]`)
+  fold case as RE2 does (closed under folding, then negated): `(?i)\p{Lu}` matches `a` and
+  `(?i)\W` no longer matches the Kelvin sign, as on cel-expr. `\_` is a literal `_` and `\é` is
+  refused, as in RE2.
+- `int()`, `uint()` and `double()` of text take ASCII whitespace around the number only, as absl
+  does on cel-expr: `int("500\u00a0")` was `500` on the subset and is a `rule_error` on both, and
+  `"1\u001c"` no longer escapes as a Python `ValueError` (every conversion failure is a CelError).
+- An even run of `!` or unary `-` (`!!args.s == "x"`, `--args.i`) checks its operand on cel-expr:
+  cel-cpp's parser drops such a run unchecked, so the front end sends that clause re-printed
+  (`!(!(args.s))`); it was `true` on cel-expr and a `rule_error` on the subset.
 
 ### The lock
 
@@ -142,6 +152,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - A resolved annotation that is an object of no recognised form is pinned as `{"object":
   "module.Type"}`, never its repr (a memory address made the lock differ every run, and a repr can
   carry data); a type nested past the depth limit is pinned by its name.
+- With `unevaluatedProperties` or `unevaluatedItems` false (or a schema) on a schema or an ancestor
+  it is an in-place subschema of, an applicator added or changed there (`allOf`, `dependentSchemas`,
+  `if`, `contains`, `$ref`, a property inside an `allOf` branch, ...) is WEAKENED: what it evaluates
+  is no longer refused. It was judged a tightening.
+- A Draft 4 / OpenAPI 3.0 boolean `exclusiveMaximum` or `exclusiveMinimum` turned from `true` to
+  `false` is WEAKENED.
 
 - `inv lock` writes `invariants.lock` (lock version 3), which pins what each rule's meaning depends
   on: the rule's semantics, its targets' signatures and resolved types (through aliases and into

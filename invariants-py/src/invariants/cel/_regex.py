@@ -7,7 +7,8 @@ Each state step is counted; the caller turns the count into CEL cost. Stdlib onl
 Supported (as RE2): literals and escapes, `.`, classes `[...]` with ranges, negation, escapes and
 `[:alpha:]` names, `\\d \\w \\s` (ASCII, as RE2) and their negations, `\\pL`/`\\p{Lu}` general
 categories, `^ $ \\A \\z \\b \\B`, groups `(...)`, `(?:...)`, `(?P<n>...)`, `(?<n>...)`, flags
-`(?imsU)` and `(?i:...)`, `|`, and `* + ? {n} {n,} {n,m}` (lazy forms match the same for a search).
+`(?imsU)` and `(?i:...)` (under `i` a class is closed under case folding, then negated, as in
+RE2), `|`, and `* + ? {n} {n,} {n,m}` (lazy forms match the same for a search).
 Lookaround and backreferences are not RE2 syntax and are refused.
 """
 from __future__ import annotations
@@ -219,8 +220,19 @@ def fold_orbit(c: str) -> tuple[str, ...]:
     return _orbits().get(c, ())
 
 
+def _group(p: Pred, negated: bool, fold: bool) -> Pred:
+    """A class such as \\w, \\pL or [:upper:] (or its negation) as RE2 builds it: under (?i) the class
+    is closed under case folding first and negated after, so (?i)\\w takes 'K' (Kelvin, which folds to
+    'k') and (?i)\\W refuses it, and (?i)\\p{Lu} takes 'a'."""
+    if fold:
+        q = p
+        p = lambda c: q(c) or any(q(x) for x in fold_orbit(c))      # noqa: E731
+    return _not(p) if negated else p
+
+
 class _Set:
-    """A character class: ranges and predicates, maybe negated, maybe case-folded."""
+    """A character class: ranges (case-folded under (?i)) and predicates (each already as _group
+    built it, so not folded again), the whole maybe negated."""
 
     __slots__ = ("ranges", "preds", "neg", "fold")
 
@@ -231,7 +243,7 @@ class _Set:
         return any(lo <= c <= hi for lo, hi in self.ranges) or any(p(c) for p in self.preds)
 
     def __call__(self, c: str) -> bool:
-        hit = self._has(c) or (self.fold and any(self._has(x) for x in fold_orbit(c)))
+        hit = self._has(c) or (self.fold and any(lo <= x <= hi for x in fold_orbit(c) for lo, hi in self.ranges))
         return hit != self.neg
 
 
@@ -396,8 +408,7 @@ class _Parser:
         if c in _SIMPLE_ESC:
             return self.lit(_SIMPLE_ESC[c])
         if c.lower() in _PERL:
-            p = _PERL[c.lower()]
-            return ("char", p if c.islower() else _not(p))
+            return ("char", _group(_PERL[c.lower()], c.isupper(), self.flags["i"]))
         if c in "pP":
             if self.peek() == "{":
                 end = self.s.find("}", self.i)
@@ -407,8 +418,7 @@ class _Parser:
             else:
                 name = self.take()
             neg = name.startswith("^")
-            p = _category(name.lstrip("^"))
-            return ("char", p if (c == "p") != neg else _not(p))
+            return ("char", _group(_category(name.lstrip("^")), (c == "P") != neg, self.flags["i"]))
         if c == "x":
             if self.peek() == "{":
                 end = self.s.find("}", self.i)
@@ -442,7 +452,7 @@ class _Parser:
                 text = self.s[self.i:] if end < 0 else self.s[self.i:end]
                 self.i = len(self.s) if end < 0 else end + 2
                 return ("cat", [self.lit(x) for x in text])
-        if c.isascii() and (c.isalnum() or c == "_"):
+        if not c.isascii() or c.isalnum():           # RE2 takes an escaped ASCII punctuation mark (\_ too)
             raise RegexError(f"invalid escape sequence \\{c}")
         return self.lit(c)
 
@@ -468,7 +478,7 @@ class _Parser:
                 p = _POSIX.get(name.lstrip("^"))
                 if p is None:
                     raise RegexError(f"bad POSIX class [:{name}:]")
-                preds.append(_not(p) if negp else p)
+                preds.append(_group(p, negp, self.flags["i"]))
                 self.i = end + 2
                 continue
             lo = self.class_char(preds)

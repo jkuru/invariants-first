@@ -196,6 +196,8 @@ input. That covers:
 
 - `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems` or `maxProperties` raised or removed;
 - the matching minimums lowered or removed;
+- a Draft 4 / OpenAPI 3.0 boolean `exclusiveMaximum` or `exclusiveMinimum` turned off (`true` to
+  `false` or absent): the bound itself now passes;
 - an `enum` value added, or the enum removed;
 - a field that is no longer `required` (or an OpenAPI parameter or request body no longer
   `required: true`), or a property removed; the `required` list is compared as a set, so a field
@@ -215,7 +217,8 @@ input. That covers:
   judged inside it, like any other subschema;
 - `items`, `prefixItems`, `contains`, `allOf`, `not`, `propertyNames`, `dependentRequired`,
   `dependentSchemas`, `if`, `then`, `else`, `properties` or `unevaluatedProperties` removed (adding
-  one is a tightening; a constraint removed inside `items` is judged where it was), a
+  one is a tightening, except under `unevaluatedProperties` or `unevaluatedItems`: see below; a
+  constraint removed inside `items` is judged where it was), a
   `dependentRequired` entry dropped, and any change inside `not`, `if` or `oneOf`, where a tighter
   subschema can let more input through (a value that failed a `oneOf` because it matched two
   branches passes once one of them is tightened);
@@ -227,6 +230,18 @@ input. That covers:
 - `patternProperties` added, or a pattern added to it, while `additionalProperties` (or
   `unevaluatedProperties`) was `false` or a schema: a property matching the pattern is no longer
   checked by it. With extra properties allowed anyway (absent or `true`) it is a tightening;
+- an applicator (`allOf`, `anyOf`, `oneOf`, `if`, `then`, `else`, `dependentSchemas` or an entry
+  of it, `$ref`, `$dynamicRef`, `contains`, `prefixItems`, `items`, `properties` or a property,
+  `patternProperties` or a pattern, `additionalProperties`, or a nested `unevaluatedProperties` /
+  `unevaluatedItems`) added or changed while `unevaluatedProperties` or `unevaluatedItems` is
+  `false` or a schema on that schema or on one it is an in-place subschema of (inside `allOf`,
+  `anyOf`, `oneOf`, `not`, `if`, `then`, `else` or `dependentSchemas`; inside `$defs`, which a `$ref`
+  reaches from anywhere, such a keyword anywhere in the schema counts). JSON Schema 2020-12 counts
+  what the applicator evaluates as evaluated, so it is no longer refused or checked there:
+  `{properties: {a: …}, unevaluatedProperties: false}` plus `allOf: [{properties: {b: {}}}]` accepts
+  `{"a": 1, "b": "x"}`. A `false` subschema evaluates nothing, and a property that is also `required`
+  with a constrained value is judged as under `additionalProperties: false`. The keyword of a
+  property's own value (`properties.x.allOf`) is judged by that value's schema, not its parent's;
 - `prefixItems` extended past its old length while the old schema had an `items` schema: those
   positions were checked by `items` and are now checked only by the new entries (extending it with
   entries equal to `items`, or with no `items`, is a tightening);
