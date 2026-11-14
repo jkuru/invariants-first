@@ -99,8 +99,8 @@ nothing beyond the standard library. Its tools:
 | Tool | What it returns |
 |---|---|
 | `scan` | `inv scan` as data: the verdict (`pass`, `fail`, `unresolved`, `ablated`), each rule's result, and every finding with its kind, code, file, line, call path, owner and an `id` |
-| `check` | `inv check` without `--relock`: one verdict and the result of each step (rules, lock, guards, scan) |
-| `status` | `inv status --json`: the standing of each rule and why it is not `held` |
+| `check` | `inv check` without `--relock`: one verdict and the result of each step (rules, lock, guards, scan); `path` and `import` are its `--path` and `--import` |
+| `status` | `inv status --json`: the standing of each rule and why it is not `held`; takes `path` and `import` too |
 | `explain` | for a rule id or a finding id: the rule's statement, its doors and sinks, the path, and the fix options in plain words |
 | `propose_rules` | `inv init`'s discovery as a dry run (see below) |
 
@@ -109,9 +109,11 @@ and `status` import the app in a child process with bytecode writing off, so an 
 imported fresh on each call and the project tree is left as it was. The server never passes
 `--relock`, `--base`, `--allow-weakening` or `INV_ALLOW_WEAKENING` on.
 
-Every path a tool argument names (`root`, `rules`, `source_roots`, `graphify`) must resolve inside the
-server's `--root`, after following symlinks; anything else (an absolute path elsewhere, `..`, a
-symlink out) is a tool error (`isError: true`), since `check` and `status` import the code they find.
+Every path a tool argument names (`root`, `rules`, `source_roots`, `path`, `graphify`) must resolve
+inside the server's `--root`, after following symlinks; anything else (an absolute path elsewhere,
+`..`, a symlink out) is a tool error (`isError: true`), since `check` and `status` import the code
+they find. An `import` entry must be a dotted module name (`app.api`): a path, an option (`-x`) or a
+relative name is a tool error, and the module it names is confined like any other (below).
 A filesystem root (`/`) is never a project root. The same holds for the directories the project's
 `pyproject.toml` names for scanning or importing, `[tool.invariants.scan] roots` and
 `[tool.setuptools.packages.find] where`: one outside `--root` is a tool error naming the setting.

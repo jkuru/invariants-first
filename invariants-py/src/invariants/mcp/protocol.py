@@ -29,6 +29,10 @@ _PROJECT = {"root": {"type": "string", "description": "project root, relative to
 _ROOTS = {"source_roots": {"type": "array", "items": {"type": "string"},
                            "description": "source roots to scan, relative to root (default: as `inv scan`)"},
           "exclude": {"type": "array", "items": {"type": "string"}, "description": "globs to skip"}}
+_IMPORTS = {"path": {"type": "array", "items": {"type": "string"},
+                     "description": "also import the app from these directories, relative to root (as `--path`)"},
+            "import": {"type": "array", "items": {"type": "string"},
+                       "description": "also import these modules (dotted names) and check their guards (as `--import`)"}}
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 
 Tool = Callable[[pathlib.Path, "pathlib.Path | None", dict[str, Any]], dict[str, Any]]
@@ -39,9 +43,9 @@ TOOLS: dict[str, tuple[Tool, str, str, dict[str, Any]]] = {
              {**_PROJECT, **_ROOTS}),
     "check": (tool_check, "inv check",
               "Run `inv check` read-only (no --relock): rule file, lock freshness, guards and scan, with one verdict "
-              "and the result of each step.", {**_PROJECT, **_ROOTS}),
+              "and the result of each step.", {**_PROJECT, **_ROOTS, **_IMPORTS}),
     "status": (tool_status, "Rule standing", "Run `inv status --json`: the standing of each rule (held, "
-               "enforce(known-callers), ...) and why.", dict(_PROJECT)),
+               "enforce(known-callers), ...) and why.", {**_PROJECT, **_IMPORTS}),
     "explain": (tool_explain, "Explain a rule or finding",
                 "Given a rule id or a finding id from scan, return the rule, its doors and sinks, the path, and the "
                 "fix options in plain words.",

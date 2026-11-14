@@ -12,6 +12,23 @@ defaults:
   run:
     working-directory: invariants-py    # the library; the apps job overrides this
 
+env:
+  # the tests that need only the core dependencies (PyYAML) and pytest
+  CORE_TESTS: >-
+    tests/test_package.py tests/test_mcp.py tests/test_cel.py tests/test_cel_conformance.py
+    tests/test_cli_verify.py tests/test_cli_status.py tests/test_cli_lock.py
+  # every module imports, except an integration whose own extra is not installed
+  CORE_IMPORTS: |
+    import importlib, pkgutil, invariants
+    extras = {"invariants.integrations.fastapi": "fastapi", "invariants.integrations.pydantic": "pydantic"}
+    for m in pkgutil.walk_packages(invariants.__path__, "invariants."):
+        try:
+            importlib.import_module(m.name)
+        except ModuleNotFoundError as e:
+            if e.name != extras.get(m.name):
+                raise
+    print("imported", invariants.__version__, invariants.__file__)
+
 jobs:
   test:
     name: py${{ matrix.python }} / ${{ matrix.backend }}
@@ -51,16 +68,27 @@ jobs:
           python -m mypy
 
   core-only:
-    name: tests without the cel extra
+    name: the core install alone, then tests without the cel extra
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install and test
+      - name: Install the library with no extras, and pytest
         run: |
-          python -m pip install -e '.[dev]'
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest      # no extras: the core must run on its own dependencies
+          python -m pip check
+      - name: Import every module and run the core tests on the core dependencies alone
+        run: |
+          python -c "$CORE_IMPORTS"
+          inv --version
+          python -m pytest -q $CORE_TESTS
+      - name: The full suite without the cel extra
+        run: |
+          python -m pip install -e '.[dev]'      # the suite's own dependencies; still no cel-expr
+          python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('cel_expr_python') is not None)"
           python -m pytest tests -q
 
   optimized:
@@ -109,13 +137,18 @@ jobs:
           python -m build
       - name: Check the distributions' metadata
         run: python -m twine check --strict dist/*
-      - name: Install the wheel into a fresh venv
+      - name: Install the wheel into a fresh venv and smoke-test it
         run: |
           python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/pip install dist/*.whl
-          /tmp/wheelcheck/bin/python -c "import invariants; print(invariants.__version__)"
+          /tmp/wheelcheck/bin/pip install dist/*.whl pytest     # the wheel's own dependencies, no extras
+          /tmp/wheelcheck/bin/pip check
+          /tmp/wheelcheck/bin/python -c "$CORE_IMPORTS"
+          # the tests below must import the installed wheel, never this checkout's src/
+          /tmp/wheelcheck/bin/python -c "import invariants, sys; sys.exit('site-packages' not in invariants.__file__)"
+          /tmp/wheelcheck/bin/inv --version
           /tmp/wheelcheck/bin/inv --help
           /tmp/wheelcheck/bin/inv-mcp --help
+          /tmp/wheelcheck/bin/python -m pytest -q -p no:cacheprovider $CORE_TESTS
       - name: Install the sdist into a fresh venv
         run: |
           python -m venv /tmp/sdistcheck
@@ -134,6 +167,8 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      REQUIRE_LANGGRAPH: "1"      # support-agent: its langgraph extra must install here (its test never skips)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

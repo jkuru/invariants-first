@@ -86,6 +86,22 @@ def _source_roots(server_root: pathlib.Path, root: pathlib.Path, args: dict[str,
     return [str(_inside(server_root, root, r, "source root")) for r in _strs(args, "source_roots")]
 
 
+def _import_paths(server_root: pathlib.Path, root: pathlib.Path, args: dict[str, Any]) -> list[str]:
+    """The path argument (`inv check --path`, `inv status --path`): each directory resolved inside the
+    server's --root, since the child imports the app from it."""
+    return [str(_inside(server_root, root, p, "path")) for p in _strs(args, "path")]
+
+
+def _imports(args: dict[str, Any]) -> list[str]:
+    """The import argument (`--import MODULE`): each a dotted module name (a.b.c), never a path, an
+    option or a relative name. The child confines what it imports to the server's --root as well."""
+    names = _strs(args, "import")
+    for n in names:
+        if not n or not all(part.isidentifier() for part in n.split(".")):
+            raise ToolError(f"import {n!r} is not a dotted module name (such as app.api)")
+    return names
+
+
 def _settings_inside(server_root: pathlib.Path, rule_file: pathlib.Path) -> None:
     """The directories pyproject.toml names for scanning or importing ([tool.invariants.scan] roots,
     setuptools packages.find.where) stay inside the server's --root, like a source_roots argument:
