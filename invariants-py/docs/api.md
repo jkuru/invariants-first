@@ -69,6 +69,23 @@ Key behaviours that the one-line docstrings leave out:
 | `Checked(*a: Any, **k: Any) -> None` | class | Base for refined types built by inv.model_call; carries value, attempts, rule and verdict. |
 | `parse(raw: Any, schema: Any, *, max_size: int \| None = None) -> Any` | function | Parse a reply into a closed schema (dataclass, {field: type} or pydantic model); extra or missing fields fail. |
 
+Stacking `@inv.guard` with other decorators:
+
+- **Put `@inv.guard` below `@pydantic.validate_call`** (`@validate_call` on top), so the guard checks
+  the coerced arguments the function receives (`True`, `1000000`), not the raw ones (`"yes"`,
+  `"1000000"`). `@inv.guard` above a `validate_call` wrapper (directly, or through other
+  `functools.wraps` decorators) is a `TypeError` when the decorator runs.
+- **A sync wrapper over an async def** (a `functools.wraps` decorator without
+  `inspect.markcoroutinefunction`): the guard's `pre_effect` checks run when the wrapper is called,
+  and when the call returns a coroutine its `post_effect` checks run on what the coroutine returns
+  (the guarded call gives back a coroutine that awaits it first). A sync-path call that returns
+  another awaitable (a `Future`, a `Task`) while `post_effect` checks are live is a `TypeError`:
+  guard the async def itself (`@inv.guard` below the wrapper).
+- **`@inv.edge`** hands its consumer exactly the re-checked value: the received `Checked` must be
+  exactly the annotated class (a subclass is a `TypeError`), and a state is copied as a plain `dict`
+  (from any dict, subclasses included) or as exactly the annotated dataclass or pydantic model (an
+  instance of a subclass is a `TypeError`).
+
 ### Loading and coverage
 
 | Name | Kind | Purpose |

@@ -338,14 +338,28 @@ class _EdgeCall:
 
 def _get_field(obj: Any, f: str) -> Any:
     if isinstance(obj, dict):
-        return obj.get(f)
+        return dict.get(obj, f)          # the dict's own storage: a subclass's __getitem__ or get() is not read
     return getattr(obj, f, None)
 
 
+def _check_state(obj: Any, declared: Any, who: str) -> None:
+    """TypeError unless obj is a state the edge can copy exactly: a dict (any dict: the consumer gets a
+    plain dict), or an instance of exactly the dataclass or pydantic model the parameter is annotated
+    with. A subclass could answer the consumer's reads (a property, __getattribute__) with something
+    other than the Checked the edge re-checked."""
+    if isinstance(obj, dict) or not isinstance(declared, type) or issubclass(declared, dict):
+        return
+    if type(obj) is not declared:
+        raise TypeError(f"{who} accepts only a {declared.__name__} state, not a {type(obj).__name__}: the "
+                        f"consumer gets a copy of the state, built as a {declared.__name__}")
+
+
 def _with_field(obj: Any, f: str, value: Any) -> Any:
-    """A shallow copy of a state object with one field replaced (the caller's object is unchanged)."""
+    """A copy of a state object with one field replaced (the caller's object is unchanged): a plain
+    dict for any dict (a dict subclass's own reads never reach the consumer), else a copy of exactly
+    the dataclass or pydantic model (_check_state)."""
     if isinstance(obj, dict):
-        new = copy.copy(obj)
+        new = dict(dict.items(obj))
         new[f] = value
         return new
     if hasattr(obj, "model_copy") and isinstance(getattr(type(obj), "model_fields", None), dict):
@@ -357,7 +371,7 @@ def _with_field(obj: Any, f: str, value: Any) -> Any:
 
 
 def _set_path(root: Any, path: tuple[str, ...], value: Any) -> Any:
-    """root with the field at path replaced, each container on the way a shallow copy."""
+    """root with the field at path replaced, each container on the way a copy (_with_field)."""
     if not path:
         return value
     return _with_field(root, path[0], _set_path(_get_field(root, path[0]), path[1:], value))
@@ -374,13 +388,15 @@ class _EdgePlan:
     """What one @inv.edge needs on every call: where the Checked value arrives (parameter, then
     fields), its Checked subclass, and how to pick the rule's edge enforcer for this consumer."""
 
-    __slots__ = ("rule_id", "sig", "pname", "fields", "refined", "fn", "enforcer_for")
+    __slots__ = ("rule_id", "sig", "pname", "fields", "refined", "fn", "enforcer_for", "states")
 
     def __init__(self, rule_id: str, sig: inspect.Signature, path: tuple[str, ...], refined: Any, fn: Any,
-                 enforcer_for: Callable[[Rule], tuple[int, dict[str, Any]]]) -> None:
+                 enforcer_for: Callable[[Rule], tuple[int, dict[str, Any]]],
+                 states: tuple[Any, ...] = ()) -> None:
         self.rule_id, self.sig, self.refined, self.fn = rule_id, sig, refined, fn
         self.pname, self.fields = path[0], path[1:]
         self.enforcer_for = enforcer_for
+        self.states = states        # the annotated type of each state container on the path
 
     def prepare(self, a: tuple[Any, ...], kw: dict[str, Any]) -> _EdgeCall | None:
         """None to call straight through; else the checked call."""
@@ -389,9 +405,10 @@ class _EdgePlan:
         bound = self.sig.bind(*a, **kw)
         bound.apply_defaults()
         value = bound.arguments[self.pname]
-        for f in self.fields:                               # read once: the value checked is this one
+        for j, f in enumerate(self.fields):                 # read once: the value checked is this one
+            _check_state(value, self.states[j] if j < len(self.states) else None, self.fn.__name__)
             value = _get_field(value, f)
-        if not isinstance(value, self.refined):
+        if type(value) is not self.refined:                 # exactly: a subclass could rebuild itself
             raise TypeError(f"{self.fn.__name__} accepts only {self.refined.__name__}")
         providers, rules = reg.generation((self.rule_id,))  # one generation per call
         rule = rules[0]
@@ -422,7 +439,9 @@ class _EdgePlan:
                verdict: str) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """The consumer's (args, kwargs): a new Checked over the re-validated reply in place of value."""
         _, attempts, rid, _ = Checked._inv_state(value)
-        fresh = type(value)._inv_make(reply, attempts, rid, verdict)
+        # the base constructor, for exactly the annotated class: never a method the received value's
+        # class could override
+        fresh = Checked._inv_make.__func__(self.refined, reply, attempts, rid, verdict)  # type: ignore[attr-defined]
         bound.arguments[self.pname] = _set_path(bound.arguments[self.pname], self.fields, fresh)
         return bound.args, bound.kwargs
 

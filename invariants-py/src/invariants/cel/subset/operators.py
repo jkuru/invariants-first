@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import values
 from ..errors import ALLOW_NON_FINITE, CelError, check_result
-from .data import _TIME, _finite, _int_range, _nty, _num, _on_map, _ty
+from .data import UINT_MAX, _TIME, Uint, _finite, _int_range, _nty, _num, _on_map, _ty, as_container
 from .equality import _eq, lookup, whole
 
 _TIME_ARITH = {("+", "timestamp", "duration"), ("+", "duration", "timestamp"), ("+", "duration", "duration"),
@@ -42,6 +42,11 @@ def _arith(op: str, a: Any, b: Any) -> Any:
         if op == "/" and isinstance(a, float) and ALLOW_NON_FINITE.get():
             return ieee_div_zero(a, b)
         raise CelError("division by zero")
+    if type(a) is Uint:                         # uint arithmetic: in [0, 2^64), / and % on naturals
+        r = a + b if op == "+" else a - b if op == "-" else a * b if op == "*" else a // b if op == "/" else a % b
+        if not 0 <= r <= UINT_MAX:
+            raise CelError("uint overflow")
+        return Uint(r)
     if op == "/" and isinstance(a, int):
         q = abs(a) // abs(b)
         return _int_range(q if (a >= 0) == (b > 0) else -q)
@@ -76,7 +81,8 @@ def _order(op: str, a: Any, b: Any) -> bool:
 
 
 def _in(a: Any, b: Any) -> bool:
-    """a in b. The list or map is read whole, as on the engines."""
+    """a in b. The list or map is read whole, as on the engines (a record as the map of its fields)."""
+    b = as_container(b)
     if isinstance(b, (list, tuple)):
         b = whole(b)
         return any(_eq(a, x) for x in b)

@@ -215,6 +215,11 @@ def from_py(ann: Any, _depth: int = 0) -> T:
     if issubclass(base, bytes):
         return T({"bytes"})
     args = typing.get_args(ann)
+    if getattr(base, "__pydantic_root_model__", False) is True and "root" in (getattr(base, "model_fields", None)
+                                                                             or {}):
+        return from_py(getattr(base, "model_fields")["root"].annotation, _depth + 1)   # read as its .root (values.py)
+    if _listlike_type(base):
+        return T(None, refused=values.LISTLIKE.format(base.__name__))
     if typing.is_typeddict(base):
         return T({"map"}, py=base)          # a record of its keys (field() reads its annotations)
     if issubclass(base, collections.abc.Mapping):
@@ -230,6 +235,18 @@ def from_py(ann: Any, _depth: int = 0) -> T:
     if dataclasses.is_dataclass(base) or isinstance(getattr(base, "model_fields", None), dict):
         return T({"map"}, py=base)
     return T(None, py=base)        # some other object: its annotated fields are known, its kind is not
+
+
+def _listlike_type(base: type) -> bool:
+    """A concrete sequence or iterable class that is not a list or tuple (UserList, deque, range, a
+    class with __iter__, __len__ or __getitem__): its values are refused at run time (values.LISTLIKE),
+    so a clause reading one is refused at load. An abstract annotation (Sequence[int], Iterable[int])
+    is not: the value passed may be a list."""
+    if issubclass(base, (list, tuple, str, bytes, bytearray, collections.abc.Mapping)) \
+            or base.__module__ in ("collections.abc", "typing") or typing.is_typeddict(base) \
+            or dataclasses.is_dataclass(base) or isinstance(getattr(base, "model_fields", None), dict):
+        return False
+    return hasattr(base, "__iter__") or hasattr(base, "__len__") or hasattr(base, "__getitem__")
 
 
 def _kind_of(v: Any) -> str:

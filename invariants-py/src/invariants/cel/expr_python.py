@@ -39,9 +39,10 @@ import threading
 from typing import Any, Callable
 
 from ._engine import (ENGINE_FUNCTIONS, FrontEnd, engine_error, ext_sum, ext_unique, ext_zip,
-                      has_comprehension, project)
+                      has_comprehension, project, uses_inv)
+from .subset.evaluator import evaluate_short
 from ._engine import _map_kids as _engine_map_kids
-from . import subset, values
+from . import _regex, subset, values
 from .errors import CelError, CelSyntaxError, check_result
 
 RECURSION_LIMIT = 32               # cel-cpp's expression nesting limit (fixed, not settable from Python)
@@ -141,17 +142,21 @@ STALE_SLOT = ("cel-expr: this cel-expr-python build can read a stale comprehensi
               "refused on it; use the subset backend (INV_CEL_BACKEND=subset) or split the clause")
 
 
-def _templates(bind: bool) -> dict[str, str]:
+def _templates(bind: bool, uints: bool = False) -> dict[str, str]:
     """The text the backend prints around each value _engine.mark_finite marks ({0}: the value's text),
-    as cel.bind(var, value, body) (bind) or as [value].map(var, body)[0]."""
+    as cel.bind(var, value, body) (bind) or as [value].map(var, body)[0]. uints: the clause has uint()
+    or a uint literal, so a checked value may be a uint (data never holds one)."""
     def let(var: str, value: str, body: str) -> str:
         return f"cel.bind({var}, {value}, {body})" if bind else f"[{value}].map({var}, {body})[0]"
 
     def check(var: str, other: str, ints: bool = True) -> str:
-        # a non-finite double, or an int past 2^53 (EXACT_INT): inv.__fin decides in Python
+        # a non-finite double, or an int or uint past 2^53 (EXACT_INT): inv.__fin decides in Python
         test = f"(type({var}) == double && {var} - {var} != 0.0)"
         if ints:
-            test = (f"({test} || (type({var}) == int && ({var} > {EXACT_INT} || {var} < -{EXACT_INT})))")
+            big = f"(type({var}) == int && ({var} > {EXACT_INT} || {var} < -{EXACT_INT}))"
+            if uints:
+                big = f"{big} || (type({var}) == uint && {var} > {EXACT_INT}u)"
+            test = f"({test} || {big})"
         return f"{test} ? inv.__fin({var}) : {other}"
     fin = let("__inv_v", "{0}", check("__inv_v", "__inv_v"))
     if bind:
@@ -160,7 +165,8 @@ def _templates(bind: bool) -> dict[str, str]:
     else:       # double() of a double is that double: checking the argument is checking the result
         dbl = let("__inv_d", "{0}", "type(__inv_d) == string ? inv.__double(__inv_d) : ("
                   + check("__inv_d", "double(__inv_d)", ints=False) + ")")
-    out = {"fin": fin, "double": dbl, "zone": "inv.__zone({0})", "chunk": "", "text": "inv.__text({0})",
+    out = {"fin": fin, "double": dbl, "getter": "inv.__{name}({0}, {1})",
+           "chunk": "", "text": "inv.__text({0})", "pattern": "inv.__pattern({0})",
            **{f: f"inv.__{f}({{0}}, {{1}})" for f in ("contains", "startsWith", "endsWith")}}
     for conv in ("timestamp", "duration"):
         out[conv] = let("__inv_t", "{0}", f"type(__inv_t) == string ? inv.__{conv}(__inv_t) : {conv}(__inv_t)")
@@ -174,16 +180,22 @@ _BUDGET_TEXT = "Iteration budget exceeded"
 
 
 # ---- int and double compared exactly --------------------------------------------------------
-# cel-cpp compares an int with a double by first rounding the int to a double, so past 2^53 it can
-# be wrong: 2^53 + 1 > 2.0^53 is false there, true on the subset (Python compares exactly). Every
+# cel-cpp compares an int (or uint) with a double by first rounding it to a double, so past 2^53 it
+# can be wrong: 2^53 + 1 > 2.0^53 is false there, true on the subset (Python compares exactly). Every
 # int up to 2^53 in magnitude is exactly a double, so such a comparison can be wrong only when an int
 # past 2^53 and a double are both in play. A clause may see a double only if its text has a double
-# literal or a double() call, or its data has a float; it may see an int past 2^53 only from its
-# text (a literal), its data, an arithmetic result, an int() result or inv.sum() -- the values the
-# backend checks anyway (_templates). When both can meet, the clause is evaluated by the subset
-# (exactly) instead: at once if the data or text holds such an int, else when a check meets one
-# and the engine's result is an error (a check met it and the result does not depend on it if the
-# engine returned a value: CEL absorbs an error only where the other operand decides).
+# literal or a double() call, or the data it reads has a float; it may see an int past 2^53 only
+# from its text (a literal), the data it reads, an arithmetic result, an int() or uint() result or
+# inv.sum() -- the values the backend checks anyway (_templates). Each clause decides for itself,
+# from the values it reads (ExprProgram._plan), never another clause's.
+#
+# When both can meet, the clause is still evaluated by the engine first: its comprehension budget
+# (ITERATION_LIMIT) decides, so a clause past it is the same "cost limit exceeded" either way. If the
+# engine stays within it and an int past 2^53 was in play (in the data or text the clause reads, or
+# met by a check), the clause is then evaluated exactly by the subset, on the same data: with every
+# function cel-expr has (uint(), bytes(), type() included), && || all exists short-circuiting as in
+# cel-cpp, and a budget that covers ITERATION_LIMIT iterations of the clause (_exact_budget), so the
+# exact evaluation answers wherever the engine did.
 EXACT_INT = 2**53
 _FLOAT, _BIG = 1, 2
 
@@ -194,16 +206,27 @@ class _Exact(threading.local):
 
 
 _EXACT = _Exact()
-INEXACT = "an int past 2^53 may meet a double (evaluated exactly instead)"
 
 
 def _big_int(v: int) -> int:
-    """inv.__fin(int), called only for an int past 2^53: an error that sends the clause to the exact
-    evaluation if a double may be in play, else the int."""
+    """inv.__fin(int or uint), called only for one past 2^53: noted, if a double may be in play (the
+    clause is then evaluated exactly), and returned unchanged, so the engine's run (and its
+    comprehension count) is the same as without the check."""
     if _EXACT.on:
         _EXACT.fired = True
-        raise CelError(INEXACT)
     return v
+
+
+def _exact_budget(ast: Any) -> int:
+    """The subset budget of a clause's exact evaluation: one unit per node for each of ITERATION_LIMIT
+    iterations and the clause itself, at least the subset's own (the engine has already kept the
+    clause within ITERATION_LIMIT iterations)."""
+    size, todo = 0, [ast]
+    while todo:
+        n = todo.pop()
+        size += 1
+        todo.extend(subset.kids(n))
+    return max(subset.DEFAULT_BUDGET, (ITERATION_LIMIT + 1) * (size + 1))
 
 
 def _sum(xs: Any) -> Any:
@@ -212,7 +235,8 @@ def _sum(xs: Any) -> Any:
 
 
 def _static_flags(n: Any) -> int:
-    """_FLOAT if the rule text has a double literal or a double() call, | _BIG for an int literal past 2^53."""
+    """_FLOAT if the rule text has a double literal or a double() call, | _BIG for an int (or uint)
+    literal past 2^53."""
     f = 0
     if n[0] == "lit":
         if type(n[1]) is float:
@@ -221,8 +245,6 @@ def _static_flags(n: Any) -> int:
             f = _BIG
     elif n[0] == "call" and n[1] == "double":
         f = _FLOAT
-    elif n[0] == "call" and n[1] == "uint":
-        return 0                    # 5u is uint(5): a uint (cel-expr only; the subset has no uint)
     for c in subset.kids(n):
         f |= _static_flags(c)
     return f
@@ -274,6 +296,8 @@ class ExprProgram:
         self.source, self._front, self._cel = front.source, front, cel
         self._run = expr.eval       # the engine's Expression.eval, not Python's builtin eval
         self._static = _static_flags(front.ast)
+        self._plan = scan_plan(front.reads)     # what this clause reads of the (shared) data
+        self._exact_prog = subset.SubsetProgram(front.source, front.exact.ast, _exact_budget(front.exact.ast))
 
     project = staticmethod(project_engine)
 
@@ -282,8 +306,9 @@ class ExprProgram:
         return self.evaluate_data(project_engine(env, self._front.reads))
 
     def evaluate_data(self, data: dict[str, Any]) -> Any:
-        """Evaluate against an env already projected to plain data; raises CelError."""
-        flags = _scan(data) | self._static
+        """Evaluate against an env already projected to plain data (this clause's projection, or one
+        shared by the rule's clauses: only what this clause reads is checked); raises CelError."""
+        flags = _scan_read(data, self._plan) | self._static
         if not flags & _FLOAT:              # no double in play: every int compares exactly
             try:                            # (self._eval, inlined: the common path)
                 r = self._run(data=data)
@@ -294,18 +319,18 @@ class ExprProgram:
                 raise
             except Exception as e:
                 raise engine_error(_cost(str(e)), "cel-expr", self._front.names) from None
-        if flags & _BIG:
-            return self._exact(data)
         prev = (_EXACT.on, _EXACT.fired)
         _EXACT.on, _EXACT.fired = True, False
         try:
-            return self._eval(data)
-        except CelError:
-            if _EXACT.fired:                # a check met an int past 2^53, and the result is an error
-                return self._exact(data)
-            raise
+            v = self._eval(data)
+            if not (_EXACT.fired or flags & _BIG):
+                return v
+        except CelError as e:
+            if not (_EXACT.fired or flags & _BIG) or _COST_ERROR.match(str(e)):
+                raise                       # the engine's budget decides, exact or not
         finally:
             _EXACT.on, _EXACT.fired = prev
+        return self._exact(data)            # an int past 2^53 may have met a double (see EXACT_INT)
 
     def _eval(self, data: dict[str, Any]) -> Any:
         try:
@@ -320,8 +345,10 @@ class ExprProgram:
         return v
 
     def _exact(self, data: dict[str, Any]) -> Any:
-        """The clause evaluated by the subset (exact int and double comparison), on the same data."""
-        return self._front.exact.evaluate(from_engine(data))
+        """The clause evaluated by the subset (exact int and double comparison), on the same data, with
+        cel-expr's type names, short-circuiting as cel-cpp and the budget of _exact_budget."""
+        env = {**subset.TYPE_NAMES, **from_engine(data)}
+        return evaluate_short(self._exact_prog, env)
 
     def references(self) -> frozenset[tuple[str, ...]]:
         """Free identifiers with their static field paths."""
@@ -338,6 +365,63 @@ class ExprProgram:
 
 NUL_TEXT = ("a string or bytes value holding a NUL character cannot be read on cel-expr (its C++ runtime "
             "would end the text there); use the subset backend, or strip NUL characters first")
+
+
+def scan_plan(reads: frozenset[tuple[str, ...]]) -> dict[str, Any]:
+    """What a clause reads of its data, as _scan_read walks it: {root: plan}, a plan None (the value
+    whole) or {step: plan} (a field name, ELEM or SIZE), as _engine.project reads the same paths."""
+    def plan(tails: list[tuple[str, ...]]) -> Any:
+        if not tails or any(len(t) == 0 for t in tails):
+            return None
+        return {h: plan([t[1:] for t in tails if t[0] == h]) for h in sorted({t[0] for t in tails})}
+    return {root: plan([r[1:] for r in reads if r[0] == root]) for root in sorted({r[0] for r in reads})}
+
+
+def _scan_read(data: dict[str, Any], plan: dict[str, Any]) -> int:
+    """_scan of only what a clause reads of data (a projection shared by the rule's clauses holds what
+    the others read too): a value another clause reads never errors this one."""
+    f = 0
+    for root, p in plan.items():
+        if root in data:
+            f |= _scan(data[root]) if p is None else _scan_at(data[root], p)
+    return f
+
+
+_ELEM, _SIZE = subset.ELEM, subset.SIZE
+
+
+def _scan_at(v: Any, plan: dict[str, Any]) -> int:
+    """_scan of the parts of v that plan reads (as _engine._project projects them)."""
+    t = type(v)
+    if t is list:
+        if plan.keys() <= {_ELEM, _SIZE}:
+            if _ELEM not in plan:
+                return 0                    # only the length is read
+            sub, f = plan[_ELEM], 0
+            if sub is None:
+                for x in v:
+                    if type(x) is not int or not -EXACT_INT <= x <= EXACT_INT:     # (an int is the usual value)
+                        f |= _scan(x)
+                return f
+            for x in v:
+                f |= _scan_at(x, sub)
+            return f
+        return _scan(v)                     # a list read by field name: the engine reads it whole
+    if t is dict:
+        f = 0
+        if _ELEM in plan or _SIZE in plan:  # the keys are read
+            for k in v:
+                if type(k) is not str or not k.isascii() or "\x00" in k:
+                    f |= _scan(k)
+        for name, sub in plan.items():
+            if name not in (_ELEM, _SIZE) and name in v:
+                x = v[name]
+                if sub is not None:
+                    f |= _scan_at(x, sub)
+                elif type(x) is not int or not -EXACT_INT <= x <= EXACT_INT:
+                    f |= _scan(x)
+        return f
+    return _scan(v)
 
 
 def _scan(v: Any) -> int:
@@ -374,6 +458,7 @@ def _scan(v: Any) -> int:
     return f
 
 
+_COST_ERROR = re.compile(r"(?:cel-expr: )?cost limit exceeded")      # the engine's budget, as _cost words it
 _BUDGET = re.compile(r"(?:[A-Z][A-Z_]*: )*" + re.escape(_BUDGET_TEXT))
 
 
@@ -405,6 +490,18 @@ def _text(s: str) -> str:
     return values.sized("matches", s)
 
 
+def _pattern(p: str) -> str:
+    """A matches() pattern from the data: under the string-size limit and the pattern limit (as on the
+    subset: _regex.pattern_size), before cel-cpp compiles it."""
+    try:
+        _regex.pattern_size(values.sized("matches", p))
+    except _regex.PatternLimit as e:
+        err = CelError(_regex.PATTERN_LIMIT)
+        err.detail = str(e)
+        raise err from None
+    return p
+
+
 class ExprPythonBackend:
     """Backend for cel-expr-python. inv.sum and inv.zip are native functions; inv.unique_by is
     rewritten to inv.__unique(list.map(v, body)). The cost limit is the engine's fixed
@@ -426,6 +523,7 @@ class ExprPythonBackend:
     # _FIN for a clause without comprehensions, _FIN_LOOP (no cel.bind) for one with them.
     _FIN = _templates(bind=True)
     _FIN_LOOP = _templates(bind=False)
+    _FIN_U, _FIN_LOOP_U = _templates(bind=True, uints=True), _templates(bind=False, uints=True)
 
     def __init__(self) -> None:
         from cel_expr_python import cel
@@ -444,15 +542,18 @@ class ExprPythonBackend:
             decl("inv.zip", "inv_zip_list_list", T.List(dyn_list), [dyn_list, dyn_list], ext_zip),
             decl("inv.__unique", "inv_unique_list", T.BOOL, [dyn_list], ext_unique),
             cel.FunctionDecl("inv.__fin", [ovl("inv_fin_double", T.DOUBLE, [T.DOUBLE], check_result),
-                                           ovl("inv_fin_int", T.INT, [T.INT], _big_int)]),
+                                           ovl("inv_fin_int", T.INT, [T.INT], _big_int),
+                                           ovl("inv_fin_uint", T.UINT, [T.UINT], _big_int)]),
             decl("inv.__double", "inv_double_string", T.DOUBLE, [S], _double_text),
             decl("inv.__timestamp", "inv_timestamp_string", T.TIMESTAMP, [S], values.parse_timestamp),
             decl("inv.__duration", "inv_duration_string", T.DURATION, [S], values.parse_duration),
-            decl("inv.__zone", "inv_zone_string", S, [S], values.check_zone),
             decl("inv.__contains", "inv_contains_string_string", T.BOOL, [S, S], _contains),
             decl("inv.__startsWith", "inv_starts_string_string", T.BOOL, [S, S], _starts),
             decl("inv.__endsWith", "inv_ends_string_string", T.BOOL, [S, S], _ends),
             decl("inv.__text", "inv_text_string", S, [S], _text),
+            decl("inv.__pattern", "inv_pattern_string", S, [S], _pattern),
+            *(decl(f"inv.__{g}", f"inv_{g}_timestamp_string", T.INT, [T.TIMESTAMP, S],
+                   functools.partial(values.getter, g)) for g in subset._GETTERS),
         ])
 
         self._slots_ok = True
@@ -476,7 +577,9 @@ class ExprPythonBackend:
         front = FrontEnd(expr)
         front.ast = _long_durations_at_run_time(front.ast)    # (front.exact keeps the rule's own tree)
         loop = has_comprehension(front.ast)
-        text = front.text_for(self._NATIVE, self._RENAME, self._FIN_LOOP if loop else self._FIN)
+        uints = uses_inv(front.ast, ("uint",))
+        fin = (self._FIN_LOOP_U if uints else self._FIN_LOOP) if loop else (self._FIN_U if uints else self._FIN)
+        text = front.text_for(self._NATIVE, self._RENAME, fin)
         if loop and not self._slots_ok and ".map(__inv_" in text:
             raise CelSyntaxError(STALE_SLOT)
         try:

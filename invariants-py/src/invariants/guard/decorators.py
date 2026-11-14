@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import inspect
+import pathlib
 import sys
 import time
 import types
@@ -55,6 +56,31 @@ def _hints(fn: Any, who: str) -> dict[str, Any]:
     return type_hints(fn, who, TypeError, localns)
 
 
+def _is_validate_call(layer: Any) -> bool:
+    """True for a pydantic.validate_call wrapper (pydantic 2: a function from pydantic's
+    _validate_call module, or a ValidateCallWrapper instance, either with .raw_function)."""
+    if not callable(getattr(layer, "raw_function", None)):
+        return False
+    if type(layer).__module__.split(".")[0] == "pydantic":
+        return True
+    code = getattr(layer, "__code__", None)
+    return "pydantic" in pathlib.PurePath(getattr(code, "co_filename", "") or "").parts
+
+
+def _refuse_validate_call_below(fn: Any, who: str) -> None:
+    """TypeError if fn is (or wraps, through __wrapped__) a pydantic.validate_call wrapper: the guard
+    would check the raw arguments ('yes', '1000000'), and the function would run on the coerced
+    ones (True, 1000000)."""
+    layer, seen = fn, 0
+    while layer is not None and seen < 64:
+        if _is_validate_call(layer):
+            raise TypeError(f"{who} is above @pydantic.validate_call on {getattr(fn, '__qualname__', fn)!r}: it "
+                            f"would check the arguments before pydantic coerces them ('yes' for True, "
+                            f"'1000000' for 1000000) while the function runs on the coerced ones; put "
+                            f"@inv.guard below @validate_call, so it checks what the function receives")
+        layer, seen = getattr(layer, "__wrapped__", None), seen + 1
+
+
 # --- guard --------------------------------------------------------------------------------------
 def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """@inv.guard("R-1", ...) or @inv.guard("py:jobs.split_work"): pre- and post-effect checks.
@@ -72,6 +98,7 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
         if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
             raise TypeError(f"@inv.guard cannot wrap the generator {fn.__qualname__}: its body runs after the "
                             f"guard returns; guard a function that returns a value")
+        _refuse_validate_call_below(fn, "@inv.guard")
         sig = inspect.signature(fn)
         shapes: set[tuple[Any, ...]] = set()       # call shapes that bound (see plan.start)
 
@@ -104,6 +131,8 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                     check(call, "pre_effect")
                 result = fn(*a, **kw)
                 if "post_effect" in call.timings:
+                    if type(result) not in _PLAIN_RESULTS and inspect.isawaitable(result):
+                        return _awaited_post(call, result, fn)
                     call.started["post_effect"] = time.time_ns()
                     check(call, "post_effect", result)
                 return result
@@ -113,6 +142,30 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
         WRAPPED.add(wrapper)
         return typing.cast(Callable[P, R], wrapper)
     return deco
+
+
+_PLAIN_RESULTS = frozenset({type(None), bool, int, float, str, bytes, list, tuple, dict})   # never awaitable
+
+
+def _awaited_post(call: Any, result: Any, fn: Any) -> Any:
+    """A sync-path guarded call whose function returned an awaitable (a sync wrapper over an async def,
+    say: functools.wraps without inspect.markcoroutinefunction). Its post_effect checks must see what
+    the awaitable gives, not the awaitable: a coroutine is returned as a coroutine that awaits it and
+    then runs them. Any other awaitable (a Future, a Task: the caller may need the object itself) is
+    a TypeError, never checked as the result."""
+    if not inspect.iscoroutine(result):
+        raise TypeError(f"@inv.guard on {getattr(fn, '__qualname__', fn)!r}: the function returned a "
+                        f"{type(result).__name__}, an awaitable that is not a coroutine, so its post_effect "
+                        f"checks cannot see the real result; guard the async def itself (put @inv.guard "
+                        f"below the wrapper) or return a coroutine")
+
+    async def post() -> Any:
+        got = await result
+        call.started["post_effect"] = time.time_ns()
+        await aprefetch(call, "post_effect", got)
+        await acheck(call, "post_effect", got)
+        return got
+    return post()
 
 
 # --- model calls --------------------------------------------------------------------------------
@@ -291,6 +344,17 @@ def _edge_path(sig: inspect.Signature, hints: dict[str, Any], at: str | None,
                     f"parameter (TypedDict, dataclass or pydantic model) with one Checked field (or at=...)")
 
 
+def _path_states(hints: dict[str, Any], path: tuple[str, ...], who: str) -> tuple[Any, ...]:
+    """The annotated type of each state container on an edge path (the parameter's, then each field's
+    but the last), as _edge_path walked them."""
+    out: list[Any] = []
+    t = hints.get(path[0])
+    for f in path[1:]:
+        out.append(t)
+        t = _state_fields(t, who).get(f)
+    return tuple(out)
+
+
 def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """@inv.edge("R-7") on the consumer of a Checked value (sync or async).
 
@@ -345,7 +409,7 @@ def edge(rule_id: str, *, at: str | None = None) -> Callable[[Callable[P, R]], C
             picked[rule.id] = (rule, *mine[0])
             return mine[0]
 
-        steps = _EdgePlan(rule_id, sig, path, refined, fn, enforcer_for)
+        steps = _EdgePlan(rule_id, sig, path, refined, fn, enforcer_for, _path_states(hints, path, who))
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:

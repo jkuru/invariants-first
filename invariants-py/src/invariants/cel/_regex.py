@@ -25,6 +25,130 @@ class RegexError(ValueError):
     """The pattern is not valid (supported) RE2 syntax."""
 
 
+# ---- the pattern limit, shared by every backend ------------------------------------------------
+# A pattern a rule matches with (a constant at load; one from the request data on every call) must be
+# at most PATTERN_CHARS characters, nest groups at most PATTERN_DEPTH deep, and its program, with
+# every {n,m} expanded (pattern_size), at most MAX_PROGRAM instructions. Past it the pattern is
+# refused before any engine compiles it, so no pattern from the data can buy compile or match time
+# (cel-cpp compiles a pattern from the data on every call; '[a-z]{1000}' * 50 took 0.8 s each).
+PATTERN_CHARS = 4096
+PATTERN_DEPTH = 64
+PATTERN_LIMIT = (f"matches(): the pattern is over the pattern limit ({PATTERN_CHARS:,} characters, "
+                 f"{PATTERN_DEPTH} nested groups, {MAX_PROGRAM:,} instructions with repeats expanded)")
+
+
+class PatternLimit(RegexError):
+    """The pattern is over the pattern limit (PATTERN_LIMIT); its str() is the reason."""
+
+
+def _brace(p: str, i: int) -> tuple[int, int | None, int] | None:
+    """(lo, hi, end) for a repeat count {n}, {n,} or {n,m} at p[i] == '{', else None (a literal '{')."""
+    j = k = i + 1
+    while k < len(p) and p[k].isdigit() and k - j < 8:
+        k += 1
+    if k == j:
+        return None
+    lo, hi = int(p[j:k]), None
+    hi = lo
+    if k < len(p) and p[k] == ",":
+        m = k + 1
+        while m < len(p) and p[m].isdigit() and m - k < 8:
+            m += 1
+        hi = int(p[k + 1:m]) if m > k + 1 else None
+        k = m
+    if k >= len(p) or p[k] != "}":
+        return None
+    return lo, hi, k + 1
+
+
+def pattern_size(p: str) -> int:
+    """PatternLimit unless p is within the pattern limit; else an upper bound on the instructions its
+    program has with every {n,m} expanded (at least what compile_pattern emits). Linear in len(p),
+    syntax-agnostic: a pattern it passes may still be invalid RE2 (the engine says so)."""
+    if len(p) > PATTERN_CHARS:
+        raise PatternLimit(f"over the pattern limit: more than {PATTERN_CHARS:,} characters")
+    stack: list[list[int]] = [[0, 0, 0]]      # per open group: [size so far, last atom's size, alternatives]
+    i, n = 0, len(p)
+
+    def atom(size: int) -> None:
+        f = stack[-1]
+        f[0] += size
+        f[1] = size
+
+    def grow(new: int) -> None:
+        f = stack[-1]
+        f[0] += new - f[1]
+        f[1] = new
+        if f[0] > MAX_PROGRAM:
+            raise PatternLimit("over the pattern limit: too large with repeats expanded")
+    while i < n:
+        c = p[i]
+        if c == "\\":
+            nxt = p[i + 1:i + 2]
+            if nxt == "Q":                          # \Q...\E: each character a literal
+                end = p.find("\\E", i + 2)
+                end = n if end < 0 else end
+                atom(max(1, end - i - 2))
+                i = end + 2
+                continue
+            i += 2
+            if nxt in ("p", "P", "x") and p[i:i + 1] == "{":
+                close = p.find("}", i)
+                i = n if close < 0 else close + 1
+            atom(1)
+        elif c == "[":                              # a class is one instruction
+            i += 1
+            if p[i:i + 1] == "^":
+                i += 1
+            if p[i:i + 1] == "]":
+                i += 1
+            while i < n and p[i] != "]":
+                if p[i] == "\\":
+                    i += 1
+                elif p.startswith("[:", i):
+                    close = p.find(":]", i + 2)
+                    i = i if close < 0 else close + 1
+                i += 1
+            i += 1
+            atom(1)
+        elif c == "(":
+            if len(stack) > PATTERN_DEPTH:
+                raise PatternLimit(f"over the pattern limit: groups nested more than {PATTERN_DEPTH} deep")
+            stack.append([0, 0, 0])
+            i += 1
+        elif c == ")" and len(stack) > 1:
+            size, _, alts = stack.pop()
+            atom(size + 2 * alts)
+            grow(stack[-1][1])
+            i += 1
+        elif c == "|":
+            f = stack[-1]
+            f[2] += 1
+            f[1] = 0
+            i += 1
+        elif c in "*+?":
+            last = stack[-1][1]
+            grow(last + 2 if c == "*" else 2 * last + 2 if c == "+" else last + 1)
+            i += 2 if p[i + 1:i + 2] == "?" else 1
+        elif c == "{" and (got := _brace(p, i)) is not None:
+            lo, hi, i = got
+            last = stack[-1][1]
+            lo, hi = min(lo, MAX_REPEAT), None if hi is None else min(hi, MAX_REPEAT)
+            grow(lo * last + last + 2 if hi is None else max(hi, lo) * (last + 1))
+            i += 1 if p[i:i + 1] == "?" else 0
+        else:
+            atom(1)
+            i += 1
+        if stack[-1][0] > MAX_PROGRAM:
+            raise PatternLimit("over the pattern limit: too large with repeats expanded")
+    total = 1
+    for size, _, alts in stack:
+        total += size + 2 * alts
+    if total > MAX_PROGRAM:
+        raise PatternLimit("over the pattern limit: too large with repeats expanded")
+    return total
+
+
 def _ascii_word(c: str) -> bool:
     return c == "_" or ("0" <= c <= "9") or ("a" <= c <= "z") or ("A" <= c <= "Z")
 
@@ -427,7 +551,8 @@ class _Prog:
 
 
 def compile_pattern(pattern: str) -> list[list]:
-    """Compile a RE2 pattern to a program. Raises RegexError."""
+    """Compile a RE2 pattern to a program. Raises RegexError (PatternLimit over the pattern limit)."""
+    pattern_size(pattern)
     tree = _Parser(pattern).parse()
     prog = _Prog()
     prog.gen(tree)
@@ -489,4 +614,5 @@ class StepLimit(Exception):
     """The search used more steps than allowed."""
 
 
-__all__ = ["compile_pattern", "search", "RegexError", "StepLimit", "MAX_REPEAT", "MAX_PROGRAM"]
+__all__ = ["compile_pattern", "search", "RegexError", "StepLimit", "MAX_REPEAT", "MAX_PROGRAM", "PatternLimit",
+           "pattern_size", "PATTERN_LIMIT", "PATTERN_CHARS", "PATTERN_DEPTH"]

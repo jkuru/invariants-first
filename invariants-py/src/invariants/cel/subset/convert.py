@@ -8,7 +8,8 @@ from typing import Any, Callable
 
 from .. import values
 from ..errors import CelError, check_result
-from .data import _int_range, _ty, check_int
+from .data import Uint, _int_range, _ty, check_int, check_uint, type_of
+from .lexer import INT_MAX
 
 _INT_TEXT = re.compile(r"\s*[+-]?[0-9]+\s*")
 _FLOAT_TEXT = re.compile(r"\s*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\s*")
@@ -61,6 +62,10 @@ def _to_int(v: Any) -> Any:
         return values.unix_seconds(v)
     if isinstance(v, bool):
         return int(v)
+    if isinstance(v, Uint):
+        if v > INT_MAX:
+            raise CelError("int(): uint out of int64 range")
+        return int(v)
     if isinstance(v, int):
         return v
     if isinstance(v, float):
@@ -85,6 +90,32 @@ def _to_double(v: Any) -> Any:
         if v.strip().lower().lstrip("+-") in ("nan", "inf", "infinity"):
             return check_result(float(v.strip()))
         raise CelError("double(): cannot convert string to double")
+    return _NO_OVERLOAD
+
+
+def _to_uint(v: Any) -> Any:
+    """uint() (the exact evaluation of a cel-expr clause: see data.Uint): uint, int >= 0, a double
+    truncated toward zero in [0, 2^64), base-10 text."""
+    if isinstance(v, bool):
+        return _NO_OVERLOAD
+    if isinstance(v, int):
+        return check_uint(int(v))
+    if isinstance(v, float):
+        if v - v != 0.0 or not (v >= 0.0 and v < 2.0**64):
+            raise CelError("uint(): double out of uint64 range")
+        return check_uint(int(v))
+    if isinstance(v, str):
+        if not _INT_TEXT.fullmatch(v):
+            raise CelError("uint(): cannot convert string to uint")
+        return check_uint(int(v))
+    return _NO_OVERLOAD
+
+
+def _to_bytes(v: Any) -> Any:
+    if isinstance(v, bytes):
+        return v
+    if isinstance(v, str):
+        return values.text(v).encode("utf-8")
     return _NO_OVERLOAD
 
 
@@ -123,6 +154,7 @@ def _to_bool(v: Any) -> Any:
 _CONVERTERS: dict[str, Callable[[Any], Any]] = {
     "dyn": lambda v: v, "timestamp": _to_timestamp, "duration": _to_duration, "int": _to_int,
     "double": _to_double, "string": _to_string, "bool": _to_bool,
+    "uint": _to_uint, "bytes": _to_bytes, "type": type_of,
 }
 
 
