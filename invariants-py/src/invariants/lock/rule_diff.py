@@ -13,7 +13,7 @@ from .cel_mono import judge_bad
 from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER,
                         NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, Change, _json_paths,
                         policy, same)
-from .schema_diff import _param_schema_changes, constraint_weakening
+from .schema_diff import POS, _param_schema_changes, constraint_weakening, ref_polarity
 
 
 # --- bad: canonical trees and polarity -----------------------------------------------------------
@@ -457,7 +457,7 @@ def _named_operations(contract: str, rules: dict[str, Any] | None) -> dict[str, 
 
 
 def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
-                   refs: list[tuple[str, str, str, str]], rules: dict[str, Any] | None = None) -> list[Change]:
+                   refs: list[tuple[Any, ...]], rules: dict[str, Any] | None = None) -> list[Change]:
     """A target, provider or contract entry, field by field, judged by FIELD_POLICY[kind.field]. An
     OpenAPI operation renamed with the same method and path is compared with its old self."""
     out: list[Change] = []
@@ -506,7 +506,7 @@ def _with_renamed_operations(where: str, a: dict[str, Any], b: dict[str, Any]) -
 
 
 def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, Any], named: dict[str, list[str]],
-                 refs: list[tuple[str, str, str, str]]) -> list[Change]:
+                 refs: list[tuple[Any, ...]]) -> list[Change]:
     """A pinned field of an entry, leaf by leaf; a contract's schemas are judged by constraint_weakening,
     and an operation removed while a rule names it is WEAKENED. Changed schema-table references are
     appended to `refs` for _schema_changes."""
@@ -522,7 +522,9 @@ def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, 
                               why or "operation removed; no rule names it"))
             continue
         out.append(Change(where, p, xv, yv, why is not None, why or ""))
-    refs += [(f"{where} {p}", p, da, db) for p, da, db in found]
+    # a schema-table reference keeps the polarity of its place: a component named under `not` is
+    # judged the other way round (schema_diff._schema_changes)
+    refs += [(f"{where} {p}", p, da, db, ref_polarity(p, a, b) if kind == "contract" else POS) for p, da, db in found]
     return out
 
 

@@ -204,6 +204,26 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   is no longer refused. It was judged a tightening.
 - A Draft 4 / OpenAPI 3.0 boolean `exclusiveMaximum` or `exclusiveMinimum` turned from `true` to
   `false` is WEAKENED.
+- A pinned schema change is judged at the polarity of its place, carried through `$ref`s and the
+  schema table: a `$defs` entry or an OpenAPI component used under `not` is judged the other way
+  round (`not: {$ref: A}` with A's `maximum` 5 -> 3 lets 4 through and is WEAKENED; 5 -> 9 is a
+  tightening), and one used under `oneOf`, `if` or a `contains` with `maxContains` (or both ways)
+  is judged both ways. These were judged by the change alone.
+- A subschema replaced by `true` (an `allOf`/`anyOf`/`oneOf`/`prefixItems` entry, a property, a
+  `$defs` entry, `not`, `items`, ...), a removed `patternProperties` entry, a removed Draft 7
+  `dependencies` entry (or a name dropped from one), and a `minContains: 0` added are WEAKENED; they
+  were not judged.
+- `const` and `enum` are compared as whole values: a structured value (`const: {"a": 1}` to
+  `{"a": 2}`, `enum: [[1]]` to `[[2]]`) was diffed as if it were a schema, and a removed `const:
+  null` was read as absent. Both are WEAKENED now.
+- Draft 4 / OpenAPI 3.0 / Swagger 2.0 schemas are judged with Draft 4's bounds, where a numeric
+  `exclusiveMaximum` bounds nothing: `maximum: 10` to `exclusiveMaximum: 11` is WEAKENED there. An
+  OpenAPI 3.0 or Swagger 2.0 contract (and its component schemas) now pins `dialect: openapi-3.0`
+  (`swagger-2.0`), so the first `inv lock` after upgrading re-pins such contracts (a change, not a
+  weakening); OpenAPI 3.1 pins are unchanged.
+- `$ref`s are resolved through `$id`, `$anchor` and `$dynamicAnchor`: an edit of one that makes an
+  unchanged `$ref` name a schema with another body is WEAKENED, as is a changed `$schema` and, in
+  Draft 7 and earlier, a `$ref` added beside other keywords (which it then hides).
 
 - `inv lock` writes `invariants.lock` (lock version 3), which pins what each rule's meaning depends
   on: the rule's semantics, its targets' signatures and resolved types (through aliases and into
