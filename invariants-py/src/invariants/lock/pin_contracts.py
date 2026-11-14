@@ -10,8 +10,9 @@ import json
 import pathlib
 from typing import Any
 
-from ..confinement import confined, import_module
+from ..confinement import confined
 from ..errors import LoadError
+from ..resolve import resolve_ref
 from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha
 from .pin_jsonschema import json_schema
 from .pin_signatures import _signature_pin
@@ -20,17 +21,7 @@ from .pin_types import (_DATA_KEYS, SCHEMA_PROSE, Schemas, _class_ref, _is_schem
 
 
 def _python_ref(name: str, ref: str) -> Any:
-    mod_name, _, attr = ref.partition(":")
-    try:
-        mod = import_module(mod_name, f"contract {name}")
-    except ImportError as e:
-        raise LoadError(f"contract {name}: cannot import {mod_name}: {e}") from e
-    obj: Any = mod
-    for part in [p for p in attr.split(".") if p]:
-        if not hasattr(obj, part):
-            raise LoadError(f"contract {name}: {mod_name} has no {attr}")
-        obj = getattr(obj, part)
-    return obj
+    return resolve_ref(ref, f"contract {name}")              # confined under inv mcp
 
 
 _SHARED_SCHEMAS = "#/components/schemas/"

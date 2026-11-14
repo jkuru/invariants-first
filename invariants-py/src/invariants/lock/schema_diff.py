@@ -272,6 +272,9 @@ def _required_weakening(suffix: str, old: Any, new: Any) -> str | None:
         return "no longer required" if old is True and new is not True else None
     if suffix == "removed" or (suffix == "" and old is not None and new is None):
         return "a field is no longer required"
+    if suffix == "" and isinstance(old, list) and isinstance(new, list):
+        gone = sorted({str(x) for x in old} - {str(x) for x in new})
+        return f"{', '.join(gone)} no longer required" if gone else None   # reordered, deduplicated or added
     if suffix == "" and old is not None and new is not None:
         return "the required fields changed"
     return None

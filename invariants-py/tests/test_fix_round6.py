@@ -472,12 +472,24 @@ def test_cel_expr_iteration_budget_is_a_cost_limit_rule_error():
 
 
 # --- 7e/f. packaging and app hygiene ---------------------------------------------------------------
-def test_publishing_checklist_names_project_urls_and_no_url_is_invented():
-    """Round 7: the CHANGELOG TODO became the "Before publishing" checklist in RELEASING.md."""
+def test_publishing_checklist_and_placeholders_go_together():
+    """Round 7: the CHANGELOG TODO became the "Before publishing" checklist in RELEASING.md. Round 27:
+    the checklist and the placeholders it lists are open or settled together. While the section is
+    there, no URL is invented ([project.urls] absent, the SARIF informationUri the placeholder); once
+    the owner settles the blockers and deletes the section (which the release workflow requires),
+    [project.urls] exists and the SARIF URL is no longer the placeholder, and this test still passes."""
     releasing = (ROOT / "RELEASING.md").read_text()
-    assert "## Before publishing" in releasing and "project.urls" in releasing
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    sarif = (ROOT / "src" / "invariants" / "scan" / "sarif.py").read_text()
+    placeholder_uri = "https://example.invalid/invariants"
     assert "RELEASING.md" in (ROOT / "CHANGELOG.md").read_text()
-    assert "[project.urls]" not in (ROOT / "pyproject.toml").read_text()
+    if "\n## Before publishing\n" in releasing:
+        assert "project.urls" in releasing and placeholder_uri in releasing
+        assert "[project.urls]" not in pyproject, "a URL in pyproject.toml: settle the Before-publishing list"
+        assert placeholder_uri in sarif, "the SARIF URL is set: settle the Before-publishing list"
+    else:
+        assert "[project.urls]" in pyproject, "the Before-publishing section is gone but [project.urls] is not set"
+        assert "example.invalid" not in sarif, "the Before-publishing section is gone but the SARIF URL is a placeholder"
 
 
 def test_report_rules_file_is_relative_to_the_rootdir() -> None:

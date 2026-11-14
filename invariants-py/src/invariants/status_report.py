@@ -163,7 +163,8 @@ def rule_status(reg: Registry, report: Report, rule_id: str,
     no falsifier caught is not held. Without it a held row is labelled unproven (ablation_proven
     false, a reason saying so); ablation_proven is true only for a held row backed by ablation."""
     rule = reg.rules[rule_id]
-    standing, reasons = reg.standing(rule_id, scan=True, ablation=ablation)
+    door_only = _door_only(rule)          # the scan is its whole check: ablation has nothing to switch off
+    standing, reasons = reg.standing(rule_id, scan=True, ablation=None if door_only else ablation)
     reasons = list(reasons)
     if standing in ("held", "enforce(known-callers)"):
         pure = (rule.effects == "none" and rule.target is not None
@@ -172,7 +173,7 @@ def rule_status(reg: Registry, report: Report, rule_id: str,
         if why:
             reasons.append(why)
             standing = DOWNGRADE.get(standing, standing)
-    if standing == "held" and ablation is None:
+    if standing == "held" and ablation is None and not door_only:
         reasons.append(NO_ABLATION)          # labelled, never reported as ablation-proven
     row = {"id": rule_id, "status": rule.status, "standing": standing, "reasons": reasons,
            "ablation_proven": standing == "held" and ablation is not None,
@@ -211,7 +212,8 @@ def _guard_line(r: dict[str, Any]) -> str:
 def to_text(data: dict[str, Any]) -> str:
     lines = []
     for r in data["rules"]:
-        held = (f"; {UNPROVEN}" if not r.get("ablation_proven") else "; held") if r["standing"] == "held" else ""
+        proven = r.get("ablation_proven") or r.get("ablation") == "not needed"
+        held = (f"; {UNPROVEN}" if not proven else "; held") if r["standing"] == "held" else ""
         words = r.get("status_text") or STATUS_WORDS.get(r["status"], r["status"])
         lines.append(f"{r['id']} ({r['status']}: {words}{held})")
         if "checks" in r:

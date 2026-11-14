@@ -137,7 +137,9 @@ while no falsifier of the rule was caught. A scan that passes only because a per
 unresolved site in `mediation.allow_unresolved` is a reason too: the site is a person's judgment, not
 the scan's proof, and `inv status` names how many sites were accepted. `inv status --ablation build/inv-report.json` checks that proof; without it a
 `held` rule is labelled unproven (`held (unproven: no --ablation)`, `"ablation_proven": false` in
-`--json`, and a reason saying so). `inv.standing()` without `ablation` does not check it. `inv verify` also checks that a `py:`-keyed guard wraps
+`--json`, and a reason saying so). A door-only rule (a `door:`/`sink:` rule with no `bad` evaluated
+at run time) is never labelled so and never judged by the report: the scan is its whole check, and
+ablation has nothing to switch off (`ablation: not needed`). `inv.standing()` without `ablation` does not check it. `inv verify` also checks that a `py:`-keyed guard wraps
 the function its key names, and runs the route check of every FastAPI app given to
 `integrations.fastapi.install`.
 

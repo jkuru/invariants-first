@@ -32,7 +32,6 @@ import dataclasses
 import datetime
 import enum
 import functools
-import importlib
 import json
 import math
 import os
@@ -50,6 +49,7 @@ from ..guard import model_call as _core_model_call
 from ..guard import parse as _core_parse
 from ..loader import read_document
 from ..registry import Registry, current
+from ..resolve import resolve_ref as _resolve_ref
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -368,15 +368,7 @@ def resolve_ref(ref: Any) -> Any:
     mod, sep, attr = str(ref).partition(":")
     if not isinstance(ref, str) or not sep or not mod or not attr:
         raise LoadError(f"contract ref {ref!r} must be 'module:Class'")
-    try:
-        obj = importlib.import_module(mod)
-    except ImportError as e:
-        raise LoadError(f"contract ref {ref}: cannot import {mod}: {e}") from e
-    for p in attr.split("."):
-        if p.startswith("_") or not hasattr(obj, p):
-            raise LoadError(f"contract ref {ref}: {p!r} does not exist")
-        obj = getattr(obj, p)
-    return obj
+    return _resolve_ref(ref, f"contract ref {ref}", public=True)    # confined under inv mcp
 
 
 def resolve_contract(spec: Any, name: str = "?") -> type[_pd.BaseModel]:

@@ -133,7 +133,10 @@ or reordered parameter, a new or changed default, a parameter made keyword-only,
 added, removed or renamed are stale. A renamed annotation counts even when the resolved type is the
 same, because an alias can stand for an `Annotated[...]` whose metadata (`Depends(get_admin)`, a
 validator) no pin carries: swapping `AdminUser` for `AnyUser` is stale. Signature text that does not parse as Python (a repr such as `<object ...>`) is compared as
-text. It lists each change as
+text. A resolved annotation that is an object of no recognised form (`x: SomeMarker()`) is pinned in
+`types` by its type only, `{"object": "module.SomeMarker"}`, never by its repr, which can carry a
+memory address (a different lock every run) or data the object holds; a typing special form
+(`typing.Never`) and a `Callable`'s parameter list of types pin as their names. It lists each change as
 `<where>: <what>: old -> new`, one line per changed key of a dict value, with values compared
 type-strictly (`1` and `true` differ). A schema change is reported once, as `schema <name>`, with
 the entries that use it.
@@ -195,7 +198,9 @@ input. That covers:
 - the matching minimums lowered or removed;
 - an `enum` value added, or the enum removed;
 - a field that is no longer `required` (or an OpenAPI parameter or request body no longer
-  `required: true`), or a property removed;
+  `required: true`), or a property removed; the `required` list is compared as a set, so a field
+  added to it is a tightening, and a reordered list (pydantic lists required fields in declaration
+  order, so a field moved in the class reorders it) or a duplicate dropped is no change of meaning;
 - `pattern`, `format`, `multipleOf`, `const` or `anyOf`/`oneOf` changed or removed, and a `type`
   widened or removed;
 - OpenAPI 3.0 `nullable` (or Swagger's `x-nullable`) turned on: `false` to `true`, or `true` added;
@@ -335,7 +340,9 @@ or a uint-typed field): `> 4 * size(x)` to `> 10 * size(x)` is weaker, while `> 
 This invariants reads and writes lock version 3 only. `inv lock` and `inv lock --check` refuse a
 lock of an older version (delete it and re-run `inv lock`) and of a newer one (upgrade invariants).
 A malformed lock is refused too: a `lock_version` that is not an integer (`true` included), or a
-section or entry of the wrong shape, is a `LockError` that names the file and the place.
+section or entry of the wrong shape, is a `LockError` that names the file and the place. Under
+`inv mcp` (`INV_CONFINE_ROOT` set), a lock file that resolves outside the server's `--root` (a
+symlinked `invariants.lock`) is a `LockError` too, raised before it is opened.
 
 ## Where the CLI imports from
 

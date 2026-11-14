@@ -17,6 +17,14 @@ they are:
 CI's `twine check --strict` passes with these placeholders (it checks that the metadata and README
 render, not that they are final), so a green build is not a sign that this list is done.
 
+This section and the placeholders go together, and `tests/test_fix_round6.py`
+(`test_publishing_checklist_and_placeholders_go_together`) flips with them: while this section
+exists it checks that no URL is invented (`[project.urls]` absent, the SARIF `informationUri` the
+placeholder); once it is deleted it checks that `[project.urls]` is set and the SARIF URL is no
+longer the placeholder. Settle `[project.urls]` and the SARIF URL and delete this section in the
+same change, and the suite stays green; do one without the other and it fails. The release
+workflow refuses to run while this section exists or the SARIF URL is the placeholder.
+
 - [ ] **Final package name.** `invariants-first` in `pyproject.toml` (`[project] name`) is a
       placeholder. Pick the distribution name, check that it is free on PyPI (and on TestPyPI), and
       update every place that names it (`git grep -n invariants-first` lists them):
@@ -30,8 +38,7 @@ render, not that they are final), so a green build is not a sign that this list 
       `tests/test_package.py` and `tests/test_integrations_anthropic.py`. The import name stays
       `invariants`.
 - [ ] **`[project.urls]`.** Add `Homepage`, `Source`, `Issues` and `Changelog` once the repository
-      has its public URL. `tests/test_fix_round6.py` checks that no URL is invented before then;
-      update that test in the same change.
+      has its public URL.
 - [ ] **README badges.** The badges are static shields that link to files in this repository; the
       CI badge says "GitHub Actions" whatever the last run did, so it must be swapped for a live one.
       Once the repository has its public URL, point the CI badge at the workflow's status badge

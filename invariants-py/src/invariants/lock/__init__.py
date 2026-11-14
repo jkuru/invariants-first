@@ -43,6 +43,7 @@ import json
 import pathlib
 from typing import Any
 
+from ..confinement import confined
 from ..errors import LoadError
 # the public names of the stages, re-exported (with the private ones this module composes)
 from .cel_canon import Typer, canon_tree, clause_types, make_typer
@@ -91,7 +92,13 @@ class LockVersionError(LockError):
 
 
 def read(path: pathlib.Path) -> dict[str, Any]:
-    """Read a lockfile; LockError when it is missing, not JSON, or not shaped like a lock."""
+    """Read a lockfile; LockError when it is missing, not JSON, or not shaped like a lock, or (under
+    `inv mcp`: INV_CONFINE_ROOT set) when it resolves outside the confined root, checked before it is
+    opened, so a symlinked invariants.lock reads nothing outside it."""
+    try:
+        confined(path, f"lockfile {path}")
+    except LoadError as e:
+        raise LockError(str(e)) from None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:

@@ -103,15 +103,21 @@ A filesystem root (`/`) is never a project root. The same holds for the director
 The files a rule file inside `--root` names are confined too: `check` and `status` run `inv` with
 `INV_CONFINE_ROOT` set to the server's `--root`, and a contract `ref` or an enforcer `artifact` that
 resolves outside it (`ref: ../outside_api.json`, or a symlink out) is refused before it is read, so
-its contents never reach a lock diff or an error in the tool's output. The modules it names are
-confined the same way: a target, contract or provider module whose file is not inside `--root` (the
+its contents never reach a lock diff or an error in the tool's output. The lock file is read the
+same way: an `invariants.lock` that is a symlink resolving outside `--root` is a stale lock naming
+only its path, and nothing behind it is read. The modules it names are
+confined the same way (a `py:` target, a provider's `from:`, and every `module:attr` contract ref,
+pydantic, dataclass, TypedDict or Python, all import through one function): a target, contract or provider module whose file is not inside `--root` (the
 standard library and installed packages included: `py:os.environ`, `py:this`) is refused before it
 is imported, so its import-time code never runs and none of its objects reach a pin or an error.
 That holds below the top-level package too: while `INV_CONFINE_ROOT` is set, a finder first on
 `sys.meta_path` checks every module the child imports before its code runs, and refuses one of the
 project's (reached through a directory inside `--root`, such as a symlink `app/leak ->
 ../../vault`, or a submodule of a package whose `__init__.py` is inside `--root`, whose `__path__`
-may have been extended) that resolves, symlinks followed, outside it. The standard library and
+may have been extended, or of a namespace package (PEP 420, no `__init__.py`) with a directory inside
+`--root`, whose portions follow `sys.path`) that resolves, symlinks followed, outside it. So a
+namespace package the project shares with an installed distribution cannot load that
+distribution's modules under `inv mcp`; run `inv check` yourself for such a project. The standard library and
 installed packages the project's code imports are reached from outside `--root` and load as before.
 The tools that scan in the server's own process (`scan`, `explain`, `propose_rules`) are confined
 the same way for a rule file inside `--root`: the walk of the source roots does not follow a

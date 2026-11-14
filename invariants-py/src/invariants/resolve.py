@@ -43,6 +43,25 @@ def resolve(target: str, what: str = "target") -> Any:
     return obj
 
 
+def resolve_ref(ref: str, what: str, public: bool = False) -> Any:
+    """'package.module:attr.path' -> the object (no eval), or LoadError naming `what` ("contract NAME").
+    The module is imported through confinement.import_module, as every module a rule file names is, so
+    under `inv mcp` a module outside --root is refused before its code runs. An empty attribute path is
+    the module itself. public: refuse an attribute that starts with "_"."""
+    mod_name, _, attr = ref.partition(":")
+    try:
+        obj = import_module(mod_name, what)
+    except ImportError as e:
+        raise LoadError(f"{what}: cannot import {mod_name}: {e}") from e
+    have = mod_name
+    for part in [p for p in attr.split(".") if p]:
+        if (public and part.startswith("_")) or not hasattr(obj, part):
+            raise LoadError(f"{what}: {have} has no {part!r}")
+        obj = getattr(obj, part)
+        have = f"{have}.{part}"
+    return obj
+
+
 def _is_this_module(e: ModuleNotFoundError, name: str) -> bool:
     """True when the module not found is `name` itself or a package on its path (the target names a
     module that does not exist); False when importing `name` failed on a module it imports."""

@@ -1,4 +1,4 @@
-"""Confining the files a rule file names (contract refs, enforcer artifacts), the modules it makes
+"""Confining the files a rule file names (contract refs, enforcer artifacts) and the lock, the modules it makes
 the tool import (targets, contracts, providers) and the files the scan reads to one directory.
 
 `inv mcp` runs `inv check` and `inv status` with INV_CONFINE_ROOT set to its --root: a rule file an
@@ -151,13 +151,19 @@ class ConfinedFinder(importlib.abc.MetaPathFinder):
 
 
 def _project_package(fullname: str, top: pathlib.Path) -> bool:
-    """fullname is a submodule of a top-level regular package whose __init__.py is inside top (its
-    __path__, which the package's code may extend, does not decide it)."""
+    """fullname is a submodule of a top-level package of the project: a regular package whose
+    __init__.py is inside top (its __path__, which the package's code may extend, does not decide it),
+    or a namespace package (PEP 420: no __init__.py, no origin) with a portion inside top. A portion
+    found later elsewhere on sys.path does not make a namespace package's submodules someone else's."""
     head, dot, _ = fullname.partition(".")
     if not dot:
         return False
     spec = getattr(sys.modules.get(head), "__spec__", None)
-    return spec is not None and spec.has_location and bool(spec.origin) and inside(spec.origin, top)
+    if spec is None:
+        return False
+    if spec.has_location and spec.origin:
+        return inside(spec.origin, top)
+    return any(inside(p, top) for p in list(spec.submodule_search_locations or []))
 
 
 def install() -> None:

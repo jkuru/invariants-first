@@ -70,7 +70,7 @@ def _type_schema(t: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | N
     schemas are expanded. With `pins`, a schema class is pinned as its own entry in the schema table
     ({"$ref": digest}); without, it goes into `defs` by name (one closure)."""
     if depth > MAX_DEPTH:
-        return {"truncated": repr(t)[:80]}
+        return {"truncated": _name(t)}
     d = depth + 1
     if t is type(None) or t is None:
         return "null"
@@ -98,7 +98,33 @@ def _type_schema(t: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | N
         return {"unresolved": t.__forward_arg__}
     if isinstance(t, str):
         return {"unresolved": t}
-    return repr(t)
+    return _opaque(t)
+
+
+_NAMED_REPR = ("typing", "typing_extensions", "types")     # a special form or alias: its repr is names
+
+
+def _name(t: Any) -> str:
+    """A type's (or a generic's origin's) qualified name, else its own type's: never a repr."""
+    o = typing.get_origin(t) or t
+    if isinstance(o, type):
+        return o.__qualname__
+    return str(getattr(o, "_name", None) or getattr(o, "__name__", None) or f"a {type(o).__qualname__} object")
+
+
+def _opaque(t: Any) -> Any:
+    """An annotation object with no recognised form, pinned without its repr (which can carry a memory
+    address, so the lock changes every run, or data the object holds): as before for Ellipsis, a
+    typing special form (typing.Never: its repr is its name) and a Callable's parameter list of types;
+    any other object by its type only."""
+    if t is Ellipsis:
+        return "Ellipsis"
+    if type(t).__module__ in _NAMED_REPR:
+        return repr(t)
+    if isinstance(t, list):                                # Callable[[int, str], R]: the parameters
+        return "[" + ", ".join(x if isinstance(x, str) else json.dumps(x, sort_keys=True)
+                               for x in (repr(a) if isinstance(a, type) else _opaque(a) for a in t)) + "]"
+    return {"object": f"{type(t).__module__}.{type(t).__qualname__}"}
 
 
 def _generic_schema(t: Any, origin: Any, defs: dict[str, Any], seen: set[int], pins: Schemas | None,

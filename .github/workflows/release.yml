@@ -1,7 +1,8 @@
 # Release: build the sdist and wheel and upload them to PyPI with trusted publishing (OpenID
 # Connect; no API token is stored in the repository). A draft until the "Before publishing" list in
 # invariants-py/RELEASING.md is done: the first job refuses to go on while that section exists, so
-# this workflow cannot upload placeholder metadata. It runs only by hand (Actions > release > Run
+# this workflow cannot upload placeholder metadata (tests/test_fix_round6.py checks that the section and
+# the placeholders are open or settled together, so deleting the section with them keeps CI green). It runs only by hand (Actions > release > Run
 # workflow), never on a push or a tag.
 #
 # Before the first run, a maintainer:

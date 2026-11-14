@@ -111,6 +111,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 - `a && true` and `a || false` (for a bool `a`) are the same condition as `a`: no weakening, and the
   message no longer says "matches fewer cases".
+- A schema's `required` list is compared as a set: a reordered list (a pydantic field moved in its
+  class) or a dropped duplicate is no longer WEAKENED; a field added stays a tightening and one
+  removed a weakening.
+- A resolved annotation that is an object of no recognised form is pinned as `{"object":
+  "module.Type"}`, never its repr (a memory address made the lock differ every run, and a repr can
+  carry data); a type nested past the depth limit is pinned by its name.
 
 - `inv lock` writes `invariants.lock` (lock version 3), which pins what each rule's meaning depends
   on: the rule's semantics, its targets' signatures and resolved types (through aliases and into
@@ -259,6 +265,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv status` says per rule, in plain words, what it checks, whether a guard wraps it, the scan
   result, whether ablation proved it (`yes`, `no`, `not run`, `not needed`) and what to do next;
   `--json` keeps its fields and adds `status_text`, `checks`, `guarded`, `ablation` and `next`.
+  A door-only rule (`ablation: not needed`) is never labelled `held (unproven: no --ablation)`, and
+  `--ablation` no longer downgrades it for having no falsifier.
 - `inv scan` with no rule naming a sink says `no door rules to check (N file(s) scanned)`.
 - `[tool.invariants.scan]` takes `extend_exclude` (added to the default excludes) beside `exclude`
   (which replaces them); the lock pins the effective list.
@@ -275,7 +283,10 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   imports a module (the standard library and installed packages included) outside its `--root`
   for a rule file inside it. That holds through symlinks: under `INV_CONFINE_ROOT` a finder first
   on `sys.meta_path` refuses, before its code runs, any module of the project (a submodule, one a
-  package's `__path__` leads to, one the project's code imports) that resolves outside the root;
+  package's `__path__` leads to, a submodule of a namespace package with a directory inside the
+  root, one the project's code imports) that resolves outside the root; every `module:attr`
+  contract ref (pydantic included) imports through the same check; a symlinked `invariants.lock`
+  that resolves outside the root is refused before it is read;
   and the scan the server runs does not follow a symlink under the source roots that resolves
   outside it, reporting it as `unresolved/outside-root` with the link's path only.
 - `inv --version` (`-V`) prints `inv (invariants) 0.1.0`; a bare `inv` lists the commands (`validate`,
