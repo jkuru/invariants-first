@@ -49,6 +49,17 @@ class _Index:
         self._methods: dict[tuple[str, str], str | None] = {}   # (class, name) -> method()
         self._mros: dict[tuple[str, bool], list[str] | None] = {}  # (class, strict) -> its C3 order
         self._fans: dict[str, tuple[str, ...]] = {}         # name -> every scanned method of that name, sorted
+        # fix round 26: module-level functions by name (a call on an unknown receiver may be a module's
+        # function), the classes that bind a method name (a def or a class-body alias), and each class body's
+        # bindings in order (def, alias, other), linked into the methods once every module is read
+        self.module_funcs_by_name: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+        self.owners_by_name: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+        self._class_events: dict[str, list[tuple[str, str, str]]] = {}   # class -> (kind, name, fid | dotted)
+        self._linked = True
+        self._ctors: dict[str, tuple[str, ...]] = {}
+        self._members: dict[str, tuple[str, ...]] = {}
+        self.getters: dict[str, tuple[str, ...]] = {}       # name -> the scanned property getters of that name
+        self._class_names: collections.defaultdict[str, list[str]] | None = None   # last name -> classes
         self._tails: set[str] | None = None                # every dotted tail of a module name under the roots
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
         self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
@@ -84,13 +95,23 @@ class _Index:
         tuple per name, shared by every such call)."""
         got = self._fans.get(name)
         if got is None:
-            got = self._fans[name] = tuple(sorted(self.methods_by_name.get(name, ())))
+            self.link()
+            # a module's function too (`m._send()` where m is a module value the scan cannot type), and the
+            # constructors of a class of that name (`m.Sender(...)`)
+            if self._class_names is None:
+                self._class_names = collections.defaultdict(list)
+                for k in self.classes:
+                    self._class_names[k.rpartition(".")[2]].append(k)
+            ctors = {c for k in self._class_names.get(name, ()) for c in self.constructors(k)}
+            got = self._fans[name] = tuple(sorted({*self.methods_by_name.get(name, ()),
+                                                   *self.module_funcs_by_name.get(name, ()), *ctors}))
         return got
 
     def short_names(self) -> set[str]:
         """The last name of every scanned function (`save` for app.repo.Repo.save): what a sink may be named."""
         if self._short is None:
-            self._short = {f.rpartition(".")[2] for f in self.funcs}
+            self.link()
+            self._short = {f.rpartition(".")[2] for f in self.funcs} | set(self.methods_by_name)
         return self._short
 
     def class_param(self, me: tuple[str, str] | None) -> bool:
@@ -154,6 +175,8 @@ class _Index:
         self._bases.clear()                            # a new module may change what a base name names
         self._methods.clear()
         self._mros.clear()
+        self._linked = False
+        self._class_names = None
         self.funcs[f"{name}.<module>"] = _Func(f"{name}.<module>", name, file, root, 1, 0, None)
         for node in _walk_of(tree, *IMPORTS):
             if isinstance(node, ast.Import):
@@ -365,9 +388,12 @@ class _Index:
                 self.funcs[fid] = _Func(fid, mod.name, mod.file, mod.root, node.lineno, node.col_offset, node, cls)
                 if cls is None:
                     mod.aliases.setdefault(node.name, fid)
+                    self.module_funcs_by_name[node.name].add(fid)
                 else:
                     self.classes[cls]["methods"][node.name] = fid
                     self.methods_by_name[node.name].add(fid)
+                    self.owners_by_name[node.name].add(cls)
+                    self._class_events[cls].append(("def", node.name, fid))
                     if node.args.args:                 # how the first parameter is used: cls or self
                         decos = {_dotted(d) for d in node.decorator_list}
                         kind = "cm" if decos & {"classmethod", "builtins.classmethod"} else \
@@ -376,9 +402,126 @@ class _Index:
             elif isinstance(node, ast.ClassDef):
                 cid = f"{prefix}.{node.name}"
                 self.classes[cid] = {"methods": {}, "bases": node.bases, "module": mod.name, "node": node}
+                self._class_events[cid] = []
                 if cls is None:
                     mod.aliases.setdefault(node.name, cid)
+                else:
+                    self._class_events[cls].append(("other", node.name, ""))
                 self._defs(mod, node.body, prefix=cid, cls=cid)
+            elif cls is not None:
+                self._class_binding(cls, node)
+
+    def _class_binding(self, cls: str, node: ast.stmt) -> None:
+        """A class-body statement other than a def or class: `name = <a function>` (a name or a dotted name)
+        is a method alias, linked once every module is read; any other binding of a name is a class-level
+        value."""
+        events = self._class_events[cls]
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            return                                     # `x: int` declares, binds nothing
+        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        d = _dotted(value) if value is not None else None
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        named = {t.id for t in targets if isinstance(t, ast.Name)} if d else set()
+        for n in _class_scope_nodes(node):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)) and n.id not in named:
+                events.append(("other", n.id, ""))
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                events.extend(("other", (a.asname or a.name).split(".")[0], "") for a in n.names)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not node:
+                events.append(("other", n.name, ""))
+        if d:
+            events.extend(("alias", name, d) for name in sorted(named))
+
+    def link(self) -> None:
+        """Make each class-body alias of a function (`post = record`, `__iadd__ = record`, `run = helper`) a
+        method of its class under the alias, once every module is read: `Ledger().post(x)` calls record. A
+        name is looked up in the class body first (the names bound above it), then in the module."""
+        if self._linked:
+            return
+        self._linked = True
+        for cls, events in self._class_events.items():
+            info = self.classes.get(cls)
+            if info is None:
+                continue
+            local: dict[str, str | None] = {}
+            for kind, name, what in events:
+                if kind != "alias":
+                    local[name] = what or None
+                    continue
+                target = self.alias_target(info["module"], what, local)
+                local[name] = target
+                if target is not None:
+                    info["methods"][name] = target
+                    self.methods_by_name[name].add(target)
+                    self.owners_by_name[name].add(cls)
+        self._methods.clear()
+        self._fans.clear()
+        self._short = None
+        self._ctors.clear()
+        self._members.clear()
+
+    def alias_target(self, module: str, dotted: str, local: dict[str, str | None]) -> str | None:
+        """The scanned function a dotted name in a class body names: through the names bound above it in the
+        body (local), else through the module; None for anything else."""
+        head = dotted.partition(".")[0]
+        if head in local:
+            return local[head] if head == dotted else None
+        target = self._name_in(module, dotted)
+        return target if target in self.funcs and self.funcs[target].node is not None else None
+
+    def constructors(self, cls: str) -> tuple[str, ...]:
+        """The scanned functions that run when cls is called: its `__init__`, `__new__` and `__post_init__`
+        (inherited ones too), and its metaclass's `__call__`."""
+        got = self._ctors.get(cls)
+        if got is None:
+            self.link()
+            out = [m for m in (self.method(cls, n) for n in ("__init__", "__new__", "__post_init__")) if m]
+            for c in self.mro(cls) or [cls]:
+                node = self.classes[c].get("node") if c in self.classes else None
+                for kw in getattr(node, "keywords", []):
+                    d = _dotted(kw.value) if kw.arg == "metaclass" else None
+                    meta = self._follow(self._name_in(self.classes[c]["module"], d)) if d else None
+                    if meta in self.classes and (call := self.method(meta, "__call__")):
+                        out.append(call)
+            got = self._ctors[cls] = tuple(sorted(set(out)))
+        return got
+
+    def all_constructors(self) -> tuple[str, ...]:
+        """The constructors of every scanned class: what building an object of a class the scan cannot type
+        (`type(x)(...)`) may run."""
+        got = self._members.get("<every class>")
+        if got is None:
+            got = self._members["<every class>"] = tuple(sorted({c for k in self.classes for c in self.constructors(k)}))
+        return got
+
+    def module_members(self, module: str) -> tuple[str, ...]:
+        """What a scanned module used as a value can call: its functions (and its submodules'), the
+        constructors of its classes, and what it re-exports (`from app.gateway import send_to_gateway`)."""
+        got = self._members.get(module)
+        if got is None:
+            self.link()
+            out: set[str] = set()
+            seen: set[str] = set()
+            todo = [module]
+            while todo:
+                m = todo.pop()
+                if m in seen or m not in self.modules:
+                    continue
+                seen.add(m)
+                todo += [k for k in self.modules if k.startswith(m + ".")]
+                out.update(fid for fid, f in self.funcs.items()
+                           if f.module == m and f.cls is None and f.node is not None)
+                for cid, info in self.classes.items():
+                    if info["module"] == m:
+                        out.update(self.constructors(cid))
+                for target in self.modules[m].aliases.values():
+                    hit = self.canon(target)
+                    if hit in self.funcs and self.funcs[hit].node is not None:
+                        out.add(hit)
+                    elif hit in self.classes:
+                        out.update(self.constructors(hit))
+            got = self._members[module] = tuple(sorted(out))
+        return got
 
     # canonical names ---------------------------------------------------------------------------
     def canon(self, fq: str, depth: int = 0) -> str:
@@ -415,6 +558,7 @@ class _Index:
     def method(self, cls: str, name: str, seen: set[str] | None = None) -> str | None:
         """A method by name on cls or its project-local bases."""
         if seen is None:
+            self.link()
             key = (cls, name)
             if key not in self._methods:
                 self._methods[key] = self.method(cls, name, set())
@@ -618,6 +762,23 @@ class _Index:
                 binds.update((a.asname or a.name).split(".")[0] for a in n.names)
         self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
         return out
+
+
+_NESTED_SCOPES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.FunctionDef,
+                  ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _class_scope_nodes(node: ast.AST) -> list[ast.AST]:
+    """node and the nodes under it that run in the class body's own scope: not inside a lambda, a
+    comprehension or a nested def or class (whose names are not the class's)."""
+    out: list[ast.AST] = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        out.append(n)
+        if n is node or not isinstance(n, _NESTED_SCOPES):
+            stack.extend(ast.iter_child_nodes(n))
+    return out
 
 
 def _package_path(f: str) -> bool:

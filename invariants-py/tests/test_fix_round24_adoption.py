@@ -249,8 +249,13 @@ def test_a_base_the_scan_cannot_place_keeps_the_dispatch_unresolved(tmp_path, ba
 
 
 def test_a_third_party_base_is_foreign_code(tmp_path):
+    # fix round 26: a base outside the scan may forward __getattr__ (tempfile's wrapper does), so only the plain
+    # bases (builtins, exceptions, ABC, the Enum family, NamedTuple, Generic, pydantic's BaseModel) are narrowed
     rep = scan.scan(DOC, [_project(tmp_path, {"web.py": "import tornado.web\n" + textwrap.dedent(DISPATCH).replace(
         "class Handler:", "class Handler(tornado.web.RequestHandler):")})])
+    assert len(_computed(rep)) == 1, rep.findings
+    rep = scan.scan(DOC, [_project(tmp_path / "b", {"web.py": "import enum\n" + textwrap.dedent(DISPATCH).replace(
+        "class Handler:", "class Handler(enum.Enum):")})])
     assert _computed(rep) == [], rep.findings
 
 
@@ -263,8 +268,9 @@ def test_a_value_taken_inside_the_door_keeps_every_dispatch_unresolved(tmp_path)
 
 
 @pytest.mark.parametrize("src, reported", [
-    ("import logging\ndef level(name):\n    return getattr(logging, name)\n", False),      # the standard library
-    ("import requests\ndef f(name):\n    return getattr(requests, name)\n", False),     # a third-party package
+    # fix round 26: never narrowed outside the scan (a module holds what it imports: logging.sys, logging.os)
+    ("import logging\ndef level(name):\n    return getattr(logging, name)\n", True),       # the standard library
+    ("import requests\ndef f(name):\n    return getattr(requests, name)\n", True),      # a third-party package
     ("import payments\ndef f(name):\n    return getattr(payments, name)(1, 2)\n", True),  # a scanned module
     ("def f(obj, name):\n    return getattr(obj, name)()\n", True),                     # an unknown receiver
 ])
