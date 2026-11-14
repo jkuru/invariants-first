@@ -171,6 +171,16 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - An even run of `!` or unary `-` (`!!args.s == "x"`, `--args.i`) checks its operand on cel-expr:
   cel-cpp's parser drops such a run unchecked, so the front end sends that clause re-printed
   (`!(!(args.s))`); it was `true` on cel-expr and a `rule_error` on the subset.
+- A clause nested more than 64 levels deep (parentheses, brackets, calls, `?:`, unary operators) or
+  whose tree is more than 256 levels deep (a 3,000-term `&&` chain) is a `LoadError` naming the
+  rule, on both backends; it was a bare `RecursionError` (`inv validate` printed it). The middle
+  of a `?:` is no longer another unparenthesized `?:` on the subset (`a ? b ? c : d : e`), which
+  cel-expr already refused.
+- An octal escape in a `matches()` pattern reads as RE2 reads it: `\101` is `A`, `\12` a newline,
+  `\1234` is `S` then `4`; the subset refused every one but `\0..` as a backreference. A lone `\1`
+  to `\7` is still refused, as in RE2.
+- cel-expr's cost message names the backend once: `cost limit exceeded (cel-expr: at most 9,999
+  ...)`, not `cel-expr: cost limit exceeded (cel-expr: ...)`.
 
 ### The lock
 
@@ -250,6 +260,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   every parameter but `in: body`) were not pinned, so loosening one was no change at all. They are
   pinned as the parameter's `schema` (with `collectionFormat`) and judged as Draft 4. A lock of a
   Swagger 2.0 contract that names such a parameter is stale once: re-pin it with `inv lock`.
+- A Swagger 2.0 response's `schema` (beside its `description`, not under `content`) was pinned as an
+  empty response, so loosening it was no change. It is pinned under each media type the operation
+  (or the document) `produces`, `application/json` by default, and judged like an OpenAPI 3
+  response. A lock of such a contract is stale once: re-pin it with `inv lock`.
+- A plain `inv lock` over a stored lock whose schemas table has a hand-edited entry wrote a changed
+  schema with "the change cannot be shown" and exit 0, though the change could loosen it. A changed
+  schema whose old entry the stored lock does not hold is WEAKENED: `--accept-weakening` writes it.
 
 ### Static checks
 
@@ -426,6 +443,11 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   installed and that several modules below a root may be says to run the scan where the dependency
   is installed. The text report shows each finding's code, and a rule with unresolved findings and no
   `allow_unresolved` is told that `allow_unresolved: []` shows their shas.
+- `inv init` froze in `allow` every function on any door-free path, a name-matched one too, so an
+  `unresolved/inferred-path` site (`r.save(x)` on a receiver the scan cannot type) was silently
+  excused and the drafted rule passed. It freezes only the functions on a door-free path of
+  extracted calls; an inferred-path site stays an unresolved finding, listed and drafted in
+  `allow_unresolved` for review (the rule is written commented out until each says why).
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.
@@ -541,6 +563,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv status --ablation` says `stale (re-run)` for a report from another version of the rule (it
   said `no`), and for a door-only rule whose tests the report ran, what it says of them
   (`not needed (the report shows it load-bearing)`; JSON `ablation_report`).
+- `inv check` (and `inv lock --check`) on a lock stale only because reviewed `allow_unresolved` sites
+  moved, which weakens nothing, says to re-pin with `inv check --relock` instead of `review the
+  changes, then run inv lock`.
 
 ### pytest plugin
 

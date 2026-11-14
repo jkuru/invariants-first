@@ -365,6 +365,9 @@ def _against_stored(stored: dict[str, Any], damaged: list[str], fresh: dict[str,
     return changes, f"{lock_path}: {len(changes)} change(s) against the stored lock"
 
 
+_MOVED_SITE = "mediation.allow_unresolved: moved "      # lock.rule_diff's change for a site that moved
+
+
 def _check_result(changes: list[lock.Change], path: pathlib.Path, lock_path: pathlib.Path) -> int:
     """`inv lock --check`: fresh (informational changes listed), or stale with the changes listed."""
     weak = [c for c in changes if c.weakened]
@@ -374,7 +377,12 @@ def _check_result(changes: list[lock.Change], path: pathlib.Path, lock_path: pat
         _err(f"stale: {lock_path} does not match {path}: {len(changes)} change(s)"
              + (f", {len(weak)} WEAKENED" if weak else ""))
         _print_changes(changes, err=True)
-        _err("review the changes, then run `inv lock" + (" --accept-weakening`" if weak else "`"))
+        if all(c.info or (c.what.startswith(_MOVED_SITE) and not c.weakened) for c in changes):
+            # fix round 30: a moved site weakens nothing, and --relock re-pins exactly such a change
+            _err("only reviewed sites moved (the code above them changed), which weakens nothing: run "
+                 "`inv check --relock` to re-pin them")
+        else:
+            _err("review the changes, then run `inv lock" + (" --accept-weakening`" if weak else "`"))
         return FAILED
     if changes:
         _out(f"fresh: {lock_path} ({len(changes)} informational change(s), not stale; `inv lock` "

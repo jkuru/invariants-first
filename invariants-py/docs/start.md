@@ -457,8 +457,9 @@ echo $?     # 2: blocked, with the reason on stderr; 0: allowed
 The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
 command can always be talked past (a name read from a file, an import the hook cannot follow: test
 modules and computed imports are not read), and an agent may run without hooks. Some commands that
-overwrite many files without naming one are not caught: `tar x` of an archive and `cp -r dir/. .`
-can each put back an old `invariants.lock` or `pyproject.toml`. The gate is `inv check --base` in
+overwrite many files without naming one are not caught: `tar x` or `unzip` of an archive can put
+back an old `invariants.lock` or `pyproject.toml`. (A recursive copy, `cp -r dir/. .`, `rsync -a` or
+`ditto`, from a directory that holds one is blocked.) The gate is `inv check --base` in
 CI, with the rule files owned by a person: it compares with the lock on the base branch, whatever
 happened on the way.
 

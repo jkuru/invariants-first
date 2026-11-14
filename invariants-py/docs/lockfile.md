@@ -83,7 +83,10 @@ what each rule's meaning depends on, entry by entry:
     component schemas, so its schemas are judged with Draft 4's `exclusiveMaximum`. A Swagger
     2.0 parameter other than `in: body` carries its schema fields on itself (`type`, `format`,
     `maximum`, `enum`, `items`, ...): they are pinned as the `schema` they make (its
-    `collectionFormat` beside them), and judged like any other;
+    `collectionFormat` beside them), and judged like any other. A Swagger 2.0 response carries
+    its `schema` itself (not under `content`): it is pinned in the shape of an OpenAPI 3 response,
+    under each media type the operation (or the document) `produces`, `application/json` when
+    neither says, and judged like one;
   - `operations` for an `openapi` contract read from a live app, `{type: openapi, app:
     "myapi.main:app"}`: `inv lock` imports the app and calls `app.openapi()` (a FastAPI app has
     it). The operations rules (or the contract's `operation`) name are pinned, or every operation
@@ -160,7 +163,9 @@ changed key, and a list whose members were replaced shows the removed and added 
 `old -> new` line. Values compare type-strictly, so `1` to `true` is a change. `--check` also checks
 the schemas table: each key must be the sha256 of its body, every `$ref` must name an entry, and no
 entry may be unreferenced. A damaged table is reported as stale; a plain `inv lock` says so and
-rewrites it.
+rewrites it. A damaged entry is left out of the old side, so when the schema it held has changed
+too, the change cannot be shown or judged: it is WEAKENED, and `inv lock` writes it only with
+`--accept-weakening`.
 
 ## Weakening
 
@@ -184,7 +189,9 @@ These changes are marked **WEAKENED**:
 - a pinned schema (pydantic, dataclass, TypedDict or OpenAPI) that now accepts more input (see
   below); also a `{field: type}` contract, an Enum contract, and a dataclass or TypedDict a
   signature names, judged as the JSON Schema the pin describes (a field type widened, `int` to
-  `Any` or to `int | None`, a field removed, a `Literal` or Enum member added);
+  `Any` or to `int | None`, a field removed, a `Literal` or Enum member added); and a changed
+  pinned schema whose old entry the stored lock does not hold (a hand-edited table entry), since
+  the change cannot be judged;
 - a parameter constraint (`param_schemas`) removed or loosened: `Annotated[int, Field(gt=0)]` to
   `int`, `lt=10` to `lt=100`, `MaxLen(3)` to `MaxLen(9)` (adding or tightening one is not);
 - a new or edited `mediation.chokepoint` (it can let the rule be `held`; removing it is a change

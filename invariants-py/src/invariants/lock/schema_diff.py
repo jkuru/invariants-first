@@ -1239,8 +1239,11 @@ def _schema_changes(refs: typing.Sequence[tuple[Any, ...]], old_tab: dict[str, A
         where = _schema_where(sa, sb, db)
         used = "used by " + ", ".join(who)
         if not isinstance(sa, dict) or not isinstance(sb, dict):
-            out.append(Change(where, "schema", da, db, note=f"{used}; the stored lock does not hold the old "
-                                                            f"schema, so the change cannot be shown"))
+            # fix round 30: a change that cannot be judged may loosen the schema, so it is a weakening
+            # (a hand-edited entry is dropped from the old side: `inv lock` wrote a loosened schema)
+            out.append(Change(where, "schema", da, db, weakened=True,
+                              note=f"{used}; the stored lock does not hold the old schema, so the change "
+                                   f"cannot be shown or judged"))
             continue
         nested: list[tuple[str, str, str]] = []
         diffs = _json_paths(sa, sb, "", nested)

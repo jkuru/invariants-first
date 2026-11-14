@@ -30,6 +30,7 @@ import re
 from typing import Any, Iterable
 
 from . import scan as scanner
+from .scan.contracts import extracted_on_paths
 
 # Names that suggest an invariant someone cares about: money, quotas, approvals, inventory.
 IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit", "debit", "charge", "transfer",
@@ -420,8 +421,10 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
         if progress is not None:
             progress(f"freezing the back doors of drafted rule {d.rid}, round", r + 1, MAX_FREEZE_ROUNDS)
         # (an unresolved site is reviewed, not frozen: fix round 28)
+        # fix round 30: only the functions on an extracted door-free path; one on a name-matched path alone
+        # holds an inferred-path site, which stays an unresolved finding (drafted in allow_unresolved)
         more = ({n for f in found if f.kind != "unresolved" for n in [f.owner, *f.path] if n}
-                | report.on_paths.get(d.rid, set())) - keep - frozen
+                | extracted_on_paths(report.on_paths, d.rid)) - keep - frozen
         if r and not more:
             break                        # the same allow scans the same (fix round 29: unresolved sites
             # left kept a rule from passing, so every round re-ran the same scan)

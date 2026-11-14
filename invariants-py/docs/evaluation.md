@@ -33,6 +33,11 @@ for tests: the business-logic defects no rule states were caught by ordinary tes
 
 ## Current results (after the lock redesign)
 
+These results were measured with `mediation.tables` (raw SQL around a door), which a later
+release removed with everything else below the API: see
+[Addendum 2](#addendum-2-2026-11-12-nothing-below-the-api-and-a-tool-calling-agent) for what
+changed since. The rule-file lines below that name `tables:` no longer load.
+
 ### What changed in the library
 
 The first run found three problems: the lock pinned whole modules, so almost every edit made it
@@ -46,9 +51,9 @@ The library changed as follows (the git history has the details):
   split clauses are not changes. Any edit that changes what `bad` reads (a `bind`, `view`,
   provider, `model_policy` or artifact edit) counts as a possible weakening. `inv lock` refuses to
   write a weakening without `--accept-weakening`.
-- **Raw SQL.** `mediation.tables` takes statement kinds. A rule that protects stored data without
-  `mediation.tables` gets a scan warning, and `inv status` does not report it held. The sink's own
-  SQL counts toward the held standing.
+- **Raw SQL (since removed).** `mediation.tables` took statement kinds. A rule that protected stored
+  data without `mediation.tables` got a scan warning, and `inv status` did not report it held. The
+  sink's own SQL counted toward the held standing. Addendum 2 removed it.
 
 The two apps changed only their rule files and locks:
 - **pool-service.** R-20 declares `tables: [{leases: [insert, update]}]`, R-21 and R-22 declare
@@ -142,8 +147,8 @@ and the fields of every model a signature names, but not function bodies.
 - **Some rules still cannot be made held.** K-15 still warns. Its effect (`UPDATE sources`) is also
   written by `add_source`, so no table spec fits without an app code change. It stays
   `enforce(known-callers)`.
-- **Existing users have one-time work.** Older locks must be migrated once, and other apps see new
-  scan warnings until they declare `mediation.tables`.
+- **Existing users have one-time work.** Older locks must be migrated once (and, while
+  `mediation.tables` existed, other apps saw new scan warnings until they declared it).
 
 ### Verdict
 
@@ -154,8 +159,8 @@ The main recurring human cost the original run measured is largely gone:
   flag, and the CI log says what is being weakened.
 
 The protective value did not change: 6 of 16 defects are caught by an invariants mechanism, and
-none of the 8 uncovered defects are. One residual gap is closed: raw SQL around a door, which the
-scan now sees once the rule declares its tables.
+none of the 8 uncovered defects are. One residual gap was closed: raw SQL around a door, which the
+scan saw once the rule declared its tables (removed since: see Addendum 2).
 
 So the ledger shifts toward "worth it" under the conditions the original verdict lists: a few
 high-stakes properties that new code might route around, new code paths that arrive without tests,

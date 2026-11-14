@@ -191,6 +191,7 @@ class _OnPaths:
     def __init__(self) -> None:
         self.known: set[str] = set()
         self._later: list[tuple[list[_Pass], list[str], set[str]]] = []
+        self._done: list[tuple[list[_Pass], list[str], set[str]]] = []     # what all() has worked out
 
     def update(self, names: Iterable[str]) -> None:
         self.known.update(names)
@@ -207,8 +208,25 @@ class _OnPaths:
         from .reachability import _every_path_node
         for later in self._later:
             self.known |= _every_path_node(*later)
+        self._done += self._later
         self._later = []
         return self.known
+
+    def extracted(self) -> set[str]:
+        """The functions on a door-free path made of extracted calls alone: what `inv init` freezes. A
+        function on a name-matched path only holds an unresolved/inferred-path site, which is reviewed
+        and accepted in allow_unresolved, never silently excused by freezing it (fix round 30)."""
+        from .reachability import _every_path_node
+        out: set[str] = set()
+        for passes, starts, allowed in self._later + self._done:
+            out |= _every_path_node(passes[:1], starts, allowed)
+        return out
+
+
+def extracted_on_paths(on_paths: dict[str, set[str]], rule: str) -> set[str]:
+    """Report.on_paths for one rule, through extracted calls alone (_OnPaths.extracted)."""
+    got = dict.get(on_paths, rule)
+    return got.extracted() if isinstance(got, _OnPaths) else set()
 
 
 class _LazyOnPaths(dict[str, Any]):

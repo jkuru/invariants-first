@@ -318,7 +318,7 @@ class ExprProgram:
             except CelError:
                 raise
             except Exception as e:
-                raise engine_error(_cost(str(e)), "cel-expr", self._front.names) from None
+                raise _raised(e, self._front.names) from None
         prev = (_EXACT.on, _EXACT.fired)
         _EXACT.on, _EXACT.fired = True, False
         try:
@@ -341,7 +341,7 @@ class ExprProgram:
         except CelError:
             raise
         except Exception as e:
-            raise engine_error(_cost(str(e)), "cel-expr", self._front.names) from None
+            raise _raised(e, self._front.names) from None
         return v
 
     def _exact(self, data: dict[str, Any]) -> Any:
@@ -467,6 +467,15 @@ def _cost(msg: str) -> str:
         return (f"cost limit exceeded (cel-expr: at most {ITERATION_LIMIT - 1:,} comprehension iterations per "
                 f"clause, nested comprehensions multiply)")
     return msg
+
+
+def _raised(e: Exception, names: frozenset[str]) -> CelError:
+    """The CelError for an exception the engine raised: 'cel-expr: <kind>'; the cost message names
+    cel-expr itself, so it is not prefixed again (fix round 30: 'cel-expr: cost limit exceeded
+    (cel-expr: ...)')."""
+    msg = str(e)
+    cost = _cost(msg)
+    return engine_error(cost, None if cost is not msg else "cel-expr", names)
 
 
 # ---- the string functions, under the string-size limit (values.sized) ---------------------------

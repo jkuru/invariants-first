@@ -515,7 +515,12 @@ change it: another name, number or string, `(x,)` for `(x)`, `a + (b - c)` for `
 is written out the same way on Python 3.11 to 3.14 (Python's own `ast.dump` differs between them), so
 the sha does too. (The sha hashed the statement's tokens before fix round 29, so a reformat by black
 or `ruff format` broke entries: every sha changed once then. An entry that still names its old sha is
-`missing/allow-unresolved-unused` with the new sha of the same site to write, then `inv lock`.) The shas
+`missing/allow-unresolved-unused` with the new sha of the same site to write, then `inv lock`. On a
+reformatted file such entries showed as two at a time going stale beside two "new" unresolved sites:
+the same statements, moved by the formatter, whose quotes changed their old sha.) A site is the
+statement the finding is reported at, found the same way on every run; an upgrade of inv can still
+change which sites are reported (one the scan now follows is no longer reported, so its entry is
+unused; one it newly sees is a new finding), and the release notes say when. The shas
 are worked out when they are shown: in `--format json` and SARIF always, and in the text output for
 a rule that declares `allow_unresolved`. An `unresolved/inferred-path` finding's sha also
 covers what reaches its site: the entrypoints from which its function is reached without a door, and
@@ -531,7 +536,9 @@ finding left with its sha. So:
 
 - an edit above the site that moves it keeps the entry: the finding is shown as accepted, with "moved
   from line N: update its at to F:L" (for an entry written with a column, "moved from N:C: update its
-  at to F:L:C", since an entry without its column matches more and is a weakening);
+  at to F:L:C", since an entry without its column matches more and is a weakening). Once the `at`
+  is updated the lock is stale with a "moved" change that weakens nothing, and when that is the
+  only kind of change `inv check` says to re-pin with `inv check --relock`;
 - an edit of any line of the statement (the second line of a call split over two, say), or a rename
   of its function, changes the sha: the finding fails again, and the entry is
   `missing/allow-unresolved-unused`, as is an entry whose finding is gone (delete it: a tightening);
@@ -603,9 +610,11 @@ receiver the scan cannot type, `unresolved/inferred-path`). `forbidden/unwrap`, 
 are still reported.
 
 `inv init` freezes the whole chain of each back door it finds (both `admin_goodwill` and the
-`goodwill_refund` it calls, say): every function on a door-free path from an entrypoint to the sink
-(not only the path a finding shows, nor only the shortest one from each entrypoint), re-scanning up
-to five rounds until nothing new is found. A long freeze prints a progress line now and then on
+`goodwill_refund` it calls, say): every function on a door-free path of extracted calls from an
+entrypoint to the sink (not only the path a finding shows, nor only the shortest one from each
+entrypoint), re-scanning up to five rounds until nothing new is found. A function that reaches the
+sink only through a name-matched call (`r.save(x)` on a receiver the scan cannot type) is not frozen:
+its site stays an `unresolved/inferred-path` finding, drafted in `allow_unresolved` for review. A long freeze prints a progress line now and then on
 stderr. It counts the back doors (bypass
 and forbidden findings) apart from the unresolved sites, which `allow` does not freeze: when only
 unresolved sites are left, the rule is written commented out with each one listed and drafted as an

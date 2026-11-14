@@ -449,11 +449,15 @@ class _Parser:
             except (ValueError, OverflowError):
                 raise RegexError("bad \\x escape") from None
             return self.lit(ch)
-        if c == "0":
+        if c in "01234567":
+            # RE2's octal escape: \0 and up to two more octal digits; \1 to \7 only with at least one
+            # more (\101 is A, \12 a newline); a lone \1 to \7 would be a backreference
+            if c != "0" and not (self.more() and self.peek() in "01234567"):
+                raise RegexError("backreferences are not RE2 syntax")
             j = self.i
             while j < len(self.s) and j < self.i + 2 and self.s[j] in "01234567":
                 j += 1
-            ch, self.i = chr(int("0" + self.s[self.i:j], 8)), j
+            ch, self.i = chr(int(c + self.s[self.i:j], 8)), j
             return self.lit(ch)
         if c.isdigit():
             raise RegexError("backreferences are not RE2 syntax")

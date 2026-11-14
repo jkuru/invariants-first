@@ -13,12 +13,20 @@ from .lexer import INT_MAX, INT_MIN, tokenize
 
 Node = tuple
 
+# How deep a clause may nest. Each nesting (a parenthesis, bracket, call argument, ?: branch or unary
+# operator) costs the parser about ten Python frames, and every node of the tree (a long && or +
+# chain is a deep tree too) costs each walker over it a few: past these the clause is refused with a
+# CelSyntaxError (a LoadError naming the rule), never a RecursionError. cel-expr's own limit is
+# lower (32 levels: expr_python.RECURSION_LIMIT).
+MAX_NESTING = 64
+MAX_TREE_DEPTH = 256
+
 
 class _Parser:
     _LEVELS = [("||",), ("&&",), ("==", "!=", "<", "<=", ">", ">=", "in"), ("+", "-"), ("*", "/", "%")]
 
     def __init__(self, src: str) -> None:
-        self.t, self.i = tokenize(src), 0
+        self.t, self.i, self.depth = tokenize(src), 0, 0
 
     def peek(self, v: str | None = None) -> Any:
         k, x = self.t[self.i]
@@ -33,15 +41,26 @@ class _Parser:
         e = self.expr()
         if self.t[self.i][0] != "end":
             raise CelSyntaxError(f"trailing input at {self.t[self.i][1]!r}")
+        if tree_depth(e) > MAX_TREE_DEPTH:
+            raise CelSyntaxError(f"the clause is more than {MAX_TREE_DEPTH} levels deep as a tree (a very long "
+                                 f"&&, ||, + or field chain, say); split it into several clauses")
         return e
 
+    def nest(self) -> None:
+        self.depth += 1
+        if self.depth > MAX_NESTING:
+            raise CelSyntaxError(f"the clause is nested more than {MAX_NESTING} levels deep (parentheses, "
+                                 f"brackets, calls, ?: or unary operators); split it into smaller expressions")
+
     def expr(self) -> Node:
+        self.nest()
         c = self.binary(0)
         if self.peek("?"):
             self.eat("?")
-            a = self.expr()
+            a = self.binary(0)              # CEL: cond ? conditionalOr : expr (a ?: in the middle needs ())
             self.eat(":")
-            return ("cond", c, a, self.expr())
+            c = ("cond", c, a, self.expr())
+        self.depth -= 1
         return c
 
     def binary(self, lvl: int) -> Node:
@@ -57,6 +76,14 @@ class _Parser:
             left = ("bin", op, left, self.binary(lvl + 1))
 
     def unary(self, run: bool = False) -> Node:
+        if self.peek("!") or self.peek("-"):
+            self.nest()
+            e = self._unary(run)
+            self.depth -= 1
+            return e
+        return self.member()
+
+    def _unary(self, run: bool) -> Node:
         if self.peek("!"):
             self.i += 1
             return ("un", "!", self.unary())
@@ -69,7 +96,7 @@ class _Parser:
                 self.i += 1
                 return self.member(("lit", INT_MIN))
             return ("un", "-", self.unary(run=True))
-        return self.member()
+        raise AssertionError("unreachable")
 
     def args(self, close: str) -> list[Node]:
         out = []
@@ -146,6 +173,30 @@ class _Parser:
             self.eat("}")
             return ("map", items)
         raise CelSyntaxError(f"unexpected {x!r}")
+
+
+def tree_depth(e: Node) -> int:
+    """How many levels deep the tree is, found without recursion."""
+    deepest, todo = 0, [(e, 1)]
+    while todo:
+        n, d = todo.pop()
+        deepest = max(deepest, d)
+        for kid in _kids(n):
+            todo.append((kid, d + 1))
+    return deepest
+
+
+def _kids(n: Node) -> list[Node]:
+    k = n[0]
+    if k in ("lit", "id"):
+        return []
+    if k == "call":
+        return ([n[2]] if n[2] is not None else []) + list(n[3])
+    if k == "list":
+        return list(n[1])
+    if k == "map":
+        return [x for kv in n[1] for x in kv]
+    return [x for x in n[1:] if isinstance(x, tuple)]
 
 
 def _check_inv(e: Node) -> None:

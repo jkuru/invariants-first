@@ -173,9 +173,22 @@ class _OpenAPIDoc:
             entry["requestBody"] = {"required": bool(rb.get("required", False)),
                                     "content": self.content(rb.get("content"))}
         if op.get("responses"):
-            entry["responses"] = {str(code): self.content((self.deref(r) or {}).get("content"))
+            entry["responses"] = {str(code): self.response(op, self.deref(r) or {})
                                   for code, r in sorted(op["responses"].items(), key=lambda kv: str(kv[0]))}
         return entry
+
+    def response(self, op: dict[str, Any], r: Any) -> dict[str, Any]:
+        """A response's schemas by media type. A Swagger 2.0 response carries its `schema` itself, for
+        each type the operation (or the document) `produces`, application/json when neither says: it
+        is pinned in the shape of an OpenAPI 3 response, and judged like one (fix round 30)."""
+        if not isinstance(r, dict):
+            return {}
+        if self.dialect == "swagger-2.0" and "content" not in r:
+            if "schema" not in r:
+                return {}
+            types = op.get("produces", self.spec.get("produces")) or ["application/json"]
+            return self.content({str(mt): {"schema": r["schema"]} for mt in types})
+        return self.content(r.get("content"))
 
 
 def _openapi_operations(name: str, label: str, spec: Any, ops: list[str], pins: Schemas) -> dict[str, Any]:
