@@ -12,7 +12,10 @@
 | datetime.datetime with a tzinfo      | timestamp (the same instant, in UTC)                       |
 | datetime.timedelta                   | duration                                                   |
 | list, tuple / dict, Mapping          | list / map                                                 |
+| pydantic RootModel                   | its .root, mapped by this table                            |
 | dataclass, pydantic model, object    | map of its public fields                                   |
+| other sequence or iterable           | refused: UserList, deque, range, generators, any class     |
+|                                      | with __iter__/__len__/__getitem__ (pass a list)            |
 | naive datetime.datetime              | refused: no timezone, and the library never assumes one    |
 | datetime.date, datetime.time         | refused: CEL has no date or time-of-day type               |
 | decimal.Decimal, Fraction, complex   | refused: CEL has no decimal, and a double loses precision  |
@@ -123,7 +126,88 @@ def sized(name: str, s: str) -> str:
     return s
 
 
+# ---- lists that are not list or tuple --------------------------------------------------------
+# A pydantic RootModel is the value it wraps (.root): RootModel[list[Line]] is the list the API
+# received. Any other sequence or iterable that is not a list or tuple (collections.UserList, a
+# deque, a range, a generator, a class with __iter__, __len__ or __getitem__) is refused on every
+# backend: never read as the map of its fields (size() would count its attributes), and never
+# iterated (a generator would be used up, a custom sequence could answer differently each time).
+
+LISTLIKE = ("a {0} is a sequence or iterable but not a list or tuple, and a rule reads only a list or "
+            "tuple as a list; pass list(...) (or a pydantic RootModel, which is read as its .root)")
+
+
+_ROOT_MODEL: dict[type, bool] = {}
+
+
+def is_root_model(v: Any) -> bool:
+    """True for a pydantic RootModel instance (read as its .root). Cached per class."""
+    t = type(v)
+    got = _ROOT_MODEL.get(t)
+    if got is None:
+        got = getattr(t, "__pydantic_root_model__", False) is True
+        if len(_ROOT_MODEL) < 4096:
+            _ROOT_MODEL[t] = got
+    return got
+
+
+def unroot(v: Any) -> Any:
+    """v, or the value a pydantic RootModel wraps (nested RootModels unwrapped too)."""
+    for _ in range(64):
+        if not is_root_model(v):
+            return v
+        v = v.root
+    raise CelError("value is cyclic or nested too deeply")
+
+
+_LISTLIKE: dict[type, bool] = {}
+
+
+def listlike(o: Any) -> bool:
+    """True for an object that is a sequence or iterable (its class has __iter__, __len__ or
+    __getitem__) but not a record (a dataclass or pydantic model instance: is_record); the caller has
+    ruled out lists, tuples, strings, bytes, Mappings and scalars. See LISTLIKE. Cached per class."""
+    t = type(o)
+    got = _LISTLIKE.get(t)
+    if got is None:
+        got = (hasattr(t, "__iter__") or hasattr(t, "__len__") or hasattr(t, "__getitem__")) and not is_record(o)
+        if len(_LISTLIKE) < 4096:
+            _LISTLIKE[t] = got
+    return got
+
+
+def listlike_error(o: Any) -> CelError:
+    return CelError(LISTLIKE.format(type(o).__name__))
+
+
+def is_record(o: Any) -> bool:
+    """A dataclass instance or a pydantic model instance: a record, read as the map of its fields
+    even if it is iterable (a pydantic model is)."""
+    return (hasattr(type(o), "__dataclass_fields__") and not isinstance(o, type)) \
+        or isinstance(getattr(type(o), "model_fields", None), dict)
+
+
 _API_NAMES: dict[type, frozenset[str]] = {}
+
+
+_RECORD_NAMES: dict[type, frozenset[str] | None] = {}
+
+
+def record_names(o: Any) -> frozenset[str]:
+    """api_names(type(o)) for an object read by field name, or CelError if it is list-like
+    (listlike: a sequence or iterable is never the map of its attributes). Cached per class."""
+    t = type(o)
+    if t not in _RECORD_NAMES:
+        got = None if listlike(o) else api_names(t)
+        if len(_RECORD_NAMES) >= 4096:
+            if got is None:
+                raise listlike_error(o)
+            return got
+        _RECORD_NAMES[t] = got
+    names = _RECORD_NAMES[t]
+    if names is None:
+        raise listlike_error(o)
+    return names
 
 
 def api_names(cls: type) -> frozenset[str]:
@@ -306,7 +390,10 @@ def getter(name: str, v: Any, tz: Any = None) -> int:
         raise CelError(f"no such overload: duration.{name}()")
     if not isinstance(v, datetime.datetime):
         raise CelError(f"no such overload: {name}() on a value that is not a timestamp or duration")
-    t = v.astimezone(UTC if tz is None else zone(tz))
+    try:                # a zone can move an instant near CEL's range ends past year 1 or 9999
+        t = v.astimezone(UTC if tz is None else zone(tz))
+    except (OverflowError, ValueError):
+        raise CelError("timestamp out of range") from None
     return {
         "getFullYear": lambda: t.year, "getMonth": lambda: t.month - 1, "getDate": lambda: t.day,
         "getDayOfMonth": lambda: t.day - 1, "getDayOfYear": lambda: t.timetuple().tm_yday - 1,

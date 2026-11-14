@@ -75,15 +75,32 @@ class MemoryReviews:
         return list(self.items)
 
 
+def _int_text(v: int) -> str:
+    """str(v), or for an int too long for Python's decimal conversion (past sys.get_int_max_str_digits()
+    digits: json.dumps would raise) its exact hexadecimal form, marked: '<int 0x...>'."""
+    try:
+        return str(v)
+    except ValueError:
+        return f"<int {hex(v)}>"
+
+
+def _int(v: int) -> Any:
+    """An int as JSON: itself, or, too long to print in decimal, _int_text's marked string."""
+    t = _int_text(v)
+    return v if not t.startswith("<") else t
+
+
 def _jsonable(v: Any, depth: int = 0) -> Any:
     """v as JSON data: plain values as they are, containers walked, anything else its repr (never raises)."""
     try:
-        if v is None or type(v) in (bool, int, float, str):
+        if type(v) is int:
+            return _int(v)
+        if v is None or type(v) in (bool, float, str):
             return v
         if depth > 16:
             return "<nested too deeply>"
         if isinstance(v, dict):
-            return {str(k): _jsonable(x, depth + 1) for k, x in v.items()}
+            return {(_int_text(k) if type(k) is int else str(k)): _jsonable(x, depth + 1) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [_jsonable(x, depth + 1) for x in v]
         if dataclasses.is_dataclass(v) and not isinstance(v, type):

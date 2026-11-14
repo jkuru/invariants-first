@@ -45,6 +45,14 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   review. It returns an `inv.Checked` value.
 - `@inv.edge` on the consumer of a reply re-validates the schema and re-checks `bad` against state as
   it is now (`inv.Checked` is forgeable, so the edge never trusts it).
+- An edge hands its consumer exactly the value it re-checked: the received `Checked` must be exactly
+  the annotated class, and a state is copied as a plain `dict` or as exactly the annotated dataclass
+  or pydantic model (a subclass never answers the consumer's reads).
+- `post_effect` checks always see the call's real result: over a sync wrapper of an async def, the
+  guard awaits the coroutine first; another awaitable is a `TypeError`. `@inv.guard` above
+  `@pydantic.validate_call` is a `TypeError` (it would check the uncoerced arguments).
+- `JsonlReviews` writes an int too long for decimal text as `"<int 0x...>"`, so a value's size never
+  stops a review from opening.
 - Providers are read at the enforcer's timing; `old_self` rules compare a target's state before and
   after the call.
 - Registries: `inv.load()` installs a rule file in the current registry; `inv.isolated()`,
@@ -63,6 +71,16 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - The extensions `inv.sum`, `inv.zip` and `inv.unique_by`; timestamps and durations; NaN and
   Infinity are rule errors unless allowed. The shared conformance suite runs against every
   installed backend.
+- A pydantic `RootModel` is read as its `.root`; any other sequence or iterable that is not a list
+  or tuple is a `rule_error` on every backend (a `LoadError` when annotated), never the map of its
+  attributes. An `Enum` map key is its value, and a record is the map of its fields for `size()`,
+  `in`, `[]` and the macros, on every backend.
+- On cel-expr, a value only errors the clauses that read it (a NUL in one argument never hides
+  another clause's violation), and an int past 2^53 is compared exactly with a double per clause,
+  with the engine's verdict and every cel-expr function kept.
+- A `matches()` pattern has a shared limit (4,096 characters, 64 nested groups, 5,000 instructions
+  with repeats expanded), and the subset charges its compile to the budget; a timestamp getter
+  whose zone moves past year 1 or 9999 is a `rule_error` on every backend.
 
 ### The lock
 

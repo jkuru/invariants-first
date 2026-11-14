@@ -5,9 +5,9 @@ import datetime
 from typing import Any
 
 from ..errors import CelError, raised
-from .data import _data, _finite, _num, _ty
+from .data import CelType, _data, _finite, _num, _ty, enum_key, has_enum_key
 
-_SCALAR_TYPES = (str, bytes, bool, int, float, datetime.datetime, datetime.timedelta, type(None))
+_SCALAR_TYPES = (str, bytes, bool, int, float, datetime.datetime, datetime.timedelta, type(None), CelType)
 
 
 def _eq(a: Any, b: Any) -> bool:
@@ -69,9 +69,15 @@ def lookup(m: Any, k: Any) -> tuple[bool, Any]:
     index are the same key ({1: 'a'}[1.0] == 'a'), a bool is never a number ({1: 'a'}[true] is no
     such key), whatever Python's dict thinks of 1 == 1.0 == True."""
     if type(k) is str:
-        return (k in m, m.get(k))
+        if k in m:
+            return (True, m.get(k))
+        return enum_key(m, k)
     kk = _kind(k)
-    if kk not in ("bool", "num") or k not in m:
+    if kk not in ("bool", "num"):
+        return (False, None)
+    if k not in m:
+        if has_enum_key(m):             # an Enum key is its value (cel/values.py)
+            return lookup(whole(m), k)
         return (False, None)
     for key in m:                       # Python merges 1, 1.0 and True: find the stored key's kind
         if _kind(key) == kk and key == k:

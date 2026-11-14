@@ -30,7 +30,15 @@ def charge(budget: list[int] | None, chars: int) -> None:
 
 
 _RE_CACHE: dict[str, list[list]] = {}
-STEPS_PER_COST = 16          # regex VM steps charged as one unit of the cost budget
+_RE_CACHE_MAX = 256
+STEPS_PER_COST = 16          # regex VM steps (or pattern characters and instructions compiled) per unit
+
+
+def _spend(budget: list[int] | None, steps: int) -> None:
+    if budget is not None and steps >= STEPS_PER_COST:
+        budget[0] -= steps // STEPS_PER_COST
+        if budget[0] < 0:
+            raise CostExceeded("cost limit exceeded (matches)")
 
 
 def _matches(text: str, pattern: str, budget: list[int] | None = None) -> bool:
@@ -46,12 +54,19 @@ def _matches(text: str, pattern: str, budget: list[int] | None = None) -> bool:
     if code is None:
         try:
             code = _regex.compile_pattern(pattern)
+        except _regex.PatternLimit as e:
+            err = CelError(_regex.PATTERN_LIMIT)
+            err.detail = str(e)
+            raise err from None
         except _regex.RegexError as e:
             err = CelError("matches(): bad pattern")   # the pattern may be request data: only in .detail
             err.detail = f"{e} in {_safe_repr(pattern)}"
             raise err from None
-        if len(_RE_CACHE) < 256:
-            _RE_CACHE[pattern] = code
+        if len(_RE_CACHE) >= _RE_CACHE_MAX:     # bounded: the oldest entry goes
+            _RE_CACHE.pop(next(iter(_RE_CACHE)))
+        _RE_CACHE[pattern] = code
+    _spend(budget, len(pattern) + len(code))    # its compile (bounded by the pattern limit), charged on
+    #                                             every call, cached or not: the verdict never depends on the cache
     left = budget[0] if budget is not None else DEFAULT_BUDGET
     try:
         found, steps = _regex.search(code, text, max(0, left) * STEPS_PER_COST)

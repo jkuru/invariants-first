@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..errors import CelError
 from .catalog import FUNCTIONS
 from .cost import DEFAULT_BUDGET
 from .evaluator import evaluate
@@ -20,7 +21,10 @@ class SubsetProgram:
 
     def evaluate(self, env: dict[str, Any]) -> Any:
         """Evaluate against env; raises CelError."""
-        return evaluate(self.ast, env, [self.budget])
+        try:
+            return evaluate(self.ast, env, [self.budget])
+        except RecursionError:          # a value or tree past Python's stack: an error, never an escape
+            raise CelError("value or expression nested too deeply") from None
 
     def references(self) -> frozenset[tuple[str, ...]]:
         """Free identifiers with their static field paths."""

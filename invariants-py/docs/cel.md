@@ -79,6 +79,16 @@ like `\p{Greek}`) still loads; on the subset it is a `rule_error` at run time. `
 one character at a time, as RE2 does: `s`, `S` and `ſ` match each other, but `ß` matches neither
 `SS` nor `[A-Z]`, and `ı` does not match `I`.
 
+**The pattern limit, on both.** A `matches()` pattern may be at most 4,096 characters, nest groups
+at most 64 deep, and expand (every `{n,m}` written out) to at most 5,000 instructions. A constant
+pattern past it is a `LoadError`; one from the data (`args.s.matches(args.p)`) is a `rule_error`
+"matches(): the pattern is over the pattern limit" on every backend, checked before any engine
+compiles it (cel-cpp compiles a pattern from the data on every call, and `[a-z]{1000}` repeated 50
+times took 0.8 s each; 5,000 nested parentheses overflowed the subset's parser). On the subset a
+pattern's compile is charged to the budget on every call, one unit per 16 characters and
+instructions, cached or not, so the verdict never depends on the cache (256 compiled patterns, the
+oldest dropped first).
+
 ## Functions per backend
 
 Standard functions per backend (global `f(x)` or receiver `x.f()` form as CEL defines them; the macros `all`, `exists`, `exists_one`, `map`, `filter` and `has()` are on every backend):
@@ -113,8 +123,10 @@ load-time type checker uses the same table, so a rule reads the same value every
 | `uuid.UUID` | `string` | the canonical lower-case hyphenated form: `args.id == "1234...-...678"` |
 | `datetime` with a `tzinfo` | `timestamp` | the same instant, in UTC; microsecond precision |
 | `timedelta` | `duration` | up to ±10,000 years, as in CEL |
-| `list`, `tuple` / `dict`, `Mapping` | list / map | |
-| dataclass, pydantic model, other object | map of its public fields | |
+| `list`, `tuple` / `dict`, `Mapping` | list / map | an `Enum` key is its value, as any `Enum` |
+| pydantic `RootModel` | its `.root` | `RootModel[list[Line]]` is the list the API received |
+| dataclass, pydantic model, other object | map of its public fields | `size()`, `in`, `[]` and the macros read it as that map, on every backend |
+| other sequence or iterable (`UserList`, `deque`, `range`, a generator, any class with `__iter__`, `__len__` or `__getitem__`) | refused | pass a `list`: never read as the map of its attributes, never iterated |
 | naive `datetime` (no `tzinfo`) | refused | the library never assumes a timezone: use `datetime.now(timezone.utc)` or attach a `tzinfo` |
 | `datetime.date` | refused | CEL has no date type: pass an aware `datetime` (midnight UTC, say) or an ISO string `"2024-01-31"` |
 | `datetime.time` | refused | pass seconds since midnight (int) or an `"HH:MM"` string |
@@ -130,8 +142,11 @@ comprehension variable used whole). Only what is read is converted: a comprehens
 element fields its body names, and `size()` reads only the length, so with `items: list[Item]` and
 `Item.price: Decimal`, `size(args.items) > 100` and `args.items.exists(i, i.qty < 0)` load and
 never touch `price` on any backend, while `args.items.exists(i, i.price > 0)` is refused (store
-cents). Without an annotation it is a `rule_error` that names the type
-and the conversion to make; a naive datetime is always one at run time (an annotation cannot tell).
+cents). An annotation naming a concrete list-like class (`xs: Batch` where
+`Batch` subclasses `collections.abc.Sequence`, `collections.UserList`, `deque`) is refused the same
+way; an abstract one (`Sequence[int]`, `Iterable[int]`) is not, since the value passed may be a list,
+and a value that is not a list or tuple is then a `rule_error` at run time. Without an annotation it
+is a `rule_error` that names the type and the conversion to make; a naive datetime is always one at run time (an annotation cannot tell).
 The type checker knows `datetime` (and pydantic's `AwareDatetime`, `PastDatetime`, `FutureDatetime`)
 as timestamp, `timedelta` as duration and `UUID` as string, so `args.deadline < 5`,
 `args.deadline < args.wait`, `args.wait * 2`, `-args.wait`, `args.deadline.year` and a constant
@@ -151,7 +166,9 @@ an optional IANA zone or offset (`t.getHours("America/New_York")`, `t.getHours("
 offset must be between `-23:59` and `+23:59`); a zone read from data (`t.getHours(args.tz)`) is
 checked by the same rules on every backend, so `""`, `"+99:00"`, an unknown name, a name with a
 NUL, space or other control character, or digits of another script (`"+٠٥:٣٠"`) is a
-`rule_error` everywhere. Digits in timestamp, duration and ISO 8601 text (and in rule text) are
+`rule_error` everywhere. A getter whose zone moves an instant past CEL's range
+(`t.getFullYear('-23:59')` on 0001-01-01, `t.getFullYear('+23:59')` on 9999-12-31) is a `rule_error`
+"timestamp out of range" on every backend (cel-cpp printed year 0 and 10000). Digits in timestamp, duration and ISO 8601 text (and in rule text) are
 ASCII only: `duration("٥m")` and a `timedelta` reply field `"PT٥M"` are refused. On
 `cel-expr`, datetime and timedelta values reach the engine as protobuf `Timestamp` and `Duration`
 messages, so that backend needs the `protobuf` package (in the `cel` extra; without it a clause that
@@ -169,17 +186,23 @@ arithmetic does not: `args.price * args.qty` with `price: float` and `qty: int` 
 an int to CEL: pass `100.0`, or convert in the rule.
 
 An int and a double compare exactly, by their true values, on every backend: `2**53 + 1 >
-2.0**53` and `2**63 - 1 < 2.0**63` are true, and `double(x) == x + 1` is false for `x = 2**53`.
-(cel-cpp rounds the int to a double first, which is exact only up to 2^53 in magnitude. On
-cel-expr a clause in which an int past 2^53, from the data, a literal, an arithmetic or `int()`
-result or `inv.sum()`, may meet a double from the data, a double literal or `double()` is
-evaluated by the subset instead, which compares exactly: slower, same answer.)
+2.0**53` and `2**63 - 1 < 2.0**63` are true, and `double(x) == x + 1` is false for `x = 2**53`; a
+uint too (`uint("9007199254740993") > 9007199254740992.0`). cel-cpp rounds an int or uint to a
+double first, which is exact only up to 2^53 in magnitude, so on cel-expr a clause in which an int
+past 2^53 (from the data the clause reads, a literal, an arithmetic, `int()` or `uint()` result, or
+`inv.sum()`) may meet a double (from the data the clause reads, a double literal or `double()`) is
+evaluated exactly. Each clause decides from what it reads: a big int in another argument never
+moves it. The engine still evaluates the clause first, so its comprehension budget decides as
+always (a clause past 9,999 iterations is the same `rule_error`); then the subset evaluates it
+exactly, with every function cel-expr has (`uint()`, `bytes()`, `type()` and the type names
+included), `&&`, `||`, `all` and `exists` stopping where cel-cpp stops, and a budget that covers
+9,999 iterations of the clause. Slower, same verdict, exactly compared.
 
 ## NaN and Infinity
 
 Every comparison with NaN is false, so a bound written the usual way, `x < 0.0 || x > 1.0`, is
-silently false for `x = NaN`. So by default a clause that reads a NaN or ±Infinity (an argument, a
-result, a provider value or a field of one, on every backend) is a `rule_error`, which
+silently false for `x = NaN`. So by default a clause that evaluates a NaN or ±Infinity (an argument,
+a result, a provider value or a field of one, on every backend) is a `rule_error`, which
 `on_error: fail_closed` rejects. On the FastAPI integration, a JSON body with `NaN` (which pydantic
 accepts by default) is answered 503 rather than passing. Model replies never carry one: `inv.parse`
 refuses them (pydantic schemas included).
@@ -200,11 +223,19 @@ A NaN inside a list that a clause never reads (only `size()` of it, or other fie
 elements) is not noticed on any backend. A NaN anywhere in a list, map or record the clause compares
 whole (`==`, `!=`, `in`) is a `rule_error` on every backend.
 
+A NaN or ±Infinity that the clause reads but never evaluates (`true || args.f > 1.0`, or a branch
+of `?:` not taken) differs: the subset reads values lazily, so CEL's error absorption gives the
+clause's value (`true`), while cel-expr refuses the value on its way to the engine, so the clause is
+a `rule_error`. Neither passes a NaN through a comparison: a clause that evaluates one is a
+`rule_error` on both (see [Known engine differences](#known-engine-differences)).
+
 ## Strings, maps and keys
 
 - **NUL characters on cel-expr.** cel-cpp reads a Python string or bytes value as C text, which ends
   at the first NUL, so `"ab\x00cd"` would reach a rule as `"ab"`. On cel-expr, a clause that reads a
-  string or bytes value holding a NUL is a `rule_error`. The subset reads it whole.
+  string or bytes value holding a NUL is a `rule_error`. The subset reads it whole. Only the clause
+  that reads it: the rule's other clauses evaluate as usual, so `args.amount > 100` still fires when
+  another clause reads a `note` holding a NUL (under `fail_open_and_page` too).
 - **Surrogate code points.** A Python `str` can hold a lone surrogate (U+D800 to U+DFFF), which is
   not Unicode text and has no UTF-8 form: `json.loads('"\ud800"')`, a FastAPI or pydantic
   python-mode body, a tool input re-dumped with `ensure_ascii=False`. A clause that reads one (a
@@ -221,7 +252,9 @@ whole (`==`, `!=`, `in`) is a `rule_error` on every backend.
   (cel-expr evaluates it).
 - **Mappings.** Any `collections.abc.Mapping` (a `dict`, a `MappingProxyType`, your own `Mapping`)
   is a CEL map on every backend: field selection, indexing, `size()`, `in`, `has()` and the macros
-  read its keys.
+  read its keys. An `Enum` key is its value (`{Color.RED: 'x'}` with `RED = 1` answers `m[1]`); a
+  map holding both an `Enum` key and its value is a `rule_error` "repeated map key". A record is the
+  map of its public fields here too (`size(r)`, `'x' in r`, `r['x']`, `r.exists(k, ...)`).
 
 ## Number literals
 
@@ -266,7 +299,7 @@ These are the cases where the backends still answer differently. None of them is
 | An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
 | Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
-| A string holding a NUL or a surrogate code point that the clause references but does not need (`false && args.s == 'x'`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
+| A string holding a NUL or a surrogate code point, a NaN or ±Infinity, or a list-like value that is not a list, that the clause references but does not need (`false && args.s == 'x'`, `true \|\| args.f > 1.0`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
 | `x in {...}` with a list, map or null `x` (`[1] in {'a': 1}`, `null in args.m`) | `false` | `rule_error` (no such overload) |
 | A duration past about ±292 years (cel-cpp holds int64 nanoseconds; CEL allows ±10,000 years): in the data, from `duration(text)`, or made by arithmetic (`t - u` for timestamps more than 292 years apart) | result | `rule_error` (cel-cpp would read it saturated, so `d + duration('0s') != d`), a literal included |
 | Regex `\101` (octal), `\C` (any byte), `\p{Greek}` (scripts) | `rule_error` at run time | evaluated by RE2 |

@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from . import subset, values
+from . import _regex, subset, values
 from .errors import (NON_FINITE, NON_FINITE_RESULT, CelError, CelSyntaxError, check_finite, check_result,
                      raised)
 
@@ -58,6 +58,7 @@ _OWN = re.compile("|".join((                # the library's own texts, raised in
     r"inv\.unique_by\(\) needs a list or map",
     r"(?:contains|startsWith|endsWith|matches)\(\): a string operand is longer than the string-size limit "
     r"\([0-9,]+ characters; " + re.escape(values.STRING_LIMIT_ENV) + r" or cel\.set_string_limit\)",
+    re.escape(_regex.PATTERN_LIMIT),
 )))
 _KINDS: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), k) for p, k in (
     (r"(?:key not found|no such key)\b", "no such key"),
@@ -229,6 +230,8 @@ def mark_finite(n: Node, inside: bool = False) -> Node:
         return ("fin_double", m[3][0])
     if m[0] == "call" and m[1] in ("double", "int") and m[2] is None:
         return ("fin", m)       # int(): its result is checked for an int past 2^53 (see expr_python)
+    if m[0] == "call" and m[1] == "uint" and m[2] is None and len(m[3]) == 1 and m[3][0][0] != "lit":
+        return ("fin", m)       # uint() of a value (5u is a literal: its text is checked statically)
     return m
 
 
@@ -244,8 +247,9 @@ def has_comprehension(n: Node) -> bool:
 
 
 def needs_finite(n: Node) -> bool:
-    """True if the tree has arithmetic or a double() or int() call."""
-    if (n[0] == "bin" and n[1] in ARITH) or (n[0] == "call" and n[1] in ("double", "int")):
+    """True if the tree has arithmetic, a double() or int() call, or a uint() call on a value."""
+    if (n[0] == "bin" and n[1] in ARITH) or (n[0] == "call" and n[1] in ("double", "int")) \
+            or (n[0] == "call" and n[1] == "uint" and len(n[3]) == 1 and n[3][0][0] != "lit"):
         return True
     return any(needs_finite(c) for c in subset.kids(n))
 
@@ -266,12 +270,13 @@ def _checked_zone(x: Node) -> bool:
     return False
 
 
-def zone_calls(n: Node) -> bool:
-    """True if the tree calls a timestamp getter with a timezone _checked_zone holds."""
+def zone_calls(n: Node, every: bool = False) -> bool:
+    """True if the tree calls a timestamp getter with a timezone _checked_zone holds (every: with any
+    timezone)."""
     if n[0] == "call" and n[1] in subset._GETTERS and n[2] is not None and len(n[3]) == 1 \
-            and _checked_zone(n[3][0]):
+            and (every or _checked_zone(n[3][0])):
         return True
-    return any(zone_calls(c) for c in subset.kids(n))
+    return any(zone_calls(c, every) for c in subset.kids(n))
 
 
 def conv_calls(n: Node, names: frozenset[str]) -> bool:
@@ -307,7 +312,9 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
     fin["let"] ({var}, {value}, {body}), if given, prints each chunk in place of cel.bind.
     fin["text"] ({0}: a string operand), if given, is printed around each operand of matches() that
     is not a string literal, and fin["contains"], fin["startsWith"] and fin["endsWith"] ({0}: the
-    string, {1}: the other operand) in place of those calls (the string-size limit, values.py).
+    string, {1}: the other operand) in place of those calls (the string-size limit, values.py);
+    fin["pattern"] ({0}), if given, is printed around a matches() pattern that is not a string literal
+    instead of fin["text"] (the pattern limit, _regex.pattern_size).
     avoid: identifiers of the rule text; a cel.bind variable never takes one of them.
     """
     def u(x: Node) -> str:
@@ -361,6 +368,8 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
         if fin and name in fin and name in ("timestamp", "duration") and tgt is None and len(args) == 1 \
                 and not _is_text(args[0]):
             return fin[name].format(u(args[0]))
+        if fin and "getter" in fin and name in subset._GETTERS and tgt is not None and len(args) == 1:
+            return fin["getter"].format(u(tgt), u(args[0]), name=name)    # the backend's getter (values.getter)
         if fin and "zone" in fin and name in subset._GETTERS and tgt is not None and len(args) == 1 \
                 and _checked_zone(args[0]):    # a timezone from data, or a bad one: values.zone first
             return f"{p(tgt)}.{name}({fin['zone'].format(u(args[0]))})"
@@ -369,9 +378,9 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
             if name in fin:                     # contains, startsWith, endsWith: the backend's function
                 return fin[name].format(u(s), u(t))
 
-            def checked(x: Node) -> str:         # matches(): the engine's, on size-checked operands
-                return u(x) if _is_text(x) else fin["text"].format(u(x))
-            return f"{checked(s)}.{name}({checked(t)})"
+            def checked(x: Node, key: str = "text") -> str:   # matches(): the engine's, on checked operands
+                return u(x) if _is_text(x) else fin.get(key, fin["text"]).format(u(x))
+            return f"{checked(s)}.{name}({checked(t, 'pattern')})"
         if name == "inv.unique_by":
             lst, var, body = args[0], args[1], args[2]
             return f"{rename['inv.unique']}({p(lst)}.map({var[1]}, {u(body)}))"
@@ -424,6 +433,8 @@ def _fields(o: Any) -> dict[str, Any] | None:
     mf = getattr(type(o), "model_fields", None)
     if isinstance(mf, dict):
         return {k: getattr(o, k) for k in mf if not k.startswith("_")}
+    if values.listlike(o):              # a sequence or iterable is never the map of its attributes
+        raise values.listlike_error(o)
     out: dict[str, Any] = {}
     for k, v in getattr(o, "__dict__", {}).items():
         if not k.startswith("_") and not callable(v):
@@ -441,14 +452,27 @@ def _same(v: Any) -> Any:
     return v
 
 
+_PLAIN = frozenset({dict, list, tuple, str, int, float, bool, bytes, type(None)})
+_UINT, _CEL_TYPE = subset.Uint, subset.CelType
+
+
 def to_plain(v: Any, _stack: tuple[int, ...] = (), leaf: Leaf = _same) -> Any:
     """Convert a Python value to plain CEL data (None, bool, int, float, str, bytes, list, dict, and
     UTC datetime / timedelta for timestamps and durations), by the mapping in cel/values.py.
 
     leaf: applied to each timestamp and duration (an engine that needs its own types for them)."""
+    t0 = type(v)
+    if t0 is int:
+        return subset.check_int(v)
+    if t0 is bool or v is None:
+        return v
+    if t0 is _UINT or t0 is _CEL_TYPE:  # the subset's exact evaluation only
+        return v
+    if t0 not in _PLAIN and values.is_root_model(v):
+        return to_plain(values.unroot(v), _stack, leaf)
     if isinstance(v, enum.Enum):
         return to_plain(v.value, _stack, leaf)
-    if type(v) is int or (isinstance(v, int) and not isinstance(v, bool)):
+    if isinstance(v, int) and not isinstance(v, bool):
         return subset.check_int(int(v))
     if type(v) is float:
         return check_finite(v)
@@ -473,6 +497,8 @@ def to_plain(v: Any, _stack: tuple[int, ...] = (), leaf: Leaf = _same) -> Any:
             k = to_plain(k, st)
             if not isinstance(k, (str, int, bool)):
                 raise CelError(f"unsupported map key type {type(k).__name__}")
+            if k in out:                # an Enum key next to its value: one CEL key twice
+                raise CelError("repeated map key")
             out[k] = to_plain(x, st, leaf)
         return out
     if isinstance(v, (list, tuple)):
@@ -492,9 +518,11 @@ _LEAVES = (bool, int, float, str, bytes, list, tuple, enum.Enum, *values.SCALARS
 def _step(o: Any, name: str) -> tuple[bool, Any]:
     """Select field name as the subset does: map key, or public non-callable attribute."""
     if isinstance(o, Mapping):
-        return (name in o, o.get(name))
-    if o is None or name.startswith("_") or isinstance(o, _NO_FIELDS) or name in values.api_names(type(o)):
-        return (False, None)
+        if name in o:
+            return (True, o.get(name))
+        return enum_key(o, name)
+    if o is None or name.startswith("_") or isinstance(o, _NO_FIELDS) or name in values.record_names(o):
+        return (False, None)            # (record_names: a list-like object is never the map of its attributes)
     try:
         v = getattr(o, name)
     except AttributeError:
@@ -507,7 +535,18 @@ def _step(o: Any, name: str) -> tuple[bool, Any]:
 _ELEM, _SIZE = subset.ELEM, subset.SIZE
 
 
+def enum_key(m: Mapping[Any, Any], key: str) -> tuple[bool, Any]:
+    """(found, value) for the field key among m's Enum keys, each read as its value (cel/values.py: an
+    Enum member is its value, as a map key too); a map without such a key has no such field."""
+    for k in m:
+        if isinstance(k, enum.Enum) and isinstance(k.value, str) and k.value == key:
+            return (True, m[k])
+    return (False, None)
+
+
 def _project(v: Any, tails: list[tuple[str, ...]], leaf: Leaf) -> Any:
+    if type(v) not in _PLAIN and values.is_root_model(v):
+        v = values.unroot(v)
     if not tails or any(len(t) == 0 for t in tails):
         return to_plain(v, (), leaf)
     heads = {t[0] for t in tails}
@@ -539,7 +578,10 @@ def _project_keys(v: Mapping[str, Any], tails: list[tuple[str, ...]], leaf: Leaf
         pk = to_plain(k)
         if not isinstance(pk, (str, int, bool)):
             raise CelError(f"unsupported map key type {type(pk).__name__}")
-        out[pk] = _project(x, [t[1:] for t in tails if t[0] == k], leaf) if k in named else None
+        if pk in out:                   # an Enum key next to its value: one CEL key twice
+            raise CelError("repeated map key")
+        out[pk] = _project(x, [t[1:] for t in tails if t[0] == pk], leaf) if type(pk) is str and pk in named \
+            else None
     return out
 
 
@@ -573,6 +615,7 @@ class FrontEnd:
         or (with fin) the rule has arithmetic or double() whose results must be checked finite."""
         rest = tuple(f for f in INV_FUNCS if f not in native)
         if fin is not None and (needs_finite(self.ast) or conv_calls(self.ast, frozenset(fin) & _TIME_CONV)
+                                or ("getter" in fin and zone_calls(self.ast, every=True))
                                 or ("zone" in fin and zone_calls(self.ast))
                                 or ("text" in fin and uses_inv(self.ast, TEXT_FUNCS))):
             return unparse(mark_finite(self.ast), rename, fin, self.names)

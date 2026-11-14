@@ -14,15 +14,20 @@ from typing import Any, Callable
 from ..errors import CelError
 from .catalog import _MACROS
 from .cost import DEFAULT_BUDGET, CostExceeded
-from .data import _bool, _data, _int_range, _nty, _num, _on_map, _safe_repr, _select, _ty, map_key
-from .equality import _eq, lookup
-from .functions import _BUILTINS
+from .data import (Uint, _bool, _data, _int_range, _nty, _num, _on_map, _safe_repr, _select, _ty, as_container,
+                   has_enum_key, map_key)
+from .equality import _eq, lookup, whole
+from .functions import _BUILTINS, ENGINE_ONLY
 from .operators import _ORDER, _arith, _in, _order
 from .parser import Node
 
 
 def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> Any:
-    """Evaluate a tree against env. Raises CelError on any evaluation error."""
+    """Evaluate a tree against env. Raises CelError on any evaluation error.
+
+    budget: [units left], or [units left, SHORT] to short-circuit && and || at a deciding left side
+    and all/exists at a deciding element, as cel-cpp does (the same result; the work, and so the cost,
+    follows cel-cpp's: the exact evaluation of a cel-expr clause, expr_python)."""
     budget = budget if budget is not None else [DEFAULT_BUDGET]
     budget[0] -= 1
     if budget[0] < 0:
@@ -45,6 +50,17 @@ def evaluate(n: Node, env: dict[str, Any], budget: list[int] | None = None) -> A
     return handler(n, env, budget)
 
 
+SHORT = 1           # the second budget item that turns short-circuiting on (see evaluate)
+
+
+def evaluate_short(prog: Any, env: dict[str, Any]) -> Any:
+    """prog (a SubsetProgram) evaluated with short-circuiting (see evaluate) against env."""
+    try:
+        return evaluate(prog.ast, env, [prog.budget, SHORT])
+    except RecursionError:
+        raise CelError("value or expression nested too deeply") from None
+
+
 def _list(n: Node, env: dict[str, Any], budget: list[int]) -> list[Any]:
     return [evaluate(x, env, budget) for x in n[1]]
 
@@ -65,7 +81,7 @@ def _sel(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
 
 
 def _idx(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
-    o, i = evaluate(n[1], env, budget), evaluate(n[2], env, budget)
+    o, i = as_container(evaluate(n[1], env, budget)), evaluate(n[2], env, budget)
     if isinstance(o, Mapping):
         found, v = _on_map(o, "reading a key", lambda: lookup(o, i))
         if not found:
@@ -92,28 +108,37 @@ def _un(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
     v = evaluate(n[2], env, budget)
     if n[1] == "!":
         return not _bool(v, "!")
-    if not _num(v):
-        raise CelError(f"no such overload: -{_ty(v)}")
+    if not _num(v) or type(v) is Uint:
+        raise CelError(f"no such overload: -{'uint' if type(v) is Uint else _ty(v)}")
     return _int_range(-v)
 
 
 def _bin(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
     op = n[1]
     if op in ("&&", "||"):                     # CEL: error absorbed if the other side decides
-        res: list[Any] = []
-        for side in (n[2], n[3]):
-            try:
-                res.append(_bool(evaluate(side, env, budget), op))
-            except CostExceeded:
-                raise
-            except CelError as e:
-                res.append(e)
         decider = op == "||"
-        if decider in res:
+        left: Any
+        try:
+            left = _bool(evaluate(n[2], env, budget), op)
+        except CostExceeded:
+            raise
+        except CelError as e:
+            left = e
+        if left is decider and len(budget) > 1:
+            return decider                      # short-circuit (SHORT): the right side is never evaluated
+        right: Any
+        try:
+            right = _bool(evaluate(n[3], env, budget), op)
+        except CostExceeded:
+            raise
+        except CelError as e:
+            right = e
+        if left is decider or right is decider:
             return decider
-        for r in res:
-            if isinstance(r, CelError):
-                raise r
+        if isinstance(left, CelError):
+            raise left
+        if isinstance(right, CelError):
+            raise right
         return not decider
     a, b = evaluate(n[2], env, budget), evaluate(n[3], env, budget)
     if op == "==":
@@ -140,7 +165,7 @@ def _call(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], bu
         return _has(args[0], env, budget)
     vals = _arguments(tgt, args, env, budget)
     fn = _BUILTINS.get(name)
-    if fn is None:
+    if fn is None or (name in ENGINE_ONLY and len(budget) == 1):
         raise CelError(f"unknown function {name}()")
     return fn(name, tgt is not None, vals, budget)
 
@@ -157,8 +182,9 @@ def _arguments(tgt: Node | None, args: list[Node], env: dict[str, Any], budget: 
 
 
 def _iter(v: Any, name: str) -> list[Any]:
+    v = as_container(v)
     if isinstance(v, Mapping):
-        return _on_map(v, f"{name}() over the keys", lambda: list(v))
+        return _on_map(v, f"{name}() over the keys", lambda: list(whole(v)) if has_enum_key(v) else list(v))
     if isinstance(v, (list, tuple)):
         return list(v)
     raise CelError(f"{name}() on {_ty(v)}")
@@ -189,10 +215,14 @@ def _unique(vals: list[Any]) -> bool:
     return True
 
 
+_STOPS = {"exists": True, "all": False}       # where cel-cpp's loop condition ends all and exists
+
+
 def _quantify(name: str, items: list[Any], var: str, body: Node, env: dict[str, Any], budget: list[int]) -> bool:
     """all, exists or exists_one. CEL folds exists with ||, all with &&: an element's error is
     absorbed when another element decides; a spent budget never is."""
     hits: list[Any] = []
+    stop = _STOPS.get(name) if len(budget) > 1 else None
     for x in items:
         try:
             hits.append(_bool(evaluate(body, {**env, var: x}, budget), name))
@@ -200,6 +230,8 @@ def _quantify(name: str, items: list[Any], var: str, body: Node, env: dict[str, 
             raise
         except CelError as e:
             hits.append(e)
+        if stop is not None and hits[-1] is stop:
+            break                           # short-circuit (SHORT), as cel-cpp's loop condition
     errs = [h for h in hits if isinstance(h, CelError)]
     if name == "exists" and True in hits:       # CEL folds exists with ||, all with &&
         return True

@@ -11,17 +11,20 @@ from ..errors import CelError, check_result
 from .catalog import _GETTERS, CONVERSIONS
 from .convert import _convert
 from .cost import _matches, charge
-from .data import _int_range, _num, _on_map
+from .data import _int_range, _num, _on_map, as_container, has_enum_key
+from .equality import whole
 
 # name -> fn(name, has_receiver, vals, budget); vals holds the receiver first, if there is one
 _Builtin = Callable[[str, bool, list[Any], list[int]], Any]
 
 
 def _size(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
-    if len(vals) != 1 or not isinstance(vals[0], (str, list, tuple, Mapping)):
+    sized = as_container(vals[0]) if len(vals) == 1 else None
+    if not isinstance(sized, (str, list, tuple, Mapping)):
         raise CelError("size() needs one string, list or map")
-    sized = vals[0]
-    return _on_map(sized, "size()", lambda: len(sized)) if isinstance(sized, Mapping) else len(sized)
+    if isinstance(sized, Mapping):
+        return _on_map(sized, "size()", lambda: len(whole(sized)) if has_enum_key(sized) else len(sized))
+    return len(sized)
 
 
 def _string_test(name: str, recv: bool, vals: list[Any], budget: list[int]) -> bool:
@@ -72,5 +75,9 @@ _BUILTINS: dict[str, _Builtin] = {
     "size": _size, "contains": _string_test, "startsWith": _string_test, "endsWith": _string_test,
     "inv.sum": _inv_sum, "matches": _match, "inv.zip": _inv_zip,
     **{n: _conversion for n in CONVERSIONS}, **{n: _getter for n in _GETTERS},
+    # uint(), bytes() and type(): only in the exact evaluation of a cel-expr clause (expr_python;
+    # evaluator.evaluate_short); on the subset backend they are unknown (the loader refuses them)
+    "uint": _conversion, "bytes": _conversion, "type": _conversion,
 }
+ENGINE_ONLY = frozenset({"uint", "bytes", "type"})
 

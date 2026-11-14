@@ -22,7 +22,7 @@ from __future__ import annotations
 from .catalog import _GETTERS, ARITY, CONVERSIONS, FUNCTIONS, arity_error
 from .convert import _convert
 from .cost import DEFAULT_BUDGET, CostExceeded
-from .data import check_int
+from .data import CelType, TYPE_NAMES, Uint, check_int
 from .equality import _eq
 from .evaluator import evaluate
 from .lexer import decode_string, tokenize
