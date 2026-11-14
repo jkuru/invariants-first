@@ -28,7 +28,12 @@ RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 # Python functions a clause may reach for, and what CEL writes instead
 PYTHON_FUNCTIONS = {"len": "size(x) (or x.size())", "str": "string(x)", "float": "double(x)",
                     "abs": "x < 0 ? -x : x", "any": "list.exists(e, <condition>)",
-                    "isinstance": "type(x) == T (cel-expr backend), or a schema"}
+                    "isinstance": "type(x) == type(<a value of that type>), e.g. type(x) == type(1) for an "
+                                  "int (cel-expr backend; a bare type name such as int is not a name a clause "
+                                  "reads), or a schema"}
+# CEL type names a clause may reach for in type(x) == T: the loader reads them as undeclared names
+_TYPE_LITERALS = {"int": "1", "uint": "1u", "double": "1.0", "string": "''", "bool": "true", "bytes": "bytes('')",
+                  "list": "[]", "map": "{}", "null_type": "null", "google": "timestamp(0)"}
 _PY_WORDS = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(and|or|not|is|None|True|False)\b""")
 _CEL_FOR = {"and": "&&", "or": "||", "not": "!", "is": "==", "None": "null", "True": "true", "False": "false"}
 
@@ -142,14 +147,17 @@ def _compile_rule(raw: dict[str, Any], rid: str, bads: list[Any], eng: cel.Backe
 
 
 def _names_map(rid: str, names: set[str], bind: dict[str, Any], reg: Registry,
-               extra: dict[str, str] | None, rule: Rule | None = None) -> dict[str, str]:
-    """Name -> path for one enforcer: bind, its view, and auto-bound providers; every name bad reads."""
+               extra: dict[str, str] | None, rule: Rule | None = None, strict: bool = True) -> dict[str, str]:
+    """Name -> path for one enforcer: bind, its view, and auto-bound providers; every name bad reads.
+
+    strict=False (the rule-level map of a rule whose enforcers have views): a name only a view
+    declares is left out instead of refused; each view enforcer's own map is checked strictly."""
     m = {**bind, **(extra or {})}
     for n in names - DEFAULT_NAMES - set(m):
         if n in reg.providers:
             m[n] = f"provider.{n}"          # auto-bound provider
     undeclared = names - DEFAULT_NAMES - set(m)
-    if undeclared:
+    if undeclared and strict:
         hints = _undeclared_hints(sorted(undeclared), m, reg, rule)
         raise LoadError(f"{rid}: bad reads undeclared name(s) {sorted(undeclared)}"
                         + (f": {'; '.join(hints)}" if hints else
@@ -192,6 +200,9 @@ def _undeclared_hints(undeclared: list[str], m: dict[str, Any], reg: Registry, r
                                                                        f"provider.{s}")
         elif n in params:
             out.append(f"{n} is a parameter of {rule.target_key if rule else 'the target'}: write args.{n}")
+        elif n in _TYPE_LITERALS:
+            out.append(f"{n} is a CEL type name, which a clause cannot read: compare with the type of a value, "
+                       f"type(x) == type({_TYPE_LITERALS[n]}) (cel-expr backend)")
         else:
             close = close_matches(n, readable, n=1)
             pclose = close_matches(n, params, n=1)
@@ -293,7 +304,7 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     if not isinstance(enforcers, list):
         raise LoadError(f"{rid}: enforcers must be a list")
     has_view = any(isinstance((e or {}).get("view") if isinstance(e, dict) else None, dict) for e in enforcers)
-    rule.names_for["rule"] = {**bind} if has_view else _names_map(rid, names, bind, reg, None, rule)
+    rule.names_for["rule"] = _names_map(rid, names, bind, reg, None, rule, strict=not has_view)
     for i, enf in enumerate(enforcers):
         _load_enforcer(rule, reg, base_dir, names, bind, i, enf)
     if rule.policy is not None and rule.enforcer("model_call")[1] is None:

@@ -332,7 +332,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e . invariants-first   # not on PyPI yet: install the library from your copy instead
+      - run: pip install -e .   # your project, with invariants-first (not on PyPI yet: pip install -e path/to/invariants-py first)
       - uses: jkuru/invariants-first@main    # action.yml at the repository root; pin a tag once released
         with:
           accept-label: accept-weakening     # a reviewer adds this label to accept a weakening

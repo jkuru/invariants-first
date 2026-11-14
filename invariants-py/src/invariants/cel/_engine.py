@@ -200,8 +200,9 @@ def _map_kids(n: Node, f: Any) -> Node:
     if k == "bin":
         return ("bin", n[1], f(n[2]), f(n[3]))
     if k == "call":
-        if n[1] == "has":
-            return n
+        if n[1] == "has" and len(n[3]) == 1 and n[3][0][0] == "sel":    # has(a.b): f on a, so the
+            a = n[3][0]                                                 # argument stays a selection
+            return ("call", "has", n[2], [("sel", f(a[1]), a[2])])
         return ("call", n[1], None if n[2] is None else f(n[2]), [f(a) for a in n[3]])
     return n
 
