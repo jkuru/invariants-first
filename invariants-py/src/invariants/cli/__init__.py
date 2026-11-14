@@ -67,10 +67,21 @@ def _lock_options(lk: argparse.ArgumentParser) -> None:
                     help="re-pin even when a change may weaken a rule (lower status or mode, removed enforcer or "
                          "clause, fail_open, a looser threshold, a changed bind, view, provider, "
                          "model_policy or artifact); without it `inv lock` refuses")
+    _weakening_alias(lk, "--allow-weakening", "accept_weakening")
     lk.add_argument("--root", action="append", default=[], metavar="DIR",
                     help="pin this scan root (as `inv check --root`; prefer [tool.invariants.scan] roots)")
     lk.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                     help="pin this scan exclude (as `inv check --exclude`; prefer [tool.invariants.scan] exclude)")
+
+
+# `inv lock` and `inv check` each take both spellings: --accept-weakening is the documented one, and
+# --allow-weakening (the name `inv check` used first) is a hidden alias of it. `inv hook pretool`
+# blocks both.
+WEAKENING_FLAGS = ("--accept-weakening", "--allow-weakening")
+
+
+def _weakening_alias(sp: argparse.ArgumentParser, flag: str, dest: str) -> None:
+    sp.add_argument(flag, dest=dest, action="store_true", help=argparse.SUPPRESS)
 
 
 def _verify_options(vf: argparse.ArgumentParser) -> None:
@@ -116,9 +127,10 @@ def _check_options(ck: argparse.ArgumentParser) -> None:
     ck.add_argument("--base", metavar="REF",
                     help="also fail when the rules weaken since the lock committed at git REF (e.g. origin/main), "
                          "even if the change re-pinned the lock with --accept-weakening")
-    ck.add_argument("--allow-weakening", action="store_true",
+    ck.add_argument("--accept-weakening", dest="allow_weakening", action="store_true",
                     help=f"with --base: report weakenings but pass (also {ALLOW_WEAKENING_ENV}=1); for a "
                          f"reviewer to set, not the change's author")
+    _weakening_alias(ck, "--allow-weakening", "allow_weakening")
     ck.add_argument("--root", action="append", default=[], metavar="DIR",
                     help="scan this source root (repeatable; as `inv scan --root`, also [tool.invariants.scan] roots)")
     ck.add_argument("--exclude", action="append", default=[], metavar="GLOB",

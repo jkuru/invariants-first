@@ -6,13 +6,21 @@ from typing import Any
 from ..errors import LoadError
 from ..model import ENUMS, MEDIATION_FIELDS, PATH_ROOTS
 from ..registry import Registry
+from ..resolve import close_matches
 
-def _check_fields(obj: Any, allowed: frozenset[str] | set[str], where: str) -> None:
+def _check_fields(obj: Any, allowed: frozenset[str] | set[str], where: str,
+                  also: frozenset[str] | set[str] = frozenset()) -> None:
+    """Known fields only (a near miss of an allowed field, or of `also`, is named) and enum values."""
     if not isinstance(obj, dict):
         raise LoadError(f"{where}: expected a mapping")
     unknown = set(obj) - allowed
     if unknown:
-        raise LoadError(f"{where}: unknown field(s) {sorted(unknown, key=str)}")
+        shown = sorted(unknown, key=str)
+        names = sorted(set(allowed) | set(also))
+        close = {u: close_matches(str(u), names, n=1) for u in shown}
+        hints = [f"{c[0]!r}" + (f" for {u!r}" if len(shown) > 1 else "") for u, c in close.items() if c]
+        raise LoadError(f"{where}: unknown field(s) {shown}"
+                        + (f" (did you mean {', '.join(hints)}?)" if hints else ""))
     for k, v in obj.items():
         if k in ENUMS and (not isinstance(v, str) or v not in ENUMS[k]):
             hint = " (YAML reads a bare off/on as a boolean; quote it)" if isinstance(v, bool) else ""

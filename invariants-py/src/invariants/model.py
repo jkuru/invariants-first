@@ -10,6 +10,7 @@ from .cel import Program
 DEFAULT_NAMES = frozenset({"args", "result", "reply", "self", "old_self"})
 PATH_ROOTS = DEFAULT_NAMES | {"provider"}
 FILE_FIELDS = frozenset({"spec", "contracts", "targets", "providers", "rules"})
+SPECS = ("invariant/v0.1",)                      # the rule-file versions this library reads
 TARGET_FIELDS = frozenset({"effects"})
 PROVIDER_FIELDS = frozenset({"type", "from", "args"})
 PROVIDER_OPTIONAL = frozenset({"concurrent"})          # may run alongside other opted-in async providers

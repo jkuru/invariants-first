@@ -241,7 +241,7 @@ A `$ref` pointed at a renamed but identical schema is a change only.
 **Comparing with a base branch.** `inv lock --check` compares with the lock in the working tree, which
 the change itself may have re-pinned with `--accept-weakening`. `inv check --base REF` compares the
 rule file with the lock committed at `REF` instead, and fails on any weakening since then. It passes
-only when `--allow-weakening` is given or `INV_ALLOW_WEAKENING=1` is set, which a reviewer sets (for
+only when `--accept-weakening` is given (`--allow-weakening` is the same switch) or `INV_ALLOW_WEAKENING=1` is set, which a reviewer sets (for
 example from a pull-request label), not the change's author. It fails closed: a `REF` that does not
 exist, a checkout that is not a git repository, and a lock at `REF` that cannot be read or compared
 (damaged, or a lock version other than this invariants writes) all fail. A reviewer may accept the

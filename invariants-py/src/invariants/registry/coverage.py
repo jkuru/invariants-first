@@ -9,7 +9,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping
 
 from ..model import GUARD_POINTS, Rule
-from ..resolve import resolve
+from ..resolve import edit_distance as edits, resolve
 
 if TYPE_CHECKING:
     from . import Registry, _View
@@ -136,7 +136,7 @@ def _target_problems(rule: Rule) -> list[str]:
         keys = getattr(rule.target, "__inv_rules__", ())
         kind = getattr(rule.target, "__inv_kind__", "")
         if rule.id not in keys and rule.target_key not in keys:
-            problems.append(f"{rule.id}: {rule.target_key} is not wrapped by its guard")
+            problems.append(_not_named(rule, keys, kind))
         elif not rule.policy and kind != "guard":
             problems.append(f"{rule.id}: {rule.target_key} is wrapped by @inv.{kind or '?'}, not by "
                             f"@inv.guard: its decorator/middleware enforcers are never evaluated")
@@ -147,13 +147,30 @@ def _target_problems(rule: Rule) -> list[str]:
         elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
             problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
         elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
-            problems.append(f"{rule.id}: decorator schema differs from model_policy.schema")
+            got = getattr(rule.target.__inv_schema__, "__name__", "an unnamed schema")
+            problems.append(f"{rule.id}: @inv.model_call on {rule.target_key} parses into {got}, but "
+                            f"model_policy.schema is {rule.policy.get('schema')!r}: name the same schema in both")
     for e in rule.enforcers:
         if e["point"] == "edge":
             t = resolve(e["target"])
             if getattr(t, "__inv_kind__", "") != "edge" or rule.id not in getattr(t, "__inv_rules__", ()):
                 problems.append(f"{rule.id}: edge target {e['target']} is not wrapped by @inv.edge({rule.id!r})")
     return problems
+
+
+def _not_named(rule: Rule, keys: Any, kind: str) -> str:
+    """Why a target's guard does not count for this rule: no guard at all, or one that names other rules."""
+    if not keys:
+        return f"{rule.id}: {rule.target_key} is not wrapped by its guard"
+    named = ", ".join(repr(k) for k in keys)
+    deco = f"@inv.{kind or 'guard'}({named})"
+    if kind not in ("", "guard"):
+        return (f"{rule.id}: {rule.target_key} is wrapped by {deco}, which does not name {rule.id}, and is not "
+                f"wrapped by its guard")
+    typo = [k for k in keys if isinstance(k, str) and not k.startswith("py:") and 0 < edits(k, rule.id) <= 2]
+    return (f"{rule.target_key} is guarded by {deco}, which does not name {rule.id}: add {rule.id!r} to the "
+            f"decorator (or use @inv.guard({rule.target_key!r}))"
+            + (f", or fix {typo[0]!r} if it is a typo of {rule.id!r}" if typo else ""))
 
 
 def _mediation_problems(rule: Rule) -> list[str]:

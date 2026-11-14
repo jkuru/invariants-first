@@ -6,7 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "spec": {"type": "string"},
+    "spec": {"enum": ["invariant/v0.1"]},
     "contracts": {"type": "object", "additionalProperties": {"type": "object"}},
     "targets": {"type": ["object", "null"], "additionalProperties": {"$ref": "#/$defs/target"}},
     "providers": {"type": ["object", "null"], "additionalProperties": {"$ref": "#/$defs/provider"}},
@@ -97,7 +97,8 @@
       "additionalProperties": false,
       "required": ["id"],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+               "description": "Letters, digits, -, _ and ., starting with a letter or digit (no spaces)."},
         "guard": {"type": "string", "pattern": "^py:",
                   "description": "Short form: the function this rule guards. Expands to subject.target and one decorator enforcer (pre_effect, mode enforce); status defaults to enforce with tests, else detect."},
         "tests": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],

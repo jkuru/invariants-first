@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from ..errors import CoverageError, LoadError, ReviewNotOpened
 from ..model import Provider, Rule  # noqa: F401
-from ..resolve import resolve
+from ..resolve import resolve, suggest
 from .ablation import _CTX_ABLATED, GLOBAL_ABLATED, ablation_level, env_ablated
 from .coverage import (WRAPPED, _ablation_problems, _edge_problem, _mediation_problems, _scope, _target_problems,
                        _targetless_problems, _wraps)
@@ -38,6 +38,10 @@ from .session import (ABLATE_ARM_ENV, ABLATE_ENV, ABLATE_TRACE_ENV, DECISION_TRA
 
 OBSERVERS: list[Observer] = []          # called on every record() in any registry
 _GLOBAL_LOCK = threading.Lock()
+
+# what a guard called before any rule file is loaded says to do
+LOAD_FIRST = ("call inv.load(\"invariants.yaml\") once at startup, before the first guarded call (in tests: "
+              "a conftest.py that calls it, or pytest --inv-rules invariants.yaml)")
 _REGISTRIES: weakref.WeakSet[Registry] = weakref.WeakSet()   # every registry, for the fork reset
 
 
@@ -310,13 +314,17 @@ class Registry:
         if key.startswith("py:"):
             found = [r for r in self.rules.values() if r.target_key == key]
             if not found and not self.rules:
-                raise LoadError(f"guard names target {key!r}, but no rule file is loaded in this registry "
-                                f"(call inv.load first)")
+                raise LoadError(f"guard names target {key!r}, but no rule file is loaded in this registry: "
+                                f"{LOAD_FIRST}")
             if not found and key not in self.targets:
                 raise LoadError(f"guard names target {key!r}, which no loaded rule or target declares")
             return found
         if key not in self.rules:
-            raise LoadError(f"guard names rule {key!r}, which is not loaded")
+            if not self.rules:
+                raise LoadError(f"guard names rule {key!r}, which is not loaded (no rule file is loaded in this "
+                                f"registry): "
+                                f"{LOAD_FIRST}")
+            raise LoadError(f"guard names rule {key!r}, which is not loaded{suggest(key, list(self.rules))}")
         return [self.rules[key]]
 
     @contextlib.contextmanager

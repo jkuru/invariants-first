@@ -330,11 +330,12 @@ def test_ablate_skips_falsifier_failing_with_guard_on(project):
     r.stdout.fnmatch_lines(["*not checked (failed with the guard on)*"])
 
 
-def test_ablate_without_rules_notes_it(pytester):
+def test_ablate_without_rules_is_a_usage_error(pytester):
+    # round 24: a green --inv-ablate that ablated nothing proved nothing; it is a usage error now
     pytester.makepyfile(test_plain=PLAIN)
     r = run(pytester, "--inv-ablate")
-    assert r.ret == 0
-    r.stdout.fnmatch_lines(["*invariants ablation*", "*no rules loaded*"])
+    assert r.ret == pytest.ExitCode.USAGE_ERROR
+    assert "no rules loaded, so nothing was checked" in r.stderr.str()
 
 
 # --- --inv-report --------------------------------------------------------------------------------

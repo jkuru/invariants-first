@@ -10,7 +10,7 @@ import pytest
 
 from ..registry import Registry, ablated_everywhere, capture
 from .rerun import _carried, _decided, _env_ablated, _env_decisions, _matches, _outcome, _reached
-from .state import _SessionState
+from .state import NO_RULES, _SessionState
 
 NO_VERDICT = "inconclusive (read an ablated scan's exit code or pass; assert its findings)"
 NEVER_FIRED = "inconclusive (the rule never fired on the control run: the test passes whether or not it holds)"
@@ -71,8 +71,8 @@ class _Ablation(_SessionState):
     def plan_ablation(self, session: pytest.Session, reg: Registry) -> None:
         """Match each rule's falsified_by entries to the collected items."""
         if not reg.rules:
-            self.ablation_notes.append("no rules loaded: pass --inv-rules PATH (or set inv_rules)")
-            return
+            # a green run that ablated nothing proves nothing: a usage error (exit 4), not a pass
+            raise pytest.UsageError(f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}")
         index = {item.nodeid: i for i, item in enumerate(session.items)}
         for rule in reg.rules.values():
             falsifiers = rule.raw.get("falsified_by") or []

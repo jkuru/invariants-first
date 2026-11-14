@@ -1,10 +1,12 @@
 """pytest plugin: load a rule file, check guard coverage, ablate rules against their falsifiers, report reach.
 
 Options (all off by default; without them the plugin only adds the fixtures):
-  --inv-rules PATH       rule file to load into the default registry (ini: inv_rules)
+  --inv-rules PATH       rule file to load into the default registry (ini: inv_rules; with --inv-ablate or
+                         --inv-verify and neither given, invariants.yaml/.yml/.json in the rootdir)
   --inv-verify           after collection, every target must carry its guard
   --inv-ablate           re-run each rule's falsified_by tests with the rule ablated; they must fail, and
-                         every enforce rule needs at least one falsifier that is caught
+                         every enforce rule needs at least one falsifier that is caught; with no rules
+                         loaded (from a file or by the tests) it is a usage error, exit 4, never a pass
   --inv-ablate-lenient   with --inv-ablate, fail only on a falsifier that still passes
   --inv-report           print per-rule reach / violation / rule_error counts at session end
   --inv-report-json PATH also write those counts (and verify/ablation results) as JSON

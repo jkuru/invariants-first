@@ -3,7 +3,10 @@ the target it binds against, and the highest status its evidence allows."""
 from __future__ import annotations
 
 import hashlib
+import inspect
+import json
 import pathlib
+import re
 from typing import Any, Iterator
 
 from .. import cel
@@ -11,11 +14,32 @@ from ..confinement import confined
 from ..errors import LoadError
 from ..model import DEFAULT_NAMES, ENFORCER_FIELDS, EVALUATED, RULE_FIELDS, STATUS_RANK, VIEW_POINTS, Rule
 from ..registry import Registry
-from ..resolve import resolve
+from ..resolve import close_matches, resolve
 from .paths import _check_scopes, _snapshot_paths, binding_problem
 from .policy import _load_policy
 from .shapes import _check_fields, _check_mediation, _check_path
+from .short_forms import SHORT_FIELDS
 from .typebind import _typecheck
+
+# A rule id: letters, digits, '-', '_' and '.', starting with a letter or digit (no spaces, no ':', so
+# an id is never mistaken for a 'py:' target key in @inv.guard).
+RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+
+# Python functions a clause may reach for, and what CEL writes instead
+PYTHON_FUNCTIONS = {"len": "size(x) (or x.size())", "str": "string(x)", "float": "double(x)",
+                    "abs": "x < 0 ? -x : x", "any": "list.exists(e, <condition>)",
+                    "isinstance": "type(x) == T (cel-expr backend), or a schema"}
+_PY_WORDS = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(and|or|not|is|None|True|False)\b""")
+_CEL_FOR = {"and": "&&", "or": "||", "not": "!", "is": "==", "None": "null", "True": "true", "False": "false"}
+
+
+def _python_hint(source: str) -> str:
+    """'; CEL writes `and` as &&, ...' for the Python words outside string literals in a clause."""
+    found = [m.group(2) for m in _PY_WORDS.finditer(source) if m.group(2)]
+    words = list(dict.fromkeys(found))
+    if not words:
+        return ""
+    return "; CEL writes " + ", ".join(f"`{w}` as {_CEL_FOR[w]}" for w in words)
 
 
 def _calls(n: Any) -> Iterator[tuple[str, bool, int]]:
@@ -42,8 +66,13 @@ def _check_functions(rid: str, source: str, eng: cel.Backend) -> None:
     for name, method, nargs in _calls(tree):
         if name not in known:
             form = f"x.{name}()" if method else f"{name}()"
+            if name in PYTHON_FUNCTIONS and not method:
+                raise LoadError(f"{rid}: bad calls {form}, a Python function CEL does not have: write "
+                                f"{PYTHON_FUNCTIONS[name]}")
             hint = (" (the subset backend has no uint, bytes or type; use the cel-expr "
                     "backend)" if eng.name == "subset" and name in cel.ENGINE_FUNCTIONS else "")
+            close = close_matches(name, sorted(known), n=1)
+            hint += f"; did you mean {close[0]}()?" if close else ""
             raise LoadError(f"{rid}: bad calls {form}, which the {eng.name} CEL backend does not have, so every "
                             f"evaluation would be a rule_error{hint}. Functions on {eng.name}: "
                             f"{', '.join(sorted(known))}")
@@ -58,10 +87,14 @@ def _check_rule_fields(rid: str, raw: Any) -> None:
     """The rule's own fields: known, id, subject, status and bad present."""
     if isinstance(raw, dict) and "effects" in raw:
         raise LoadError(f"{rid}: effects belongs to the target; declare it once under targets:")
-    _check_fields(raw, RULE_FIELDS, rid)
+    _check_fields(raw, RULE_FIELDS, rid, also=SHORT_FIELDS)
     _check_mediation(rid, raw)
     if not isinstance(raw.get("id"), str) or not raw["id"]:
         raise LoadError(f"{rid}: missing id")
+    if not RULE_ID.match(raw["id"]):
+        fixed = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw["id"]).strip("-_.")
+        raise LoadError(f"{raw['id']!r}: not a rule id: an id is letters, digits, '-', '_' and '.', starting with "
+                        f"a letter or digit (no spaces)" + (f"; for example {fixed!r}" if fixed else ""))
     subject = raw.get("subject")
     if subject is not None and not isinstance(subject, dict):
         raise LoadError(f"{rid}: subject must be a mapping (subject: {{target: 'py:module.function'}}), "
@@ -87,14 +120,19 @@ def _bad_clauses(rid: str, raw: dict[str, Any]) -> list[Any]:
 def _compile_rule(raw: dict[str, Any], rid: str, bads: list[Any], eng: cel.Backend) -> tuple[Rule, set[str]]:
     """Compile each clause on the backend; the Rule, and the root names its clauses read."""
     clauses, refs, reads = [], set(), set()
-    for c in bads:
+    for n, c in enumerate(bads, 1):
+        if isinstance(c, str):
+            raise LoadError(f"{rid}.bad: clause {n} is a bare string; in a list each clause is a mapping: "
+                            f"- {{when: {json.dumps(c)}, message: \"...\"}}")
         _check_fields(c, {"when", "message"}, f"{rid}.bad")
         if not isinstance(c.get("when"), str):
             raise LoadError(f"{rid}.bad: each clause needs a string when")
         try:
             prog = eng.compile(c["when"])
         except cel.CelSyntaxError as e:
-            raise LoadError(f"{rid}: bad does not parse: {e}") from e
+            which = (f"clause {c['message']!r} " if "message" in c else f"clause {n} ") if len(bads) > 1 else ""
+            raise LoadError(f"{rid}: bad {which}does not parse: {e} (in {c['when']!r}){_python_hint(c['when'])}") \
+                from e
         _check_functions(rid, c["when"], eng)
         clauses.append((prog, str(c.get("message", rid))))
         refs |= set(prog.references())
@@ -104,7 +142,7 @@ def _compile_rule(raw: dict[str, Any], rid: str, bads: list[Any], eng: cel.Backe
 
 
 def _names_map(rid: str, names: set[str], bind: dict[str, Any], reg: Registry,
-               extra: dict[str, str] | None) -> dict[str, str]:
+               extra: dict[str, str] | None, rule: Rule | None = None) -> dict[str, str]:
     """Name -> path for one enforcer: bind, its view, and auto-bound providers; every name bad reads."""
     m = {**bind, **(extra or {})}
     for n in names - DEFAULT_NAMES - set(m):
@@ -112,8 +150,56 @@ def _names_map(rid: str, names: set[str], bind: dict[str, Any], reg: Registry,
             m[n] = f"provider.{n}"          # auto-bound provider
     undeclared = names - DEFAULT_NAMES - set(m)
     if undeclared:
-        raise LoadError(f"{rid}: bad reads undeclared name(s) {sorted(undeclared)}")
+        hints = _undeclared_hints(sorted(undeclared), m, reg, rule)
+        raise LoadError(f"{rid}: bad reads undeclared name(s) {sorted(undeclared)}"
+                        + (f": {'; '.join(hints)}" if hints else
+                           f" (a clause reads {', '.join(sorted(DEFAULT_NAMES))}, a declared provider or a bind "
+                           f"name)"))
     return m
+
+
+def _target_params(rule: Rule | None) -> list[str]:
+    """The parameters of the rule's target, in order ([] when it has none or does not resolve yet)."""
+    tk = rule.target_key if rule is not None else None
+    if not isinstance(tk, str):
+        return []
+    try:
+        fn = inspect.unwrap(resolve(tk))
+        return [p for p in inspect.signature(fn).parameters if p not in ("self", "cls")]
+    except Exception:                       # the target's own error is reported where it is bound
+        return []
+
+
+def _undeclared_hints(undeclared: list[str], m: dict[str, Any], reg: Registry, rule: Rule | None) -> list[str]:
+    """What each undeclared name probably meant: a parameter (args.x), a provider read by its bare name,
+    or a near miss of a name the clause can read."""
+    params = _target_params(rule)
+    readable = sorted({*DEFAULT_NAMES, *reg.providers, *m})
+    out = []
+    for n in undeclared:
+        if n == "provider":
+            subs = sorted({r[1] for r in (rule.refs if rule else ()) if r[0] == "provider" and len(r) > 1})
+            for s in subs:
+                if s in reg.providers:
+                    out.append(f"a provider is read by its name: write {s}, not provider.{s}")
+                else:
+                    declared = sorted(reg.providers)
+                    close = close_matches(s, declared, n=1)
+                    out.append(f"no provider {s} is declared"
+                               + (f" (did you mean {close[0]}?)" if close else
+                                  f" (declared: {', '.join(declared)})" if declared else
+                                  " (declare it under providers:)") + f"; a provider is read by its name, not "
+                                                                       f"provider.{s}")
+        elif n in params:
+            out.append(f"{n} is a parameter of {rule.target_key if rule else 'the target'}: write args.{n}")
+        else:
+            close = close_matches(n, readable, n=1)
+            pclose = close_matches(n, params, n=1)
+            if pclose:
+                out.append(f"{n}: did you mean args.{pclose[0]}?")
+            elif close:
+                out.append(f"{n}: did you mean {close[0]}?")
+    return out
 
 
 def _load_enforcer(rule: Rule, reg: Registry, base_dir: pathlib.Path, names: set[str], bind: dict[str, Any],
@@ -143,7 +229,7 @@ def _load_enforcer(rule: Rule, reg: Registry, base_dir: pathlib.Path, names: set
         for name, path in view.items():
             _check_path(rid, f"view {name}", path, reg)
     if point in VIEW_POINTS:
-        rule.names_for[i] = _names_map(rid, names, bind, reg, view)
+        rule.names_for[i] = _names_map(rid, names, bind, reg, view, rule)
     if enf.get("artifact"):                  # conformance binding: artifact hash + test
         _check_artifact(rid, enf, base_dir)
 
@@ -207,7 +293,7 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     if not isinstance(enforcers, list):
         raise LoadError(f"{rid}: enforcers must be a list")
     has_view = any(isinstance((e or {}).get("view") if isinstance(e, dict) else None, dict) for e in enforcers)
-    rule.names_for["rule"] = {**bind} if has_view else _names_map(rid, names, bind, reg, None)
+    rule.names_for["rule"] = {**bind} if has_view else _names_map(rid, names, bind, reg, None, rule)
     for i, enf in enumerate(enforcers):
         _load_enforcer(rule, reg, base_dir, names, bind, i, enf)
     if rule.policy is not None and rule.enforcer("model_call")[1] is None:

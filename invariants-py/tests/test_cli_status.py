@@ -46,7 +46,9 @@ def test_verify_failure_downgrades_held():
 def test_text_output():
     proc = run_inv("status", BYPASS / "invariants.yaml")
     assert proc.returncode == 0
-    assert "F-1" in proc.stdout and "enforce(known-callers)" in proc.stdout and "verify: pass" in proc.stdout
+    assert "F-1 (enforce: blocks a bad call)" in proc.stdout and "verify: pass" in proc.stdout
+    assert "  scan:    FAIL (1 bypass, 2 forbidden, 2 unresolved)" in proc.stdout
+    assert "enforce(known-callers)" not in proc.stdout and "mediation" not in proc.stdout
 
 
 def test_invalid_rule_file_exits_1(tmp_path):

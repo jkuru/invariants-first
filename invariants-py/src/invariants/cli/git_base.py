@@ -12,7 +12,7 @@ from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import isolated
 from .common import ALLOW_WEAKENING_ENV, FAILED, OK, _compare, _out, _print_changes
-from .project import DEFAULT_SCAN_EXCLUDE, _import_path, _setuptools_where, _str_list
+from .project import _import_path, _setuptools_where, _str_list, effective_exclude
 
 
 def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
@@ -26,7 +26,7 @@ def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
 
 
 class BaseUnavailable(Exception):
-    """`--base` cannot compare with the base branch. A reviewer may accept it (--allow-weakening) when
+    """`--base` cannot compare with the base branch. A reviewer may accept it (--accept-weakening) when
     the base lock exists but cannot be read or compared; never when the base ref itself is missing."""
 
     def __init__(self, why: str, acceptable: bool = False) -> None:
@@ -147,8 +147,7 @@ def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
     if not roots:
         dirs = [posixpath.normpath(d) for d in [*_setuptools_where(tool), "src"]] if has_py else []
         roots = [*(d for d in dirs if d != "." and tree.get(posixpath.normpath(pre + d)) == "tree"), "."]
-    exclude = _str_list(cfg["exclude"]) if isinstance(cfg.get("exclude"), list) else list(DEFAULT_SCAN_EXCLUDE)
-    return lock.scan_pin(roots, exclude)
+    return lock.scan_pin(roots, effective_exclude(cfg))
 
 
 def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool,
@@ -161,7 +160,7 @@ def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Seq
             return OK
         _out(f"cannot compare with {ref}: {e}")
         if e.acceptable:
-            _out(f"a person may accept this: --allow-weakening or {ALLOW_WEAKENING_ENV}=1, set by a reviewer")
+            _out(f"a person may accept this: --accept-weakening or {ALLOW_WEAKENING_ENV}=1, set by a reviewer")
         return FAILED
     if changes is None:
         _out(why)
@@ -174,6 +173,6 @@ def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Seq
     _print_changes(weak)
     if allow:
         return OK
-    _out(f"a person must accept these: re-run with --allow-weakening or {ALLOW_WEAKENING_ENV}=1, set by a reviewer "
+    _out(f"a person must accept these: re-run with --accept-weakening or {ALLOW_WEAKENING_ENV}=1, set by a reviewer "
          f"(for example from a pull-request label), never by the change's author or agent")
     return FAILED

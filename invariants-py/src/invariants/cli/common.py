@@ -64,7 +64,7 @@ def _describe(e: BaseException, typed: bool = False) -> str:
     module, which one: an error in the app's own import is otherwise read as one in the rule file."""
     text = f"{type(e).__name__}: {e}" if typed else str(e)
     where = _importing(e)
-    if where is None or f"import {where[0]}:" in text:
+    if where is None or f"import {where[0]}:" in text or f"while importing {where[0]})" in text:
         return text
     mod, loads = where
     text += f" (raised while importing {mod}"

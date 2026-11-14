@@ -34,6 +34,7 @@ class Model:
     name: str
     constraints: list[str]
     validators: int
+    problem: str | None = None              # why `inv lock` cannot pin it (then written commented out)
 
 
 @dataclasses.dataclass
@@ -53,20 +54,98 @@ def _message(exc: ast.expr | None, fallback: str) -> str:
 
 
 def _preconditions(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterable[tuple[ast.expr, str, ast.stmt]]:
-    """(bad condition, message, statement) for the leading `if c: raise` / `assert c` statements."""
-    body = list(fn.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-            and isinstance(body[0].value.value, str):
-        body = body[1:]
-    for st in body:
+    """(bad condition, message, statement) for the leading `if c: raise` / `assert c` statements.
+
+    Leading means before the first statement that may do something: a docstring, `pass`, a logging
+    call or an assignment of a plain value (no call other than a few builtins) may come first. A
+    condition that reads a name assigned there is no longer about the arguments, and ends the
+    search. `assert self.x is not None` (a type-narrowing check on the object's own state, not on
+    an argument) is skipped."""
+    assigned: set[str] = set()
+    for st in fn.body:
         if isinstance(st, ast.If) and not st.orelse and len(st.body) == 1 and isinstance(st.body[0], ast.Raise):
+            if _names(st.test) & assigned:
+                return
             yield st.test, _message(st.body[0].exc, ast.unparse(st.test)), st
         elif isinstance(st, ast.Assert):
+            if _self_check(st.test):
+                continue
+            if _names(st.test) & assigned:
+                return
             msg = st.msg.value if isinstance(st.msg, ast.Constant) and isinstance(st.msg.value, str) \
                 else f"assert {ast.unparse(st.test)}"
             yield negate(st.test), msg, st
+        elif _inert(st):
+            assigned |= _bound(st)
         else:
             return
+
+
+# calls that compute a value and do nothing else, allowed in a statement before the preconditions
+PURE_CALLS = frozenset({"len", "int", "str", "float", "bool", "min", "max", "abs", "tuple", "list", "set",
+                        "frozenset", "dict", "sorted", "isinstance", "round"})
+LOG_RECEIVERS = frozenset({"log", "logger", "logging", "_log", "_logger", "LOG", "LOGGER"})
+
+
+def _names(n: ast.AST) -> set[str]:
+    return {x.id for x in ast.walk(n) if isinstance(x, ast.Name)}
+
+
+def _self_check(test: ast.expr) -> bool:
+    """`self.x is not None`, `self.x` or `isinstance(self.x, T)`: a check on the object's own state."""
+    def on_self(n: ast.expr) -> bool:
+        while isinstance(n, (ast.Attribute, ast.Subscript)):
+            n = n.value
+        return isinstance(n, ast.Name) and n.id in ("self", "cls")
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.IsNot) \
+            and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value is None:
+        return isinstance(test.left, ast.Attribute) and on_self(test.left)
+    if isinstance(test, ast.Attribute):
+        return on_self(test)
+    if isinstance(test, ast.Call) and isinstance(test.func, ast.Name) and test.func.id == "isinstance" and test.args:
+        return isinstance(test.args[0], ast.Attribute) and on_self(test.args[0])
+    return False
+
+
+def _logging_call(n: ast.expr) -> bool:
+    """logger.debug(...), log.info(...), logging.warning(...)."""
+    if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+        return False
+    recv = n.func.value
+    name = recv.attr if isinstance(recv, ast.Attribute) else recv.id if isinstance(recv, ast.Name) else ""
+    return name in LOG_RECEIVERS
+
+
+def _inert(st: ast.stmt) -> bool:
+    """A statement with no effect beyond binding local names: a docstring or `...`, pass, a logging
+    call, or `x = <value>` whose value calls nothing but PURE_CALLS."""
+    if isinstance(st, ast.Pass) or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant)):
+        return True
+    if isinstance(st, ast.Expr):
+        v = st.value
+        return isinstance(v, ast.Call) and _logging_call(v) and all(_pure(a) for a in v.args)
+    if isinstance(st, ast.Assign):
+        return all(isinstance(t, ast.Name) for t in st.targets) and _pure(st.value)
+    if isinstance(st, ast.AnnAssign):
+        return isinstance(st.target, ast.Name) and (st.value is None or _pure(st.value))
+    return False
+
+
+def _pure(n: ast.AST) -> bool:
+    for x in ast.walk(n):
+        if isinstance(x, (ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Lambda)):
+            return False
+        if isinstance(x, ast.Call) and not (isinstance(x.func, ast.Name) and x.func.id in PURE_CALLS):
+            return False
+    return True
+
+
+def _bound(st: ast.stmt) -> set[str]:
+    if isinstance(st, ast.Assign):
+        return {t.id for t in st.targets if isinstance(t, ast.Name)}
+    if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+        return {st.target.id}
+    return set()
 
 
 def _params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -103,9 +182,10 @@ def _guards(module: str, tree: ast.Module) -> list[Guard]:
 
     def visit(body: list[ast.stmt], prefix: str, in_class: bool) -> None:
         for n in body:
-            if isinstance(n, ast.ClassDef) and not prefix:
+            if isinstance(n, ast.ClassDef) and not prefix and not n.name.startswith("_"):
                 visit(n.body, f"{n.name}.", True)
-            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("__"):
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_"):
+                # a private function or method (_helper, __init__) is not an API boundary: no rule
                 if any(isinstance(d, ast.Name) and d.id in ("staticmethod", "classmethod", "property")
                        for d in n.decorator_list) and in_class:
                     continue

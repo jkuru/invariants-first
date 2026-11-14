@@ -109,12 +109,25 @@ def _typed_stores(fn: ast.AST, aliases: frozenset[str]) -> frozenset[str]:
     return frozenset(out)
 
 
+REGISTRATION = re.compile(r"(callback|listener|handler|hook|observer|subscriber)s?$")
+# names of functions that only read: never a door (a door is where a write goes through)
+READ_ONLY = re.compile(r"^_*(get|list|read|find|fetch|load|query|search|count|is|has|exists|iter|lookup|describe|"
+                       r"show|peek|view|select)(_|$|[A-Z])")
+
+
+def _read_only(fid: str) -> bool:
+    """get_session, list_sessions, isReady: a name that says the function only reads."""
+    return bool(READ_ONLY.match(fid.rsplit(".", 1)[-1]))
+
+
 def _is_write_name(name: str) -> bool:
     """save, add_usage, setStatus: a write verb, alone or followed by _ or a capital (not 'settle')."""
     if name.startswith("__"):
         return False
     bare = name.lstrip("_")
     low = bare.lower()
+    if REGISTRATION.search(low):
+        return False                       # add_done_callback, add_listener: registering a hook is no write
     return any(low == v or low.startswith(v + "_") or (low.startswith(v) and bare[len(v):len(v) + 1].isupper())
                for v in WRITE_VERBS)
 
@@ -136,7 +149,18 @@ def _store_call(call: ast.Call, typed: frozenset[str] = frozenset()) -> str | No
         if name not in ("insert", "update", "delete"):
             return None
     recv = ast.unparse(f.value)
-    words = set(re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", recv).lower()))
+    words = _words(recv)
+    if words & LOG_WORDS:
+        return None                                         # a logging call
+    if f.attr in CONTAINER_METHODS:
+        # dict.update and set.add look like session.add: the receiver itself must be the store (not
+        # an item of one, d["k"].update, nor an attribute of one, session.state.update)
+        if isinstance(f.value, ast.Subscript):
+            return None
+        own = f.value.attr if isinstance(f.value, ast.Attribute) else f.value.id if isinstance(f.value, ast.Name) \
+            else None
+        if own is not None and not (_words(own) & STORE_RECEIVERS or own in typed):
+            return None
     root = f.value
     while isinstance(root, ast.Attribute):
         root = root.value
@@ -145,6 +169,15 @@ def _store_call(call: ast.Call, typed: frozenset[str] = frozenset()) -> str | No
     if words & STORE_RECEIVERS or (f.attr == "create" and recv[:1].isupper()):    # stripe.Refund.create
         return f"{recv}.{f.attr}"
     return None
+
+
+CONTAINER_METHODS = frozenset({"add", "update"})            # also dict.update, set.add
+LOG_WORDS = frozenset({"log", "logger", "logging"})
+
+
+def _words(name: str) -> set[str]:
+    """The lower-case words of a name or dotted expression (self.dbSession -> self, db, session)."""
+    return set(re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", name).lower()))
 
 
 def _writes_in(fn: ast.AST, aliases: frozenset[str] = frozenset()) -> list[str]:
@@ -229,7 +262,7 @@ def _doors_for(w: str, callers: dict[str, set[str]], real: set[str], inside: set
     repository). With a Graphify graph, so is every caller in another community than w that is itself
     called (a function between two layers, whatever it is named). Without either, the caller the most
     other functions go through (at least MIN_CALLERS)."""
-    cands = sorted(c for c in callers[w] - inside if c in real)
+    cands = sorted(c for c in callers[w] - inside if c in real and not _read_only(c))
     svc = [c for c in cands if _service_like(c)]
     if svc:
         return svc

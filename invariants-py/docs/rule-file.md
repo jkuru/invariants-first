@@ -62,7 +62,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 
 | Field | Meaning |
 |---|---|
-| `spec` | `invariant/v0.1`. |
+| `spec` | `invariant/v0.1`, the only version this library reads; any other value is a load error. |
 | `contracts` | Named contracts: `{type: python \| pydantic \| dataclass \| schema \| openapi \| ..., ref: ...}`, or `{type: openapi, app: "module:app"}` to read the OpenAPI document of a live app (`app.openapi()`, as a FastAPI app has). A `pydantic`, `dataclass` or TypedDict contract pins its JSON Schema's constraints, and loosening one is a weakening ([lockfile.md](lockfile.md#weakening)); removing a contract is one too. `inv lock` pins each one at contract granularity: see [lockfile.md](lockfile.md). |
 | `targets` | `"py:pkg.mod.fn": {effects: none \| external}`. Effects belong to the target, once. An unlisted target is `external`. |
 | `providers` | `name: {type, from, args}`. See below. |
@@ -88,7 +88,7 @@ not a lock: two concurrent callers can both pass it.
 
 | Field | Meaning |
 |---|---|
-| `id`, `rev` | Identity and revision. |
+| `id`, `rev` | Identity and revision. An `id` is letters, digits, `-`, `_` and `.`, starting with a letter or digit (`^[A-Za-z0-9][A-Za-z0-9_.-]*$`: no spaces, no `:`); it is unique in the file. |
 | `status` | Set by human review: `candidate`, `contested`, `detect`, `enforce`, `retired`. The loader computes the highest status the evidence allows (`Rule.max_status`) and refuses a higher one. `enforce` needs an enforcer with mode `enforce`, `falsified_by`, and a passing timing check. |
 | `class`, `owner`, `statement`, `why` | Documentation. `statement` is the default clause message. |
 | `subject` | `{target: "py:...", contract: name, operation: ...}`. |
