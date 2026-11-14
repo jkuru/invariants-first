@@ -736,8 +736,8 @@ $ pytest -q --inv-rules invariants.yaml --inv-ablate --inv-report
   PAY-1: load-bearing
       caught         test_events.py::test_the_right_rule_fired
 ------------------------------ invariants report -------------------------------
-  rule       status      reach     ok violation rule_error parse_error
-  PAY-1      enforce         1      0         1          0           0
+  rule       status      reach     ok violation rule_error parse_error abstain
+  PAY-1      enforce         1      0         1          0           0       0
 2 passed in 0.06s
 ```
 

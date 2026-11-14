@@ -73,8 +73,8 @@ def lookup(m: Any, k: Any) -> tuple[bool, Any]:
             return (True, m.get(k))
         return enum_key(m, k)
     kk = _kind(k)
-    if kk not in ("bool", "num"):
-        return (False, None)
+    if kk not in ("bool", "num"):       # bytes, null, a list, a map, a timestamp: never a map key (as cel-expr)
+        raise CelError(f"no such overload: a {_ty(k)} as a map key (a key is an int, uint, bool or string)")
     if k not in m:
         if has_enum_key(m):             # an Enum key is its value (cel/values.py)
             return lookup(whole(m), k)

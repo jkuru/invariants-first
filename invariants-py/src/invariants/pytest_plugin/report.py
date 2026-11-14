@@ -7,7 +7,7 @@ import pytest
 
 from .ablation import _Ablation
 
-KINDS = ("ok", "violation", "rule_error", "parse_error")
+KINDS = ("ok", "violation", "rule_error", "parse_error", "abstain")
 
 
 class _Report(_Ablation):
@@ -72,7 +72,7 @@ class _Report(_Ablation):
             tr.write_line("  no rules loaded and no rule evaluations recorded")
             return
         tr.write_line(f"  {'rule':<10} {'status':<10} {'reach':>6} {'ok':>6} {'violation':>9} "
-                      f"{'rule_error':>10} {'parse_error':>11}")
+                      f"{'rule_error':>10} {'parse_error':>11} {'abstain':>7}")
         for rid, r in rules.items():
             tr.write_line(f"  {rid:<10} {r['status'] or '-':<10} {r['reach']:>6} {r['ok']:>6} {r['violation']:>9} "
-                          f"{r['rule_error']:>10} {r['parse_error']:>11}")
+                          f"{r['rule_error']:>10} {r['parse_error']:>11} {r['abstain']:>7}")

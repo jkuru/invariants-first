@@ -83,6 +83,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 ### CEL
 
+- On the subset, looking up a value that can never be a map key (bytes, `null`, a list, a map, a
+  timestamp: `null in args.m`) is a `rule_error`, as on cel-expr, not a quiet `false`.
+
 - Two backends behind one front end, so a rule parses the same everywhere: `subset` (the default,
   standard library only, with a cost budget) and `cel-expr` (Google's C++ runtime, from the `cel`
   extra). `INV_CEL_BACKEND=subset|cel-expr|auto` or `backend=` picks one; `auto` prefers cel-expr.
@@ -234,6 +237,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   root.
 
 ### pytest plugin
+
+- `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain below
+  `enforce`) next to the other four.
 
 - Installed with the package (entry point `pytest11`). Options: `--inv-rules`, `--inv-verify`,
   `--inv-ablate` (with `--inv-ablate-lenient`), `--inv-report` and `--inv-report-json`; fixtures

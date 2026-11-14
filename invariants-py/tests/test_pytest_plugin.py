@@ -372,7 +372,7 @@ def test_report_json(project):
     assert r.ret == 0
     data = json.loads((project.path / "out" / "report.json").read_text())
     assert data["rules"]["R-1"] == {"status": "enforce", "reach": 4, "ok": 3, "violation": 1,
-                                    "rule_error": 0, "parse_error": 0}
+                                    "rule_error": 0, "parse_error": 0, "abstain": 0}
     assert data["verify"] == {"ok": True, "problems": []}
     assert "ablation" not in data
 

@@ -273,3 +273,40 @@ def test_abstain_ablated_is_passive():
         r26.REPLIES[:] = [json.dumps({"action": "ESCALATE_TO_HUMAN", "amount": 0})]
         with inv.ablated("M-1"):
             assert r26.plan("o1").verdict == "ok"
+
+
+def test_the_pytest_report_counts_and_shows_abstains():
+    """--inv-report and --inv-report-json show the abstain outcome next to the other four."""
+    import types
+    from invariants.pytest_plugin.report import _Report
+
+    class TR:
+        lines: list[str] = []
+
+        def write_sep(self, *a: Any) -> None:
+            pass
+
+        def write_line(self, s: str) -> None:
+            self.lines.append(s)
+
+    me = types.SimpleNamespace(statuses={"M-1": "detect"}, totals={"M-1": {"runs": 2, "ok": 1, "abstain": 1}},
+                               verify_on=False, ablate_on=False, rules_path=None, _shown=lambda p: p)
+    data = _Report.report_data(me)  # type: ignore[arg-type]
+    assert data["rules"]["M-1"]["abstain"] == 1
+    me.report_data = lambda: data
+    tr = TR()
+    _Report._write_report(me, tr)  # type: ignore[arg-type]
+    assert tr.lines[0].split()[-1] == "abstain" and tr.lines[1].split()[-1] == "1", tr.lines
+
+
+@pytest.mark.parametrize("expr, env", [("null in args.m", {}), ("[1] in args.m", {}), ("args.k in args.m", {"k": b"x"}),
+                                       ("args.m[args.k] == 1", {"k": b"x"}), ("{'a': 1} in {'b': 2}", {}),
+                                       ("timestamp('2020-01-01T00:00:00Z') in args.m", {})])
+def test_a_value_that_can_never_be_a_map_key_is_a_rule_error_on_the_subset(expr, env):
+    """As cel-expr: `null in m` is no such overload, never a quiet false a bad clause would pass on."""
+    from invariants import cel
+    from invariants.cel import CelError
+    with pytest.raises(CelError):
+        cel.get_backend("subset").compile(expr).evaluate({"args": {"m": {"a": 1}, **env}})
+    assert cel.get_backend("subset").compile("'a' in args.m && 1.0 in {1: 'x'} && !(true in {1: 'x'})").evaluate(
+        {"args": {"m": {"a": 1}}}) is True

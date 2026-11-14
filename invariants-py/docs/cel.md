@@ -251,7 +251,9 @@ a `rule_error`. Neither passes a NaN through a comparison: a clause that evaluat
   across int and double (`{1: 'a'}[1.0] == 'a'`; `1.5` matches nothing), a bool is never a number
   key (`{1: 'a'}[true]` is no such key, though Python's `dict` calls `True` and `1` one key), a list
   index may be an integral double (`[7, 8][1.0] == 8`), and a map literal key must be an int, bool
-  or string (`{1.0: 'a'}`, `{null: 1}` and a repeated key are `rule_error`s). Python cannot hold `1`
+  or string (`{1.0: 'a'}`, `{null: 1}` and a repeated key are `rule_error`s). Looking up a value that
+  can never be a key (bytes, `null`, a list, a map, a timestamp: `null in args.m`, `args.m[args.blob]`)
+  is a `rule_error` on every backend, not `false`. Python cannot hold `1`
   and `true` as two keys of one map, so a map literal with both is a `rule_error` on the subset
   (cel-expr evaluates it).
 - **Mappings.** Any `collections.abc.Mapping` (a `dict`, a `MappingProxyType`, your own `Mapping`)
@@ -302,10 +304,8 @@ These are the cases where the backends still answer differently. None of them is
 | Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 220 terms, about 100 with a comprehension in the clause) | yes | `LoadError` naming cel-cpp's limit |
 | An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
-| `x in m` with `x` a value that cannot be a map key (bytes, `null`, a list) | `false` | `rule_error` (no such overload) |
 | Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
 | A string holding a NUL or a surrogate code point, a NaN or ±Infinity, or a list-like value that is not a list, that the clause references but does not need (`false && args.s == 'x'`, `true \|\| args.f > 1.0`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
-| `x in {...}` with a list, map or null `x` (`[1] in {'a': 1}`, `null in args.m`) | `false` | `rule_error` (no such overload) |
 | A duration past about ±292 years (cel-cpp holds int64 nanoseconds; CEL allows ±10,000 years): in the data, from `duration(text)`, or made by arithmetic (`t - u` for timestamps more than 292 years apart) | result | `rule_error` (cel-cpp would read it saturated, so `d + duration('0s') != d`), a literal included |
 | Regex `\101` (octal), `\C` (any byte), `\p{Greek}` (scripts) | `rule_error` at run time | evaluated by RE2 |
 
