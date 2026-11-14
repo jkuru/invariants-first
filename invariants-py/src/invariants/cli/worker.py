@@ -25,7 +25,8 @@ from typing import Any, Callable, Sequence
 
 from .. import lock
 from ..errors import LoadError
-from .common import ALLOW_WEAKENING_ENV, Usage
+from ..scan.text import safe_output
+from .common import ALLOW_WEAKENING_ENV, SITE, Usage
 
 _BOOT = ("import json, sys\n"
          "req = json.loads(sys.stdin.buffer.read())\n"
@@ -49,6 +50,7 @@ class Imported:
         self.path, self.extra, self.doc = path, list(extra), doc
         self.want: dict[str, Any] = {"load": False, "build": None, "olds": [], "verify": None, "contracts": None}
         self.got: dict[str, Any] | None = None
+        self.ran = False                              # a child has imported the app: files may have changed
         self._early: dict[Any, tuple[bool, Any]] = {}
 
     def before(self, key: Any, fn: Callable[[], Any]) -> Any:
@@ -69,10 +71,16 @@ class Imported:
         self._want("load", True)
 
     def want_build(self, scan: dict[str, Any] | None, scan_error: bool = False) -> None:
-        """Register the pins; the ones that need no import are taken here, now (lock.static_pins)."""
+        """Register the pins; the ones that need no import are taken here, now (lock.static_pins).
+        Once a child has run, only the scan settings registered before it are accepted: settings read
+        after it come from files the imported app could have rewritten."""
+        wanted = {"scan": scan, "scan_error": scan_error}
+        if self.ran and self.want["build"] != wanted:
+            raise LoadError("internal error: scan settings that were not read before the app was imported "
+                            "cannot be pinned (the app could have rewritten pyproject.toml)")
         with contextlib.suppress(Exception):          # raised by build(), after the child's own errors
             self._static(scan)
-        self._want("build", {"scan": scan, "scan_error": scan_error})
+        self._want("build", wanted)
 
     def _static(self, scan: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, str]]:
         got: tuple[dict[str, Any], dict[str, str]] = self.before(
@@ -99,6 +107,7 @@ class Imported:
     # --- reading ------------------------------------------------------------------------------
     def _result(self) -> dict[str, Any]:
         if self.got is None:
+            self.ran = True
             self.got = run_child(self.path, self.extra, self.want)
         return self.got
 
@@ -172,6 +181,7 @@ def _replay(table: list[Any]) -> lock.Typer:
 
 def emit(text: str) -> None:
     if text:
+        text = safe_output(text)
         sys.stdout.write(text if text.endswith("\n") else text + "\n")
         sys.stdout.flush()
 
@@ -190,13 +200,19 @@ def child_env() -> dict[str, str]:
     return env
 
 
+def _child_path() -> list[str]:
+    """The child's sys.path: this process's, then the --site directories (common.SITE)."""
+    own = [p for p in sys.path if isinstance(p, str)]
+    return [*own, *(s for s in SITE if s not in own)]
+
+
 def run_child(path: pathlib.Path, extra: Sequence[str], want: dict[str, Any]) -> dict[str, Any]:
     """Run the child for `want` and return what it computed."""
     flags = ["-I", *(["-O"] * min(sys.flags.optimize, 2))]
     with tempfile.TemporaryDirectory(prefix="inv-worker-") as tmp:
         out = pathlib.Path(tmp) / "result.json"
         req = {"rulefile": str(path), "extra": list(extra), "want": want, "out": str(out),
-               "sys_path": [p for p in sys.path if isinstance(p, str)],
+               "sys_path": _child_path(),
                "dont_write_bytecode": sys.dont_write_bytecode}
         p = subprocess.run([sys.executable, *flags, "-c", _BOOT], input=json.dumps(req).encode(),
                            capture_output=True, env=child_env())
@@ -207,5 +223,5 @@ def run_child(path: pathlib.Path, extra: Sequence[str], want: dict[str, Any]) ->
             raise LoadError(f"the process that imports the app stopped (exit {p.returncode}) before it "
                             f"finished" + (f": {stray.splitlines()[-1]}" if stray else "")) from None
     if stray:
-        print(stray, file=sys.stderr)
+        print(safe_output(stray), file=sys.stderr)
     return got

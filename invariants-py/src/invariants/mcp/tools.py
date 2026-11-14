@@ -82,7 +82,8 @@ def _inv(root: pathlib.Path, server_root: pathlib.Path, rule_file: pathlib.Path,
     if rule_file.resolve().is_relative_to(server_root):
         env[CONFINE_ENV] = str(server_root)
     try:
-        p = subprocess.run([sys.executable, "-m", "invariants.cli", *argv], cwd=root, env=env,
+        # -P: root is the cwd, and its own yaml.py or tomllib.py must not shadow the deciding process's
+        p = subprocess.run([sys.executable, "-P", "-m", "invariants.cli", *argv], cwd=root, env=env,
                            capture_output=True, text=True, timeout=CHILD_TIMEOUT, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as e:
         raise ToolError(f"inv {argv[0]} took longer than {CHILD_TIMEOUT}s") from e

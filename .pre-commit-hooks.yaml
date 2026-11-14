@@ -1,5 +1,7 @@
 # pre-commit hooks for invariants (https://pre-commit.com). `language: system` runs the `inv` installed
 # in your project's environment, because `inv check` imports your app to pin its models and functions.
+# That `inv` is whatever the environment's console script is, so this hook is a local early warning;
+# the gate is the GitHub Action (action.yml), which runs invariants from an interpreter of its own.
 - id: inv-check
   name: invariants check
   description: Fail a commit that weakens a rule. When no change weakens one, re-pin invariants.lock and fail once, so the new lock is reviewed and staged.

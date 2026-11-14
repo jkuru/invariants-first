@@ -3,7 +3,31 @@
 Explicit decorators only: no AST rewriting, no eval/exec of rule or source text.
 """
 
-from importlib import metadata as _metadata
+import sys as _sys
+
+
+def _drop_cwd_for_inv() -> None:
+    """`python -m invariants.cli` (or invariants.mcp) puts the working directory first on sys.path, so a
+    project's own yaml.py, tomllib.py or json.py would be imported by the process that decides the
+    verdict. Drop it, as `python -P` does, before anything else is imported. Only while runpy imports
+    this package for one of those two commands; an app that imports invariants keeps its sys.path."""
+    import os
+    argv = list(getattr(_sys, "orig_argv", []))
+    target = next((argv[i + 1] if a == "-m" and i + 1 < len(argv) else a[2:]
+                   for i, a in enumerate(argv[1:], 1) if a == "-m" or (a.startswith("-m") and len(a) > 2)), None)
+    if _sys.argv[:1] != ["-m"] or _sys.flags.safe_path or target not in ("invariants.cli", "invariants.mcp"):
+        return
+    try:
+        here = os.getcwd()
+    except OSError:
+        here = None
+    if _sys.path and _sys.path[0] in ("", here):
+        del _sys.path[0]
+
+
+_drop_cwd_for_inv()
+
+from importlib import metadata as _metadata  # noqa: E402
 
 from . import cel
 from .errors import (CoverageError, Escalation, Halted, InvariantError, LoadError, ParseError, Rejected,

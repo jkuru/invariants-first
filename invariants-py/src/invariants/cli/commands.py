@@ -617,7 +617,7 @@ def cmd_check(a: argparse.Namespace) -> int:
         allow = a.allow_weakening or allow_env
         base = imp.before(("base", a.base), lambda: base_read(lock_path, a.base))
         code, text = _captured(lambda ns: _base_step(path, lock_path, a.base, a.path, allow,
-                                                     scan_settings(ns, path) if mediated else None, imp, base),
+                                                     _scan_read_first(ns, path, doc, imp), imp, base),
                                argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
     if importable:
@@ -643,6 +643,16 @@ def cmd_check(a: argparse.Namespace) -> int:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")
     return FAILED if failed else OK
+
+
+def _scan_read_first(a: argparse.Namespace, path: pathlib.Path, doc: dict[str, Any],
+                     imp: Imported) -> dict[str, Any] | None:
+    """The scan settings the lock step pinned, read from pyproject.toml before the child ran (never
+    again after it: the imported app could have rewritten pyproject.toml back to the base's settings)."""
+    scan, scan_error = imp.before(("scan", tuple(a.root), tuple(a.exclude)), lambda: _scan_for_lock(a, path, doc))
+    if scan_error is not None:
+        raise scan_error
+    return scan
 
 
 def _check_imports(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path, doc: dict[str, Any],

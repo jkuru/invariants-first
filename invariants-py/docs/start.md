@@ -321,7 +321,13 @@ With the reviewer's `INV_ALLOW_WEAKENING=1` (or `inv check --base main --accept-
 step reads `ok    since main: 1 change(s) since main weaken a rule (allowed by a reviewer)` and the
 check passes.
 
-On GitHub, use the bundled action after installing your project:
+On GitHub, use the bundled action. It installs invariants into an interpreter of its own (a venv
+under `RUNNER_TEMP`, from the action's own copy) before anything of the pull request is installed,
+and runs it as `python -I -m invariants.cli check`, never the `inv` on `PATH`: a pull request can
+declare a console script named `inv`, or drop a `.pth` file into the project's environment. Your
+project's dependencies are read from that environment's site-packages (`inv check --site DIR`),
+after invariants' own and without running its `.pth` files; `inv` imports the project itself from
+the checkout (its `src/`, the rule file's directory), so the project does not need to be installed:
 
 ```yaml
 on: pull_request
@@ -332,26 +338,49 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e .   # your project, with invariants-first (not on PyPI yet: pip install -e path/to/invariants-py first)
       - uses: jkuru/invariants-first@main    # action.yml at the repository root; pin a tag once released
         with:
+          install: pip install --only-binary :all: -r requirements.txt   # your dependencies, not the project
           accept-label: accept-weakening     # a reviewer adds this label to accept a weakening
 ```
 
 The action fetches the base branch and fails with an error if the fetch fails or the ref is still
-missing afterwards, rather than skipping the comparison.
+missing afterwards, rather than skipping the comparison. Its other inputs: `rule-file`,
+`working-directory`, `base`, `python` (the interpreter of the dependencies' environment, default
+`python` on `PATH`) and `path` (extra import directories, one per line, as `inv check --path`).
+
+**Installing the pull request runs its code in the gate's job.** `pip install -e .` (or `pip install
+.`, `python setup.py ...`, `poetry install` of the project) runs the pull request's build backend: an
+in-tree backend (`backend-path`), `setup.py`, a build requirement it names. That code runs as the CI
+user before `inv check` reads anything, and it can do whatever a later step can: replace the files
+of the gate's venv or the Python it was made from, set variables for later steps, rewrite the
+checkout. Nothing in the same job is trustworthy after it, and no ordering of steps fixes that. So:
+install only the dependencies, from wheels (`--only-binary :all:` runs no package code at install
+time; a wheel's `.pth` file runs only when an interpreter starts with that site-packages as a site
+directory, which the gate's does not), and let `inv` import the project from the checkout. If the
+project must be built, build it in a separate job from the one that runs the gate. The pull
+request's own modules still run inside `inv check`'s child process when it imports the app (see
+[lockfile.md, "What the lock trusts"](lockfile.md#what-the-lock-trusts)): that is why the modules
+it imports, and the files that decide how it is built, need a code owner.
 
 Labels can be added by anyone with write access, and that includes an agent holding a token. Also
 make a person own the rule files with a `CODEOWNERS` line, and require code-owner review on `main`.
 The lock's signature and schema pins are read by importing your code, so `inv check` trusts the code
-it imports to describe itself: own the guarded modules, the contract and model modules, and the CI
-workflow that runs the check the same way (a change to the workflow can drop the step altogether):
+it imports to describe itself: own the guarded modules, the contract and model modules, the files
+that build the project (`pyproject.toml`, `setup.py`, `setup.cfg`, an in-tree build backend, the
+requirements files) and the CI workflow that runs the check the same way (a change to the workflow
+can drop the step altogether):
 
 ```text
 invariants.yaml        @your-org/payments-owners
 invariants.lock        @your-org/payments-owners
 src/payments/api.py    @your-org/payments-owners   # guarded targets and doors
 src/payments/models.py @your-org/payments-owners   # contracts and models the lock pins
+pyproject.toml         @your-org/payments-owners   # scan settings, build backend, console scripts
+setup.py               @your-org/payments-owners
+setup.cfg              @your-org/payments-owners
+requirements*.txt      @your-org/payments-owners
+_build/                @your-org/payments-owners   # an in-tree build backend (backend-path), if any
 .github/workflows/     @your-org/payments-owners
 ```
 
@@ -401,9 +430,11 @@ src/payments/models.py @your-org/payments-owners   # contracts and models the lo
   It blocks commands that would rewrite the lock or `pyproject.toml` without naming either: running a
   project script whose text names one of them, or that imports a project module whose text does
   (`python scripts/fix.py`, `python -m tools.fix`); a pytest run when a `conftest.py` it loads, a
-  `-p` plugin or a module they import names one; `git apply` or `git am` of a patch that names one;
-  `git stash pop|apply` of an entry that changes one; and `git checkout REF -- PATHS` or
-  `git restore --source REF PATHS` whose pathspec may match one (`.`, a parent directory, `:/`).
+  `-p` plugin or a module they import names one; `git apply`, `git am` or `patch` of a patch that
+  names one; `git stash pop|apply` of an entry that changes one; `git checkout REF -- PATHS` or
+  `git restore --source REF PATHS` whose pathspec may match one (`.`, a parent directory, `:/`);
+  `git merge`, `cherry-pick`, `reset --hard`, `checkout REF` or `switch REF` to a commit whose copy
+  differs; and a recursive `cp`, `rsync` or `ditto` into the tree of a directory holding one.
   It also blocks an edit of `.claude/settings.json` or `.claude/settings.local.json`, where the hooks
   themselves are configured.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,

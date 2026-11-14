@@ -30,7 +30,13 @@ understand ──> propose ──> verify ──> human approval ──> lock
   `pyproject`, or one that imports such a module (below), `git apply`/`git am` of a patch that
   names either, `git stash pop|apply` of an entry
   that changes either, `git checkout REF -- PATHS` or `git restore --source REF PATHS` whose
-  pathspec may match either (`.`, a directory holding it, a glob), and any edit of
+  pathspec may match either (`.`, a directory holding it, a glob), `patch` (`gpatch`, `busybox
+  patch`) of a patch that names either (read from `-i`, its second operand or a `<` redirect; one
+  piped in is blocked, `--dry-run` is not), a git command that moves the tree to a commit whose copy
+  of either differs (`git merge REF`, `git cherry-pick REF|A..B`, `git reset --hard|--keep|--merge
+  REF`, `git checkout REF` or `git switch REF` without paths, or the start point of a new branch),
+  a recursive copy (`cp -r`/`-a`, `rsync -r`/`-a`, `ditto`) into the lock's tree of a directory
+  that holds either, and any edit of
   `.claude/settings.json` or `.claude/settings.local.json`, where the hooks themselves are
   configured. The hook is a text check on one command and an early warning, not the gate: a
   determined agent can still get past it. `inv check --base origin/main` in CI is the gate.
@@ -55,7 +61,12 @@ understand ──> propose ──> verify ──> human approval ──> lock
   install from elsewhere, a relative import climbing above the tree), plugins named in
   `pytest.ini`, `tox.ini`, `setup.cfg` or `[tool.pytest.ini_options]` (`addopts = -p`,
   `pythonpath`), entry-point plugins, a script run by other tools (`make`, `tox`, `nox`, a shell
-  script), and anything past 400 files.
+  script), and anything past 400 files. Among shell commands it does not see an archive unpacked
+  over the tree (`tar -x`, `unzip`, `bsdtar`, `7z x`), `ed`/`ex`/`vim -c` scripts fed a file name
+  the shell computes, `git pull` and `git rebase` (what they bring in is fetched or replayed as they
+  run), and a write by a program it does not know; the
+  clearly-writing ones it can check cheaply (patch, the git commands above, a recursive copy) it
+  blocks, the rest are left to `inv check --base` in CI.
 - **`inv check` never reads the graph or calls a model.** The graph and the agent only suggest. What
   CI enforces is decided by the rule file, the lock and the source, read the same way on every run.
 

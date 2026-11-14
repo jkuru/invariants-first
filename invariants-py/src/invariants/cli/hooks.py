@@ -679,6 +679,9 @@ def _git_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) 
     if sub == "stash" and args[:1] and args[0] in ("pop", "apply"):
         ref = next((a for a in args[1:] if not a.startswith("-")), None)
         return _stash_touches(base, ref)
+    moved = _ref_rewrites(sub, args, base)
+    if moved:
+        return moved
     if any(a == "--pathspec-from-file" or a.startswith("--pathspec-from-file=") for a in args):
         return lock.LOCK_NAME if sub in ("checkout", "restore") else None
     specs: list[str] = []
@@ -706,6 +709,123 @@ def _git_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) 
     return next((h for s in specs if (h := _pathspec_hits(s, base))), None)
 
 
+_PATCH_VALUE = frozenset("pdiorBDFVzYg")          # patch's short options that take a value
+_PATCH_LONG_VALUE = frozenset({"--strip", "--directory", "--input", "--output", "--reject-file", "--prefix",
+                               "--ifdef", "--fuzz", "--version-control", "--suffix", "--basename-prefix", "--get"})
+
+
+def _patch_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> str | None:
+    """The protected file `patch` (gpatch, `busybox patch`) may change: one its patch text names (the
+    -i/--input file, the second operand, or what < redirects in), the lock when the patch comes from
+    a pipe; nothing for --dry-run (or BSD's -C/--check), which applies nothing."""
+    words = _command_words(words)
+    if words and pathlib.PurePath(words[0]).name == "busybox":
+        words = words[1:]
+    if not words or pathlib.PurePath(words[0]).name not in ("patch", "gpatch"):
+        return None
+    base, given, operands = cwd, [], []
+    args = iter(words[1:])
+    for a in args:
+        if a in ("--dry-run", "--check") or (a.startswith("-") and not a.startswith("--") and a[1:2] == "C"):
+            return None
+        if a.startswith("--"):
+            name, eq, value = a.partition("=")
+            if name in _PATCH_LONG_VALUE and not eq:
+                value = next(args, "")
+            if name == "--input":
+                given.append(value)
+            elif name == "--directory":
+                base = os.path.join(base, value)
+        elif a.startswith("-") and a != "-":
+            for i, letter in enumerate(a[1:], 1):
+                if letter in _PATCH_VALUE:
+                    value = a[i + 1:] or next(args, "")
+                    if letter == "i":
+                        given.append(value)
+                    elif letter == "d":
+                        base = os.path.join(base, value)
+                    break
+        else:
+            operands.append(a)
+    given += operands[1:2] or [t for op, t in redirects if op == "<"]
+    return _patch_touches(given, base)
+
+
+def _ref_touches(base: str, *diff: str) -> str | None:
+    """The protected file `git diff --name-only DIFF` lists; None when git cannot tell (the git
+    command that asked then fails as well, or names no commit)."""
+    import subprocess
+    try:
+        p = subprocess.run(["git", "diff", "--name-only", "--no-renames", *diff, "--"], cwd=base,
+                           capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    names = {pathlib.PurePath(n).name.casefold() for n in p.stdout.splitlines()}
+    return next((n for n in PROTECTED if n in names), None)
+
+
+_GIT_REF_VALUE = {"merge": frozenset({"-m", "-s", "-X", "-F", "--strategy", "--strategy-option", "--file"}),
+                  "cherry-pick": frozenset({"-m", "-X", "-s", "--mainline", "--strategy", "--strategy-option"}),
+                  "checkout": frozenset({"-b", "-B", "--orphan", "--conflict"}),
+                  "switch": frozenset({"-c", "-C", "--create", "--force-create", "--orphan", "--conflict"}),
+                  "reset": frozenset()}
+
+
+def _ref_rewrites(sub: str, args: list[str], base: str) -> str | None:
+    """The protected file a git command that moves the tree to another commit changes: `git merge REF`,
+    `git cherry-pick REF|A..B`, `git reset --hard|--keep|--merge REF`, and `git checkout REF` or
+    `git switch REF` (or the start point of a new branch) without paths, when REF's copy differs."""
+    if sub not in _GIT_REF_VALUE or "--" in args:
+        return None
+    if sub == "reset" and not any(a in ("--hard", "--keep", "--merge") for a in args):
+        return None                                 # --soft and --mixed leave the files as they are
+    refs, it = [], iter(args)
+    for a in it:
+        if a in _GIT_REF_VALUE[sub]:
+            next(it, None)
+        elif not a.startswith("-"):
+            refs.append(a)
+    if sub == "checkout" and len(refs) > 1:
+        return None                                 # REF PATHS: the pathspec check reads it
+    for ref in refs:
+        diff = (ref,) if ".." in ref else (f"{ref}^!",) if sub == "cherry-pick" else ("HEAD", ref)
+        hit = _ref_touches(base, *diff)
+        if hit:
+            return hit
+    return None
+
+
+_COPY_RECURSIVE = {"cp": re.compile(r"^-[A-Za-z]*[aRr]|^--(?:recursive|archive)$"),
+                   "rsync": re.compile(r"^-[A-Za-z]*[ar]|^--(?:recursive|archive)$")}
+
+
+def _copy_rewrites(words: list[str], cwd: str) -> str | None:
+    """The protected file a recursive copy (cp -r/-a, rsync -r/-a, ditto) brings into the lock's tree
+    from a directory that holds one (a staging copy of the project, say)."""
+    words = _command_words(words)
+    if not words:
+        return None
+    cmd = pathlib.PurePath(words[0]).name
+    if cmd not in (*_COPY_RECURSIVE, "ditto"):
+        return None
+    args = words[1:]
+    if cmd != "ditto" and not any(_COPY_RECURSIVE[cmd].match(a) for a in args):
+        return None
+    paths = [a for a in args if not a.startswith("-")]
+    if len(paths) < 2 or any(_computed(p) for p in paths):
+        return None
+    dest = os.path.realpath(os.path.join(cwd, os.path.expanduser(paths[-1])))
+    if not _lock_dir(dest if os.path.isdir(dest) else os.path.dirname(dest)):
+        return None
+    for src in paths[:-1]:
+        d = os.path.realpath(os.path.join(cwd, os.path.expanduser(src)))
+        if os.path.isdir(d) and (hit := _tree_holds(pathlib.Path(d))):
+            return hit
+    return None
+
+
 def _indirect_write(command: str, cwd: str) -> tuple[str, str, str | None] | None:
     """(protected file, the command, the project file it runs that names it, else None) for a command
     that may rewrite the lock or pyproject.toml without naming it: a Python script of the project whose
@@ -722,7 +842,8 @@ def _indirect_write(command: str, cwd: str) -> tuple[str, str, str | None] | Non
             continue
         for here in dirs:
             hit = next((h for s in _python_scripts(words, redirects, here) if (h := _script_rewrites(s))), None)
-            hit = hit or _git_rewrites(words, redirects, here)
+            hit = (hit or _git_rewrites(words, redirects, here) or _patch_rewrites(words, redirects, here)
+                   or _copy_rewrites(words, here))
             if hit:
                 return hit, " ".join(words), None
             via = _run_rewrites(words, redirects, here)
@@ -825,9 +946,9 @@ def _pretool(event: dict[str, Any]) -> int:
     if indirect:
         name, how, via = indirect
         through = f" (through {via}, a project file it imports or loads)" if via else ""
-        _err(f"invariants: blocked `{how}`{through}: it can rewrite {name} without naming it (a project script whose "
-             f"text names it, or a patch, stash or other commit's copy). The lock is written only by "
-             f"`inv lock` or `inv check --relock`, which refuse a weakening, and the scan settings in "
+        _err(f"invariants: blocked `{how}`{through}: it can rewrite {name} without naming it (a project script "
+             f"whose text names it, or a patch, stash, other commit or copied directory that holds it). The lock "
+             f"is written only by `inv lock` or `inv check --relock`, which refuse a weakening, and the scan settings in "
              f"pyproject.toml are the user's to edit; run those or tell the user.")
         return 2
     lock_name, pyproject = lock.LOCK_NAME.casefold(), "pyproject.toml"   # a case-insensitive filesystem
@@ -865,7 +986,9 @@ def cmd_hook(a: argparse.Namespace) -> int:
              the lock (or LOCK_NAME) or pyproject, `git apply`/`git am` of a patch naming one,
              `git stash pop|apply` of an entry that changes one, `git checkout REF -- PATHS` or
              `git restore --source REF PATHS` whose pathspec may match one ('.', a directory
-             holding it, a glob); and any edit of .claude/settings.json or
+             holding it, a glob), `patch` of a patch naming one, `git merge`/`cherry-pick`/
+             `reset --hard`/`checkout REF`/`switch REF` to a commit whose copy differs, and a
+             recursive cp/rsync/ditto into the tree of a directory holding one; and any edit of .claude/settings.json or
              .claude/settings.local.json, where the hooks themselves are configured.
     stop:    refuse to finish while `inv check --relock` fails, once per stop (stop_hook_active ends the
              loop): the relock re-pins only a change that weakens nothing. The rule file is the one in

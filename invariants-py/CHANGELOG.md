@@ -398,7 +398,10 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   edit of `invariants.lock` or of the scan settings in `pyproject.toml`, a command that rewrites
   either without naming it (a project script whose text names it, a project module the script
   imports or, for pytest, a conftest.py, a `-p` plugin or a module they import whose text names
-  it; `git apply`, `git stash pop`, `git checkout REF -- .`, `git restore --source`), an edit of
+  it; `git apply`, `git stash pop`, `git checkout REF -- .`, `git restore --source`; `patch`,
+  `gpatch` or `busybox patch` of a patch naming it; `git merge`, `cherry-pick`, `reset --hard`,
+  `checkout REF` or `switch REF` to a commit whose copy differs; a recursive `cp`, `rsync` or
+  `ditto` into the tree of a directory holding it), an edit of
   `.claude/settings.json` or `.claude/settings.local.json` (the hooks' own configuration), and
   finishing while `inv check --relock` fails (the relock re-pins only a change that weakens
   nothing; the rule file is found in the event's cwd or the nearest directory above it, and a lock
@@ -422,7 +425,24 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls, 4 the scan
   skipped an ablated `enforce` rule (3 and 4 are not passes).
 - A GitHub Action (`action.yml`) and a pre-commit hook (`.pre-commit-hooks.yaml`) at the repository
-  root.
+  root. The action installs invariants into a venv of its own before anything of the pull request is
+  installed (an optional `install` input runs after it) and runs `python -I -m invariants.cli check`
+  from it, never the `inv` on `PATH` (which a pull request's console script could replace); the
+  dependencies' site-packages are passed as `--site`, asked for with `python -I -S` so no `.pth` file
+  runs. start.md says plainly that installing the pull request runs its build code in the gate's
+  job, and recommends installing only the dependencies, from wheels.
+- `--site DIR` (validate, lock, verify, check, init, status, hook): import the app's dependencies from
+  DIR, after inv's own path and only where the app is imported; its `.pth` files are not run.
+- `python -m invariants.cli` (and `invariants.mcp`) drop the working directory from `sys.path` before
+  anything is imported, as `python -P` does, so a project's own `yaml.py`, `tomllib.py`, `json.py` or
+  `jsonschema.py` is not imported by the process that decides the verdict; the MCP server runs its
+  `inv` child with `-P`.
+- `inv check --base` compares with the scan settings read before the child that imports the app ran
+  (it read `pyproject.toml` again after it, so a module rewriting it back to the base's settings at
+  import hid an added exclude); the child is refused scan settings not read before it ran.
+- Text output (`inv scan`, `inv check`, lock diffs, `inv status`, errors) escapes control characters
+  in paths and messages (`\n`, `\r`, `\x1b`), and a line from data that would start a GitHub Actions
+  workflow command (`::error::`) is printed with a backslash first; JSON and SARIF were escaped already.
 
 ### pytest plugin
 

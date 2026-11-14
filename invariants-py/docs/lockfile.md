@@ -377,7 +377,9 @@ WEAKENED, reads `INV_ALLOW_WEAKENING` and writes the lock never imports the proj
 cannot change the verdict by what it does at import time: setting `INV_ALLOW_WEAKENING`, replacing
 `invariants.lock.changes`, or faking the whole lock. That process also reads everything the verdict
 depends on before the child runs (the rule file, the stored lock, the lock at `--base`, the scan of
-the sources), so a module that rewrites a file at import does not change what is compared. It takes
+the sources), so a module that rewrites a file at import does not change what is compared:
+`--base` compares with the scan settings read then too, not a second read of `pyproject.toml`, and
+the child is refused any scan settings that were not read before it ran. It takes
 from the child only what importing alone can tell: the targets' and providers' signatures, the
 schemas of pydantic, dataclass and TypedDict contracts, a live app's OpenAPI document, and the
 clause types read from those signatures. The rules, the scan settings, declared effects and
@@ -386,13 +388,23 @@ provider fields, and contracts read from files are pinned in the deciding proces
 So the lock trusts the code it imports to describe itself. A module that lies about its own
 signature or schema at import (a `__signature__`, a `model_json_schema` override, an `openapi()`
 that returns something else) gets that pinned, and a module can do anything the CI user can (write
-files, change the installed tools for a later step). Treat the guarded, contract and model modules
-as part of the rules: give them, the rule file, the lock and the CI workflow a code owner (start.md,
-"Make the check unskippable"). `inv verify` and `inv status` import the app in their own process
-and decide no weakening.
+files, change the installed tools for a later step). The same goes for any of the pull request's
+code that runs in the job before `inv check`: installing the project (`pip install -e .`) runs its
+build backend, `setup.py` or a console script it declares, and that code can replace the `inv` a
+later step runs or the files of its environment. The GitHub Action runs invariants from a venv of
+its own, set up before anything is installed, as `python -I -m invariants.cli` with the
+dependencies' site-packages passed as `--site` (their `.pth` files are not run), and `python -m
+invariants.cli` drops the working directory from `sys.path`, so a project's own `yaml.py` or
+`tomllib.py` is not imported by the deciding process; but no step order makes a job safe once the
+pull request's build code has run in it (start.md, "Make the check unskippable": install
+dependencies from wheels, and let `inv` import the project from the checkout). Treat the guarded,
+contract and model modules as part of the rules: give them, the rule file, the lock, the files that
+build the project (`pyproject.toml`, `setup.py`, `setup.cfg`, an in-tree build backend) and the CI
+workflow a code owner. `inv verify` and `inv status` import the app in their own process and decide
+no weakening.
 
 The full synopsis is `inv lock [file] [--check] [--accept-weakening] [--lock FILE]
-[--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]...`. `--allow-weakening` is
+[--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]... [--site DIR]...`. `--allow-weakening` is
 another spelling of `--accept-weakening`.
 
 ## Limitations
