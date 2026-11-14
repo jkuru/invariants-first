@@ -338,3 +338,34 @@ def test_monitor_events_carry_start_and_end():
         assert [e["key"] for e in evs] == ["a", "b"]
         for e in evs:
             assert 0 < e["start_ns"] <= e["end_ns"], e
+
+
+def test_status_says_to_rerun_a_stale_ablation_report(tmp_path):
+    """`inv status --ablation` with a report for another version of the rule says to re-run it, not to
+    write a new falsifier."""
+    import json
+    import textwrap
+    from cli_support import run_inv, write_project
+    root = write_project(tmp_path, {
+        "pay.py": textwrap.dedent("""
+            import invariants as inv
+
+            @inv.guard("PAY-1")
+            def refund(amount: int) -> None:
+                pass
+        """),
+        "invariants.yaml": textwrap.dedent("""
+            rules:
+              - id: PAY-1
+                guard: py:pay.refund
+                bad: args.amount <= 0
+                tests: [tests/test_pay.py::test_refuses]
+        """)})
+    for digest in ("sha256:" + "0" * 64, None):
+        abl: dict[str, Any] = {"rules": {"PAY-1": [{"falsifier": "tests/test_pay.py::test_refuses",
+                                                   "result": "caught"}]}, "not_load_bearing": []}
+        if digest:
+            abl["digests"] = {"PAY-1": digest}
+        (root / "r.json").write_text(json.dumps({"rules": {}, "ablation": abl}))
+        r = run_inv("status", "--import", "pay", "--ablation", "r.json", cwd=root)
+        assert "the ablation report is stale; re-run it" in r.stdout, r.stdout + r.stderr

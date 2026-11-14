@@ -138,6 +138,10 @@ def next_steps(rule: Rule, report: Report, row: dict[str, Any]) -> list[str]:
                        "(falsified_by: in a long-form rule), then the rule blocks instead of logging")
         elif row["ablation"] == "not run":
             out.append(f"prove its tests fail without it: {ABLATE_CMD}")
+        elif row["ablation"] == "no" and any(r.startswith(("ablation: the report is for another version",
+                                                           "ablation: the report does not say which version"))
+                                             for r in row["reasons"]):
+            out.append(f"the ablation report is stale; re-run it: {ABLATE_CMD}")
         elif row["ablation"] == "no":
             out.append("make a test under tests: fail when the rule is off (pytest --inv-ablate says why it did not)")
     if any(r.startswith("verify fails") for r in row["reasons"]) and row["guarded"] is not False:
