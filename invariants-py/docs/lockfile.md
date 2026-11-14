@@ -78,7 +78,9 @@ what each rule's meaning depends on, entry by entry:
     as its method, path, `parameters`, `requestBody` and `responses` schemas (a file no rule names
     an operation of is pinned by digest, and every operation with an `operationId` is pinned
     beside it, so a looser schema in any of them is judged; a file that is not JSON or YAML, or
-    has an unresolvable `$ref`, is pinned by digest alone);
+    has an unresolvable `$ref`, is pinned by digest alone). An OpenAPI 3.0 or Swagger 2.0
+    document also pins `dialect: openapi-3.0` (`swagger-2.0`), on the contract and on each of its
+    component schemas, so its schemas are judged with Draft 4's `exclusiveMaximum`;
   - `operations` for an `openapi` contract read from a live app, `{type: openapi, app:
     "myapi.main:app"}`: `inv lock` imports the app and calls `app.openapi()` (a FastAPI app has
     it). The operations rules (or the contract's `operation`) name are pinned, or every operation
@@ -194,11 +196,21 @@ TypedDict contract, and the schemas of an OpenAPI contract's operations.
 `invariants.lock.constraint_weakening` (in `invariants.lock.schema_diff`) marks a change **WEAKENED** when the schema may now accept more
 input. That covers:
 
-- `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems` or `maxProperties` raised or removed;
-- the matching minimums lowered or removed;
+- `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems`, `maxProperties` or `maxContains` raised
+  or removed;
+- the matching minimums lowered or removed (`minContains` defaults to 1, so adding `minContains: 0`
+  is a lowering);
 - a Draft 4 / OpenAPI 3.0 boolean `exclusiveMaximum` or `exclusiveMinimum` turned off (`true` to
-  `false` or absent): the bound itself now passes;
-- an `enum` value added, or the enum removed;
+  `false` or absent): the bound itself now passes. In Draft 4 and OpenAPI 3.0 (and Swagger 2.0)
+  `exclusiveMaximum` is only a flag on `maximum`, and a number there bounds nothing, so `maximum: 10`
+  to `exclusiveMaximum: 10` is **WEAKENED** there, while in JSON Schema 2020-12 (OpenAPI 3.1,
+  pydantic) it is a tightening. The dialect comes from the schema's `$schema`, a boolean
+  `exclusiveMaximum`/`exclusiveMinimum` in it, or the OpenAPI version: the pin of an OpenAPI 3.0 or
+  Swagger 2.0 document records `dialect: openapi-3.0` (or `swagger-2.0`) on the contract and its
+  component schemas (an OpenAPI 3.1 pin records none). A changed `$schema` is **WEAKENED**;
+- an `enum` value added, or the enum removed. `const` and `enum` are compared as values, whole:
+  below them nothing is a schema, so `const: {"a": 1}` to `{"a": 2}` is a new value, not a
+  changed subschema, and `const: null` removed lets any value through;
 - a field that is no longer `required` (or an OpenAPI parameter or request body no longer
   `required: true`), or a property removed; the `required` list is compared as a set, so a field
   added to it is a tightening, and a reordered list (pydantic lists required fields in declaration
@@ -207,7 +219,11 @@ input. That covers:
   widened or removed;
 - OpenAPI 3.0 `nullable` (or Swagger's `x-nullable`) turned on: `false` to `true`, or `true` added;
 - a `$ref` removed (the value is now `{}`, Any) or pointed at a schema with a different body, and a
-  `$defs` entry removed while the old schema referred to it;
+  `$defs` entry removed while the old schema referred to it. References are resolved the way a
+  validator does (`$id`, `$anchor`, `$dynamicAnchor`, Draft 7's `"$id": "#name"`, JSON pointers), so
+  an `$anchor` or `$id` edit that makes an unchanged `$ref` name another schema is judged by the
+  old and new targets' bodies: **WEAKENED** unless they are the same. In Draft 7 and earlier (and
+  OpenAPI 3.0) a `$ref` added beside other keywords is **WEAKENED**: they are ignored next to it;
 - `additionalProperties` relaxed: `false` to anything else (absent, `true`, `{}` or a schema), a
   schema to absent or `true`, or, on a model (the schema's root, a `$defs` entry, or an object with
   `properties`, where absent means extras are ignored), absent to `true` (or to a schema), so extra
@@ -216,12 +232,23 @@ input. That covers:
   `dict[str, Any]` to `dict[str, int]` is a tightening. A schema changed into another schema is
   judged inside it, like any other subschema;
 - `items`, `prefixItems`, `contains`, `allOf`, `not`, `propertyNames`, `dependentRequired`,
-  `dependentSchemas`, `if`, `then`, `else`, `properties` or `unevaluatedProperties` removed (adding
-  one is a tightening, except under `unevaluatedProperties` or `unevaluatedItems`: see below; a
-  constraint removed inside `items` is judged where it was), a
-  `dependentRequired` entry dropped, and any change inside `not`, `if` or `oneOf`, where a tighter
-  subschema can let more input through (a value that failed a `oneOf` because it matched two
-  branches passes once one of them is tightened);
+  `dependentSchemas`, Draft 7's `dependencies`, `if`, `then`, `else`, `properties` or
+  `unevaluatedProperties` removed (adding one is a tightening, except under `unevaluatedProperties`
+  or `unevaluatedItems`: see below; a constraint removed inside `items` is judged where it was), a
+  `dependentRequired` or `dependencies` entry dropped (or a name dropped from it), a
+  `patternProperties` entry removed;
+- a subschema replaced by `true` (or `{}`), or `false` replaced by a schema: an `allOf`, `anyOf`,
+  `oneOf` or `prefixItems` entry, a property, a pattern, a `$defs` entry, `items`, `not`, ... A
+  subschema replaced by `false` is a tightening;
+- a change where a tighter subschema can let more input through. Each place in a schema has a
+  polarity: under `not` it is reversed, so there a looser subschema is the weakening and a tighter
+  one is not (`not: {maximum: 5}` to `not: {maximum: 3}` lets 4 through); under `oneOf`, `if` and a
+  `contains` with `maxContains` both directions can let more through (a value that failed a `oneOf`
+  because it matched two branches passes once one of them is tightened), so any change there that
+  is not a no-op is **WEAKENED**. A `$ref` passes its place's polarity to the schema it names, so a
+  `$defs` entry used under `not` is judged the other way round, one used both ways is judged both
+  ways, and the same holds for a shared component of the schema table (an OpenAPI
+  `components/schemas` entry named under `not` in an operation);
 - a property added while `additionalProperties` (or `unevaluatedProperties`) was `false` or a
   schema, so an input carrying it, rejected before, now passes: an optional field added to a
   pydantic model with `extra="forbid"` is **WEAKENED**. It is not when the new property is also
@@ -250,13 +277,14 @@ input. That covers:
   operationId from the function name) is reported as renamed and compared field by field with the
   old one, so a rename cannot hide a looser body.
 
-Adding a constraint or tightening one is not a weakening. These count as tightenings, judged with
-the neighbouring keywords:
+Adding a constraint or tightening one is not a weakening (under `not`, loosening one is not). These
+count as tightenings, judged with the neighbouring keywords:
 
 - a bound replaced by its exclusive or inclusive twin at least as tight: `le=10` to `lt=10`, and
   on an integer `ge=1` to `gt=0` or `le=9` to `lt=10` (for an integer `gt=k` is `ge=k+1`, when
   both bounds are integral: `ge=1.5` to `gt=0.6` lets 1 through and is **WEAKENED**);
-- an `enum` replaced by a `const` that was one of its values (`Literal["a", "b"]` to `Literal["a"]`);
+- an `enum` replaced by a `const` that was one of its values (`Literal["a", "b"]` to `Literal["a"]`),
+  or values dropped from it; an `anyOf` with branches dropped;
 - a `type` narrowed: `number` to `integer`, or a type dropped from a list;
 - a `pattern` given `^` or `$` anchors it did not have, with the rest unchanged (a pattern with a
   top-level `|` is not judged this way). Any other pattern change is still a possible weakening.

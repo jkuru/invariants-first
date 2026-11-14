@@ -63,6 +63,7 @@ FIELD_POLICY: dict[str, str] = {
     "contract.type": WEAKENING, "contract.ref": WEAKENING, "contract.app": WEAKENING,
     "contract.schema": PIN, "contract.operations": PIN, "contract.hash": PIN, "contract.signature": PIN,
     "contract.types": PIN, "contract.param_schemas": PIN,
+    "contract.dialect": PIN,            # an OpenAPI 3.0 / Swagger 2.0 document: its schemas read as Draft 4
     # targets and providers
     "target.effects": RANKED,
     "target.signature": PIN, "target.types": PIN, "target.reply_schema": PIN, "target.param_schemas": PIN,

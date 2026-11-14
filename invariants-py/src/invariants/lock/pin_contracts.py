@@ -60,6 +60,19 @@ def _openapi_app(name: str, ref: str) -> Any:
         raise LoadError(f"contract {name}: {ref}.openapi() failed ({type(e).__name__}: {e})") from e
 
 
+def openapi_dialect(spec: Any) -> str | None:
+    """openapi-3.0 or swagger-2.0 for a document whose schemas follow Draft 4 (exclusiveMaximum a flag
+    on maximum, not a bound of its own), so the lock judges them that way; None for OpenAPI 3.1 (JSON
+    Schema 2020-12), which pins no dialect."""
+    if not isinstance(spec, dict):
+        return None
+    if isinstance(spec.get("swagger"), str) and spec["swagger"].startswith("2"):
+        return "swagger-2.0"
+    if isinstance(spec.get("openapi"), str) and spec["openapi"].startswith("3.0"):
+        return "openapi-3.0"
+    return None
+
+
 def _operation_ids(spec: Any) -> list[str]:
     return sorted({op["operationId"] for item in (spec.get("paths") or {}).values() if isinstance(item, dict)
                    for op in item.values() if isinstance(op, dict) and isinstance(op.get("operationId"), str)})
@@ -71,6 +84,7 @@ class _OpenAPIDoc:
 
     def __init__(self, name: str, label: str, spec: dict[str, Any], pins: Schemas) -> None:
         self.name, self.label, self.spec, self.pins = name, label, spec, pins
+        self.dialect = openapi_dialect(spec)
 
     def lookup(self, ref: str) -> Any:
         target: Any = self.spec
@@ -89,7 +103,8 @@ class _OpenAPIDoc:
                 if ref in stack:
                     return {"$ref": ref, "recursive": True}
                 body = self.schema(self.lookup(ref), (*stack, ref))
-                got = (self.pins.add({"name": f"{self.label}{ref[1:]}", "schema": body})
+                got = (self.pins.add({"name": f"{self.label}{ref[1:]}", "schema": body,
+                                      **({"dialect": self.dialect} if self.dialect else {})})
                        if ref.startswith(_SHARED_SCHEMAS) else body)
                 rest = {k: self.schema(v, stack) for k, v in node.items() if k != "$ref" and k not in SCHEMA_PROSE}
                 return {"allOf": [got], **rest} if rest else got
@@ -176,8 +191,9 @@ def contract_hash(name: str, c: dict[str, Any], base_dir: pathlib.Path,
     if not f.is_file():                                        # is_file() itself returns False on an OSError
         raise LoadError(f"contract {name}: {ref} not found next to the rule file")
     if ctype == "openapi" and operations:
-        entry["operations"] = _openapi_operations(name, f.name, _openapi_file(name, f), sorted(set(operations)), pins)
-        return entry
+        spec = _openapi_file(name, f)
+        entry["operations"] = _openapi_operations(name, f.name, spec, sorted(set(operations)), pins)
+        return _with_dialect(entry, spec)
     try:
         entry["hash"] = _sha(f.read_bytes())
     except OSError as e:
@@ -220,6 +236,7 @@ def _pin_every_operation(name: str, f: pathlib.Path, entry: dict[str, Any], pins
         if ids:
             trial = Schemas(inline=pins.inline)            # merged only when every operation reads
             entry["operations"] = _openapi_operations(name, f.name, spec, ids, trial)
+            _with_dialect(entry, spec)
             pins.table.update(trial.table)
     except LoadError:
         pass                                        # not a document it can read: the digest pins it
@@ -237,4 +254,12 @@ def _openapi_app_pin(name: str, c: dict[str, Any], operations: list[str] | None,
     spec = _openapi_app(name, app)
     named = [*(operations or []), *([c["operation"]] if isinstance(c.get("operation"), str) else [])]
     ops = sorted(set(named)) if named else _operation_ids(spec if isinstance(spec, dict) else {})
-    return {"type": "openapi", "app": app, "operations": _openapi_operations(name, app, spec, ops, pins)}
+    return _with_dialect({"type": "openapi", "app": app, "operations": _openapi_operations(name, app, spec, ops, pins)},
+                         spec)
+
+
+def _with_dialect(entry: dict[str, Any], spec: Any) -> dict[str, Any]:
+    """The entry with the document's dialect (openapi_dialect), when it is not OpenAPI 3.1."""
+    if openapi_dialect(spec):
+        entry["dialect"] = openapi_dialect(spec)
+    return entry

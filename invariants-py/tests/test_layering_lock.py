@@ -257,9 +257,10 @@ def test_with_renamed_operations() -> None:
 def test_pin_changes_collects_schema_refs() -> None:
     a = {"types": {"x": {"$ref": "sha256:aa"}}, "signature": "f(x)"}
     b = {"types": {"x": {"$ref": "sha256:bb"}}, "signature": "f(x)"}
-    refs: list[tuple[str, str, str, str]] = []
+    refs: list[tuple[typing.Any, ...]] = []
     assert rule_diff._pin_changes("target t", "target", "types", a, b, {}, refs) == []
-    assert refs == [("target t types.x", "types.x", "sha256:aa", "sha256:bb")]
+    # the fifth item is the polarity of the reference's place (+1: not under not, oneOf or if)
+    assert refs == [("target t types.x", "types.x", "sha256:aa", "sha256:bb", schema_diff.POS)]
     a = {"operations": {"createRefund": {"method": "POST"}}}
     (c,) = rule_diff._pin_changes("contract api", "contract", "operations", a, {"operations": {}},
                                   {"createRefund": ["R-1"]}, [])

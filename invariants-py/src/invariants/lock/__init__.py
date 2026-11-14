@@ -231,7 +231,7 @@ def changes(old: dict[str, Any], new: dict[str, Any],
             out.append(Change(f"rule {rid}", "added"))
         else:
             out += _rule_changes(rid, ra[rid], rb[rid], (types or {}).get(rid))
-    refs: list[tuple[str, str, str, str]] = []
+    refs: list[tuple[Any, ...]] = []
     for section, kind in (("targets", "target"), ("providers", "provider"), ("contracts", "contract")):
         sa, sb = old.get(section) or {}, new.get(section) or {}
         for name in sorted(set(sa) | set(sb)):
