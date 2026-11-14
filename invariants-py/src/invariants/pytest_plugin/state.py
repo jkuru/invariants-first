@@ -10,6 +10,10 @@ from ..errors import LoadError
 from ..loader import load
 from ..registry import Registry, default_registry
 
+DEFAULT_RULE_FILES = ("invariants.yaml", "invariants.yml", "invariants.json")   # found in the rootdir
+NO_RULES = ("no rules loaded, so nothing was checked: pass --inv-rules PATH, set inv_rules in the pytest ini, "
+            "or put invariants.yaml in the rootdir ({root})")
+
 
 class _SessionState:
     """What every part of InvSession reads: the options, the rule file, the counts and the ablation plan."""
@@ -22,6 +26,7 @@ class _SessionState:
         self.lenient: bool = opt("inv_ablate_lenient")
         self.report_on: bool = opt("inv_report")
         self.json_path: str | None = opt("inv_report_json")
+        self.discovered = False                     # the rule file was found in the rootdir
         self.rules_path = self._rules_path()
         self.rules: Registry | None = None          # the loaded rule file (not installed anywhere)
         self._saved: Registry | None = None         # the default registry's contents before we installed
@@ -52,7 +57,18 @@ class _SessionState:
         except (ValueError, OSError):
             return str(path)
 
+    def _shown_root(self) -> str:
+        """pytest's rootdir, relative to where pytest was run when it is under it."""
+        try:
+            rel = pathlib.Path(self.config.rootpath).resolve().relative_to(
+                pathlib.Path(self.config.invocation_params.dir).resolve())
+            return rel.as_posix() if rel.parts else "."
+        except (ValueError, OSError):
+            return str(self.config.rootpath)
+
     def _rules_path(self) -> pathlib.Path | None:
+        """--inv-rules, else the inv_rules ini option, else (with --inv-ablate or --inv-verify, which
+        need rules) the invariants.yaml, .yml or .json in pytest's rootdir."""
         cli = self.config.getoption("inv_rules")
         if cli:
             return pathlib.Path(self.config.invocation_params.dir, cli).resolve()
@@ -60,6 +76,12 @@ class _SessionState:
         if ini:
             base = self.config.inipath.parent if self.config.inipath else self.config.rootpath
             return pathlib.Path(base, ini).resolve()
+        if self.ablate_on or self.verify_on:
+            for name in DEFAULT_RULE_FILES:
+                found = pathlib.Path(self.config.rootpath, name)
+                if found.is_file():
+                    self.discovered = True
+                    return found.resolve()
         return None
 
     @property

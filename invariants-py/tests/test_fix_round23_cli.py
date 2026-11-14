@@ -142,17 +142,35 @@ BROKEN = {"pyproject.toml": '[project]\nname = "app7"\nversion = "0"\n',
                                 "class Order(BaseModel):\n    qty: int = Field(gt=0)\n"}
 
 
-def test_init_after_a_failed_lock_says_what_to_do_next(tmp_path):
+def test_init_comments_out_a_contract_whose_model_does_not_import(tmp_path):
+    # round 24: init tries the lock's pin on each drafted contract first, so a model module that
+    # imports a missing package is written commented out with the reason, and the lock is written
     pytest.importorskip("pydantic")
     root = write_project(tmp_path / "proj", BROKEN)
     r = run_inv("init", cwd=root)
-    assert r.returncode == 1 and (root / "invariants.yaml").exists() and not (root / "invariants.lock").exists()
-    assert "cannot import app7.models" in r.stderr
-    assert "no lock was written" in r.stderr and "then run `inv lock invariants.yaml`" in r.stderr
-    assert "Do not rerun `inv init`" in r.stderr and "--no-lock" in r.stderr
-    # nothing was pinned, so the header says to run inv lock
-    assert (root / "invariants.yaml").read_text().splitlines()[0].endswith(
-        "Review it, then run `inv lock` and commit both files.")
+    assert r.returncode == 0 and (root / "invariants.lock").exists(), r.stderr
+    text = (root / "invariants.yaml").read_text()
+    assert "# not written as a contract: `inv lock` cannot pin it: contract order: cannot import app7.models" in text
+    assert '  # order: {type: pydantic, ref: "app7.models:Order"}' in text and "contracts: {}" in text
+    assert "left 1 model(s) commented out" in r.stdout
+
+
+def test_init_after_a_failed_lock_says_what_to_do_next(tmp_path, capsys):
+    # the lock step failing anyway (here: a rule file whose contract does not import) still says what to do
+    root = write_project(tmp_path / "proj", BROKEN)
+    path = root / "invariants.yaml"
+    path.write_text('spec: invariant/v0.1\ncontracts:\n  order: {type: pydantic, ref: "app7.models:Order"}\n')
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        code = commands._init_lock(argparse.Namespace(path=[]), pathlib.Path("invariants.yaml"))
+    finally:
+        os.chdir(cwd)
+    err = capsys.readouterr().err
+    assert code == 1 and not (root / "invariants.lock").exists()
+    assert "cannot import app7.models" in err
+    assert "no lock was written" in err and "then run `inv lock invariants.yaml`" in err
+    assert "Do not rerun `inv init`" in err and "--no-lock" in err and "often a model module" not in err
     r = run_inv("init", cwd=root)
     assert r.returncode == 2 and "already exists" in r.stderr
     assert "no invariants.lock yet" in r.stderr and "run `inv lock invariants.yaml`" in r.stderr

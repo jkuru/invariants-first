@@ -172,7 +172,7 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
         cfg = tomllib.loads(py.read_text(encoding="utf-8")).get("tool", {}).get("invariants", {}).get("scan", {})
     except tomllib.TOMLDecodeError as e:
         raise Usage(f"{py}: {e}") from e
-    for k in ("roots", "exclude"):
+    for k in ("roots", "exclude", "extend_exclude"):
         if k in cfg and not (isinstance(cfg[k], list) and all(isinstance(x, str) for x in cfg[k])):
             raise Usage(f"{py}: [tool.invariants.scan] {k} must be a list of strings")
     return cfg
@@ -181,9 +181,15 @@ def scan_config(path: pathlib.Path) -> dict[str, Any]:
 DEFAULT_SCAN_EXCLUDE = lock.DEFAULT_SCAN_EXCLUDE
 
 
+def effective_exclude(cfg: dict[str, Any]) -> list[str]:
+    """The exclude globs [tool.invariants.scan] gives: `exclude` replaces the defaults (tests, docs,
+    examples and the like), `extend_exclude` adds to them (or to `exclude`, when both are given)."""
+    base = _str_list(cfg["exclude"]) if isinstance(cfg.get("exclude"), list) else list(DEFAULT_SCAN_EXCLUDE)
+    return [*base, *_str_list(cfg.get("extend_exclude"))]
+
+
 def _exclude(a: argparse.Namespace, path: pathlib.Path) -> list[str]:
-    cfg = scan_config(path)
-    return [*cfg.get("exclude", DEFAULT_SCAN_EXCLUDE), *a.exclude]
+    return [*effective_exclude(scan_config(path)), *a.exclude]
 
 
 def _roots(a: argparse.Namespace, path: pathlib.Path) -> list[pathlib.Path]:

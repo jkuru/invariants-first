@@ -53,7 +53,7 @@ inv check: invariants.yaml
   FAIL  since main
         1 change(s) since main weaken a rule:
           schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (maximum raised: larger values pass; used by contract refund_request schema)
-        a person must accept these: re-run with --allow-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer (for example from a pull-request label), never by the change's author or agent
+        a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer (for example from a pull-request label), never by the change's author or agent
 fail
 ```
 
@@ -293,7 +293,12 @@ $ inv scan
 PAY-1: pass (no findings)
 scanned 2 file(s), 4 function(s)
 $ inv status --import payments
-PAY-1    enforce    held
+PAY-1 (enforce: blocks a bad call; held (unproven: no --ablation))
+  checks:  py:payments.refund refuses a call when: refund must be positive; refund exceeds what is left of the charge; and every call to py:payments.send_to_gateway goes through py:payments.refund
+  guard:   yes
+  scan:    pass, no path skips it
+  ablation proved it: not run
+  next:    prove its tests fail without it: pytest --inv-rules invariants.yaml --inv-ablate --inv-report-json build/inv-report.json, then inv status --ablation build/inv-report.json
 verify: pass
 $ pytest --inv-rules invariants.yaml --inv-ablate -q
 ..                                                                       [100%]

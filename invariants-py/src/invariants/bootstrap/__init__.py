@@ -12,7 +12,10 @@ It reads the source (it does not import it) and finds:
   translated from Python to CEL. These are written commented out: a rule needs `@inv.guard("ID")` on the
   function before `inv check` passes, so `inv init` leaves that decision, and the edit, to a person.
 
-The file it writes passes `inv check` as written. It never overwrites a rule file.
+Before writing (unless `--no-lock`), `inv init` tries the lock's pin on each drafted contract, importing
+its model as `inv lock` will; a model pydantic cannot give a JSON Schema for (an arbitrary-type field)
+or whose module does not import is written commented out, with the reason. The file it writes passes
+`inv check` as written. It never overwrites a rule file.
 
 The package is split by seam:
 - translate.py: Python -> CEL (one condition, its truth tests by annotation, module constants)
@@ -23,9 +26,10 @@ from __future__ import annotations
 
 from .finding import CON_TYPES, EXCLUDE, FIELD_CONSTRAINTS, MODEL_ROOTS, Found, Guard, Model, discover  # noqa: F401
 from .translate import Unsupported, module_constants, negate, to_cel, truth_kind  # noqa: F401
-from .writing import render, summary  # noqa: F401
+from .writing import contract_record, contracts, render, summary  # noqa: F401
 
 # `from invariants.bootstrap import *` exports these names and no submodules.
 __all__ = ["CON_TYPES", "EXCLUDE", "FIELD_CONSTRAINTS", "Found", "Guard", "MODEL_ROOTS", "Model",
-           "Unsupported", "discover", "module_constants", "negate", "render", "summary", "to_cel",
+           "Unsupported", "contract_record", "contracts", "discover", "module_constants", "negate", "render",
+           "summary", "to_cel",
            "truth_kind"]

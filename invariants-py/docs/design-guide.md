@@ -313,7 +313,8 @@ around without type hints, the fix is usually one annotation.
 
 The scan skips test code (`tests/`, `test/`, `testing/`, `test_*.py`, `*_test.py`, `conftest.py`)
 and migrations (`migrations/`, `alembic/`) at any depth: a unit test calling the repository directly
-is not a back door. `[tool.invariants.scan] exclude` in `pyproject.toml` replaces that list.
+is not a back door. `[tool.invariants.scan] extend_exclude` in `pyproject.toml` adds to that list;
+`exclude` replaces it.
 
 ### 3.4 The four kinds of finding
 

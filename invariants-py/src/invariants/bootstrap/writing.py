@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 
-from .finding import Found, Guard
+from .finding import Found, Guard, Model
 
 
 def _snake(name: str) -> str:
@@ -22,9 +22,9 @@ def _rule_id(g: Guard, taken: set[str]) -> str:
     return rid
 
 
-def _contract_lines(found: Found) -> list[str]:
-    """One pydantic contract per model with constraints, each under a comment naming them."""
-    contracts: list[str] = []
+def contracts(found: Found) -> list[tuple[str, Model]]:
+    """(contract name, model) for each model with constraints: the contracts `inv init` drafts."""
+    out: list[tuple[str, Model]] = []
     names: set[str] = set()
     for m in found.models:
         if not m.constraints:
@@ -33,12 +33,31 @@ def _contract_lines(found: Found) -> list[str]:
         if name in names:
             name = _snake(f"{m.module.replace('.', '_')}_{m.name}")
         names.add(name)
+        out.append((name, m))
+    return out
+
+
+def contract_record(m: Model) -> dict[str, str]:
+    """The contract `inv init` drafts for a model."""
+    return {"type": "pydantic", "ref": f"{m.module}:{m.name}"}
+
+
+def _contract_lines(found: Found) -> list[str]:
+    """One pydantic contract per model with constraints, each under a comment naming them; a model
+    `inv lock` cannot pin is written commented out, with the reason."""
+    lines: list[str] = []
+    for name, m in contracts(found):
         shown = ", ".join(m.constraints[:4]) + (f", +{len(m.constraints) - 4} more" if len(m.constraints) > 4 else "")
-        contracts.append(f"  # {shown}")
+        lines.append(f"  # {shown}")
         if m.validators:
-            contracts.append(f"  # (its {m.validators} validator function(s) are code, not schema: not pinned)")
-        contracts.append(f"  {name}: {{type: pydantic, ref: {_q(f'{m.module}:{m.name}')}}}")
-    return contracts
+            lines.append(f"  # (its {m.validators} validator function(s) are code, not schema: not pinned)")
+        entry = f"{name}: {{type: pydantic, ref: {_q(contract_record(m)['ref'])}}}"
+        if m.problem:
+            lines.append(f"  # not written as a contract: `inv lock` cannot pin it: {m.problem}")
+            lines.append(f"  # {entry}")
+        else:
+            lines.append(f"  {entry}")
+    return lines
 
 
 def _suggested_lines(rules: list[Guard]) -> list[str]:
@@ -85,8 +104,9 @@ def render(found: Found, locked: bool = False) -> str:
              "# change lets a model accept more than it does today (a raised limit, a removed",
              "# constraint, a new enum value), unless someone accepts it with `inv lock --accept-weakening`.",
              "spec: invariant/v0.1", ""]
-    contracts = _contract_lines(found)
-    lines += ["contracts:", *contracts, ""] if contracts else ["contracts: {}", ""]
+    contract_lines = _contract_lines(found)
+    active = any(not m.problem for _, m in contracts(found))
+    lines += ["contracts:" if active else "contracts: {}", *contract_lines, ""]
     rules = [g for g in found.guards if g.clauses]
     lines.append("rules:")
     if found.doors is not None:
@@ -104,11 +124,14 @@ def render(found: Found, locked: bool = False) -> str:
 
 
 def summary(found: Found) -> list[str]:
-    models = [m for m in found.models if m.constraints]
+    models = [m for m in found.models if m.constraints and not m.problem]
     n_cons = sum(len(m.constraints) for m in models)
     rules = [g for g in found.guards if g.clauses]
+    unpinnable = [m for m in found.models if m.constraints and m.problem]
     return [f"read {found.files} source file(s)",
             f"pinned {len(models)} pydantic model(s) with {n_cons} constraint(s)",
+            *([f"left {len(unpinnable)} model(s) commented out: `inv lock` cannot pin them ("
+               + ", ".join(m.name for m in unpinnable) + "; the file says why)"] if unpinnable else []),
             f"suggested {len(rules)} rule(s) from function preconditions (commented out; see the file)",
             *(_doors_summary(found))]
 

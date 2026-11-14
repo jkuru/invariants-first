@@ -157,12 +157,42 @@ def _fresh_lock(a: argparse.Namespace, path: pathlib.Path,
     """The lock the rule file pins now and its clause types, with the app imported from this checkout."""
     with _import_path(path, a.path), isolated() as reg:
         load(path)
-        fresh = lock.build(doc, path.resolve().parent,
+        try:
+            fresh = lock.build(doc, path.resolve().parent,
                                scan_settings(a, path) if lock.mediated(doc) else None)
+        except (LoadError, Usage, scanner.ScanConfigError):
+            raise
+        except Exception as e:
+            unpinnable = contract_problems(doc, path.resolve().parent)
+            if not unpinnable:
+                raise
+            raise LoadError("; ".join(unpinnable) + f" (comment out or delete it in {path.name}, or fix the "
+                            f"model, then run `inv lock` again)") from e
         types = lock.clause_types(reg)
         for w in outside_roots(path, doc, a.path):
             _err(w)
     return fresh, types
+
+
+def contract_problem(name: str, c: Any, base_dir: pathlib.Path) -> str | None:
+    """Why `inv lock` cannot pin one contract (naming the contract and its ref), else None. Imports
+    the contract's module, as `inv lock` does."""
+    try:
+        lock.contract_hash(name, c if isinstance(c, dict) else {}, base_dir)
+    except LoadError as e:
+        return str(e)
+    except Exception as e:                       # pydantic cannot build the model's JSON Schema, say
+        ref = c.get("ref") or c.get("app") if isinstance(c, dict) else None
+        first = (str(e).strip().splitlines() or [""])[0]
+        return f"contract {name} ({ref}) cannot be pinned: {type(e).__name__}: {first}"
+    return None
+
+
+def contract_problems(doc: dict[str, Any], base_dir: pathlib.Path) -> list[str]:
+    """contract_problem for every contract of a rule document."""
+    contracts = doc.get("contracts") or {}
+    found = [contract_problem(n, c, base_dir) for n, c in contracts.items()] if isinstance(contracts, dict) else []
+    return [p for p in found if p]
 
 
 def _damaged(damaged: list[str], lock_path: pathlib.Path) -> bool:
@@ -286,6 +316,10 @@ def cmd_scan(a: argparse.Namespace) -> int:
         text = json.dumps(scanner.to_sarif(report, __version__), indent=2)
     elif a.format == "json":
         text = json.dumps(report.as_dict(), indent=2)
+    elif not report.scanned and not report.findings and not report.ablated_enforce:
+        # no rule names a sink: say so in plain words, rather than one "not scanned" line per rule
+        text = "\n".join([f"no door rules to check ({report.files} file(s) scanned); a rule with door: and sink: "
+                          f"(or guard: and sink:) is what `inv scan` checks", *(f"note: {n}" for n in report.notes)])
     else:
         text = scanner.to_text(report)
     if a.output:
@@ -339,6 +373,8 @@ def cmd_init(a: argparse.Namespace) -> int:
                     f"directory that holds your package)")
     if not a.no_doors:
         found.doors = _init_doors(a, path, project)
+    if not a.no_lock:
+        _check_drafted_contracts(found, path, a.path)
     path.write_text(bootstrap.render(found, locked=not a.no_lock), encoding="utf-8")
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
@@ -350,6 +386,16 @@ def cmd_init(a: argparse.Namespace) -> int:
     if code != OK:                  # nothing was pinned: the header says to run `inv lock`
         path.write_text(bootstrap.render(found), encoding="utf-8")
     return code
+
+
+def _check_drafted_contracts(found: Any, path: pathlib.Path, extra: Sequence[str]) -> None:
+    """Try the lock's pin on each contract `inv init` drafts (importing the model as `inv lock` will),
+    so one pydantic cannot give a JSON Schema for is written commented out, with the reason, instead
+    of failing the lock step."""
+    from .. import bootstrap
+    with _import_path(path, extra), isolated():
+        for name, m in bootstrap.contracts(found):
+            m.problem = contract_problem(name, bootstrap.contract_record(m), path.resolve().parent)
 
 
 def _already_exists(path: pathlib.Path) -> str:
@@ -392,9 +438,9 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
              "(see docs/start.md)")
     else:
         _err(f"`inv lock` failed, so no lock was written; {path} is kept. Next: fix what it reports above "
-             f"(often a model module that imports a package not installed in this environment), then run "
-             f"`inv lock {path}`. Do not rerun `inv init`: it never overwrites {path} (to draft it again, "
-             f"delete it and run `inv init`, or `inv init --no-lock` to skip the lock step).")
+             f"in {path} or in the code it names (a contract or rule `inv lock` cannot pin can be commented "
+             f"out), then run `inv lock {path}`. Do not rerun `inv init`: it never overwrites {path} (to "
+             f"draft it again, delete it and run `inv init`, or `inv init --no-lock` to skip the lock step).")
     return code
 
 

@@ -10,6 +10,7 @@ import pytest
 from ..errors import CoverageError
 from ..registry import observe
 from .report import _Report
+from .state import NO_RULES
 
 
 class InvSession(_Report):
@@ -30,7 +31,7 @@ class InvSession(_Report):
             self.plan_ablation(session, reg)
         if self.verify_on:
             if not reg.rules:
-                self.verify_problems = ["no rules loaded: pass --inv-rules PATH (or set inv_rules)"]
+                self.verify_problems = [NO_RULES.format(root=self._shown_root())]
                 return
             try:
                 self.verify_count = reg.verify()

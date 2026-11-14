@@ -307,8 +307,9 @@ scanned under the module names `inv lock` imports it by. A file is named from th
 holds it. Test code and migrations are skipped by default, at any depth (`tests/`, `test/`,
 `testing/`, `test_*.py`, `*_test.py`, `conftest.py`, `migrations/`, `alembic/`): a unit test that calls
 a sink directly is not a back door. Scan roots and excludes can
-also live in the `pyproject.toml` beside the rule file (an `exclude` there replaces the default list,
-so `exclude = []` scans the tests too). Excluded files are not read, but their module names are
+also live in the `pyproject.toml` beside the rule file: `extend_exclude` adds globs to the default
+list, and `exclude` replaces it (so `exclude = []` scans the tests too; give both to replace the
+defaults and add more). Excluded files are not read, but their module names are
 noted: any reference from scanned code into an excluded module (production code calling
 `app/testing/helpers.py` or `app/test_fastpath.py`, or using a function or class from one as a value,
 a callback, a decorator, a base class or a getattr() target, a star import of one, a router from one
@@ -329,7 +330,7 @@ excluded code calling scanned code, and stay quiet:
 ```toml
 [tool.invariants.scan]
 roots = ["src"]
-exclude = ["*/legacy/*"]
+extend_exclude = ["*/legacy/*"]     # the default excludes, and this
 ```
 
 The lock pins the roots and excludes `inv check` scans with (the `scan` section of

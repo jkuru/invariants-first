@@ -31,6 +31,20 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv validate` checks the file against the bundled JSON Schema (`inv.schema_path()`) and runs every
   load-time check: unknown fields, enum values, root paths, bindings, providers, the functions each
   CEL backend has, and a static type check of every clause. Every defect is a `LoadError`.
+- Load errors say what to do: a near miss is named (`unknown field(s) ['tset'] (did you mean
+  'tests'?)`, `billing has no 'servce'; did you mean 'service'?`, `args.amout ... (did you mean
+  args.amount? its parameters: ...)`, `amount is a parameter of py:...: write args.amount`, a
+  provider read as `provider.x` is told to write `x`); a clause written in Python is told the CEL
+  form (`and` as `&&`, `or` as `||`, `not` as `!`, `len(x)` as `size(x)`); a parse error names its
+  clause; a contract ref `pkg.mod.Class` is told to write `pkg.mod:Class`; a provider's bad `from:`
+  is named as the provider's, not a target's. An error in one rule, provider or target of a file is
+  prefixed with the file and its YAML line (`invariants.yaml:19: REFUND: ...`), a YAML syntax error
+  names the file, and a duplicate rule id names both rules and their lines.
+- A target whose module imports a package that is not installed reports that package (`cannot import
+  billing.service: ModuleNotFoundError: No module named 'x' (while importing billing.models)`), not
+  "'service' does not exist".
+- `spec` must be `invariant/v0.1`, and a rule id is letters, digits, `-`, `_` and `.`, starting with a
+  letter or digit (no spaces); anything else is a `LoadError` (and a JSON Schema error).
 
 ### Run time
 
@@ -140,11 +154,26 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   models as contracts, service-to-repository door rules with today's back doors frozen in `allow`,
   and function preconditions translated to CEL, written commented out), then locks it. It never
   overwrites a rule file, and reads a Graphify `graph.json` for door hints (`--graph`); every
-  proposed door is checked by the scan.
+  proposed door is checked by the scan. It tries the lock's pin on each drafted contract first, and
+  writes a model pydantic cannot give a JSON Schema for (or whose module does not import) commented
+  out with the reason, so the lock step does not fail on it. It skips private functions and
+  `assert self.x is not None` checks, reads `if ...: raise` preconditions after a docstring, logging
+  call or plain assignment, does not count `dict.update`, `set.add`, logging or callback
+  registration as writes, and never proposes a read-only function (`get_*`, `list_*`, ...) as a door.
+- `inv lock` names the contract and its ref when it cannot pin one (`contract agent
+  (app.models:Agent) cannot be pinned: PydanticInvalidForJsonSchema: ...`).
 - `inv check` runs validate, `lock --check`, verify and scan with one exit code. `--relock` re-pins
   when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base REF` also
-  fails on a weakening since the lock at REF, unless `--allow-weakening` or `INV_ALLOW_WEAKENING=1`,
+  fails on a weakening since the lock at REF, unless `--accept-weakening` or `INV_ALLOW_WEAKENING=1`,
   and fails closed when REF or its lock cannot be compared (a REF with no lock is a first adoption).
+- `inv lock` and `inv check` both take `--accept-weakening`, the documented spelling, and
+  `--allow-weakening` as another name for it; `inv hook pretool` blocks both.
+- `inv status` says per rule, in plain words, what it checks, whether a guard wraps it, the scan
+  result, whether ablation proved it (`yes`, `no`, `not run`, `not needed`) and what to do next;
+  `--json` keeps its fields and adds `status_text`, `checks`, `guarded`, `ablation` and `next`.
+- `inv scan` with no rule naming a sink says `no door rules to check (N file(s) scanned)`.
+- `[tool.invariants.scan]` takes `extend_exclude` (added to the default excludes) beside `exclude`
+  (which replaces them); the lock pins the effective list.
 - `inv hook pretool|stop`: Claude Code hooks that refuse a command accepting a weakening, a direct
   edit of `invariants.lock` or of the scan settings in `pyproject.toml`, a command that rewrites
   either without naming it (a project script whose text names it, `git apply`, `git stash pop`,
@@ -165,7 +194,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 - Installed with the package (entry point `pytest11`). Options: `--inv-rules`, `--inv-verify`,
   `--inv-ablate` (with `--inv-ablate-lenient`), `--inv-report` and `--inv-report-json`; fixtures
-  `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`.
+  `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`. With `--inv-ablate` or `--inv-verify`
+  and no `--inv-rules` or `inv_rules`, it loads `invariants.yaml` (`.yml`, `.json`) from the rootdir;
+  `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run.
 - Ablation re-runs each rule's `falsified_by` tests with the rule off: a falsifier is caught only when
   its rule decided something on a control run and the ablated run fails; everything else is
   reported as inconclusive with the reason. It works under pytest-xdist and reaches subprocesses

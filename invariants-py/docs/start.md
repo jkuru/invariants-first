@@ -170,7 +170,9 @@ Each call site is its own finding, so two direct calls in one script are two lin
 unannotated parameter, say) is reported as unresolved, which also fails: the scan never guesses that
 a path is safe. Reads through the repository and unit tests that call it directly are not back doors.
 The scan skips `tests/`, `test_*.py`, `*_test.py`, `conftest.py` and migrations (`migrations/`,
-`alembic/`), at any depth, unless `[tool.invariants.scan] exclude` in `pyproject.toml` says otherwise.
+`alembic/`), at any depth. To skip more, add globs to `[tool.invariants.scan] extend_exclude` in
+`pyproject.toml` (the defaults stay); `exclude` replaces the default list instead, so it must
+list everything to skip.
 
 The doors are pinned by name. A new service method that calls the repository without passing the
 door that checks the rule (a `bulk_refund` that skips `refund`) is a back door too. If it is a real
@@ -258,7 +260,7 @@ invariants cannot read or compare (damaged, or an older or newer lock version) f
 so do a lock replaced by a symlink and a base lock the pull request moved or removed. Only a base
 with no `invariants.lock` at that path (and none moved away) passes, as a first adoption (the whole
 lock is reviewed in that pull request). A reviewer can accept a base lock that cannot be compared with the same
-`--allow-weakening` or `INV_ALLOW_WEAKENING=1` that accepts a weakening; nothing accepts a missing
+`--accept-weakening` or `INV_ALLOW_WEAKENING=1` that accepts a weakening; nothing accepts a missing
 base ref.
 
 ```text
@@ -266,7 +268,7 @@ $ inv check --base main
   FAIL  since main
         1 change(s) since main weaken a rule:
           schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (...)
-        a person must accept these: re-run with --allow-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer ...
+        a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer ...
 ```
 
 On GitHub, use the bundled action after installing your project:
@@ -391,8 +393,19 @@ That is the whole short form:
 - `guard` names the function, and the rule checks its arguments before it runs.
 - `tests` lists the proof.
 - Until a rule names a test, it only logs. Once it names one, it blocks with `inv.Rejected`.
-  `pytest --inv-ablate` then checks that the test fails when the guard is switched off.
 - Deleting `tests:`, removing the decorator or loosening `bad` all fail `inv check`.
+
+Then prove the test depends on the guard. Run this in CI, from the directory that holds
+`invariants.yaml`:
+
+```bash
+pytest --inv-rules invariants.yaml --inv-ablate
+```
+
+It reruns each test listed under `tests:` with its rule switched off; the test must then fail.
+`--inv-rules` can be left out when `invariants.yaml` (or `.yml`, `.json`) is in pytest's rootdir,
+or when the pytest ini sets `inv_rules = invariants.yaml`. With no rules found at all, it stops
+with a usage error (exit 4) instead of passing, so a CI step that checks nothing is never green.
 
 Only conditions over the function's parameters are translated: comparisons, `and`, `or`, `not`,
 arithmetic, `len`, `is None`, and `in` over a literal list. A parameter tested for truth is

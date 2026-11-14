@@ -10,7 +10,8 @@ from .session import STASH, InvSession
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("invariants", "invariants rule checks")
     group.addoption("--inv-rules", metavar="PATH", default=None,
-                    help="rule file (JSON or YAML) to load into the default registry")
+                    help="rule file (JSON or YAML) to load into the default registry (default, with --inv-ablate "
+                         "or --inv-verify: the inv_rules ini option, else invariants.yaml, .yml or .json in the rootdir)")
     group.addoption("--inv-verify", action="store_true", default=False,
                     help="after collection, fail the session if a rule's target lacks its guard")
     group.addoption("--inv-ablate", action="store_true", default=False,

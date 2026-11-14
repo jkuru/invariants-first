@@ -8,6 +8,7 @@ from typing import Any, Iterator
 from ..errors import LoadError
 from ..model import DEFAULT_NAMES, EVALUATED, VIEW_POINTS, Rule
 from ..registry import Registry
+from ..resolve import close_matches
 from .schemas import _params
 
 
@@ -30,7 +31,7 @@ def binding_problem(rule: Rule, reg: Registry, i: Any, target: Any, tk: str) -> 
                         want.add(path.split(".")[1])
         missing = want - _params(target)
         if missing:
-            return f"{rid}: args.{sorted(missing)[0]} does not resolve against {tk}"
+            return _unresolved_arg(rid, sorted(missing)[0], target, tk)
     if i == "rule":
         return None
     enf = rule.enforcers[i]
@@ -46,6 +47,19 @@ def binding_problem(rule: Rule, reg: Registry, i: Any, target: Any, tk: str) -> 
                     f"{tk} is sync, so it cannot await it (every call would be a rule_error); make {tk} async or "
                     f"the provider sync")
     return None
+
+
+def _unresolved_arg(rid: str, name: str, target: Any, tk: str) -> str:
+    """args.<name> names no parameter of the target: the closest parameter, and every one it takes."""
+    try:
+        fn = inspect.unwrap(target)
+        params = [p for p in inspect.signature(fn).parameters if p not in ("self", "cls")] if callable(fn) else []
+    except (TypeError, ValueError):
+        params = []
+    close = close_matches(name, params, n=1)
+    hint = f"did you mean args.{close[0]}? " if close else ""
+    taken = f"its parameters: {', '.join(params)}" if params else "it takes no parameters"
+    return f"{rid}: args.{name} does not resolve against {tk} ({hint}{taken})"
 
 
 def _read_paths(rule: Rule, reg: Registry, i: Any) -> Iterator[tuple[str, str]]:
