@@ -223,8 +223,8 @@ pip install 'invariants-first[schema]' pytest   # not on PyPI yet: pip install -
 ```
 
 Python 3.11+; the core depends only on PyYAML. Extras: `[schema]` (the JSON Schema check in
-`inv validate`), `[cel]` (the C++ and pure-Python CEL engines), `[pydantic]`, `[fastapi]` (with httpx, for
-`fastapi.testclient`) and `[otel]`. The distribution name is a placeholder ([RELEASING.md](RELEASING.md#before-publishing));
+`inv validate`), `[cel]` (the cel-expr CEL engine, Google's C++ runtime), `[pydantic]`, `[fastapi]` (with httpx, for
+`fastapi.testclient`), `[otel]` and `[anthropic]`. The distribution name is a placeholder ([RELEASING.md](RELEASING.md#before-publishing));
 you always `import invariants`.
 
 **1. The rule file**, `invariants.yaml`:
@@ -435,8 +435,8 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
   (there is no data-dependent short circuit). Pydantic
   replies must carry every field, and are strict by default. HTTP rules bind to handler parameter
   names, not OpenAPI paths.
-- **Not in v0.1:** clauses scoped to one enforcer, rules that reference contract enums, generated differential harnesses for table rules, a sampled mode,
-  `openapi` contracts from a live app, and conformance cases beyond CEL.
+- **Not in v0.1:** clauses scoped to one enforcer, rules that reference contract enums, a sampled mode,
+  and conformance cases beyond CEL.
 
 ## Documentation
 

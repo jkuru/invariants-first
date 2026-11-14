@@ -37,7 +37,7 @@ for tests: the business-logic defects no rule states were caught by ordinary tes
 
 The first run found three problems: the lock pinned whole modules, so almost every edit made it
 stale; a reflex re-pin silently accepted a weakened rule; and raw SQL around a door was invisible.
-The library changed as follows (CHANGELOG.md has the details):
+The library changed as follows (the git history has the details):
 - **Contract-level pins.** The lock pins each contract instead of whole modules: target signatures
   and effects, provider signatures, resolved reply and contract schemas (in one shared table, lock
   version 3), named OpenAPI operations, resolved types, and each rule's semantic content.
