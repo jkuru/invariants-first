@@ -211,11 +211,18 @@ class Door:
     active: bool = True                      # written as a rule (False: commented out, with the reason)
     why_inactive: str = ""
     score: int = 0
+    # fix round 30: each sink -> its own doors, when the writes have different doors (drafted as a sink
+    # mapping, so a write moved into another write's door is a bypass); None: one set of doors for all
+    pairs: dict[str, list[str]] | None = None
 
     def rule(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"id": self.rid,
-                               "door": [f"py:{d}" for d in self.doors] if len(self.doors) > 1 else f"py:{self.doors[0]}",
-                               "sink": [f"py:{s}" for s in self.sinks] if len(self.sinks) > 1 else f"py:{self.sinks[0]}"}
+        if self.pairs is not None:
+            out: dict[str, Any] = {"id": self.rid, "sink": {f"py:{s}": [f"py:{d}" for d in self.pairs[s]]
+                                                            for s in self.sinks}}
+        else:
+            out = {"id": self.rid,
+                   "door": [f"py:{d}" for d in self.doors] if len(self.doors) > 1 else f"py:{self.doors[0]}",
+                   "sink": [f"py:{s}" for s in self.sinks] if len(self.sinks) > 1 else f"py:{self.sinks[0]}"}
         if self.allow:
             out["allow"] = [f"py:{a}" for a in self.allow]
         return out
@@ -367,8 +374,9 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         members = groups[res]
         inside = {f for f in real if _resource(g, f) == res} | members      # the repository's own code
         door_list: list[str] = []
+        per = {w: _doors_for(w, callers, real, inside, community, routes) for w in sorted(members)}
         for w in sorted(members):
-            for door in _doors_for(w, callers, real, inside, community, routes):
+            for door in per[w]:
                 if door not in door_list:
                     door_list.append(door)
         if not door_list:
@@ -377,10 +385,13 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         repo = _resource(g, sorted(members)[0]) == res
         # a repository's write methods are all sinks: nobody but a door may call any of them. Outside a
         # repository, only the writers that have a door are (the rest are listed with no door).
-        sinks = sorted(members) if repo else sorted(w for w in members
-                                                    if _doors_for(w, callers, real, inside, community, routes))
+        sinks = sorted(members) if repo else sorted(w for w in members if per[w])
         via = sorted({c for d in door_list for c in callers[d]} - set(door_list))
-        found.append(Door("", res, door_list, sinks, via, score=_score(res, *door_list, *sinks)))
+        # fix round 30: writes whose doors differ get a sink mapping, each write with its own doors (a
+        # repository write no door calls keeps every door, as in the list form)
+        pairs = ({w: per[w] or list(door_list) for w in sinks}
+                 if len({tuple(sorted(per[w])) for w in sinks if per[w]}) > 1 else None)
+        found.append(Door("", res, door_list, sinks, via, score=_score(res, *door_list, *sinks), pairs=pairs))
     found.sort(key=lambda d: (-d.score, -len(d.callers), d.resource))
     kept, dropped = found[:limit], found[limit:]
     taken: set[str] = set()
@@ -465,6 +476,7 @@ def render(found: DoorsFound) -> list[str]:
              "  # code path that calls a write without passing its door.",
              "  # Nothing runs in production: `inv check` reads the source. Delete a rule you do not want.",
              "  #"]
+    multi = _shared_sites(found)
     for d in found.doors:
         lines.append(f"  # {d.resource}: written by {', '.join(d.sinks)}")
         lines.append(f"  #   {len(d.callers)} caller(s) go through {' or '.join(d.doors)}")
@@ -473,16 +485,24 @@ def render(found: DoorsFound) -> list[str]:
             lines.append(f"  # {len(d.back_doors)} back door(s) {verb}:")
             lines += [f"  #   {b}" for b in d.back_doors]
         r = d.rule()
-        body = [f"- id: {r['id']}",
-                f"  door: {json.dumps(r['door']) if isinstance(r['door'], str) else _yaml_list(r['door'])}",
-                f"  sink: {json.dumps(r['sink']) if isinstance(r['sink'], str) else _yaml_list(r['sink'])}"]
+        if d.pairs is not None:                    # each write with its own doors (fix round 30)
+            lines.append("  # each write has its own door(s): a door of one write is no door for another")
+            body = [f"- id: {r['id']}", "  sink:"]
+            body += [f"    {json.dumps(s)}: {_yaml_list(ds)}" for s, ds in r["sink"].items()]
+        else:
+            body = [f"- id: {r['id']}",
+                    f"  door: {json.dumps(r['door']) if isinstance(r['door'], str) else _yaml_list(r['door'])}",
+                    f"  sink: {json.dumps(r['sink']) if isinstance(r['sink'], str) else _yaml_list(r['sink'])}"]
         if d.allow:
             body.append("  allow:")
             body += [f"    - {json.dumps(a)}" for a in r["allow"]]
         if d.unresolved:
             lines.append(f"  # {len(d.unresolved)} unresolved site(s) to review (the scan cannot follow them):")
             lines += [f"  #   {at} {msg}" if at else f"  #   {msg}" for at, _, _, msg in d.unresolved]
-            sites = [u for u in d.unresolved if u[0] and u[2]]
+            # a site seen under several drafted rules is drafted once, in the top-level allow_unresolved
+            sites = [u for u in d.unresolved if u[0] and u[2] and (u[0], u[1], u[2]) not in multi]
+            if len(sites) < len([u for u in d.unresolved if u[0] and u[2]]):
+                lines.append("  #   (a site seen under other drafted rules too is in allow_unresolved below)")
             if sites:                              # why is empty: the rule does not load until each says why
                 body.append("  allow_unresolved:   # once its site is read, write why it cannot reach the sink")
                 body += [f"    - {{at: {json.dumps(at)}, code: {code}, sha: {json.dumps(sha)}, why: \"\"}}"
@@ -505,12 +525,42 @@ def render(found: DoorsFound) -> list[str]:
     return lines
 
 
+def _shared_sites(found: DoorsFound) -> dict[tuple[str, str, str], list[Door]]:
+    """(at, code, sha) -> the drafted rules that see the site, for each unresolved site two or more of them
+    see (fix round 30: drafted once, in the file's top-level allow_unresolved, with rules: [...])."""
+    by: dict[tuple[str, str, str], list[Door]] = {}
+    for d in found.doors:
+        for at, code, sha, _ in d.unresolved:
+            if at and sha and d not in by.setdefault((at, code, sha), []):
+                by[(at, code, sha)].append(d)
+    return {k: ds for k, ds in by.items() if len(ds) > 1}
+
+
+def render_shared(found: DoorsFound) -> list[str]:
+    """The file's top-level allow_unresolved: one drafted entry per unresolved site that several drafted
+    rules see, listing them. Commented out while any rule it lists is (a shared entry names rules that
+    exist); why is empty, so it does not load until each says why."""
+    shared = _shared_sites(found)
+    if not shared:
+        return []
+    lines = ["",
+             "# Unresolved sites the scan sees under several drafted door rules: each entry is one reviewed",
+             "# site, accepted once under every rule it lists. Read each site; when it cannot reach a sink,",
+             "# write why (else fix it), and uncomment this with the rules it lists."]
+    live = all(d.active for ds in shared.values() for d in ds)
+    body = ["allow_unresolved:"]
+    body += [f"  - {{at: {json.dumps(at)}, code: {code}, sha: {json.dumps(sha)}, why: \"\", "
+             f"rules: [{', '.join(sorted(d.rid for d in ds))}]}}" for (at, code, sha), ds in shared.items()]
+    return lines + (body if live else [f"# {x}" for x in body])
+
+
 def summary(found: DoorsFound) -> list[str]:
     out = [found.graph] if found.graph else []
     for d in found.doors:
         state = "" if d.active else " (commented out: see the file)"
+        paired = ", each write through its own door(s)" if d.pairs is not None else ""
         out.append(f"door {d.rid}: {d.resource} through {' or '.join(d.doors)} ({len(d.callers)} "
-                   f"caller(s)){state}")
+                   f"caller(s){paired}){state}")
         if d.back_doors:
             files = sorted({b.split(":", 1)[0] for b in d.back_doors})
             out.append(f"  found {len(d.back_doors)} back door(s) in {', '.join(files)}"

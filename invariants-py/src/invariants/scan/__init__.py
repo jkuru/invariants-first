@@ -28,7 +28,7 @@ import time
 from typing import Any, Iterable, Iterator
 
 from . import accept
-from .checks import _canon_py, _check_rule, _declared, _Targets
+from .checks import _canon_py, _check_rule, _declared, _merge_groups, _Targets
 from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Accept, Finding, Mediation, Report,
                         ScanConfigError,
                         _Edge, _Fan, _Module, _OnPaths, _Site)
@@ -369,6 +369,9 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
         progress("checking rule", k, len(scanned))
         on = _OnPaths()                                # worked out when read (inv init), not here
         dict[str, Any].__setitem__(report.on_paths, med.rule, on)
+        if med.pairs is not None:                      # a sink mapping: each set of doors with its own sinks
+            report.findings += _check_paired(idx, med, edges, lines, sites, entries, on, guarded, report)
+            continue
         found = _check_rule(idx, med, edges, sites, entries, on, guarded=guarded)
         found += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                           str(r)) for r, f, line, code, msg in idx.problems]
@@ -384,6 +387,31 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     report.accepted.sort(key=lambda f: (f.rule, f.file or "", f.line, f.col, f.code))
     return report
+
+
+def _check_paired(idx: _Index, med: Mediation, edges: list[_Edge | _Fan], lines: accept._Lines, sites: list[_Site],
+                  entries: list[str], on: _OnPaths, guarded: frozenset[str], report: Report) -> list[Finding]:
+    """The findings of a rule whose mediation.sink maps each sink to its doors: each set of doors is checked
+    with the sinks it may reach (Mediation.groups), so a path to a sink through another sink's door only is a
+    bypass. The same finding from two parts is one; an allow entry is unused when no part uses it; each
+    part's inferred paths are hashed in its own door-free graph. Accepted findings go to report.accepted."""
+    parts = [(sub, _check_rule(idx, sub, edges, sites, entries, on, guarded=guarded)) for sub in med.groups()]
+    found = _merge_groups([got for _, got in parts])
+    rest = [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
+                    str(r)) for r, f, line, code, msg in idx.problems]
+    rest += _skipped_importers(idx, med)
+    for sub, got in parts:
+        if med.accept is not None:
+            accept.fill_sha(got, lines, _inferred_basis(idx, sub, edges, entries, got), old=bool(med.accept))
+        else:
+            accept.defer_sha(got, lines, functools.partial(_inferred_basis, idx, sub, edges, entries, got))
+    if med.accept is not None:
+        accept.fill_sha(rest, lines, None, old=bool(med.accept))
+        found, ok = accept.apply(med.rule, med.accept, found + rest)
+        report.accepted += ok
+        return found
+    accept.defer_sha(rest, lines, lambda: None)
+    return found + rest
 
 
 def _inferred_basis(idx: _Index, med: Mediation, edges: list[_Edge | _Fan], entries: list[str],
@@ -414,6 +442,10 @@ def _guarded(idx: _Index, doc: dict[str, Any]) -> frozenset[str]:
             continue
         med = raw.get("mediation")
         doors = med.get("door") if isinstance(med, dict) else None
+        sink = med.get("sink") if isinstance(med, dict) else None
+        if isinstance(sink, dict):                     # a sink mapping names its doors (fix round 30)
+            doors = [d for ds in sink.values() for d in ([ds] if isinstance(ds, str) else
+                                                         ds if isinstance(ds, list) else [])]
         subject = raw.get("subject")
         target = subject.get("target") if isinstance(subject, dict) else None
         for p in [*([doors] if isinstance(doors, str) else doors if isinstance(doors, list) else []),

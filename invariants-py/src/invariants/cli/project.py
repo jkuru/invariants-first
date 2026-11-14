@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any, Iterator, Sequence
 
@@ -204,6 +206,87 @@ def _roots(a: argparse.Namespace, path: pathlib.Path) -> list[pathlib.Path]:
         if not r.exists():
             raise Usage(f"source root {r} does not exist")
     return roots
+
+
+_SCAN_HEADER = re.compile(r"^[ \t]*\[[ \t]*tool[ \t]*\.[ \t]*invariants[ \t]*\.[ \t]*scan[ \t]*\][ \t]*(#[^\r\n]*)?(\r?\n|$)",
+                          re.MULTILINE)
+
+
+def _scan_table(text: str) -> Any:
+    """[tool.invariants.scan] of a pyproject.toml's text: the table, None when absent; raises TOMLDecodeError."""
+    import tomllib
+    tool = tomllib.loads(text).get("tool")
+    inv = tool.get("invariants") if isinstance(tool, dict) else None
+    return inv.get("scan") if isinstance(inv, dict) else None
+
+
+def add_scan_settings(text: str, add: dict[str, list[str]]) -> str | None:
+    """pyproject.toml's text with the keys in add (roots, extend_exclude) set in [tool.invariants.scan],
+    every other byte kept: the table appended at the end when the file has none, else the keys inserted
+    under its `[tool.invariants.scan]` header line. None when that cannot be done by inserting text (the
+    table is written as dotted keys or inline, the file does not parse) or the result would not read back
+    as exactly those keys added. No TOML writer: only lines inserted."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    body = "".join(f"{k} = {json.dumps(v)}{nl}" for k, v in add.items())
+    import tomllib
+    try:
+        old = _scan_table(text)
+    except tomllib.TOMLDecodeError:
+        return None
+    if old is None:
+        lead = "" if not text else (text if text.endswith("\n") else text + nl) + (nl if text.strip() else "")
+        new = f"{lead}[tool.invariants.scan]{nl}{body}"
+    else:
+        m = _SCAN_HEADER.search(text)
+        if m is None or not isinstance(old, dict):
+            return None
+        end = m.end() if m.group(2) else len(text)
+        new = text[:end] + ("" if m.group(2) else nl) + body + text[end:]
+    try:
+        got = _scan_table(new)
+    except tomllib.TOMLDecodeError:
+        return None
+    return new if got == {**(old or {}), **add} else None
+
+
+def write_scan_settings(rule_file: pathlib.Path, roots: list[str], extend: list[str]) -> list[str]:
+    """`inv init --root/--exclude`: set [tool.invariants.scan] roots (relative to the rule file) and
+    extend_exclude in the pyproject.toml beside the rule file (the one `inv check` reads; created when
+    missing), so `inv check` scans what init scanned. Settings already there are never changed: one that
+    differs is named in a note, beside what init used. Returns the lines to print."""
+    py = rule_file.resolve().parent / "pyproject.toml"
+    want = {k: v for k, v in (("roots", roots), ("extend_exclude", extend)) if v}
+    shown = ", ".join(f"{k} = {json.dumps(v)}" for k, v in want.items())
+    if not want:
+        return []
+    import tomllib
+    try:
+        text = py.read_bytes().decode("utf-8") if py.is_file() else ""
+        cfg = _scan_table(text)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        return [f"note: cannot read {py.name} ({type(e).__name__}): `inv check` reads its scan settings from "
+                f"[tool.invariants.scan] there; add {shown} to scan what init scanned"]
+    cfg = cfg if isinstance(cfg, dict) else {}
+    differ = [k for k in want if k in cfg and sorted(set(_str_list(cfg[k]))) != sorted(set(want[k]))]
+    if differ:
+        return [f"note: {py.name} already sets [tool.invariants.scan] "
+                + "; ".join(f"{k} = {json.dumps(cfg[k])}, but init scanned with {k} = {json.dumps(want[k])}"
+                            for k in differ)
+                + f"; left it unchanged, so `inv check` scans with what {py.name} says: edit it there to scan "
+                  f"what init scanned, or pass the same flags to every `inv check`"]
+    add = {k: v for k, v in want.items() if k not in cfg}
+    if not add:
+        return [f"{py.name} already has [tool.invariants.scan] {shown}: `inv check` scans what init scanned"]
+    new = add_scan_settings(text, add)
+    lines = "; ".join(f"{k} = {json.dumps(v)}" for k, v in add.items())
+    if new is None:
+        return [f"note: cannot add {lines} to [tool.invariants.scan] in {py.name} by inserting lines (it is "
+                f"written as dotted keys or an inline table); add them there yourself, so `inv check` scans "
+                f"what init scanned"]
+    created = not py.is_file()
+    py.write_bytes(new.encode("utf-8"))
+    return [f"wrote [tool.invariants.scan] to {py.name}{' (created it)' if created else ''}: {lines}; "
+            f"`inv check` scans what init scanned"]
 
 
 def scan_settings(a: argparse.Namespace, path: pathlib.Path) -> dict[str, list[str]]:

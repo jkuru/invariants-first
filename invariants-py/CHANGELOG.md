@@ -60,6 +60,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   "'service' does not exist".
 - `spec` must be `invariant/v0.1`, and a rule id is letters, digits, `-`, `_` and `.`, starting with a
   letter or digit (no spaces); anything else is a `LoadError` (and a JSON Schema error).
+- Door-to-sink pairing: `sink:` (and `mediation.sink`) may map each sink to the door or doors that
+  may reach it (`sink: {py:store.record_refund: [py:BillingService.refund], py:store.record_cancel:
+  py:BillingService.cancel}`). A door listed for one sink is no door for another, so a write moved
+  into the wrong door (a refund record added inside `BillingService.cancel`) is a `bypass`; the list
+  form keeps its meaning (any door reaches any sink). `door:` is then left out or names exactly the
+  doors the mapping lists; `allow` and `allow_unresolved` stay rule-wide. `inv status`, the MCP
+  `explain` and `propose_rules` tools and `inv scan --format json` (`pairs`) show the pairing.
+- A top-level `allow_unresolved:` accepts one reviewed site under several path laws: each entry is
+  `{at, code, sha, why, rules: [ID, ...]}`, every listed rule must exist and declare a sink (once
+  each), and the entry is given to each of them, accepting its site once under each (unused under
+  one: `missing/allow-unresolved-unused` there). The text, JSON (`accepted_by`) and SARIF output say
+  which shared entry accepted a finding.
 
 ### Run time
 
@@ -184,6 +196,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 ### The lock
 
+- A sink mapping is pinned as written and judged sink by sink: a door that may now reach a sink it
+  could not (added to its list, or the list form replacing the mapping) is WEAKENED, a door taken
+  off a sink is a tightening, and the same doors per sink written another way is not a weakening. A
+  top-level `allow_unresolved` entry is pinned in each rule it lists: a new one, or a rule added to
+  its `rules`, is WEAKENED for that rule, with the same multiset judgement per (rule, file, code, sha)
+  as a rule's own entries; a rule taken out is a tightening.
 - The process that decides WEAKENED never imports the project. `inv validate`, `inv lock`, `inv
   check`, `inv init` and the stop hook import the app in one child process per command (`python -I`,
   the same import path) and take from it only what importing alone can say (signatures, model
@@ -469,8 +487,16 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   scan --format json` gives), not in `allow:`, and `inv check`'s failing scan step says how to get
   the sha. `inv init` mentions commented-out door drafts only when it wrote one.
 
-- `inv init` says when it wrote no path law (so `inv check` will skip its scan), and when its
-  `--root`/`--exclude` differ from the `[tool.invariants.scan]` settings `inv check` will read.
+- `inv init` says when it wrote no path law (so `inv check` will skip its scan).
+- `inv init --root/--exclude` writes what it scanned into `[tool.invariants.scan]` of the
+  `pyproject.toml` beside the rule file (`roots` relative to the rule file, the globs as
+  `extend_exclude`), creating the file or table when missing and only inserting lines (the rest of
+  the file is kept byte for byte), and prints what it wrote, so the lock it takes and the next `inv
+  check` scan exactly what it scanned. It never changes settings already there: one that differs is
+  named in a note beside what init used. (It used to print a note asking for the settings by hand.)
+- `inv init` drafts a door rule whose writes have different doors as a sink mapping (each write
+  with its own doors) instead of one list of every door, and drafts an unresolved site several
+  drafted rules see once, in a top-level `allow_unresolved` entry listing them.
 - The pretool hook reads each command segment in every directory an earlier `cd` or `pushd` moves to
   (`cd tools && python ../run.py`). `inv status` says a rule below `enforce` flags (logs) a bad call
   rather than refusing it. The cel-expr cost message names the real limit (at most 9,999 iterations).

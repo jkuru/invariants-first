@@ -19,7 +19,7 @@ from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UN
                      _describe, _err, _out, _print_changes, _rule_file)
 from .git_base import _base_step, base_read, base_scan_default
 from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
-                      source_dirs)
+                      source_dirs, write_scan_settings)
 from .worker import Imported, emit, imported, reraise
 
 if TYPE_CHECKING:
@@ -529,6 +529,11 @@ def cmd_init(a: argparse.Namespace) -> int:
     _out(f"wrote {path}")
     for line in bootstrap.summary(found):
         _out(f"  {line}")
+    # fix round 30: what init scanned goes in [tool.invariants.scan], so `inv check` (and the lock) scan it
+    base = path.resolve().parent
+    for line in write_scan_settings(path, [pathlib.Path(os.path.relpath(pathlib.Path(r).resolve(), base)).as_posix()
+                                           for r in a.root], list(a.exclude)):
+        _out(line)
     if a.no_lock:
         _out("next: review it, run `inv lock`, and commit both files")
         return OK
@@ -610,14 +615,6 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
     if code == OK:
         _out("next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit "
              "(the invariants docs: start.md, \"Make the check unskippable\")")
-        given = {"roots": scan_settings(argparse.Namespace(root=a.root, exclude=a.exclude), path)["roots"]
-                 if a.root else None, "exclude": list(a.exclude) if a.exclude else None}
-        if a.root or a.exclude:      # what init scanned is not what `inv check` will, unless pyproject says so
-            settings = "; ".join(f"{k} = {json.dumps(v)}" for k, v in given.items() if v)
-            _out(f"note: these drafts were scanned with {' '.join(f'--root {r}' for r in a.root)}"
-                 f"{' ' if a.root and a.exclude else ''}{' '.join(f'--exclude {g}' for g in a.exclude)}, but "
-                 f"`inv check` reads its scan settings from [tool.invariants.scan] in pyproject.toml; add "
-                 f"{settings} there, or pass the same flags to every `inv check`")
         if not _has_path_law(path):
             drafts = (f"see the commented-out door drafts in {path.name}, or write one by hand"
                       if _has_door_draft(path) else "write one by hand")

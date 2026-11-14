@@ -68,8 +68,9 @@ def to_text(report: Report) -> str:
         moved = "" if f.moved_from is None else \
             f"; moved from line {f.moved_from}: update its at to {plain(f.file)}:{f.line}" if f.moved_col is None else \
             f"; moved from {f.moved_from}:{f.moved_col}: update its at to {plain(f.file)}:{f.line}:{f.col}"
+        by = f"; {plain(f.accepted_by)}" if f.accepted_by else ""       # a shared entry says which
         lines.append(f"{'accepted':<10} {plain(f.rule):<8} {_where(f)}  {_code(f)}{plain(f.message)} "
-                     f"(allow_unresolved: {plain(f.why)}{moved})")
+                     f"(allow_unresolved: {plain(f.why)}{moved}{by})")
     for rid in report.scanned:
         c = report.counts(rid)
         summary = ", ".join(f"{n} {k}" for k, n in c.items()) or "no findings"

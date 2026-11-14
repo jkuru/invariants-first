@@ -120,6 +120,9 @@ def render(found: Found, locked: bool = False) -> str:
         for g in untranslated:
             for s in g.skipped:
                 lines.append(f"#   {g.module}.{g.qualname} {s}")
+    if found.doors is not None:                    # a site several door rules see, drafted once (fix round 30)
+        from .. import doors
+        lines += doors.render_shared(found.doors)
     return "\n".join(lines).rstrip() + "\n"
 
 

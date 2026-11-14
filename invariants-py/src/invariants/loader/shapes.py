@@ -43,6 +43,16 @@ def _strings(v: Any, prefix: str = "") -> bool:
     return items is not None and all(isinstance(x, str) and x.startswith(prefix) for x in items)
 
 
+def _check_pairs(rid: str, sink: Any, where: str = "mediation.sink") -> None:
+    """A sink mapping's shape (scan.mediation.pairs_of), as a LoadError."""
+    from ..scan import ScanConfigError
+    from ..scan.mediation import pairs_of
+    try:
+        pairs_of(rid, sink, where)
+    except ScanConfigError as e:
+        raise LoadError(str(e)) from None
+
+
 def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     """Shapes of mediation (chokepoint, residual_paths, and the scan's sink, door, allow) and applies_to."""
     if "applies_to" in raw and not _strings(raw["applies_to"]):
@@ -56,8 +66,10 @@ def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     rp = med.get("residual_paths", [])
     if not isinstance(rp, list) or not all(isinstance(x, str) for x in rp):
         raise LoadError(f"{rid}: mediation.residual_paths must be a list of strings")
+    if isinstance(med.get("sink"), dict):              # each sink mapped to the doors that may reach it
+        _check_pairs(rid, med["sink"])
     for k in ("sink", "door", "allow"):
-        if k in med and not _strings(med[k], "py:"):
+        if k in med and not (k == "sink" and isinstance(med[k], dict)) and not _strings(med[k], "py:"):
             raise LoadError(f"{rid}: mediation.{k} must be a 'py:' path or a non-empty list of them")
     au = med.get("allow_unresolved")                   # reviewed unresolved sites; `inv scan` checks each entry
     if au is not None and not (isinstance(au, list) and all(isinstance(e, dict) for e in au)):

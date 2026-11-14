@@ -43,6 +43,8 @@ class Finding:
     # an unresolved/inferred-path finding: what reaches its site, which its sha covers too (the entrypoints
     # and the name-matched calls on the paths through it)
     reached_by: list[str] | None = None
+    # accepted by an entry of the file's top-level allow_unresolved (shared by several rules): which one
+    accepted_by: str | None = None
 
     def __getattribute__(self, name: str) -> Any:
         # sha and reached_by are worked out when first read (accept.defer_sha; fix round 28)
@@ -54,7 +56,7 @@ class Finding:
 
     def as_dict(self) -> dict[str, Any]:
         out = dataclasses.asdict(self)
-        for k in ("sha", "why", "moved_from", "moved_col", "reached_by"):     # only where they say something
+        for k in ("sha", "why", "moved_from", "moved_col", "reached_by", "accepted_by"):     # only where they say something
             if out[k] is None:
                 del out[k]
         return out
@@ -71,9 +73,17 @@ class Accept:
     code: str                      # unresolved/... (bypass and forbidden findings are never accepted)
     sha: str
     why: str
+    # an entry of the file's top-level allow_unresolved: every rule it lists (it accepts its site once
+    # under each); () for an entry of the rule's own list
+    rules: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {"at": self.at, "code": self.code, "sha": self.sha, "why": self.why}
+        return {"at": self.at, "code": self.code, "sha": self.sha, "why": self.why,
+                **({"rules": list(self.rules)} if self.rules else {})}
+
+    def label(self) -> str | None:
+        """Which entry accepted a finding, for a shared one (a rule's own entry is named by its at)."""
+        return f"the allow_unresolved entry {self.at} shared by rules {', '.join(self.rules)}" if self.rules else None
 
 
 @dataclasses.dataclass
@@ -86,6 +96,19 @@ class Mediation:
     allow: list[str] = dataclasses.field(default_factory=list)   # known back doors, let through
     # reviewed unresolved findings, accepted one by one (None: the rule has no allow_unresolved)
     accept: list[Accept] | None = None
+    # the door-to-sink pairing, when mediation.sink maps each sink to its doors (None: the list form, in
+    # which any door may reach any sink); doors is then every door the mapping names
+    pairs: dict[str, list[str]] | None = None
+
+    def groups(self) -> list[Mediation]:
+        """What the scan checks one at a time: the rule itself (the list form), or one part per set of
+        doors (the mapping), holding the sinks that set may reach: a door of another sink is no door there."""
+        if self.pairs is None:
+            return [self]
+        by: dict[tuple[str, ...], list[str]] = {}
+        for s in self.sinks:
+            by.setdefault(tuple(dict.fromkeys(self.pairs[s])), []).append(s)
+        return [Mediation(self.rule, sinks, list(ds), self.allow) for ds, sinks in by.items()]
 
 
 @dataclasses.dataclass
@@ -136,6 +159,7 @@ class Report:
         out: dict[str, Any] = {
             "files": self.files, "functions": self.functions,
             "rules": {rid: {"result": self.rule_result(rid), "sinks": m.sinks, "doors": m.doors,
+                            **({"pairs": m.pairs} if m.pairs is not None else {}),
                             "allow": m.allow, "counts": self.counts(rid),
                             **({"allow_unresolved": [a.as_dict() for a in m.accept]} if m.accept else {})}
                       for rid, m in self.scanned.items()},

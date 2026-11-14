@@ -453,6 +453,7 @@ def apply(rule: str, entries: list[Accept], findings: list[Finding]) -> tuple[li
             continue
         pick = picks[i]
         pick.why = e.why
+        pick.accepted_by = e.label()             # a shared entry (the file's top-level allow_unresolved)
         if pick.line != e.line or (e.col is not None and pick.col != e.col):
             pick.moved_from = e.line
             pick.moved_col = e.col               # an entry with a column keeps one (a dropped column weakens it)

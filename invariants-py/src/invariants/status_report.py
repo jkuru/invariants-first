@@ -88,7 +88,10 @@ def checks_text(rule: Rule) -> str:
         else:
             parts.append(f"{where} {'refuses' if blocks else 'flags (logs, does not refuse)'} a call when: "
                          + "; ".join(clauses))
-    if med.get("sink"):
+    if isinstance(med.get("sink"), dict):              # each sink with its own doors (fix round 30)
+        parts.append(", and ".join(f"every call to {s} goes through {_names(d)}" for s, d in med["sink"].items())
+                     + " (a door of one sink is no door for another)")
+    elif med.get("sink"):
         door = med.get("door") or rule.target_key
         parts.append(f"every call to {_names(med['sink'])} goes through {_names(door)}")
     return "; and ".join(parts) or "nothing yet"

@@ -13,7 +13,7 @@ import pathlib
 from typing import Any, Iterator
 
 from ..errors import LoadError
-from .short_forms import expand_short_forms
+from .short_forms import expand_shared_accepts, expand_short_forms
 
 YAML_SUFFIXES = (".yaml", ".yml")
 
@@ -79,6 +79,7 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
             where.short_doors.add(raw["id"])
         with where.located(where.rules.get(i)):
             expand_short_forms({"rules": [raw]})
+    expand_shared_accepts(doc)                         # the top-level allow_unresolved, rule by rule
     return doc, where
 
 

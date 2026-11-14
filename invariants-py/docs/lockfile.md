@@ -175,11 +175,20 @@ These changes are marked **WEAKENED**:
 - `timing` moved to `post_effect`;
 - a removed sink;
 - a new door on a scanned sink, or a new `allow` entry (a back door is now let through);
+- with a sink mapping (`sink: {sink: [doors]}`) on either side, judged sink by sink for the sinks on
+  both sides: a door that may now reach a sink it could not before, whether added to that sink's
+  list or because the list form replaced the mapping (there every door reaches every sink); a door
+  taken off a sink's list, or a move from the list form to a mapping, is a tightening, and the same
+  doors per sink written another way (the other form, a reordered mapping, `door:` beside it) is a
+  change that is not a weakening;
 - a `mediation.allow_unresolved` site (file, code, sha) named by more entries than before, compared
   as a multiset: a new site, or a second entry for a sha one entry named (each entry accepts one
   finding, and identical statements in one function share a sha), or more entries for it without a
   column (they match any column of the line); fewer entries for a site is a tightening, and a new
-  line or `why` is neither;
+  line or `why` is neither. An entry of the file's top-level `allow_unresolved` (shared by the rules
+  its `rules` lists) is pinned in each of those rules' `mediation.allow_unresolved` and judged there
+  the same way: a new one, or a rule added to its `rules`, is a weakening for that rule; a rule taken
+  out is a tightening; the same site moved between a rule's own list and the shared one is neither;
 - a target declared `effects: none`, or a target no longer covered;
 - `compares_to` removed, `compensable` set to true, or more `format_retries` or
   `semantic_resamples`;

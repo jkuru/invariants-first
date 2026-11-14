@@ -18,7 +18,7 @@ Each rule declares, under `mediation`:
 ```yaml
 mediation:
   chokepoint: pools.size is written only by resize_door    # the positive argument, in words
-  sink:   "py:pkg.store.set_size"           # the protected effect: a string or a list
+  sink:   "py:pkg.store.set_size"           # the protected effect: a string, a list, or a mapping (below)
   door:   "py:pkg.service.resize"           # the chokepoint function(s); defaults to subject.target
   allow:  ["py:pkg.batch.refund_all"]       # known back doors: the call chain, frozen
   residual_paths: []                        # known gaps, in words; while any is listed, the rule is not held
@@ -39,6 +39,25 @@ bypass     PAY-1    ops.py:5:5  ops.goodwill_credit -> payments.send_to_gateway 
 PAY-1: fail (1 bypass)
 scanned 2 file(s), 3 function(s)
 ```
+
+With a list of sinks and a list of doors, any door may reach any sink. When each sink has its own
+door, `sink` maps each one to the doors that may reach it:
+
+```yaml
+mediation:
+  sink:
+    "py:app.repo.LedgerRepo.record_refund": ["py:app.service.BillingService.refund"]
+    "py:app.repo.LedgerRepo.cancel_subscription": "py:app.service.BillingService.cancel"
+```
+
+The scan then checks each sink against its own doors (the sinks that share a set of doors are
+checked together): a path to `record_refund` that passes only `BillingService.cancel` is a `bypass`
+("... reaches the sink without passing app.service.BillingService.refund"), where the list form lets
+it through. `door` is left out (or names exactly the doors the mapping lists), `allow` and
+`allow_unresolved` are rule-wide, a finding two sinks' checks give alike is reported once, and an
+`allow` entry is `missing/allow-unused` only when no sink's check uses it. A path through one sink
+into another (`cancel_subscription` calling `record_refund`) is checked against the second sink's
+doors too. `--format json` gives the rule's `pairs` beside its `sinks` and `doors`.
 
 ### Functions used as values
 
@@ -557,6 +576,28 @@ finding left with its sha. So:
 - only `unresolved/*` codes can be accepted: an entry for `bypass` or `forbidden/*` is refused when the
   rule file is read.
 
+A site several path laws see (most unresolved sites are reported under every rule: a plugin loader,
+a parse error) can be accepted once for all of them in the file's top-level `allow_unresolved`, each
+entry naming the rules it is accepted under:
+
+```yaml
+rules:
+  - {id: LEDGER-DOOR, door: py:app.service.post, sink: py:app.store.write}
+  - {id: USER-DOOR, door: py:app.users.join, sink: py:app.users_store.save}
+allow_unresolved:
+  - {at: "app/extensions.py:46:28", code: unresolved/reflection, sha: 5452f77c9ad1d679,
+     why: "loads the extensions listed in config; none imports a store", rules: [LEDGER-DOOR, USER-DOOR]}
+```
+
+Each listed rule must exist and be a path law (declare a sink), once. The entry is checked as a
+rule's own is, then given to each rule it lists (at the end of its `mediation.allow_unresolved`): it
+accepts one finding under each, matched as above, and under a rule where it matches nothing it is
+`missing/allow-unresolved-unused` for that rule. The text output names it on the accepted line
+(`(allow_unresolved: why; the allow_unresolved entry app/extensions.py:46:28 shared by rules
+LEDGER-DOOR, USER-DOOR)`), `--format json` as the accepted finding's `accepted_by`, and SARIF in the
+suppression's justification. A rule's own entry is shown as before. `inv init` drafts a site it sees
+under several drafted door rules this way, once (commented out with those rules, `why` empty).
+
 An accepted finding is `accepted` in the text output, under `accepted` in `--format json`, a SARIF
 result with an accepted external suppression (its justification is the entry's `why`), and counted in
 the rule's summary (`pass (13 accepted)`). It never fails `inv scan` or `inv check`, and `inv check`
@@ -583,7 +624,10 @@ multiset of sites (file, code, sha): a site named by more entries than before is
 site, or a second entry for a sha one entry named, which accepts one more copy of that statement), as
 is a site named by more entries without a column than before (such an entry matches any column of
 its line). A weakening needs `inv lock --accept-weakening`, a person's decision. A site named by fewer
-entries is a tightening, and a new line or `why` for the same site is neither.
+entries is a tightening, and a new line or `why` for the same site is neither. A shared entry is
+judged in each rule it lists, the same way: a new shared entry, or a rule added to its `rules`, is a
+weakening for that rule; a rule taken out of `rules` is a tightening for it; and moving a rule's own
+entry into the shared list (or back) for the same site is neither.
 
 ## Allowed back doors
 
@@ -665,12 +709,17 @@ roots = ["src"]
 extend_exclude = ["*/legacy/*"]     # the default excludes, and this
 ```
 
+`inv init --root DIR --exclude GLOB` writes what it scanned here (`roots`, relative to the rule file,
+and the globs as `extend_exclude`), creating the file or the table when missing, so the next `inv
+check` scans the same; it never changes settings already there (see [start.md](start.md#1-draft-and-lock-2-minutes)).
+
 The lock pins the roots and excludes `inv check` scans with (the `scan` section of
 [lockfile.md](lockfile.md)), so adding an exclude, here or with `inv check --exclude`, or dropping a
 root is a weakening that a person accepts, like any other. The agent hook `inv hook pretool` also
 blocks an agent's edit of `[tool.invariants]`.
 
-`--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
+`--format json` gives one record per rule (its result, sinks, doors, `pairs` for a sink mapping,
+`allow` and counts), and
 `--format sarif` gives SARIF 2.1.0 for code-scanning tools. The text output gives one finding per
 line: its kind, rule, place, code (`unresolved/reflection: ...`; not for a bypass, whose code is its
 kind) and message, and for a rule with unresolved findings that declares no `allow_unresolved`, a note

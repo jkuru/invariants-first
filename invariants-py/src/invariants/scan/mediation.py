@@ -10,7 +10,7 @@ from .contracts import Accept, Mediation, ScanConfigError
 
 _AT = re.compile(r"^(?P<file>[^:]+):(?P<line>[1-9][0-9]*)(?::(?P<col>[1-9][0-9]*))?$")
 _SHA = re.compile(r"^[0-9a-f]{16}$")
-ACCEPT_FIELDS = frozenset({"at", "code", "sha", "why"})
+ACCEPT_FIELDS = frozenset({"at", "code", "sha", "why"})       # required; a shared entry also has rules
 
 
 def _str_list(v: Any, where: str) -> list[str]:
@@ -40,6 +40,8 @@ def _not_scanned(rid: str, raw: dict[str, Any], med: Any) -> str | None:
 
 def _mediation(rid: str, raw: dict[str, Any], med: dict[str, Any]) -> Mediation:
     """The sink, door (subject.target by default) and allow fields of a rule that declares a sink."""
+    if isinstance(med["sink"], dict):
+        return _paired(rid, med)
     sinks = _str_list(med["sink"], f"{rid}: mediation.sink")
     default_door = (raw.get("subject") or {}).get("target")
     if "door" in med:
@@ -56,6 +58,40 @@ def _mediation(rid: str, raw: dict[str, Any], med: dict[str, Any]) -> Mediation:
     return Mediation(rid, sinks, doors, allow, accept)
 
 
+def pairs_of(rid: str, sink: Any, where: str = "mediation.sink") -> dict[str, list[str]]:
+    """A sink mapping (each sink -> the door or doors that may reach it), its doors as lists; raises
+    ScanConfigError on a malformed one."""
+    if not isinstance(sink, dict) or not sink:
+        raise ScanConfigError(f"{rid}: {where} as a mapping names at least one sink, each with the door or doors "
+                              f"that may reach it ({{py:store.write: py:service.door}})")
+    out: dict[str, list[str]] = {}
+    for s, ds in sink.items():
+        doors = [ds] if isinstance(ds, str) else ds
+        if not (isinstance(s, str) and s.startswith("py:") and isinstance(doors, list) and doors
+                and all(isinstance(d, str) and d.startswith("py:") for d in doors)):
+            raise ScanConfigError(f"{rid}: {where}: each sink is a 'py:' path mapped to a 'py:' path or a non-empty "
+                                  f"list of them (the doors that may reach it), got {s!r}: {ds!r}")
+        out[s] = list(dict.fromkeys(doors))
+    return out
+
+
+def _paired(rid: str, med: dict[str, Any]) -> Mediation:
+    """mediation.sink as a mapping: each sink with the doors that may reach it. mediation.door, when given,
+    names exactly the doors the mapping lists (it adds none: a door listed for one sink only is no door for
+    another); a subject.target is no default door here."""
+    pairs = pairs_of(rid, med["sink"])
+    doors = list(dict.fromkeys(d for ds in pairs.values() for d in ds))
+    if "door" in med and set(_str_list(med["door"], f"{rid}: mediation.door")) != set(doors):
+        raise ScanConfigError(f"{rid}: mediation.door must be left out or name exactly the doors the sink mapping "
+                              f"lists ({', '.join(doors)}): with a mapping, each sink's doors are the ones it maps to")
+    allow = _str_list(med["allow"], f"{rid}: mediation.allow") if "allow" in med else []
+    for p in allow:
+        if not p.startswith("py:"):
+            raise ScanConfigError(f"{rid}: {p!r} must be a 'py:module.name' path")
+    accept = _accepts(rid, med["allow_unresolved"]) if "allow_unresolved" in med else None
+    return Mediation(rid, list(pairs), doors, allow, accept, pairs)
+
+
 def _accepts(rid: str, raw: Any) -> list[Accept]:
     """mediation.allow_unresolved: reviewed unresolved findings, each {at, code, sha, why}."""
     where = f"{rid}: mediation.allow_unresolved"
@@ -68,7 +104,7 @@ def _accepts(rid: str, raw: Any) -> list[Accept]:
         at = f"{where}[{i}]"
         if not isinstance(e, dict):
             raise ScanConfigError(f"{at} must be a mapping {{at, code, sha, why}}")
-        extra = sorted(set(e) - ACCEPT_FIELDS)
+        extra = sorted(set(e) - ACCEPT_FIELDS - {"rules"})
         if extra:
             raise ScanConfigError(f"{at}: unknown field(s) {', '.join(map(str, extra))} "
                                   f"(an entry has at, code, sha, why)")
@@ -93,6 +129,11 @@ def _accepts(rid: str, raw: Any) -> list[Accept]:
                                   f"--format json), got {e['sha']!r}{old}")
         if not e["why"].strip():
             raise ScanConfigError(f"{at}: why must say why the reviewed site cannot reach the sink")
+        # an entry of the file's top-level allow_unresolved, given to each rule it lists (loader.short_forms)
+        shared = e.get("rules", [])
+        if "rules" in e and not (isinstance(shared, list) and rid in shared and all(isinstance(r, str) for r in shared)):
+            raise ScanConfigError(f"{at}: rules lists the rules a shared entry accepts its site under (this rule, "
+                                  f"{rid}, among them); write a shared entry in the file's top-level allow_unresolved")
         out.append(Accept(e["at"], m["file"], int(m["line"]), int(m["col"]) if m["col"] else None, code,
-                          e["sha"], e["why"]))
+                          e["sha"], e["why"], tuple(shared)))
     return out
