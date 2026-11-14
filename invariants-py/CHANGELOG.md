@@ -154,6 +154,25 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 ### The lock
 
+- The process that decides WEAKENED never imports the project. `inv validate`, `inv lock`, `inv
+  check`, `inv init` and the stop hook import the app in one child process per command (`python -I`,
+  the same import path) and take from it only what importing alone can say (signatures, model
+  schemas, a live app's OpenAPI document, clause types); the rules, the scan settings, declared
+  effects and provider fields, and file contracts are pinned in the deciding process, from the rule
+  file, the locks and the scanned sources it read before the child ran. A module that sets
+  `INV_ALLOW_WEAKENING`, patches `invariants.lock.changes`, fakes the lock or rewrites a file at
+  import no longer passes `inv check --base` or lets plain `inv lock` write a weakened lock. The
+  reviewer's switch is read before anything else. The trust boundary that is left (the lock trusts
+  the imported code to describe itself) is stated in lockfile.md, "What the lock trusts", agents.md
+  and SECURITY.md; start.md's CODEOWNERS advice now covers the guarded and contract modules and
+  `.github/workflows/`.
+- `inv lock` refuses a rule file `inv validate` rejects (an old 10-digit or malformed
+  `allow_unresolved` entry, for one), with validate's message, even with `--accept-weakening`.
+- A change to `mediation.allow_unresolved` is listed entry by entry (added, another entry for,
+  removed, moved, new reason, a malformed entry by its index), not as the whole list on both sides.
+- An OpenAPI YAML contract that stands for more than a million values once its aliases are
+  expanded is refused instead of walked.
+
 - `a && true` and `a || false` (for a bool `a`) are the same condition as `a`: no weakening, and the
   message no longer says "matches fewer cases".
 - A schema's `required` list is compared as a set: a reordered list (a pydantic field moved in its
@@ -302,6 +321,21 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv status` reports each rule's standing with its reasons.
 
 ### CLI
+
+- `inv validate` (and `inv check`'s rules step) prints the loader's and the scan's specific
+  messages before the JSON Schema's, and cuts each schema message to 200 characters.
+- A YAML anchor or alias in a rule file is refused with the line it is on (a nested alias bomb hung
+  `inv validate`).
+- A contract `ref` whose attribute path goes through a module (`app.mod:os.environ`,
+  `app:models.Refund`) is refused: name the module before the colon. Under `inv mcp`
+  (`INV_CONFINE_ROOT`) an attribute path of a target, provider or contract goes only through objects
+  defined inside `--root`, so `os.environ` or `sys.modules` cannot reach the `check` tool's output.
+- The pretool hook treats every `python` option cluster with `c` before the script as code from a
+  string (`python -I -c`, `python3 -Ic`, `python3 -u -c`, `-W ignore -c`), and `python -` as code
+  from stdin.
+- `inv status` says to accept a reviewed unresolved site in `allow_unresolved` (with the sha `inv
+  scan --format json` gives), not in `allow:`, and `inv check`'s failing scan step says how to get
+  the sha. `inv init` mentions commented-out door drafts only when it wrote one.
 
 - `inv init` says when it wrote no path law (so `inv check` will skip its scan), and when its
   `--root`/`--exclude` differ from the `[tool.invariants.scan]` settings `inv check` will read.

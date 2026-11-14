@@ -9,10 +9,9 @@ from typing import Any, Sequence
 
 from .. import lock
 from ..errors import LoadError
-from ..loader import load, read_document
-from ..registry import isolated
 from .common import ALLOW_WEAKENING_ENV, FAILED, OK, _compare, _out, _print_changes
-from .project import _import_path, _setuptools_where, _str_list, effective_exclude
+from .project import _setuptools_where, _str_list, effective_exclude
+from .worker import Imported
 
 
 def _git(cwd: pathlib.Path, *args: str) -> tuple[int, str]:
@@ -105,22 +104,44 @@ def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None
     return stored, name
 
 
+BaseRead = tuple[dict[str, Any] | None, str] | BaseUnavailable   # what _base_lock gave or raised
+
+
 def base_changes(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str],
-                 scan: dict[str, Any] | None = None) -> tuple[list[lock.Change] | None, str]:
+                 scan: dict[str, Any] | None = None, imported: Imported | None = None,
+                 base: BaseRead | None = None) -> tuple[list[lock.Change] | None, str]:
     """The changes between the lock committed at git `ref` and the rule file as it is now, or (None, why)
     when `ref` has no lock (a first adoption, reviewed as a whole). BaseUnavailable when there is no
     git checkout, no such ref, a symlinked lock, a lock the change moved or removed, or a lock at
-    `ref` that cannot be read or compared."""
-    stored, name = _base_lock(lock_path, ref)
+    `ref` that cannot be read or compared. `base` is what _base_lock gave (or raised) when `inv
+    check` read it before the child ran, and `imported` that child, which pins the rule file: this
+    process never imports the app."""
+    got = _base_lock(lock_path, ref) if base is None else base
+    if isinstance(got, BaseUnavailable):
+        raise got
+    stored, name = got
     if stored is None:
         return None, f"no {name}: first adoption of invariants, nothing to compare (review the whole lock)"
-    doc = read_document(path)
-    with _import_path(path, extra), isolated() as reg:
-        load(path)
-        fresh = lock.build(doc, path.resolve().parent, scan)
-        types = lock.clause_types(reg)
-    default = _base_scan_default(path, ref) if "scan" not in stored and "scan" in fresh else None
+    imp = imported or Imported(path, extra)
+    imp.want_old(stored)
+    fresh = imp.build(scan)["fresh"]
+    types = imp.types(stored)
+    default = base_scan_default(imp, path, ref) if "scan" not in stored and "scan" in fresh else None
     return _compare(lambda: lock.changes(stored, fresh, types, default), lock_path), ""
+
+
+def base_read(lock_path: pathlib.Path, ref: str) -> BaseRead:
+    """_base_lock's result, or the BaseUnavailable it raised."""
+    try:
+        return _base_lock(lock_path, ref)
+    except BaseUnavailable as e:
+        return e
+
+
+def base_scan_default(imp: Imported, path: pathlib.Path, ref: str) -> dict[str, list[str]]:
+    """_base_scan_default, read once per command (before the child runs, when `inv check` asks first)."""
+    got: dict[str, list[str]] = imp.before(("base-default", ref), lambda: _base_scan_default(path, ref))
+    return got
 
 
 def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
@@ -151,9 +172,10 @@ def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
 
 
 def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool,
-               scan: dict[str, Any] | None = None) -> int:
+               scan: dict[str, Any] | None = None, imported: Imported | None = None,
+               base: BaseRead | None = None) -> int:
     try:
-        changes, why = base_changes(path, lock_path, ref, extra, scan)
+        changes, why = base_changes(path, lock_path, ref, extra, scan, imported, base)
     except BaseUnavailable as e:
         if allow and e.acceptable:
             _out(f"{e} (allowed by a reviewer)")

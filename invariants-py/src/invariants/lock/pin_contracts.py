@@ -40,9 +40,12 @@ def _openapi_file(name: str, path: pathlib.Path) -> Any:
     except json.JSONDecodeError:
         try:
             import yaml
-            return yaml.safe_load(text)
+            spec = yaml.safe_load(text)
         except Exception as e:
             raise LoadError(f"contract {name}: {path.name} is neither JSON nor YAML ({e})") from e
+        from ..loader.reading import check_expanded
+        check_expanded(spec, f"contract {name}: {path.name}")       # a YAML alias bomb is refused, not walked
+        return spec
 
 
 def _openapi_app(name: str, ref: str) -> Any:

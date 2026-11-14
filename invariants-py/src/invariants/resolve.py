@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import difflib
+import inspect
+import pathlib
 import pkgutil
+import sys
 from types import TracebackType
 from typing import Any, Iterable
 
-from .confinement import import_module
+from .confinement import confine_root, import_module, inside
 from .errors import LoadError
 
 MAX_LISTED = 12
@@ -35,11 +38,16 @@ def resolve(target: str, what: str = "target") -> Any:
     else:
         raise LoadError(f"{what} {target}: no importable module {parts[0]!r}")
     have = name
-    for p in parts[i:]:
+    top = confine_root()
+    for n, p in enumerate(parts[i:]):
+        if n and top is not None:
+            _stays_inside(obj, have, f"{what} {target}", top)
         if not hasattr(obj, p):
             raise LoadError(f"{what} {target}: {have} has no {p!r}{suggest(p, names_in(obj))}")
         obj = getattr(obj, p)
         have = f"{have}.{p}"
+    if top is not None and len(parts) > i:
+        _module_inside(obj, have, f"{what} {target}", top)
     return obj
 
 
@@ -47,19 +55,60 @@ def resolve_ref(ref: str, what: str, public: bool = False) -> Any:
     """'package.module:attr.path' -> the object (no eval), or LoadError naming `what` ("contract NAME").
     The module is imported through confinement.import_module, as every module a rule file names is, so
     under `inv mcp` a module outside --root is refused before its code runs. An empty attribute path is
-    the module itself. public: refuse an attribute that starts with "_"."""
+    the module itself. public: refuse an attribute that starts with "_".
+
+    A contract is a class, mapping or function defined in the module the ref names before the colon,
+    so the attribute path never goes through a module object (`app.mod:os.environ` is refused; write
+    `app.models:Refund`, not `app:models.Refund`). Under confinement (`inv mcp`) every object the path
+    goes through, and a module it ends at, must also be defined inside the root."""
     mod_name, _, attr = ref.partition(":")
     try:
         obj = import_module(mod_name, what)
     except ImportError as e:
         raise LoadError(f"{what}: cannot import {mod_name}: {e}") from e
     have = mod_name
-    for part in [p for p in attr.split(".") if p]:
+    top = confine_root()
+    for n, part in enumerate(p for p in attr.split(".") if p):
+        if n:
+            if inspect.ismodule(obj):
+                raise LoadError(f"{what}: {ref}: the attribute path goes through the module {have}; name the "
+                                f"module before the colon (module:attribute), and only an object defined in it")
+            if top is not None:
+                _stays_inside(obj, have, what, top)
         if (public and part.startswith("_")) or not hasattr(obj, part):
             raise LoadError(f"{what}: {have} has no {part!r}")
         obj = getattr(obj, part)
         have = f"{have}.{part}"
+    if top is not None and have != mod_name:
+        _module_inside(obj, have, what, top)
     return obj
+
+
+def _defined_in(obj: Any) -> str | None:
+    """The file of the module an object comes from: a module's own, a class's or function's
+    __module__'s, else its type's; None when there is none (a builtin)."""
+    if inspect.ismodule(obj):
+        f = getattr(obj, "__file__", None)
+        return f if isinstance(f, str) else None
+    owner = obj if inspect.isclass(obj) or inspect.isroutine(obj) else type(obj)
+    mod = sys.modules.get(getattr(owner, "__module__", None) or "")
+    f = getattr(mod, "__file__", None)
+    return f if isinstance(f, str) else None
+
+
+def _stays_inside(obj: Any, have: str, what: str, top: pathlib.Path) -> None:
+    """Under confinement, an attribute path goes on only through an object defined inside the root:
+    never through the standard library (`os.environ`, `sys.modules`) or an installed package."""
+    f = _defined_in(obj)
+    if f is None or not inside(f, top):
+        raise LoadError(f"{what}: {have} is not defined inside {top}, the --root `inv mcp` confines "
+                        f"references to; the attribute path is not followed through it")
+
+
+def _module_inside(obj: Any, have: str, what: str, top: pathlib.Path) -> None:
+    """Under confinement, an attribute path that ends at a module ends at one inside the root."""
+    if inspect.ismodule(obj):
+        _stays_inside(obj, have, what, top)
 
 
 def _is_this_module(e: ModuleNotFoundError, name: str) -> bool:

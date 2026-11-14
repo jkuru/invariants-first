@@ -70,7 +70,7 @@ def test_signature_change_names_the_target_and_shows_old_and_new(app):
      "mode: detect}\n", "rule L-3: enforcer decorator mode: 'enforce' -> 'detect'  WEAKENED"),
     ("on_violation: reject, on_error: fail_closed}", "on_violation: reject, on_error: fail_open_and_page}",
      "rule L-1: enforcer decorator on_error: 'fail_closed' -> 'fail_open_and_page'  WEAKENED (fail_open"),
-    ('      sink: "py:ledger.store.write_balance"\n', "",
+    ('      sink: "py:ledger.store.write_balance"\n      door: "py:ledger.service.withdraw"\n', "",
      'rule L-1: mediation.sink: ["py:ledger.store.write_balance"] -> (none)  WEAKENED'),
 ])
 def test_weakening_is_called_out_and_refused(app, old, new, expect):

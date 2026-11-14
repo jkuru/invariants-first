@@ -112,6 +112,9 @@ confined the same way (a `py:` target, a provider's `from:`, and every `module:a
 pydantic, dataclass, TypedDict or Python, all import through one function): a target, contract or provider module whose file is not inside `--root` (the
 standard library and installed packages included: `py:os.environ`, `py:this`) is refused before it
 is imported, so its import-time code never runs and none of its objects reach a pin or an error.
+The attribute path after the module stays inside `--root` too: it goes only through objects
+defined there (`app.mod:os.environ._data` or `py:app.mod.sys.modules` is refused), and a contract
+ref never goes through a module object at all (name the module before the colon).
 That holds below the top-level package too: while `INV_CONFINE_ROOT` is set, a finder first on
 `sys.meta_path` checks every module the child imports before its code runs, and refuses one of the
 project's (reached through a directory inside `--root`, such as a symlink `app/leak ->
@@ -178,3 +181,12 @@ The person runs `inv lock` and commits `invariants.yaml` and `invariants.lock` t
 CI runs `inv check --base origin/main`, pre-commit runs `inv check --relock --fail-on-repin`, and
 the agent's hooks run `inv hook pretool` and `inv hook stop`. A later change that weakens a law fails until a person
 accepts it, whoever wrote the change.
+
+The code the agent writes cannot switch that off from the inside: `inv check` (and `inv lock` and
+the stop hook) imports the app only in a child process, and the process that decides on a weakening
+never imports the project, so a module that sets `INV_ALLOW_WEAKENING` or patches `invariants.lock`
+at import changes nothing. It trusts the code it imports to describe itself: a
+signature or model schema is pinned as the imported code reports it, so a module that lies about
+its own schema is believed. That is why the guarded and contract modules, like the rule file, the
+lock and the CI workflow, need a code owner (start.md, "Make the check unskippable"; lockfile.md,
+"What the lock trusts").
