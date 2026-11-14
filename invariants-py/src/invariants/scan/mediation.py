@@ -1,10 +1,16 @@
-"""Reading the rule file: each rule's mediation fields (sink, door, allow); scan.mediations() is the entry."""
+"""Reading the rule file: each rule's mediation fields (sink, door, allow, allow_unresolved);
+scan.mediations() is the entry."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import _scan_hooks
-from .contracts import Mediation, ScanConfigError
+from .contracts import Accept, Mediation, ScanConfigError
+
+_AT = re.compile(r"^(?P<file>[^:]+):(?P<line>[1-9][0-9]*)(?::(?P<col>[1-9][0-9]*))?$")
+_SHA = re.compile(r"^[0-9a-f]{10}$")
+ACCEPT_FIELDS = frozenset({"at", "code", "sha", "why"})
 
 
 def _str_list(v: Any, where: str) -> list[str]:
@@ -26,8 +32,8 @@ def _not_scanned(rid: str, raw: dict[str, Any], med: Any) -> str | None:
         return ("ablated (INV_ABLATE); an enforce rule, so the scan cannot pass"
                 if raw.get("status") == "enforce" else "ablated (INV_ABLATE)")
     if "sink" not in med:
-        if "door" in med or "allow" in med:
-            raise ScanConfigError(f"{rid}: mediation.door and allow need mediation.sink")
+        if "door" in med or "allow" in med or "allow_unresolved" in med:
+            raise ScanConfigError(f"{rid}: mediation.door, allow and allow_unresolved need mediation.sink")
         return "mediation declares no sink"
     return None
 
@@ -46,4 +52,45 @@ def _mediation(rid: str, raw: dict[str, Any], med: dict[str, Any]) -> Mediation:
     for p in sinks + doors + allow:
         if not p.startswith("py:"):
             raise ScanConfigError(f"{rid}: {p!r} must be a 'py:module.name' path")
-    return Mediation(rid, sinks, doors, allow)
+    accept = _accepts(rid, med["allow_unresolved"]) if "allow_unresolved" in med else None
+    return Mediation(rid, sinks, doors, allow, accept)
+
+
+def _accepts(rid: str, raw: Any) -> list[Accept]:
+    """mediation.allow_unresolved: reviewed unresolved findings, each {at, code, sha, why}."""
+    where = f"{rid}: mediation.allow_unresolved"
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ScanConfigError(f"{where} must be a list of entries {{at, code, sha, why}}")
+    out = []
+    for i, e in enumerate(raw):
+        at = f"{where}[{i}]"
+        if not isinstance(e, dict):
+            raise ScanConfigError(f"{at} must be a mapping {{at, code, sha, why}}")
+        extra = sorted(set(e) - ACCEPT_FIELDS)
+        if extra:
+            raise ScanConfigError(f"{at}: unknown field(s) {', '.join(map(str, extra))} "
+                                  f"(an entry has at, code, sha, why)")
+        missing = sorted(ACCEPT_FIELDS - set(e))
+        if missing:
+            raise ScanConfigError(f"{at}: missing {', '.join(missing)}; the scan's JSON output gives at, code and sha "
+                                  f"for each unresolved finding, and why is the reviewer's reason")
+        if not all(isinstance(e[k], str) for k in ACCEPT_FIELDS):
+            raise ScanConfigError(f"{at}: at, code, sha and why must be strings")
+        m = _AT.match(e["at"])
+        if m is None:
+            raise ScanConfigError(f"{at}: at must be path:line or path:line:col (the file relative to its source "
+                                  f"root, as the scan reports it), got {e['at']!r}")
+        code = e["code"]
+        if not code.startswith("unresolved/"):
+            raise ScanConfigError(f"{at}: only an unresolved finding can be accepted, not {code!r}: a bypass or a "
+                                  f"forbidden idiom is fixed, or a known back door is frozen in allow")
+        if not _SHA.match(e["sha"]):
+            raise ScanConfigError(f"{at}: sha must be the 10 hex digits the scan gives the finding (inv scan "
+                                  f"--format json), got {e['sha']!r}")
+        if not e["why"].strip():
+            raise ScanConfigError(f"{at}: why must say why the reviewed site cannot reach the sink")
+        out.append(Accept(e["at"], m["file"], int(m["line"]), int(m["col"]) if m["col"] else None, code,
+                          e["sha"], e["why"]))
+    return out

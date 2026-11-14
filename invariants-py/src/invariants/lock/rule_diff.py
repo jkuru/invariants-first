@@ -213,9 +213,54 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
     ra, rb = a.get("residual_paths"), b.get("residual_paths")
     if not same(ra, rb):
         out.append(_residual_change(where, ra, rb))
-    for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow"}):
+    if not same(a.get("allow_unresolved"), b.get("allow_unresolved")):
+        out += _accept_changes(where, a.get("allow_unresolved"), b.get("allow_unresolved"))
+    for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow", "allow_unresolved"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
+    return out
+
+
+def _accept_key(e: Any) -> tuple[str, str, str, str | None] | None:
+    """(file, code, sha, column or None) of a mediation.allow_unresolved entry, or None when malformed."""
+    if not isinstance(e, dict) or not all(isinstance(e.get(k), str) for k in ("at", "code", "sha")):
+        return None
+    parts = e["at"].split(":")
+    if len(parts) not in (2, 3):
+        return None
+    return parts[0], e["code"], e["sha"], parts[2] if len(parts) == 3 else None
+
+
+def _accept_changes(where: str, old: Any, new: Any) -> list[Change]:
+    """mediation.allow_unresolved: an entry for a site no old entry names (a new file, code or sha), or
+    one that drops its column (it then matches any column of the line), is a weakening; a removed entry
+    is a tightening, and a new line or reason for the same site is neither (the code above it moved,
+    or the reviewer reworded it)."""
+    la = old if isinstance(old, list) else [] if old is None else [old]
+    lb = new if isinstance(new, list) else [] if new is None else [new]
+    ka, kb = [_accept_key(e) for e in la], [_accept_key(e) for e in lb]
+    if None in ka or None in kb:
+        return [Change(where, "mediation.allow_unresolved", old, new, True,
+                       "a malformed entry; treated as a possible weakening")]
+    had = {k[:3]: k[3] for k in ka if k is not None}
+    out = []
+    for e, k in zip(lb, kb):
+        if k is None:
+            continue
+        if k[:3] not in had:
+            out.append(Change(where, "mediation.allow_unresolved", None, e, True,
+                              f"an unresolved site is now accepted without the scan's proof: {e['at']} ({e['code']})"))
+        elif had[k[:3]] is not None and k[3] is None:
+            out.append(Change(where, "mediation.allow_unresolved", None, e, True,
+                              f"the entry for {e['at']} ({e['code']}) no longer names a column, so it matches more"))
+    kept = {x[:3] for x in kb if x is not None}
+    for e, k in zip(la, ka):
+        if k is not None and k[:3] not in kept:
+            out.append(Change(where, "mediation.allow_unresolved", e, None, False,
+                              f"{e['at']} ({e['code']}) is no longer accepted: the scan reports it again"))
+    if not out:                                        # the same sites: moved lines or a new why
+        out.append(Change(where, "mediation.allow_unresolved", old, new, False,
+                          "the same sites are accepted (a new line or reason)"))
     return out
 
 

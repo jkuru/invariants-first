@@ -36,7 +36,7 @@ rules:
     allow: [py:scripts.admin.goodwill_refund]           # known back doors, frozen (optional)
 ```
 
-It expands to `mediation: {sink, door, allow}`, `bad: 'false'`, one enforcer
+It expands to `mediation: {sink, door, allow, allow_unresolved}`, `bad: 'false'`, one enforcer
 `{point: structure, timing: pre_effect, mode: enforce}`, and `status: enforce`. Nothing is evaluated at
 run time: `inv scan`, inside `inv check`, fails any call path from an entrypoint to a sink that passes
 no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A structure rule may be
@@ -53,8 +53,16 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   (`missing/allow`). An empty or null `allow` means none.
 - With `guard:` as well, the guarded function is the door, and the rule also checks its arguments
   (give `bad`, and optionally `tests`). A door rule without `guard:` cannot have `bad`.
-- The lock reports these as weakenings: a new `allow` entry, a new door, a removed sink, and
-  removing the rule. Deleting an `allow` entry or a door is a tightening.
+- `allow_unresolved` (short for `mediation.allow_unresolved`) accepts unresolved findings a person
+  has reviewed, one site each: `{at: "app/plugins.py:41", code: unresolved/reflection, sha:
+  3f9c0a17be, why: "..."}`, with the sha `inv scan --format json` gives the finding. A matching
+  finding is shown as accepted and does not fail the rule; an edit above it keeps the entry, an edit
+  of the site does not, and an entry that matches nothing is `missing/allow-unresolved-unused`. Only
+  `unresolved/*` codes can be accepted, never a `bypass` or `forbidden` finding (see
+  [scan.md](scan.md#accepting-a-reviewed-unresolved-site)).
+- The lock reports these as weakenings: a new `allow` entry, a new `allow_unresolved` entry (or one
+  that drops its column), a new door, a removed sink, and removing the rule. Deleting an `allow` or
+  `allow_unresolved` entry or a door is a tightening.
 
 `inv init` drafts door rules from the code: see [start.md](start.md#3-path-laws-doors-and-back-doors).
 
@@ -96,7 +104,7 @@ not a lock: two concurrent callers can both pass it.
 | `bind` | Name -> path, for names `bad` reads. A name that matches a provider is bound to it automatically. |
 | `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
 | `enforcers` | See below. |
-| `mediation` | `{chokepoint, residual_paths, sink, door, allow}`. `allow` lists known back doors the scan lets through (see "The door form" above). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`. |
+| `mediation` | `{chokepoint, residual_paths, sink, door, allow, allow_unresolved}`. `allow` lists known back doors the scan lets through (see "The door form" above). `allow_unresolved` lists unresolved findings a person reviewed and accepts, one site each: `{at: "path:line[:col]", code: "unresolved/...", sha, why}` ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`. |
 | `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
 | `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |

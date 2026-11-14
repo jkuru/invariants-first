@@ -21,6 +21,9 @@ _NOWHERE = "<above the source roots>"                    # a relative import abo
 _IMPORT_STATE = frozenset({"sys.path", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache"})
 _IMPORT_STATE_CALLS = frozenset({"importlib.invalidate_caches", "site.addsitedir", "zipimport.zipimporter",
                                  "importlib.machinery.PathFinder.invalidate_caches"})
+# calls that let a package's submodules come from other directories (they extend its __path__)
+_PACKAGE_PATH_CALLS = frozenset({"pkgutil.extend_path", "pkg_resources.declare_namespace",
+                                 "pkg_resources.fixup_namespace_packages"})
 _READS = frozenset({"index", "count", "copy", "get", "keys", "values", "items", "__contains__", "__len__",
                     "__iter__", "__getitem__"})
 
@@ -45,6 +48,7 @@ class _Index:
         self._methods: dict[tuple[str, str], str | None] = {}   # (class, name) -> method()
         self._mros: dict[tuple[str, bool], list[str] | None] = {}  # (class, strict) -> its C3 order
         self._fans: dict[str, tuple[str, ...]] = {}         # name -> every scanned method of that name, sorted
+        self._tails: set[str] | None = None                # every dotted tail of a module name under the roots
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
         self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
         self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
@@ -90,6 +94,24 @@ class _Index:
         """me's name is the class itself (a @classmethod's `cls`), never an instance, in every method of
         its class that names its first parameter so: `cls()` builds an instance of it or of a subclass."""
         return me is not None and self.first_params.get(me) == {"cm"}
+
+    def outside(self, fq: str) -> bool:
+        """fq names an object outside the scanned code: no prefix of it is a scanned, excluded or unreadable
+        module, a file under the roots, or a scanned class or function; so it is the standard library, a
+        builtin or a third-party package (an import of a module a scanned package lacks is reported on
+        its own, as unresolved/unknown-module)."""
+        if not fq or fq.startswith(("self:", "?")) or self.excluded_module(fq) is not None:
+            return False
+        if self._tails is None:                        # a file under the roots named from a deeper directory
+            self._tails = {".".join(p[i:]) for n in self.module_files for p in [n.split(".")]
+                           for i in range(len(p))}
+        parts = self.real(fq).split(".")
+        for i in range(1, len(parts) + 1):
+            head = ".".join(parts[:i])
+            if head in self.modules or head in self.classes or head in self.funcs or head in self.module_files \
+                    or head in self.no_source or head in self.excluded or head in self._tails:
+                return False                           # (`fleet.store` may be app/fleet/store.py on sys.path)
+        return True
 
     def real(self, fq: str) -> str:
         """fq with a module name another root gives a file (`src.app.x` with the roots `src` and `.`)
@@ -256,23 +278,47 @@ class _Index:
 
     def import_path_writes(self) -> None:
         """Scanned code that changes where Python finds modules (sys.path, sys.meta_path, sys.path_hooks,
-        sys.path_importer_cache, importlib.invalidate_caches, site.addsitedir, zipimport) is a problem: an
-        import after it may load code from outside the roots, such as a zip archive."""
+        sys.path_importer_cache, importlib.invalidate_caches, site.addsitedir, zipimport), directly or
+        through a name bound to one of them (`p = sys.path; p.insert(0, d)`), is a problem: an import
+        after it may load code from outside the roots, such as a zip archive. So is a write of a
+        package's `__path__` (`__path__.append(d)`, `__path__ = extend_path(__path__, __name__)`,
+        `pkg.__path__ += [d]`, pkgutil.extend_path): its submodules may then come from any directory."""
         for mod in self.modules.values():
+            names = _state_aliases(mod)
+            seen: set[int] = set()                     # one __path__ finding per line
+
+            def full(node: ast.AST) -> str:
+                f = _full(mod, node) or ""
+                head, _, rest = f.partition(".")
+                return ".".join(filter(None, [names[head], rest])) if head in names else f
             for node in _walk_of(mod.tree, ast.Call, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete):
-                what, line = None, getattr(node, "lineno", 1)
+                what, line, package = None, getattr(node, "lineno", 1), False
                 if isinstance(node, ast.Call):
-                    f = _full(mod, node.func) or ""
+                    f = full(node.func)
                     owner, _, attr = f.rpartition(".")
                     if f in _IMPORT_STATE_CALLS or (owner in _IMPORT_STATE and attr not in _READS):
                         what = f"{f}()"
+                    elif f in _PACKAGE_PATH_CALLS or (_package_path(owner) and attr not in _READS):
+                        what, package = f"{f}()", True
                 elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
                     targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
                     for t in targets:
                         base = t.value if isinstance(t, ast.Subscript) else t
-                        if not isinstance(t, ast.Name) and (f := _full(mod, base) or "") in _IMPORT_STATE:
+                        f = t.id if isinstance(t, ast.Name) else full(base)      # p = sys.path binds p only
+                        if _package_path(f):
+                            what, package = f"a write of {f}", True
+                        elif not isinstance(t, ast.Name) and f in _IMPORT_STATE:
                             what = f"a write of {f}"
-                if what:
+                if what and package and line in seen:
+                    continue
+                if what and package:
+                    seen.add(line)
+                    self.problems.append((mod.root, mod.file, line, "unresolved/reflection",
+                                          f"{what} changes a package's __path__, so its submodules may come from "
+                                          f"any directory: an import of one may load code from outside the "
+                                          f"scanned roots, which the scan does not read; keep the package's "
+                                          f"modules in the roots"))
+                elif what:
                     self.problems.append((mod.root, mod.file, line, "unresolved/reflection",
                                           f"{what} changes where Python finds modules: an import after it may "
                                           f"load code from outside the scanned roots (a zip archive, another "
@@ -538,6 +584,31 @@ class _Index:
                 binds.update((a.asname or a.name).split(".")[0] for a in n.names)
         self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
         return out
+
+
+def _package_path(f: str) -> bool:
+    """f is a package's __path__ (`__path__` in its __init__, or `pkg.__path__`)."""
+    return f == "__path__" or f.endswith(".__path__")
+
+
+def _state_aliases(mod: _Module) -> dict[str, str]:
+    """Names mod binds to sys.path (or another of the import state lists) or a __path__: `p = sys.path`,
+    anywhere in the module (an over-approximation: a name bound so once counts everywhere)."""
+    out: dict[str, str] = {}
+    binds: list[tuple[ast.Name, str]] = []             # (name, the dotted value it is bound to)
+    for n in _walk_of(mod.tree, ast.Assign, ast.AnnAssign, ast.NamedExpr):
+        value = getattr(n, "value", None)
+        if not isinstance(value, (ast.Name, ast.Attribute)) or not (dotted := _full(mod, value)):
+            continue
+        targets = n.targets if isinstance(n, ast.Assign) else [getattr(n, "target", None)]
+        binds += [(t, dotted) for t in targets if isinstance(t, ast.Name)]
+    for _ in range(3):                                 # p = sys.path; q = p
+        for t, f in binds:
+            head, _, rest = f.partition(".")
+            f = ".".join(filter(None, [out[head], rest])) if head in out else f
+            if (f in _IMPORT_STATE or _package_path(f)) and t.id != f:
+                out.setdefault(t.id, f)
+    return out
 
 
 def _full(mod: _Module, node: ast.AST) -> str | None:

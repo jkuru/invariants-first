@@ -26,8 +26,10 @@ import sys
 import time
 from typing import Any, Iterable, Iterator
 
+from . import accept
 from .checks import _canon_py, _check_rule
-from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report, ScanConfigError,
+from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Accept, Finding, Mediation, Report,
+                        ScanConfigError,
                         _Edge, _Fan, _Module, _OnPaths, _Site)
 from .astutil import _dotted
 from .indexer import _Index
@@ -249,6 +251,9 @@ def _skipped_imports(idx: _Index, root: pathlib.Path, file: pathlib.Path) -> lis
     names: list[tuple[int, str]] = []
     runs: list[tuple[int, str]] = []
     paths = False
+    # a name bound to sys.path (p = sys.path; p.insert(0, d)) changes it too
+    held = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and f"{_dotted(n.value)}.".startswith(_PATH_STATE)
+            for t in n.targets if isinstance(t, ast.Name)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names += [(node.lineno, idx.real(a.name)) for a in node.names]
@@ -263,7 +268,7 @@ def _skipped_imports(idx: _Index, root: pathlib.Path, file: pathlib.Path) -> lis
                 names.append((node.lineno, idx.real(first.value.lstrip("."))))
             elif last in _IMPORTS_NAMED or last in _RUNS_NAMED or d in _RUNS_BUILTIN:
                 runs.append((node.lineno, f"{d}()"))
-            paths = paths or d.startswith(_PATH_STATE)
+            paths = paths or d.startswith(_PATH_STATE) or (d.partition(".")[0] in held and "." in d)
         elif isinstance(node, (ast.Assign, ast.AugAssign)):
             paths = paths or any(f"{_dotted(t.value if isinstance(t, ast.Subscript) else t)}.".startswith(_PATH_STATE)
                                  for t in (node.targets if isinstance(node, ast.Assign) else [node.target]))
@@ -343,14 +348,62 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     report.notes = list(idx.notes)
     entries = g.entries
     progress = _Progress()
+    guarded = _guarded(idx, doc)
+    lines = accept._Lines()
     for k, med in enumerate(scanned.values()):
         progress("checking rule", k, len(scanned))
         on = _OnPaths()                                # worked out when read (inv init), not here
         dict[str, Any].__setitem__(report.on_paths, med.rule, on)
-        report.findings += _check_rule(idx, med, edges, sites, entries, on)
-        report.findings += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
-                                    str(r)) for r, f, line, code, msg in idx.problems]
-        report.findings += _skipped_importers(idx, med)
+        found = _check_rule(idx, med, edges, sites, entries, on, guarded=guarded)
+        found += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
+                          str(r)) for r, f, line, code, msg in idx.problems]
+        found += _skipped_importers(idx, med)
+        accept.fill_sha(found, lines)
+        if med.accept is not None:                     # reviewed sites: shown as accepted, never failing
+            found, ok = accept.apply(med.rule, med.accept, found)
+            report.accepted += ok
+        report.findings += found
     order = {k: i for i, k in enumerate(KINDS)}
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
+    report.accepted.sort(key=lambda f: (f.rule, f.file or "", f.line, f.col, f.code))
     return report
+
+
+# decorators that put an inv guard on a function (it checks the rule's values before or after it runs)
+_INV_GUARDS = frozenset({"guard", "model_call", "edge"})
+
+
+def _guarded(idx: _Index, doc: dict[str, Any]) -> frozenset[str]:
+    """The scanned functions that are guarded doors: the doors and targets of the rules in the file, and
+    every function decorated with an inv guard (`@inv.guard`, `@inv.model_call`, `@inv.edge`)."""
+    from .inference import _Inference
+    named: set[str] = set()
+    for raw in doc.get("rules") or []:
+        if not isinstance(raw, dict):
+            continue
+        med = raw.get("mediation")
+        doors = med.get("door") if isinstance(med, dict) else None
+        subject = raw.get("subject")
+        target = subject.get("target") if isinstance(subject, dict) else None
+        for p in [*([doors] if isinstance(doors, str) else doors if isinstance(doors, list) else []),
+                  *([target] if isinstance(target, str) else [])]:
+            if isinstance(p, str) and p.startswith("py:"):
+                named.add(idx.canon(p[3:]))
+    out: set[str] = {n for n in named if n in idx.funcs and idx.funcs[n].node is not None}
+    homes: dict[str, _Inference] = {}
+    # only a module that imports from invariants (or star-imports) can name an inv guard
+    may = {m for m, mod in idx.modules.items() if mod.star or any(
+        v.split(".")[0] == "invariants" for v in mod.aliases.values())}
+    for fid, f in idx.funcs.items():
+        node = f.node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.decorator_list or fid in out \
+                or f.module not in may:
+            continue
+        inf = homes.get(f.module) or homes.setdefault(f.module, _Inference(idx, idx.modules[f.module]))
+        for d in node.decorator_list:
+            fn = d.func if isinstance(d, ast.Call) else d
+            fq = inf._resolve(fn, set(), None) if _dotted(fn) else None
+            if fq and fq.split(".")[0] == "invariants" and fq.rpartition(".")[2] in _INV_GUARDS:
+                out.add(fid)
+                break
+    return frozenset(out)

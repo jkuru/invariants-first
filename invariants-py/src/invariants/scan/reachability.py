@@ -220,7 +220,9 @@ class _Pass:
         return _paths(start, self.goals, self.succ, True, allowed)
 
     def into_goal(self, e: _Call) -> bool:
-        return any(c in self.goals for c in e.callees) if type(e) is _Fan else e.callee in self.goals  # type: ignore[union-attr]
+        if type(e) is _Fan:
+            return any(c in self.goals for c in e.callees)
+        return e.callee in self.goals  # type: ignore[union-attr]
 
     def first_starts(self, starts: list[str], allowed: frozenset[str] | set[str]) -> dict[str, int]:
         """For each function with a call into a goal, the index of the first start whose search reaches it

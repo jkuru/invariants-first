@@ -351,7 +351,8 @@ def _names_dicts(tree: ast.AST, fn: ast.AST) -> bool:
     if lines is None:
         lines = tree.__dict__["_inv_dict_lines"] = sorted(
             n.lineno for n in _walk_of(tree, ast.Attribute, ast.Name)
-            if (isinstance(n, ast.Attribute) and n.attr in ("__dict__", "vars")) or (isinstance(n, ast.Name) and n.id == "vars"))
+            if (isinstance(n, ast.Attribute) and n.attr in ("__dict__", "vars"))
+            or (isinstance(n, ast.Name) and n.id == "vars"))
     if not lines:
         return False
     end = getattr(fn, "end_lineno", None)

@@ -34,9 +34,34 @@ class Finding:
     root: str | None = None
     path: list[str] = dataclasses.field(default_factory=list)
     owner: str | None = None       # the function the finding is in (module.qualname), when known
+    # an unresolved finding in a file: the key a person writes in mediation.allow_unresolved to accept it
+    # after review (a short hash of its code, function and normalized source line)
+    sha: str | None = None
+    why: str | None = None         # accepted: the reason its allow_unresolved entry gives
+    moved_from: int | None = None  # accepted at another line than its entry says (the code above moved)
 
     def as_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        out = dataclasses.asdict(self)
+        for k in ("sha", "why", "moved_from"):     # only where they say something
+            if out[k] is None:
+                del out[k]
+        return out
+
+
+@dataclasses.dataclass(frozen=True)
+class Accept:
+    """One mediation.allow_unresolved entry: a person reviewed this unresolved finding and accepts it."""
+
+    at: str                        # as written: path:line or path:line:col
+    file: str
+    line: int
+    col: int | None
+    code: str                      # unresolved/... (bypass and forbidden findings are never accepted)
+    sha: str
+    why: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"at": self.at, "code": self.code, "sha": self.sha, "why": self.why}
 
 
 @dataclasses.dataclass
@@ -47,6 +72,8 @@ class Mediation:
     sinks: list[str]
     doors: list[str]
     allow: list[str] = dataclasses.field(default_factory=list)   # known back doors, let through
+    # reviewed unresolved findings, accepted one by one (None: the rule has no allow_unresolved)
+    accept: list[Accept] | None = None
 
 
 @dataclasses.dataclass
@@ -65,13 +92,19 @@ class Report:
     # excludes (an exclude glob that matches a file from some of its roots only); shown, never findings
     skipped: dict[str, int] = dataclasses.field(default_factory=dict)
     notes: list[str] = dataclasses.field(default_factory=list)
+    # unresolved findings a rule's mediation.allow_unresolved accepts after review: shown, never failing
+    accepted: list[Finding] = dataclasses.field(default_factory=list)
 
     def for_rule(self, rule_id: str) -> list[Finding]:
         return [f for f in self.findings if f.rule == rule_id]
 
     def counts(self, rule_id: str | None = None) -> dict[str, int]:
         c = collections.Counter(f.kind for f in self.findings if rule_id is None or f.rule == rule_id)
-        return {k: c[k] for k in KINDS if c[k]}
+        out = {k: c[k] for k in KINDS if c[k]}
+        n = sum(1 for f in self.accepted if rule_id is None or f.rule == rule_id)
+        if n:
+            out["accepted"] = n
+        return out
 
     @property
     def ablated_enforce(self) -> list[str]:
@@ -82,7 +115,7 @@ class Report:
         """pass | fail | unresolved | not_scanned."""
         if rule_id not in self.scanned:
             return "not_scanned"
-        c = self.counts(rule_id)
+        c = self.counts(rule_id)                     # an accepted finding never fails a rule
         if c.get("bypass") or c.get("forbidden") or c.get("missing"):
             return "fail"
         return "unresolved" if c.get("unresolved") else "pass"
@@ -91,11 +124,14 @@ class Report:
         out: dict[str, Any] = {
             "files": self.files, "functions": self.functions,
             "rules": {rid: {"result": self.rule_result(rid), "sinks": m.sinks, "doors": m.doors,
-                            "allow": m.allow, "counts": self.counts(rid)}
+                            "allow": m.allow, "counts": self.counts(rid),
+                            **({"allow_unresolved": [a.as_dict() for a in m.accept]} if m.accept else {})}
                       for rid, m in self.scanned.items()},
             "not_scanned": self.not_scanned,
             "findings": [f.as_dict() for f in self.findings],
         }
+        if self.accepted:
+            out["accepted"] = [f.as_dict() for f in self.accepted]
         if self.skipped:
             out["skipped"] = dict(self.skipped)
         if self.notes:
@@ -214,3 +250,6 @@ class _Site:
     line: int
     col: int
     detail: str = ""
+    # getattr/setattr/delattr/hasattr: the class the receiver is an instance of, when the scan knows it
+    # ("C", or "C!" when it is exactly C: built here, or the class object itself), else ""
+    recv: str = ""

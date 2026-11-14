@@ -546,7 +546,7 @@ class _Inference:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return []
         fq = self._resolve(node, local, me) if _dotted(node) else None
-        alts = [a for a in self._alternatives(node, local, me) if a != fq and a in self.idx.funcs]
+        alts = [a for a in sorted(self._alternatives(node, local, me)) if a != fq and a in self.idx.funcs]
         if fq and fq in self.idx.funcs:
             return [fq, *alts]
         if isinstance(node, ast.Attribute) and (fq is None or self._via_function(node, local, me)):

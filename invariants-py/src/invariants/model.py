@@ -18,7 +18,7 @@ RULE_FIELDS = frozenset({"id", "rev", "status", "class", "owner", "statement", "
                          "falsified_by", "evidence", "applies_to"})
 ENFORCER_FIELDS = frozenset({"point", "target", "timing", "mode", "on_violation", "on_error", "view", "artifact",
                              "generated", "conformance_test"})
-MEDIATION_FIELDS = frozenset({"chokepoint", "residual_paths", "sink", "door", "allow"})
+MEDIATION_FIELDS = frozenset({"chokepoint", "residual_paths", "sink", "door", "allow", "allow_unresolved"})
 POLICY_FIELDS = frozenset({"schema", "format_retries", "semantic_resamples", "feedback", "abstain"})
 EVALUATED = frozenset({"decorator", "middleware", "model_call", "edge"})   # points the SDK evaluates in-process
 VIEW_POINTS = EVALUATED | {"monitor"}                          # points that bind names (and may take a view)

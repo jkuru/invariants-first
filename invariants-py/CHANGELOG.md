@@ -99,8 +99,34 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   entrypoint, a name-matched call kept as one record instead of one edge per method of that name,
   and each module's tree walked once for the passes that only collect from it. SQLAlchemy (239k
   lines) scans in 3 s instead of 16 s; PyTorch (1M lines; it did not finish in 18 minutes before) in
-  20 s and 1.6 GB; transformers in 30 s and 1.6 GB (18 GB before). A scan that runs past 5 seconds
-  prints a progress line on stderr (`INV_PROGRESS=0` turns it off).
+  20 s and 1.6 GB; transformers in 30 s and 1.6 GB (it did not finish in 20 minutes before). A scan
+  that runs past 5 seconds prints a progress line on stderr (`INV_PROGRESS=0` turns it off).
+- Reviewed exceptions: `mediation.allow_unresolved` (short form `allow_unresolved:`) accepts an
+  unresolved finding a person has read, one site at a time: `{at: "path:line[:col]", code, sha,
+  why}`, where `sha` (in `--format json`) hashes the finding's code, function and source line. An
+  accepted finding is shown (`accepted` in text, JSON, a SARIF suppression with the `why`, `inv
+  status`, MCP `explain`) and never fails the rule; an edit above the site keeps the entry (reported
+  as moved), an edit of the site does not; an entry that matches nothing is
+  `missing/allow-unresolved-unused`. `bypass` and `forbidden/*` findings can never be accepted. A new
+  entry, or one that drops its column, is a lock weakening (`--accept-weakening`); removing one is a
+  tightening.
+- Narrowing the scan can prove: a `getattr` with a computed name on an instance (or the class) of a
+  class whose whole family the scan sees, where no attribute is named like a sink or door and none
+  can reach a sink without a door, or on an object outside the scanned code (`getattr(logging,
+  level)`), is not reported; reading only a namespace's names (`globals().keys()`, `name in
+  globals()`) is not reflection. Reflection elsewhere is still reported wherever it is (a module
+  that imports nothing can still be handed the sink). On jupyter_server's session door this, with
+  the unwrap change below, took 1 forbidden and 19 unresolved findings to 13 unresolved; on
+  google-adk's credential door 2 forbidden and 76 unresolved to 69 unresolved (besides 258
+  imports of `google.*` packages the roots lack).
+- `forbidden/unwrap` ("calls a guarded function without its guard") is reported only when what is
+  unwrapped can be a guarded door (a door or target of a rule, or a function with an inv guard);
+  any other unwrap that bears on the rule is `unresolved/unwrap`, and `hasattr(f, "__wrapped__")` or
+  an unwrap of a standard-library or third-party object is not reported.
+- A write of a package's `__path__` (`__path__.append`, `pkgutil.extend_path`) is
+  `unresolved/reflection`: its submodules may come from any directory. `sys.path` changed through a
+  name bound to it (`p = sys.path; p.insert(0, d)`) is reported too. Name-matched alternatives are
+  followed in sorted order, so a scan gives the same paths on every run.
 
 - A function used as a value is an entrypoint: one that can reach a sink without passing a door (a
   door's own helper included) and is taken as a value outside the doors and allowed functions (a

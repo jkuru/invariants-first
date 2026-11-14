@@ -28,6 +28,11 @@ def verify_result(reg: Registry, imports: Iterable[str] = ()) -> tuple[bool, lis
 
 def _scan_reason(report: Report, rule_id: str, pure: bool = False) -> str | None:
     result = report.rule_result(rule_id)
+    accepted = report.counts(rule_id).get("accepted", 0)
+    if result == "pass" and accepted:
+        # reviewed unresolved sites (mediation.allow_unresolved): a person's judgment, not the scan's proof
+        return (f"inv scan pass with {accepted} unresolved site(s) accepted after review in "
+                f"mediation.allow_unresolved (the scan could not follow them)")
     if result == "pass":
         return None
     if result == "not_scanned":

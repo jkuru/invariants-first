@@ -19,7 +19,8 @@ PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR =
 INSTRUCTIONS = ("Read-only tools for the project's invariants (laws on API boundaries). Use scan, check, status "
                 "and explain to understand the laws; use propose_rules to draft new ones. Nothing here approves "
                 "or locks a rule: show proposals to a person, who edits invariants.yaml and runs `inv lock`. "
-                "Never edit invariants.lock or mediation.allow, and never accept a weakening yourself.")
+                "Never edit invariants.lock, mediation.allow or mediation.allow_unresolved, and never accept a weakening "
+                "yourself.")
 
 
 # --- the tools ----------------------------------------------------------------------------------

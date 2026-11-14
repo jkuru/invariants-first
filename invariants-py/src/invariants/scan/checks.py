@@ -1,10 +1,12 @@
 """The per-rule checks: bypass paths, bypass idioms at each site, and allow entries no longer used."""
 from __future__ import annotations
 
+import ast
 import collections
 import dataclasses
 import pathlib
 
+from .astutil import _dotted
 from .contracts import SKIP_DIRS, Finding, Mediation, _Edge, _Fan, _OnPaths, _Site
 from .indexer import _Index
 from .reachability import _Call, _can_reach, _Pass, _reach, _search_order, door_only
@@ -61,10 +63,12 @@ _MISSING = {"sink": "sink {} is not defined in the scanned code",
 
 
 def _check_rule(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Site],
-                entries: list[str], on_paths: _OnPaths | None = None, every_escape: bool = False) -> list[Finding]:
+                entries: list[str], on_paths: _OnPaths | None = None, every_escape: bool = False,
+                guarded: frozenset[str] = frozenset()) -> list[Finding]:
     """The findings for one rule. on_paths, when given, collects every function on a path that reaches the
     sink without the door, from every entrypoint (findings show one path per call site). every_escape:
-    report a function used as a value even when the path search already reports its paths."""
+    report a function used as a value even when the path search already reports its paths. guarded: the
+    functions that carry a guard (scan._guarded), for unwrapping."""
     rid, out = med.rule, []
     for root, file, line, err in idx.parse_errors:
         out.append(Finding("unresolved", rid, "unresolved/parse-error", f"cannot parse: {err}",
@@ -73,9 +77,9 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Si
                  _declared(idx, rid, med.allow, "allow", out))
     paths = _bypasses(idx, rid, edges, entries, t, on_paths) + _escapes(idx, rid, edges, sites, entries, t, on_paths,
                                                                      every_escape)
-    out += paths + _one_per_site(paths, _Idioms(idx, rid, edges, sites, entries, t).findings(sites))
+    out += paths + _one_per_site(paths, _Idioms(idx, rid, edges, sites, entries, t, guarded).findings(sites))
     if t.allowed:
-        out += _unused_allows(idx, med, edges, sites, entries, t)
+        out += _unused_allows(idx, med, edges, sites, entries, t, guarded)
     return out
 
 
@@ -221,13 +225,19 @@ class _Idioms:
     idiom it matches; the idioms of different site kinds are tried in their own order."""
 
     def __init__(self, idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entries: list[str],
-                 t: _Targets) -> None:
-        self.idx, self.rid, self.edges, self.t = idx, rid, edges, t
+                 t: _Targets, guarded: frozenset[str] = frozenset()) -> None:
+        self.idx, self.rid, self.edges, self.t, self.sites = idx, rid, edges, t, sites
         self.trusted = t.sinks | t.doors | t.allowed
         self.dominated = door_only(idx, edges, sites, entries, self.trusted)
         self.sink_names = {s.rsplit(".", 1)[1] for s in t.sinks}
         self.guarded_names = self.sink_names | {d.rsplit(".", 1)[1] for d in t.doors}
+        self.guarded = guarded
+        # the guarded functions with a decorator: only those have a __wrapped__ (or a wrapper's closure) to
+        # lift, so only they can be what an unwrap of an object the scan cannot name reaches
+        self.liftable = sorted(f for f in guarded if getattr(idx.funcs[f].node, "decorator_list", None))
         self._unwraps: set[str] | None = None
+        self._safe: dict[tuple[str, bool], bool] = {}
+        self._hidden: bool | None = None
 
     def findings(self, sites: list[_Site]) -> list[Finding]:
         return [f for s in sites if (f := self._at(s)) is not None]
@@ -243,14 +253,71 @@ class _Idioms:
             return self._patch(s)
         return self._other(s)
 
-    def _unwraps_here(self, fn: str) -> bool:
-        """An unwrap of fn bears on this rule: fn is unknown, is a sink, door or allowed function, or reaches
-        a sink without passing a door (its own guard may be what stands between them)."""
-        if fn not in self.idx.funcs or fn in self.trusted:
-            return True
+    def _reaches(self) -> set[str]:
+        """Every function with a path to a sink that passes no door (the sinks too), found once."""
         if self._unwraps is None:                      # every f with _reach([f], edges, doors) & sinks
             self._unwraps = _can_reach(self.t.sinks, self.edges, self.t.doors)
-        return fn in self._unwraps
+        return self._unwraps
+
+    def _unwrap(self, s: _Site, fn: str, what: str, outside: bool) -> Finding | None:
+        """An unwrap (x.__wrapped__, inspect.unwrap(x), x.__closure__, x.__dict__["__wrapped__"]) of fn (a
+        scanned function, or "" when the scan cannot tell which object x is), under this rule when what it
+        lifts bears on the rule: a sink, door or allowed function of the rule, or a function with a path to
+        its sink that passes no door. It calls a guarded function without its guard (forbidden) only when
+        x can be a guarded door: a door or target of a rule, or a function with an inv guard (scan._guarded);
+        an object the scan cannot name can be one only when such a function here has a decorator (one with
+        none has no __wrapped__, and a module function or method no closure). Any other unwrap that bears
+        on the rule makes a call the scan cannot follow: unresolved/unwrap. An object outside the scanned
+        code, or a function that does not bear on the rule, is neither."""
+        if outside:
+            return None
+        if fn in self.idx.funcs:
+            if fn not in self.trusted and fn not in self._reaches():
+                return None                            # nothing it lifts reaches this rule's sink
+            if fn in self.guarded:
+                return self._found("forbidden", "forbidden/unwrap",
+                                   f"{what} calls the guarded function {fn} without its guard", s)
+            return self._found("unresolved", "unresolved/unwrap",
+                               f"{what} reaches the function {fn} wraps, which can reach the sink without a "
+                               f"door: the scan cannot follow that call", s)
+        liftable = [f for f in self.liftable if f in self.trusted or f in self._reaches()]
+        if liftable:
+            shown = ", ".join(liftable[:3]) + (", ..." if len(liftable) > 3 else "")
+            return self._found("forbidden", "forbidden/unwrap",
+                               f"{what} may call a guarded function ({shown}) without its guard: the scan cannot "
+                               f"tell which object it unwraps", s)
+        return self._found("unresolved", "unresolved/unwrap",
+                           f"{what}: the scan cannot tell which function it unwraps, so it cannot follow the call "
+                           f"(no decorated door or guarded function here reaches the sink)", s)
+
+    # ---- fix round 25: a computed getattr that provably cannot reach the sink -------------------------
+    def _narrowed(self, s: _Site, obj: str) -> bool:
+        """getattr(x, <computed>) cannot reach this rule's sink: x is an instance (or the class) of a class
+        whose family the scan sees whole, none of whose attributes is named like a sink or door or can
+        reach a sink without a door; or x is an object outside the scanned code. Either way, no value that
+        can reach the sink is held where the checks do not look (see _hidden_values). docs/scan.md,
+        "Computed getattr on a known receiver", gives the argument."""
+        if self._hidden_values():
+            return False
+        if s.recv:
+            return self._class_safe(s.recv.rstrip("!"), s.recv.endswith("!"))
+        return _outside(self.idx, obj)
+
+    def _hidden_values(self) -> bool:
+        """A function that can reach the sink without a door (or the sink) is taken as a value inside a door,
+        sink or allowed function, or code reached only through them: the escape check trusts such a value,
+        so an attribute holding it could be anything a computed getattr returns."""
+        if self._hidden is None:
+            reach = self._reaches()
+            self._hidden = any(x.what == "ref" and x.detail in reach and (
+                x.owner in self.trusted or x.owner in self.dominated) for x in self.sites)
+        return self._hidden
+
+    def _class_safe(self, cls: str, exact: bool) -> bool:
+        key = (cls, exact)
+        if key not in self._safe:
+            self._safe[key] = _family_safe(self.idx, cls, exact, self.guarded_names, self._reaches())
+        return self._safe[key]
 
     def _found(self, kind: str, code: str, msg: str, s: _Site) -> Finding:
         return _finding(self.idx, self.rid, kind, code, msg, s.owner, s.line, s.col)
@@ -268,13 +335,20 @@ class _Idioms:
             what = "sink" if lit in self.sink_names else "door"
             return self._found("forbidden", f"forbidden/getattr-{what}",
                                f"getattr-style lookup of the {what} name {lit!r} hides the call from the scan", s)
+        if lit == "__wrapped__" and s.what in ("setattr", "delattr") and obj in self.trusted:
+            return self._found("forbidden", "forbidden/monkeypatch",
+                               f"{s.what} on '__wrapped__' of {obj} replaces what unwrapping the sink or door gives", s)
         if lit == "__wrapped__":
-            return self._found("forbidden", "forbidden/unwrap",
-                               "reaches __wrapped__, which calls a guarded function without its guard",
-                               s) if self._unwraps_here(obj) else None
+            if s.what == "hasattr":
+                return None                            # it only asks: no function comes out of it
+            fn = obj if obj in self.idx.funcs else ""
+            return self._unwrap(s, fn, f"{s.what}({obj if not obj.startswith('?') else 'an object'}, "
+                                       f"'__wrapped__')", _outside(self.idx, obj))
         if s.what in ("setattr", "delattr") and lit in self.guarded_names:
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"{s.what} on {lit!r} replaces the sink or door at run time", s)
+        if not lit and s.what == "getattr" and obj not in ("?attrgetter", "?methodcaller") and self._narrowed(s, obj):
+            return None                                # provably cannot reach the sink (docs/scan.md)
         if not lit and s.what != "hasattr":
             how = f"operator.{obj[1:]}" if obj in ("?attrgetter", "?methodcaller") else s.what
             recv = "" if obj in ("?attrgetter", "?methodcaller") else f" on {obj}"
@@ -304,11 +378,8 @@ class _Idioms:
 
     def _other(self, s: _Site) -> Finding | None:
         if s.what == "wrapped":
-            shown, _, rest = s.detail.partition("|")
-            fn, _, how = rest.partition("|")             # how: inspect.unwrap(f), f.__closure__, f.__dict__
-            return self._found("forbidden", "forbidden/unwrap",
-                               f"{how or (shown or 'an object') + '.__wrapped__'} calls a guarded function "
-                               f"without its guard", s) if self._unwraps_here(fn) else None
+            shown, fn, how, ext = (s.detail.split("|") + ["", "", ""])[:4]   # how: inspect.unwrap(f), ...
+            return self._unwrap(s, fn, how or f"{shown or 'an object'}.__wrapped__", ext == "outside")
         if s.what == "ref" and s.detail in self.t.sinks:
             return self._found("unresolved", "unresolved/sink-escapes",
                                f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
@@ -362,13 +433,14 @@ def _excluded_finding(idx: _Index, rid: str, s: _Site) -> Finding:
 
 
 def _unused_allows(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Site], entries: list[str],
-                   t: _Targets) -> list[Finding]:
+                   t: _Targets, guarded: frozenset[str] = frozenset()) -> list[Finding]:
     """3. an allowed back door that is no longer one: its entry would let a regression through unseen.
     An entry is in use when the scan without allow reports something in it or on a path through it."""
     on = _OnPaths()
     # every escape counts: an allowed function that takes another as a value is in use (deleting it from
     # allow would make that value a new caller)
-    bare = _check_rule(idx, Mediation(med.rule, med.sinks, med.doors), edges, sites, entries, on, every_escape=True)
+    bare = _check_rule(idx, Mediation(med.rule, med.sinks, med.doors), edges, sites, entries, on, every_escape=True,
+                       guarded=guarded)
     used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path}
     return [_finding(idx, med.rule, "missing", "missing/allow-unused",
                      f"allowed back door {a} no longer reaches the sink without the door; delete it from "
@@ -381,3 +453,107 @@ def _holds(idx: _Index, name: str, trusted: set[str]) -> bool:
     """name is a scanned module or class that holds a sink, door or allowed function: rebinding it
     (`pkg.repo.Repo = Fake`) replaces them all."""
     return (name in idx.modules or name in idx.classes) and any(t.startswith(name + ".") for t in trusted)
+
+
+def _outside(idx: _Index, fq: str) -> bool:
+    return idx.outside(fq)
+
+
+_CLASS_BODY = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign, ast.AugAssign,
+               ast.Expr, ast.Pass, ast.Import, ast.ImportFrom)
+
+
+def _made_by(idx: _Index, home: object, func: ast.AST) -> set[str] | None:
+    """The scanned functions that run when what `func(...)` makes is read or called as a class attribute: a
+    scanned function's own code (a decorator), a scanned class's constructor, __call__ and __get__ (or
+    those of the class a scanned factory is annotated to return); nothing for a foreign callable; None
+    when the scan cannot tell what func is."""
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Call):
+        # Unicode().tag(config=True): a method of what a foreign call made is foreign too
+        return set() if _made_by(idx, home, func.value.func) == set() else None
+    fq = home._resolve(func, set(), None) if _dotted(func) else None  # type: ignore[attr-defined]
+    if fq is None:
+        return None
+    if fq in idx.funcs:
+        made = home.return_type(fq)  # type: ignore[attr-defined]
+        out = {fq}
+    elif fq in idx.classes:
+        made, out = fq, set()
+    elif _outside(idx, fq):
+        return set()
+    else:
+        return None
+    if made is not None:
+        out.update(m for m in (idx.method(made, n) for n in ("__init__", "__new__", "__call__", "__get__")) if m)
+    return out
+
+
+def _family_safe(idx: _Index, cls: str, exact: bool, guarded_names: set[str], reach: set[str]) -> bool:
+    """Every attribute getattr can find on an instance of cls (exact: of cls itself, or the class object)
+    is known and harmless for this rule: the classes it may be (cls, and each scanned subclass unless
+    exact) and their method resolution orders are all seen (no base the scan cannot place: a computed
+    base, an excluded or unknown project class; a standard-library or third-party base is foreign code),
+    none is subverted, defined or subclassed in excluded code, has a scanned metaclass or its own
+    __getattr__ / __getattribute__; no attribute of theirs (a method, a class-level name, a nested
+    class, an instance attribute set through self) is named like a sink or door; and no method, nested
+    class constructor or scanned descriptor's __get__ among them can reach a sink without a door."""
+    from .inference import _Inference, subverted
+    if cls not in idx.classes:
+        return False
+    kinds = [cls] if exact else [cls, *idx.subclasses(cls)]
+    family: set[str] = set()
+    for k in kinds:
+        order = idx.strict_mro(k)
+        if order is None:
+            return False
+        family.update(order)
+    if family & subverted(idx) or idx.excluded_subclass(family) is not None:
+        return False
+    members: set[str] = set()
+    names: set[str] = set()
+    for c in family:
+        info = idx.classes[c]
+        home = _Inference(idx, idx.modules[info["module"]])
+        for b in idx._base_names(c):
+            if b is None or (b not in idx.classes and not _outside(idx, b)):
+                return False
+        node = info["node"]
+        for kw in node.keywords:
+            if kw.arg == "metaclass":
+                fq = home._resolve(kw.value, set(), None) if _dotted(kw.value) else None
+                if fq is None or not _outside(idx, fq):
+                    return False
+        methods = info["methods"]
+        if "__getattr__" in methods or "__getattribute__" in methods:
+            return False
+        names.update(methods)
+        members.update(methods.values())
+        for st in node.body:
+            if not isinstance(st, _CLASS_BODY):
+                return False                           # an if/try/for/with block may bind any name
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(st.name)
+                for d in st.decorator_list:            # what the attribute is: the decorator's result
+                    got = _made_by(idx, home, d.func if isinstance(d, ast.Call) else d)
+                    if got is None:
+                        return False
+                    members |= got
+            if isinstance(st, ast.ClassDef):
+                inner = f"{c}.{st.name}"
+                members.update(m for m in (idx.method(inner, "__init__"), idx.method(inner, "__new__")) if m)
+            elif isinstance(st, (ast.Import, ast.ImportFrom)):
+                names.update((a.asname or a.name).split(".")[0] for a in st.names)
+            targets = st.targets if isinstance(st, ast.Assign) else [st.target] \
+                if isinstance(st, (ast.AnnAssign, ast.AugAssign)) else []
+            for t in targets:
+                names.update(n.id for n in ast.walk(t) if isinstance(n, ast.Name))
+            value = getattr(st, "value", None) if targets else None
+            if isinstance(value, ast.Call):            # x = Desc(): a scanned descriptor's __get__ runs
+                got = _made_by(idx, home, value.func)
+                if got is None:
+                    return False
+                members |= got
+        names.update(home._attr_seen(c))
+    if names & guarded_names:
+        return False
+    return not (members & reach)
