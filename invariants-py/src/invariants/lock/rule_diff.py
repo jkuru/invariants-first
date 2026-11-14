@@ -13,7 +13,8 @@ from .cel_mono import judge_bad
 from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER,
                         NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, Change, _json_paths,
                         policy, same)
-from .schema_diff import POS, _param_schema_changes, constraint_weakening, ref_polarity
+from .schema_diff import (POS, _param_schema_changes, aligned_parameters, constraint_weakening,
+                          parameter_flag_weakening, ref_polarity)
 
 
 # --- bad: canonical trees and polarity -----------------------------------------------------------
@@ -512,8 +513,17 @@ def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, 
     appended to `refs` for _schema_changes."""
     out: list[Change] = []
     found: list[tuple[str, str, str]] = []
+    names: dict[str, str] = {}
+    if f == "operations" and kind == "contract":     # parameters matched by (in, name), not by position
+        a, b, out, names = aligned_parameters(where, a, b)
+
+    def shown(p: str) -> str:
+        head, sep, rest = p.partition("]")
+        return names.get(head + sep, head + sep) + rest if sep else p
     for p, xv, yv in _json_paths(a.get(f), b.get(f), f, found):
         why = constraint_weakening(p, xv, yv, a, b) if kind == "contract" else None
+        if why is None and kind == "contract" and f == "operations":
+            why = parameter_flag_weakening(p, xv, yv)
         op = p.split(".")
         if f == "operations" and len(op) == 2 and yv is None:
             users = named.get(op[1])
@@ -521,10 +531,11 @@ def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, 
             out.append(Change(where, f"{p} removed", xv, None, why is not None,
                               why or "operation removed; no rule names it"))
             continue
-        out.append(Change(where, p, xv, yv, why is not None, why or ""))
+        out.append(Change(where, shown(p), xv, yv, why is not None, why or ""))
     # a schema-table reference keeps the polarity of its place: a component named under `not` is
     # judged the other way round (schema_diff._schema_changes)
-    refs += [(f"{where} {p}", p, da, db, ref_polarity(p, a, b) if kind == "contract" else POS) for p, da, db in found]
+    refs += [(f"{where} {shown(p)}", p, da, db, ref_polarity(p, a, b) if kind == "contract" else POS)
+             for p, da, db in found]
     return out
 
 

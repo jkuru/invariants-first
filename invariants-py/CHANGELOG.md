@@ -237,6 +237,16 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   weakening.
 - `inv lock --check` fails CI on a stale lock. Only lock version 3 is read: a lock of another
   version is refused with what to do.
+- An OpenAPI operation's `parameters` are compared by `in` and `name`, not by position: removing
+  one shifted the rest, so a removed parameter was never WEAKENED, and a loosened one could be read
+  against its neighbour. A removed parameter is now WEAKENED (a required one: a request without it
+  passes; an optional one: its value is no longer checked), an added one only tightens, and
+  `allowEmptyValue` turned on is WEAKENED. Changes name the parameter
+  (`operations.op.parameters[query limit].schema.maximum`).
+- A Swagger 2.0 parameter's own schema fields (`type`, `format`, `maximum`, `enum`, `items`, ...;
+  every parameter but `in: body`) were not pinned, so loosening one was no change at all. They are
+  pinned as the parameter's `schema` (with `collectionFormat`) and judged as Draft 4. A lock of a
+  Swagger 2.0 contract that names such a parameter is stale once: re-pin it with `inv lock`.
 
 ### Static checks
 
@@ -494,6 +504,17 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - Text output (`inv scan`, `inv check`, lock diffs, `inv status`, errors) escapes control characters
   in paths and messages (`\n`, `\r`, `\x1b`), and a line from data that would start a GitHub Actions
   workflow command (`::error::`) is printed with a backslash first; JSON and SARIF were escaped already.
+- `inv check`'s hint for an unresolved site names the spelling of the failing rule's form:
+  `allow_unresolved` at the top of a `door:`/`sink:` rule, `mediation.allow_unresolved` in a long-form
+  one. A `door:`/`sink:` rule now also takes `mediation.allow_unresolved` (following the old hint was
+  refused as "not both" though it was given once); `door` or `allow` under `mediation` beside a
+  top-level `sink:` says to move them to the top. An entry error in a top-level `allow_unresolved`
+  names it as written (`allow_unresolved[0]: why must say ...`), at load.
+- `inv check --base REF` marks each accepted unresolved site whose entry the lock at `REF` did not
+  have (`[new since REF]`, and a count on the `ok scan` line).
+- `inv status --ablation` says `stale (re-run)` for a report from another version of the rule (it
+  said `no`), and for a door-only rule whose tests the report ran, what it says of them
+  (`not needed (the report shows it load-bearing)`; JSON `ablation_report`).
 
 ### pytest plugin
 

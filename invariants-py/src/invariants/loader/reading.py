@@ -26,6 +26,8 @@ class Where:
     rules: dict[int, int] = dataclasses.field(default_factory=dict)
     providers: dict[str, int] = dataclasses.field(default_factory=dict)
     targets: dict[str, int] = dataclasses.field(default_factory=dict)
+    # the ids of the rules written in the door:/sink: short form (their allow_unresolved is top-level)
+    short_doors: set[str] = dataclasses.field(default_factory=set)
 
     def at(self, line: int | None) -> str:
         """'file:line' (or 'file' when the line is not known)."""
@@ -73,6 +75,8 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
         raise LoadError(f"{source}: the rule file must be a mapping")
     rules = doc.get("rules")
     for i, raw in enumerate(rules if isinstance(rules, list) else []):
+        if isinstance(raw, dict) and {"door", "sink"} & set(raw) and isinstance(raw.get("id"), str):
+            where.short_doors.add(raw["id"])
         with where.located(where.rules.get(i)):
             expand_short_forms({"rules": [raw]})
     return doc, where

@@ -29,6 +29,8 @@ UNPROVEN = "held (unproven: no --ablation)"
 # what `ablation` says: proved, not proved, not run (no --ablation report), or not needed (the scan
 # is a door rule's whole check)
 ABLATION_STATES = ("yes", "no", "not run", "not needed")
+# a report for another version of the rule, or one that does not say which version it ablated
+STALE = ("ablation: the report is for another version", "ablation: the report does not say which version")
 STATUS_WORDS = {"enforce": "blocks a bad call", "detect": "logs a bad call, does not block it",
                 "candidate": "drafted, not checked", "contested": "under review, not checked",
                 "retired": "retired, not checked"}
@@ -118,6 +120,20 @@ def ablation_state(rule: Rule, ablation: Mapping[str, Any] | None) -> str:
     return "no" if _ablation_problems(rule, ablation) else "yes"
 
 
+def _report_says(rule: Rule, ablation: Mapping[str, Any] | None) -> str | None:
+    """What an ablation report says of a door-only rule whose falsifiers it ran: load-bearing, stale or
+    not load-bearing (None when there is no report or it ran none of them). Shown beside `not needed`,
+    never counted: the scan is the rule's whole check."""
+    abl = ablation.get("ablation", ablation) if ablation is not None else None
+    if not isinstance(abl, Mapping) or not ((abl.get("rules") or {}).get(rule.id)
+                                            or rule.id in (abl.get("not_load_bearing") or [])):
+        return None
+    problems = _ablation_problems(rule, abl)
+    if not problems:
+        return "load-bearing"
+    return "stale" if any(p.startswith(STALE) for p in problems) else "not load-bearing"
+
+
 def next_steps(rule: Rule, report: Report, row: dict[str, Any]) -> list[str]:
     """What to do next for one rule, most important first; [] when nothing is left."""
     out: list[str] = []
@@ -138,9 +154,7 @@ def next_steps(rule: Rule, report: Report, row: dict[str, Any]) -> list[str]:
                        "(falsified_by: in a long-form rule), then the rule blocks instead of logging")
         elif row["ablation"] == "not run":
             out.append(f"prove its tests fail without it: {ABLATE_CMD}")
-        elif row["ablation"] == "no" and any(r.startswith(("ablation: the report is for another version",
-                                                           "ablation: the report does not say which version"))
-                                             for r in row["reasons"]):
+        elif row["ablation"] == "no" and _stale(row):
             out.append(f"the ablation report is stale; re-run it: {ABLATE_CMD}")
         elif row["ablation"] == "no":
             out.append("make a test under tests: fail when the rule is off (pytest --inv-ablate says why it did not)")
@@ -192,6 +206,8 @@ def rule_status(reg: Registry, report: Report, rule_id: str,
            "scan": report.rule_result(rule_id), "scan_counts": report.counts(rule_id),
            "status_text": status_text(rule), "checks": checks_text(rule), "guarded": guarded(rule),
            "ablation": ablation_state(rule, ablation)}
+    if door_only and (said := _report_says(rule, ablation)) is not None:
+        row["ablation_report"] = said      # what the report says of its falsifiers, beside `not needed`
     row["next"] = next_steps(rule, report, row)
     return row
 
@@ -210,6 +226,25 @@ def build(reg: Registry, report: Report, ablation: Mapping[str, Any] | None = No
     ok, problems = verify_result(reg, imports)
     rows = [rule_status(reg, report, rid, ablation) for rid in reg.rules]
     return {"verify": {"passed": ok, "problems": problems}, "rules": rows}
+
+
+def _stale(row: Mapping[str, Any]) -> bool:
+    """The row's ablation report is for another version of the rule (or names none): re-run it."""
+    return any(str(r).startswith(STALE) for r in row.get("reasons") or [])
+
+
+_REPORT_WORDS = {"load-bearing": "the report shows it load-bearing", "stale": "the report for it is stale",
+                 "not load-bearing": "the report does not show it load-bearing"}
+
+
+def _ablation_line(r: Mapping[str, Any]) -> str:
+    """`ablation proved it:` in words: a stale report says so, and a door-only rule shows what the
+    report says of its falsifiers beside `not needed`."""
+    state = str(r["ablation"])
+    if state == "no" and _stale(r):
+        return "stale (re-run)"
+    said = _REPORT_WORDS.get(str(r.get("ablation_report")))
+    return f"{state} ({said})" if said and state == "not needed" else state
 
 
 _SCAN_WORDS = {"pass": "pass, no path skips it", "fail": "FAIL", "unresolved": "unresolved calls (not a pass)"}
@@ -235,7 +270,7 @@ def to_text(data: dict[str, Any]) -> str:
             if scan:
                 counts = ", ".join(f"{n} {k}" for k, n in (r.get("scan_counts") or {}).items())
                 lines.append(f"  scan:    {scan}" + (f" ({counts})" if counts else ""))
-            lines.append(f"  ablation proved it: {r['ablation']}")
+            lines.append(f"  ablation proved it: {_ablation_line(r)}")
             for step in r.get("next") or []:
                 lines.append(f"  next:    {step}")
         else:                                     # a row built by an older caller: its reasons

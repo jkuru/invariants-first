@@ -25,7 +25,20 @@ def _python_ref(name: str, ref: str) -> Any:
 
 _SHARED_SCHEMAS = "#/components/schemas/"
 _PARAM_KEYS = ("name", "in", "required", "schema", "content", "style", "explode", "allowEmptyValue",
-               "allowReserved")
+               "allowReserved", "collectionFormat")
+# a Swagger 2.0 parameter's (and Items Object's) schema fields, which sit on the parameter itself
+_SWAGGER_SCHEMA = ("type", "format", "default", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
+                   "maxLength", "minLength", "pattern", "maxItems", "minItems", "uniqueItems", "enum",
+                   "multipleOf")
+
+
+def _swagger_items(node: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+    """The JSON Schema a Swagger 2.0 parameter or Items Object's fields make (items nested)."""
+    out = {k: node[k] for k in _SWAGGER_SCHEMA if k in node}
+    items = node.get("items")
+    if isinstance(items, dict) and depth < 32:
+        out["items"] = _swagger_items(items, depth + 1)
+    return out
 
 
 def _openapi_file(name: str, path: pathlib.Path) -> Any:
@@ -133,10 +146,21 @@ class _OpenAPIDoc:
         for p in [*(item.get("parameters") or []), *(op.get("parameters") or [])]:
             p = self.deref(p)
             if isinstance(p, dict):
-                params[(str(p.get("in")), str(p.get("name")))] = {
-                    k: (self.schema(v, ()) if k == "schema" else self.content(v) if k == "content" else v)
-                    for k, v in p.items() if k in _PARAM_KEYS}
+                pin = {k: (self.schema(v, ()) if k == "schema" else self.content(v) if k == "content" else v)
+                       for k, v in p.items() if k in _PARAM_KEYS}
+                inline = self.swagger_schema(p)
+                if inline is not None:
+                    pin["schema"] = inline
+                params[(str(p.get("in")), str(p.get("name")))] = pin
         return params
+
+    def swagger_schema(self, p: dict[str, Any]) -> dict[str, Any] | None:
+        """A Swagger 2.0 non-body parameter carries its schema fields itself (type, maximum, enum,
+        items, ...): pinned as the schema they make, so it is judged like any other (Draft 4)."""
+        if self.dialect != "swagger-2.0" or p.get("in") == "body" or "schema" in p:
+            return None
+        got = _swagger_items(p)
+        return got or None
 
     def operation(self, route: str, method: str, item: dict[str, Any], op: dict[str, Any]) -> dict[str, Any]:
         """One operation: method, path, and the schemas of its parameters, request body and responses."""

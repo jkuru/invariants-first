@@ -80,7 +80,10 @@ what each rule's meaning depends on, entry by entry:
     beside it, so a looser schema in any of them is judged; a file that is not JSON or YAML, or
     has an unresolvable `$ref`, is pinned by digest alone). An OpenAPI 3.0 or Swagger 2.0
     document also pins `dialect: openapi-3.0` (`swagger-2.0`), on the contract and on each of its
-    component schemas, so its schemas are judged with Draft 4's `exclusiveMaximum`;
+    component schemas, so its schemas are judged with Draft 4's `exclusiveMaximum`. A Swagger
+    2.0 parameter other than `in: body` carries its schema fields on itself (`type`, `format`,
+    `maximum`, `enum`, `items`, ...): they are pinned as the `schema` they make (its
+    `collectionFormat` beside them), and judged like any other;
   - `operations` for an `openapi` contract read from a live app, `{type: openapi, app:
     "myapi.main:app"}`: `inv lock` imports the app and calls `app.openapi()` (a FastAPI app has
     it). The operations rules (or the contract's `operation`) name are pinned, or every operation
@@ -212,7 +215,11 @@ input. That covers:
   below them nothing is a schema, so `const: {"a": 1}` to `{"a": 2}` is a new value, not a
   changed subschema, and `const: null` removed lets any value through;
 - a field that is no longer `required` (or an OpenAPI parameter or request body no longer
-  `required: true`), or a property removed; the `required` list is compared as a set, so a field
+  `required: true`), or a property removed. An operation's parameters are matched by `in` and
+  `name`, not by position (`operations.op.parameters[query limit].schema.maximum`): a parameter
+  removed is **WEAKENED**, a required one because a request without it now passes and an optional
+  one because the value a request sends is no longer checked, while an added parameter (required
+  or not) only tightens; `allowEmptyValue` turned on is **WEAKENED**; the `required` list is compared as a set, so a field
   added to it is a tightening, and a reordered list (pydantic lists required fields in declaration
   order, so a field moved in the class reorders it) or a duplicate dropped is no change of meaning;
 - `pattern`, `format`, `multipleOf`, `const` or `anyOf`/`oneOf` changed or removed, and a `type`

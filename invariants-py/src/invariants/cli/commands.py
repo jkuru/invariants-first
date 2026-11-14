@@ -13,6 +13,7 @@ from .. import lock, scan as scanner, status_report
 from ..confinement import confined
 from ..errors import CoverageError, LoadError
 from ..loader import read_document, schema_path
+from ..loader.reading import read_located
 from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
                      _describe, _err, _out, _print_changes, _rule_file)
@@ -25,8 +26,56 @@ if TYPE_CHECKING:
     from ..doors import DoorsFound
 
 
-UNRESOLVED_HINT = ("a person who reviewed an unresolved site can accept it in mediation.allow_unresolved "
+UNRESOLVED_HINT = ("a person who reviewed an unresolved site can accept it in {where} "
                    "(at, code, sha, why); `inv scan --format json` gives each finding's sha")
+
+
+def unresolved_hint(rids: Sequence[str], short_doors: set[str]) -> str:
+    """UNRESOLVED_HINT spelled for each failing rule's form: `allow_unresolved:` at the top of a
+    door:/sink: rule, mediation.allow_unresolved in a long-form one."""
+    short = [r for r in rids if r in short_doors]
+    long = [r for r in rids if r not in short_doors]
+    if not short:
+        where = "mediation.allow_unresolved"
+    elif not long:
+        where = "allow_unresolved (at the top of the rule, beside door: and sink:)"
+    else:
+        where = (f"allow_unresolved at the top of {', '.join(short)} (door:/sink: rules) or "
+                 f"mediation.allow_unresolved in {', '.join(long)}")
+    return UNRESOLVED_HINT.format(where=where)
+
+
+def _new_accepts(base: Any, raw_rules: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(rule id, at) of each allow_unresolved entry the rule file has and the lock at --base does not
+    (by code and sha, one for one): the sites accepted since the base."""
+    stored = base[0] if isinstance(base, tuple) else None
+    if not isinstance(stored, dict):
+        return set()
+    out = set()
+    for r in raw_rules:
+        rid, med = r.get("id"), r.get("mediation")
+        entries = med.get("allow_unresolved") if isinstance(med, dict) else None
+        if not isinstance(rid, str) or not isinstance(entries, list):
+            continue
+        old = (((stored.get("rules") or {}).get(rid) or {}).get("semantic") or {}).get("mediation") or {}
+        had = [(e.get("code"), e.get("sha")) for e in old.get("allow_unresolved") or [] if isinstance(e, dict)]
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if (e.get("code"), e.get("sha")) in had:
+                had.remove((e.get("code"), e.get("sha")))
+            elif isinstance(e.get("at"), str):
+                out.add((rid, e["at"]))
+    return out
+
+
+def _is_new(line: str, new: set[tuple[str, str]]) -> bool:
+    """An `accepted RULE FILE:LINE:COL ...` line of the scan names a site in `new` (an at may omit the column)."""
+    parts = line.split()
+    if len(parts) < 3:
+        return False
+    rid, where = parts[1], parts[2]
+    return any(r == rid and (where == at or where.startswith(at + ":")) for r, at in new)
 NO_JSONSCHEMA ="jsonschema is not installed; schema check skipped (the loader checks still run)"
 
 
@@ -584,7 +633,7 @@ def cmd_check(a: argparse.Namespace) -> int:
         allow_env = os.environ.get(ALLOW_WEAKENING_ENV) == "1"
     path = _rule_file(a.rulefile)
     lock_path = path.with_name(lock.LOCK_NAME)
-    doc = read_document(path)
+    doc, where = read_located(path)
     raw_rules = [r for r in doc.get("rules") or [] if isinstance(r, dict)]
     importable = _importable(doc, a.imports)
     mediated = any(r.get("mediation") for r in raw_rules)
@@ -613,9 +662,11 @@ def cmd_check(a: argparse.Namespace) -> int:
         return FAILED
     code, text = _lock_step(a, path, lock_path, scan, imp)
     step("lock", code, text, None if text.startswith("re-pinned") else f"{lock_path.name} matches")
+    new_accepts: set[tuple[str, str]] = set()
     if a.base:
         allow = a.allow_weakening or allow_env
         base = imp.before(("base", a.base), lambda: base_read(lock_path, a.base))
+        new_accepts = _new_accepts(base, raw_rules)
         code, text = _captured(lambda ns: _base_step(path, lock_path, a.base, a.path, allow,
                                                      _scan_read_first(ns, path, doc, imp), imp, base),
                                argparse.Namespace(**scan))
@@ -631,14 +682,19 @@ def cmd_check(a: argparse.Namespace) -> int:
             rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
         accepted = [line for line in text.splitlines() if line.startswith("accepted ")]
         ok_line = "no path skips a door or guard"
+        fresh = [line for line in accepted if _is_new(line, new_accepts)]
         if accepted:      # reviewed sites pass, but the reader sees each one, never a bare "no path skips"
             ok_line += f"; {len(accepted)} reviewed unresolved site(s) accepted by allow_unresolved"
+            ok_line += f" ({len(fresh)} new since {a.base})" if fresh else ""
         step("scan", code, text, ok_line if code == OK else None)
         if code == OK:
-            for line in accepted:
-                _out(f"        {line}")
-        elif any(line.startswith("unresolved ") and "[sha " not in line for line in text.splitlines()):
-            _out(f"        hint: {UNRESOLVED_HINT}")
+            for line in accepted:       # a site accepted since --base is marked: the change's own acceptance
+                _out(f"        {line}" + (f"  [new since {a.base}]" if line in fresh else ""))
+        else:
+            bare = [line.split()[1] for line in text.splitlines()
+                    if line.startswith("unresolved ") and "[sha " not in line and len(line.split()) > 1]
+            if bare:
+                _out(f"        hint: {unresolved_hint(sorted(set(bare)), where.short_doors)}")
     else:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")

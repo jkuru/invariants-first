@@ -572,7 +572,10 @@ around it. It becomes `held` when:
 - no `mediation.residual_paths` is listed and every live `allow` back door is declared;
 - ablation proved it: `pytest --inv-ablate --inv-report-json build/inv-report.json`, then
   `inv status --ablation build/inv-report.json`. Without `--ablation`, a rule that meets the rest is
-  shown as `held (unproven: no --ablation)`.
+  shown as `held (unproven: no --ablation)`. A report from before the rule last changed is shown
+  as `ablation proved it: stale (re-run)`. A door-only rule needs no ablation (the scan is its
+  check), so it shows `not needed`, with what the report says of its tests when it ran them:
+  `not needed (the report shows it load-bearing)`.
 
 The [README quickstart](../README.md#quickstart) takes one rule all the way to `held`;
 [concepts](concepts.md#standing) has the full table.

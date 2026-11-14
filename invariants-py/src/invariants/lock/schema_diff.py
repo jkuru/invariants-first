@@ -1277,6 +1277,73 @@ def _schema_entry_changes(where: str, used: str, sa: dict[str, Any], sb: dict[st
     return out
 
 
+def _param_key(p: Any) -> tuple[str, str] | None:
+    return (str(p.get("in")), str(p.get("name"))) if isinstance(p, dict) else None
+
+
+def _param_required(p: dict[str, Any]) -> bool:
+    return p.get("required") is True or p.get("in") == "path"          # a path parameter always is
+
+
+def aligned_parameters(where: str, a: dict[str, Any], b: dict[str, Any]) -> tuple[
+        dict[str, Any], dict[str, Any], list[Change], dict[str, str]]:
+    """The old and new contract entries with each operation's parameters matched by (in, name), not by
+    position: a parameter both have sits at the same index in both lists, so its schema, required
+    and allowEmptyValue are judged against its old self. A parameter only one side has is taken out
+    and judged here: removing a required one is WEAKENED (a request without it now passes), and so is
+    removing an optional one (the value it is sent is no longer checked: a request its schema refused
+    now passes); an added one only tightens. Also the display name of each aligned parameter path
+    ("operations.op.parameters[0]" -> "operations.op.parameters[query limit]")."""
+    oa, ob = a.get("operations"), b.get("operations")
+    if not isinstance(oa, dict) or not isinstance(ob, dict):
+        return a, b, [], {}
+    na, nb = dict(oa), dict(ob)
+    out: list[Change] = []
+    names: dict[str, str] = {}
+    for op in sorted(set(oa) & set(ob), key=str):
+        x, y = oa[op], ob[op]
+        if not (isinstance(x, dict) and isinstance(y, dict)):
+            continue
+        px, py = x.get("parameters", []), y.get("parameters", [])
+        if not (isinstance(px, list) and isinstance(py, list)):
+            continue
+        kx = {k: p for p in px if (k := _param_key(p)) is not None}
+        ky = {k: p for p in py if (k := _param_key(p)) is not None}
+        if len(kx) != len(px) or len(ky) != len(py):
+            continue                                   # a malformed pin: compared by position
+        both = sorted(set(kx) & set(ky))
+        for i, k in enumerate(both):
+            names[f"operations.{op}.parameters[{i}]"] = f"operations.{op}.parameters[{k[0]} {k[1]}]"
+        for k in sorted(set(kx) - set(ky)):
+            p = kx[k]
+            why = (f"required {k[0]} parameter {k[1]} removed: a request without it now passes"
+                   if _param_required(p) else
+                   f"{k[0]} parameter {k[1]} removed: its schema no longer checks the value a request sends")
+            out.append(Change(where, f"operations.{op}.parameters[{k[0]} {k[1]}] removed", p, None, True, why))
+        for k in sorted(set(ky) - set(kx)):
+            p = ky[k]
+            out.append(Change(where, f"operations.{op}.parameters[{k[0]} {k[1]}] added", None, p,
+                              note=("a new required parameter: a request without it is now refused"
+                                    if _param_required(p) else "a new optional parameter, checked when sent")))
+        na[op] = {**x, "parameters": [kx[k] for k in both]}
+        nb[op] = {**y, "parameters": [ky[k] for k in both]}
+        for side, d in ((na, x), (nb, y)):
+            if not side[op]["parameters"] and "parameters" not in d:
+                del side[op]["parameters"]
+    return {**a, "operations": na}, {**b, "operations": nb}, out, names
+
+
+def parameter_flag_weakening(path: str, old: Any, new: Any) -> str | None:
+    """allowEmptyValue turned on for an aligned OpenAPI parameter (required is judged by
+    constraint_weakening)."""
+    head, _, key = path.rpartition(".")
+    if not (head.startswith("operations.") and ".parameters[" in head and head.endswith("]")):
+        return None
+    if key == "allowEmptyValue" and new is True and old is not True:
+        return "allowEmptyValue now true: an empty value passes"
+    return None
+
+
 def _param_schema_changes(where: str, old: Any, new: Any) -> list[Change]:
     """The constraints Annotated metadata puts on a signature's parameters, judged like a pinned
     schema: a constraint removed or loosened is WEAKENED, one added or tightened is not."""

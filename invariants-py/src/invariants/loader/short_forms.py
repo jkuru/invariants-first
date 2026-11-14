@@ -18,6 +18,19 @@ def _py_list(rid: str, key: str, v: Any) -> list[str]:
     return list(items)
 
 
+def _check_accepts(rid: str, entries: Any) -> None:
+    """A top-level allow_unresolved checked as the scan checks mediation.allow_unresolved, its errors
+    naming the field as the rule spells it (allow_unresolved[0], not mediation.allow_unresolved[0])."""
+    from ..scan import ScanConfigError
+    from ..scan.mediation import _accepts
+    try:
+        _accepts(rid, entries)
+    except ScanConfigError as e:
+        long, short = f"{rid}: mediation.allow_unresolved", f"{rid}: allow_unresolved"
+        msg = str(e)
+        raise LoadError(short + msg[len(long):] if msg.startswith(long) else msg) from None
+
+
 def _expand_door(raw: dict[str, Any], rid: str) -> None:
     """door/sink/allow -> mediation; without guard or bad, a structure rule checked by the scan."""
     if "sink" not in raw:
@@ -26,9 +39,17 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
     med = raw.get("mediation")
     if med is not None and not isinstance(med, dict):
         raise LoadError(f"{rid}: mediation must be a mapping")
-    clash = sorted({"sink", "door", "allow", "allow_unresolved"} & set(med or {}))
-    if clash:
-        raise LoadError(f"{rid}: give {', '.join(clash)} at the top of the rule or under mediation, not both")
+    both = sorted(set(DOOR_FIELDS) & set(med or {}) & set(raw))
+    if both:
+        raise LoadError(f"{rid}: give {', '.join(both)} at the top of the rule or under mediation, not both")
+    # mediation.allow_unresolved (as `inv check`'s hint for a long-form rule spells it) is kept as written;
+    # a door or allow under mediation beside a top-level sink: is half of each form
+    moved = sorted({"door", "allow"} & set(med or {}))
+    if moved:
+        raise LoadError(f"{rid}: this rule gives sink: at the top (the door:/sink: form), so give "
+                        f"{', '.join(moved)} at the top too, not under mediation")
+    if "allow_unresolved" in raw:
+        _check_accepts(rid, raw["allow_unresolved"])
     sinks = _py_list(rid, "sink", raw.pop("sink"))
     doors = _py_list(rid, "door", raw.pop("door")) if "door" in raw else []
     allow_raw = raw.pop("allow", None)

@@ -68,7 +68,10 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   statement does not, nor does a new caller of an inferred path, and an entry that matches nothing is
   `missing/allow-unresolved-unused`. Only
   `unresolved/*` codes can be accepted, never a `bypass` or `forbidden` finding (see
-  [scan.md](scan.md#accepting-a-reviewed-unresolved-site)).
+  [scan.md](scan.md#accepting-a-reviewed-unresolved-site)). In a door rule it may also be written
+  as `mediation: {allow_unresolved: [...]}`, but not in both places; an entry error names it as
+  written (`allow_unresolved[0]`). `inv check`'s hint names the spelling of the failing rule's form.
+  `door` and `allow` beside a top-level `sink:` go at the top too, not under `mediation`.
 - The lock reports these as weakenings: a new `allow` entry, a new `allow_unresolved` entry (a
   second entry with the same file, code and sha included: each accepts one finding, so it accepts one
   more copy of that statement), one that drops its column, a new door, a removed sink, and removing

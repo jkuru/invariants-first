@@ -553,6 +553,10 @@ inv check: invariants.yaml
 pass
 ```
 
+Under `inv check --base REF`, a site whose entry (by code and sha) the lock at `REF` did not have is
+marked `[new since REF]`, and the `ok scan` line counts them (`(1 new since REF)`): the sites the
+change itself accepts.
+
 `inv status` says the rule passes with accepted sites (`scan: pass, no path skips it (1 accepted)`)
 and does not call it `held`. The lock compares the entries as a
 multiset of sites (file, code, sha): a site named by more entries than before is a weakening (a new
