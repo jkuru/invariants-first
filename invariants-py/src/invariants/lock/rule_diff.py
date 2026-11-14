@@ -357,8 +357,8 @@ def _same_sites(where: str, la: list[Any], ka: list[Any], lb: list[Any], kb: lis
             out.append(Change(where, f"mediation.allow_unresolved: {_entry(e)} "
                                      + (f"now shared by rules {', '.join(map(str, shared))}"
                                         if isinstance(shared, list) and shared else "no longer shared"),
-                              None, None, False, "the same site is accepted under this rule (each rule a shared "
-                                                 "entry lists is judged on its own)"))
+                              None, None, False, "the same site is accepted under this rule; each rule a shared "
+                                                 "entry lists is judged on its own"))
     return out
 
 

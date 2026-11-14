@@ -207,3 +207,7 @@ class _Ablation(_SessionState):
             tr.write_line(f"  {rid}: {verdict}")
             for r in rows:
                 tr.write_line(f"      {r['result']:<14} {r['falsifier']}")
+        if any(r["result"] == "not collected" for rows in ablation.values() for r in rows):
+            tr.write_line(f"  note: falsified_by ids are node ids relative to pytest's rootdir "
+                          f"({getattr(self.config, 'rootpath', '?')}); an id written relative to another "
+                          f"directory is not collected (run with --rootdir, or fix the id)")

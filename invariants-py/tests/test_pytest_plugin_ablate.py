@@ -269,6 +269,7 @@ def test_xdist_uncollected_falsifier_and_verify(lifetimes):
     assert rep["ablation"]["unverified"] == ["R-1"]
     assert rep["verify"] == {"ok": True, "problems": []}
     r.stdout.fnmatch_lines(["*invariants verify: 2 targeted rule(s) guarded*"])
+    r.stdout.fnmatch_lines(["*note: falsified_by ids are node ids relative to pytest's rootdir*"])
 
 
 @xdist
