@@ -1258,13 +1258,16 @@ def _exported(idx: _Index, src: str) -> set[str]:
 
 
 def rebound_class_names(idx: _Index, mod: _Module) -> frozenset[str]:
-    """The names in mod that name a scanned class but are bound more than once at module scope (`class
-    Safe` then `Safe = Repo`, `from a import Safe` then `Safe = Repo`, `global Safe`): the scan cannot
-    tell which binding a use sees, so it resolves them to nothing (a runtime value)."""
+    """The names in mod that name a scanned class (or a value class of the standard library, fix round 31)
+    but are bound more than once at module scope (`class Safe` then `Safe = Repo`, `from a import Safe`
+    then `Safe = Repo`, `global Safe`) or written as an attribute of the module by any code (fix round 31:
+    `ops.Safe = Repo`, `setattr(ops, "Safe", Repo)`): the scan cannot tell which binding a use sees, so it
+    resolves them to nothing (a runtime value)."""
     per = _REBOUND.setdefault(idx, {})
     if mod.name not in per:
         raw = _Inference(idx, mod, raw=True)
         binds = _module_binds(mod.tree)
+        binds.update({n: 2 for n in _module_attr_writes(idx).get(mod.name, ())})
         values = idx.module_values(mod.name)
 
         def own(n: str) -> str | None:                         # what the module itself binds n to, if a name
@@ -1279,9 +1282,43 @@ def rebound_class_names(idx: _Index, mod: _Module) -> frozenset[str]:
                          if src in idx.modules else list(binds))
         per[mod.name] = frozenset(
             name for name, n in binds.items() if n > 1 and (
-                raw._resolve(ast.Name(name, ast.Load()), set(), None) in idx.classes
+                (got := raw._resolve(ast.Name(name, ast.Load()), set(), None)) in idx.classes
+                or (got in _VALUE_CLASSES and idx.outside(got))
                 or f"{mod.name}.{name}" in idx.classes))
     return per[mod.name]
+
+
+_ATTR_WRITES: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()
+
+
+def _module_attr_writes(idx: _Index) -> dict[str, frozenset[str]]:
+    """Scanned module -> the names any scanned code writes or deletes as its attributes (`ops.Safe = Repo`,
+    `del ops.Safe`, `setattr(ops, "Safe", Repo)`, `delattr(ops, "Safe")`)."""
+    got = _ATTR_WRITES.get(idx)
+    if got is None:
+        out: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+        for mod in idx.modules.values():
+            raw: _Inference | None = None
+            for node in _walk_of(mod.tree, ast.Attribute, ast.Call):
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    target, name = node.value, node.attr
+                elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)) \
+                        and (_dotted(node.func) or "").rpartition(".")[2] in ("setattr", "delattr") \
+                        and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) \
+                        and isinstance(node.args[1].value, str):
+                    raw = raw or _Inference(idx, mod, raw=True)
+                    if raw._resolve(node.func, set(), None) not in ("builtins.setattr", "builtins.delattr"):
+                        continue
+                    target, name = node.args[0], node.args[1].value
+                else:
+                    continue
+                if not _dotted(target):
+                    continue
+                raw = raw or _Inference(idx, mod, raw=True)
+                if (fq := raw._resolve(target, set(), None)) in idx.modules:
+                    out[fq].add(name)
+        got = _ATTR_WRITES[idx] = {k: frozenset(v) for k, v in out.items()}
+    return got
 
 
 _SCOPED: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()

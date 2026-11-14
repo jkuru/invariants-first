@@ -54,6 +54,10 @@ def _mediation(rid: str, raw: dict[str, Any], med: dict[str, Any]) -> Mediation:
     for p in sinks + doors + allow:
         if not p.startswith("py:"):
             raise ScanConfigError(f"{rid}: {p!r} must be a 'py:module.name' path")
+    own = sorted(set(sinks) & set(doors))
+    if own:                                            # fix round 31: it would mediate itself, so pass always
+        raise ScanConfigError(f"{rid}: {', '.join(own)} is both a sink and a door: a sink is never its own door "
+                              f"(every call to it would pass); the door is the function that must be passed first")
     accept = _accepts(rid, med["allow_unresolved"]) if "allow_unresolved" in med else None
     return Mediation(rid, sinks, doors, allow, accept)
 
@@ -71,6 +75,9 @@ def pairs_of(rid: str, sink: Any, where: str = "mediation.sink") -> dict[str, li
                 and all(isinstance(d, str) and d.startswith("py:") for d in doors)):
             raise ScanConfigError(f"{rid}: {where}: each sink is a 'py:' path mapped to a 'py:' path or a non-empty "
                                   f"list of them (the doors that may reach it), got {s!r}: {ds!r}")
+        if s in doors:                                 # fix round 31: it would mediate itself, so pass always
+            raise ScanConfigError(f"{rid}: {where}: {s} maps to itself: a sink is never its own door (every call to "
+                                  f"it would pass); map it to the function that must be passed first")
         out[s] = list(dict.fromkeys(doors))
     return out
 

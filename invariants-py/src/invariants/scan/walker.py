@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+import re
+import string
 from typing import Any, Callable
 
 from .astutil import (
@@ -72,6 +74,11 @@ _LITERAL = frozenset({"typing.Literal", "typing_extensions.Literal"})
 _DEPENDS = frozenset({"fastapi.Depends", "fastapi.Security", "fastapi.params.Depends", "fastapi.params.Security",
                       "fastapi.param_functions.Depends", "fastapi.param_functions.Security"})
 # reflective builtins and helpers taken as a value (`g = getattr`): calls through the name hide a lookup
+# fix round 31: methods of a datetime or time that call its tzinfo's (utcoffset, dst, tzname, fromutc): on a
+# value the scan types as one, each such call is name-matched to the scanned methods of those names
+_TZ_CALLERS = frozenset({"utcoffset", "dst", "tzname", "astimezone", "timetuple", "utctimetuple", "timestamp",
+                         "isoformat", "strftime", "ctime", "__str__", "__format__"})
+_TZ_HOOKS = ("dst", "fromutc", "tzname", "utcoffset")
 _REFLECTIVE = frozenset({*(f"builtins.{n}" for n in ("getattr", "setattr", "delattr", *REFLECTION)),
                          *DYNAMIC_IMPORT, "operator.attrgetter", "operator.methodcaller", *_RUNS_DATA,
                          *_NAME_LOOKUP, "logging.config.dictConfig", "inspect.unwrap", "inspect.getattr_static"})
@@ -510,6 +517,13 @@ class _Walker(_Inference):
                 self._site("reflection", owner, node, f"{ns}.{how}")
             else:
                 self._lookup(owner, node, ns, key, how)
+                if ns == "type(...)" and lit is not None and not _dunder(lit):
+                    # fix round 31: type(r).__dict__["pay"] is a method of r's class (typed, or name-matched);
+                    # through __mro__, __bases__ or __base__ some class above it, name-matched
+                    v = x.value
+                    recv = v.value if isinstance(v, ast.Attribute) and v.attr == "__class__" else \
+                        v.args[0] if isinstance(v, ast.Call) and v.args else None
+                    self._named_on(node, recv, lit, owner, local, me)
         elif kind == "func":
             if lit is None or lit == "__wrapped__":       # the dict holds the function a guard wraps
                 self._site("wrapped", owner, node,
@@ -577,19 +591,27 @@ class _Walker(_Inference):
 
     def _getattribute(self, node: ast.Call, f: ast.Attribute, owner: str, local: set[str],
                       me: tuple[str, str] | None) -> bool:
-        """`m.__getattribute__(k)` and `X.__getattribute__(m, k)` on a scanned module or class m."""
+        """`m.__getattribute__(k)` and `X.__getattribute__(m, k)` on a scanned module or class m; on any
+        other receiver (fix round 31: `r.__getattribute__("save")`, `object.__getattribute__(r, "save")`,
+        `type.__getattribute__(type(r), "pay")`), exactly getattr(r, k)."""
         kw = [k.value for k in node.keywords]
         ns = self._namespace(f.value, local, me)
-        if ns:                                                          # m.__getattribute__(k)
+        if ns and len(node.args) != 2:                                  # m.__getattribute__(k)
             self._lookup(owner, node, ns, node.args[0] if node.args else None, "__getattribute__(...)")
             self._exprs([*node.args, *kw], owner, local, me)
             return True
-        ns = self._namespace(node.args[0], local, me) if node.args else None
+        ns = self._namespace(node.args[0], local, me) if len(node.args) == 2 else None
         if ns:                                                          # object.__getattribute__(m, k)
-            self._lookup(owner, node, ns, node.args[1] if len(node.args) > 1 else None, "__getattribute__(...)")
+            self._lookup(owner, node, ns, node.args[1], "__getattribute__(...)")
             self._exprs([f.value, *node.args[1:], *kw], owner, local, me)
             return True
-        return False
+        if node.keywords or len(node.args) not in (1, 2):
+            return False
+        recv, key = (f.value, node.args[0]) if len(node.args) == 1 else (node.args[0], node.args[1])
+        self._type_use(recv)                                            # a lookup on it, as getattr's
+        self._attr_builtin(node, "builtins.getattr", owner, local, me, [recv, key])
+        self._exprs([recv, key] if len(node.args) == 1 else [f.value, recv, key], owner, local, me)
+        return True
 
     def _expr(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         if self._reflect(node, owner, local, me):
@@ -785,6 +807,7 @@ class _Walker(_Inference):
                         if alt in self.idx.classes else []:
                     self.edges.append(_Edge(owner, target, node.lineno, node.col_offset, False))
         self._remade(node, fq, owner, local, me)
+        self._format_fields(node, fq, owner)
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
             self._attr_builtin(node, fq, owner, local, me)
             return
@@ -833,10 +856,32 @@ class _Walker(_Inference):
             hits, container = self._typed(func, owner, local, me)
             for m in hits:                              # the class's method, and a subclass's override
                 self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False))
+            if container in ("datetime.datetime", "datetime.time", "datetime.date") and func.attr in _TZ_CALLERS:
+                for hook in _TZ_HOOKS:                  # dt.isoformat() asks dt.tzinfo.utcoffset(dt)
+                    if fan := self.idx.fan(hook):
+                        self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset))
             if not hits and container is None:          # d.update() on a dict is the dict's own method
                 self._site("attrcall", owner, func, func.attr)
                 if fan := self.idx.fan(func.attr):         # an inferred edge to each method of that name
                     self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset))
+
+    def _format_fields(self, node: ast.Call, fq: str | None, owner: str) -> None:
+        """fix round 31: `"{0.total}".format(a)` (or format_map, str.format("...", a)) looks up the attributes
+        its literal fields name, as operator.attrgetter("total") would: a getattr site, and each name fanned."""
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr in ("format", "format_map") and _lit(f.value) is not None:
+            text = _lit(f.value)
+        elif fq in ("builtins.str.format", "builtins.str.format_map") and node.args:
+            text = _lit(node.args[0])
+        else:
+            return
+        names = _format_attrs(text or "", 0)
+        if not names:
+            return
+        self._site("getattr", owner, node, f"?attrgetter|{'|'.join(names)}")
+        for part in dict.fromkeys(p for n in names for p in n.split(".")):
+            if fan := self.idx.fan(part):
+                self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
 
     def _remade(self, node: ast.Call, fq: str | None, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         """A call that builds another instance of an object's class: `type(x)(...)`, `x.__class__(...)`,
@@ -910,18 +955,21 @@ class _Walker(_Inference):
         return fq in self.idx.funcs or fq in self.idx.classes or fq in _REFLECTIVE or fq == "builtins.hasattr" \
             or fq.startswith("sys.modules.") or self.idx.excluded_module(fq) is not None
 
-    def _attr_builtin(self, node: ast.Call, fq: str, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+    def _attr_builtin(self, node: ast.Call, fq: str, owner: str, local: set[str], me: tuple[str, str] | None,
+                      args: list[ast.expr] | None = None) -> None:
         """getattr/setattr/delattr/hasattr(obj, name, ...): a site; a getattr with a literal name is an edge too
-        (to the function it names, or to the methods a runtime value's attribute may be)."""
-        name = node.args[1] if len(node.args) > 1 else None
+        (to the function it names, or to the methods a runtime value's attribute may be). args: the (obj,
+        name) of a lookup written otherwise (`obj.__getattribute__(name)`)."""
+        args = node.args if args is None else args
+        name = args[1] if len(args) > 1 else None
         lit = name.value if isinstance(name, ast.Constant) and isinstance(name.value, str) else None
-        obj = self._resolve(node.args[0], local, me)
+        obj = self._resolve(args[0], local, me)
         self._site(fq.split(".")[1], owner, node, f"{obj or '?'}|{lit if lit is not None else ''}")
         # the class of the receiver, for a computed name; fix round 29: a computed setattr is narrowed only
         # when its name is known not to be __class__ (a dataclass field's, a __setattr__ or __setstate__ passing
         # its own on): any other may retype the object, and every alias of it the scan has typed
         if lit is None and (fq != "builtins.setattr" or id(node) in _plain_named_sets(self.idx, self.mod)):
-            self.sites[-1].recv = self._receiver_class(node.args[0], obj, owner, local, me)
+            self.sites[-1].recv = self._receiver_class(args[0], obj, owner, local, me)
         if lit is not None and obj and f"{obj}.{lit}" in _REFLECTIVE:       # getattr(builtins, "getattr")
             self._site("reflection", owner, node, f"{lit} looked up by name")
         if lit in _FRAME_NAMESPACES:                                         # getattr(frame, "f_globals")
@@ -932,7 +980,7 @@ class _Walker(_Inference):
             if obj in self.idx.funcs and lit == "__call__":          # getattr(f, "__call__") is f
                 self.edges.append(_Edge(owner, obj, node.lineno, node.col_offset, False))
                 if id(node) in self._called:                         # and called here: f is not a value
-                    self._called.add(id(node.args[0]))
+                    self._called.add(id(args[0]))
                 return
             if obj in self.idx.funcs and _dunder(lit):              # __get__, __func__, ...: f as a value
                 self._site("ref", owner, node, obj)
@@ -940,13 +988,19 @@ class _Walker(_Inference):
             hit = self.idx.method(obj[5:], lit) if obj.startswith("self:") else self.idx.canon(f"{obj}.{lit}")
             self._looked_up(owner, node, hit)
         elif lit is not None and fq == "builtins.getattr" and not _dunder(lit):
-            # getattr(repo, "save") on a runtime value: the methods it may name, as for repo.save
-            # (typed: the class's method and its overrides; otherwise name-matched)
-            hits, container = self._typed(ast.Attribute(node.args[0], lit, ast.Load()), owner, local, me)
-            for m in hits:
-                self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False, via_getattr=True))
-            if not hits and container is None and (fan := self.idx.fan(lit)):
-                self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
+            self._named_on(node, args[0], lit, owner, local, me)
+
+    def _named_on(self, node: ast.AST, recv: ast.expr | None, lit: str, owner: str, local: set[str],
+                  me: tuple[str, str] | None) -> None:
+        """getattr(repo, "save") on a runtime value: the methods it may name, as for repo.save (typed: the
+        class's method and its overrides; otherwise, or with no receiver to type, name-matched)."""
+        hits, container = self._typed(ast.Attribute(recv, lit, ast.Load()), owner, local, me) \
+            if recv is not None else ([], None)
+        line, col = getattr(node, "lineno", 0), getattr(node, "col_offset", 0)
+        for m in hits:
+            self.edges.append(_Edge(owner, m, line, col, False, via_getattr=True))
+        if not hits and container is None and (fan := self.idx.fan(lit)):
+            self.edges.append(_Fan(owner, fan, line, col, via_getattr=True))
 
     def _receiver_class(self, arg: ast.AST, obj: str | None, owner: str, local: set[str],
                         me: tuple[str, str] | None) -> str:
@@ -1017,6 +1071,26 @@ class _Walker(_Inference):
                     self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
         for a in [*node.args, *[k.value for k in node.keywords]]:
             self._expr(a, owner, local, me)
+
+
+def _format_attrs(text: str, depth: int) -> list[str]:
+    """The attribute chains a str.format string's fields look up ("{0.a.b}" -> "a.b", "{x[k].c}" -> "c"),
+    nested replacement fields in a format spec too; a string that is not a valid format gives none."""
+    out: list[str] = []
+    try:
+        fields = list(string.Formatter().parse(text))
+    except ValueError:
+        return out
+    for _, field, spec, _ in fields:
+        if field:
+            # "0.a[k].b": after the first name, each `.name` is an attribute, each `[key]` an item
+            rest = [m[1:] for m in re.findall(r"\.[^.\[]*|\[[^\]]*\]", field[len(re.split(r"[.\[]", field)[0]):])
+                    if m.startswith(".")]
+            if rest:
+                out.append(".".join(rest))
+        if spec and depth < 2:
+            out.extend(_format_attrs(spec, depth + 1))
+    return out
 
 
 def _parsed_annotation(node: ast.Constant) -> ast.expr | None:
