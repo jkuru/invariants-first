@@ -13,7 +13,7 @@ from ..confinement import import_module
 from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import Registry
-from .common import Usage
+from .common import SITE, Usage
 
 
 def project_root(rule_file: pathlib.Path) -> pathlib.Path:
@@ -94,10 +94,12 @@ def source_dirs(rule_file: pathlib.Path) -> list[pathlib.Path]:
 
 @contextlib.contextmanager
 def _import_path(rule_file: pathlib.Path, extra: Sequence[str]) -> Iterator[None]:
-    """Put --path entries and this checkout's source roots (import_roots) first on sys.path for the block."""
+    """Put --path entries and this checkout's source roots (import_roots) first on sys.path for the
+    block, and the --site directories last."""
     entries = [str(d) for d in import_roots(rule_file, extra)]
     saved = list(sys.path)
     sys.path[:0] = [e for e in entries if e not in sys.path]
+    sys.path.extend(e for e in SITE if e not in sys.path)
     try:
         yield
     finally:

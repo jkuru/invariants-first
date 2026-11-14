@@ -60,7 +60,14 @@ The trust boundary of the lock: it trusts the code it imports to describe itself
 reports a false signature or schema at import (or rewrites the installed tools for a later CI step)
 is outside what the lock can check; that is why the guarded, contract and model modules and the CI
 workflow need a code owner, like the rule file and the lock (docs/start.md, docs/lockfile.md "What
-the lock trusts").
+the lock trusts"). The same holds for the pull request's code that runs in the CI job before the
+gate: installing the project runs its build backend, `setup.py` or console scripts. The bundled
+GitHub Action runs invariants from a venv of its own, made before anything is installed, as
+`python -I -m invariants.cli` (never the `inv` on `PATH`), and `python -m invariants.cli` drops the
+working directory from `sys.path`; a way for a pull request to change the verdict of that action
+without its code running before the gate (for example through a file name, which `inv` prints with
+control characters and a leading `::` escaped) is in scope, code run by installing the project in
+the gate's job is not (docs/start.md).
 
 Operational hazards, by design:
 

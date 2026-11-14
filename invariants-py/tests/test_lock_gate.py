@@ -128,7 +128,7 @@ def test_action_fails_when_the_base_cannot_be_fetched():
     if not (root / "action.yml").exists():
         pytest.skip("action.yml lives at the monorepo root, not in the sdist")
     import yaml
-    run = yaml.safe_load((root / "action.yml").read_text())["runs"]["steps"][0]["run"]
+    run = yaml.safe_load((root / "action.yml").read_text())["runs"]["steps"][-1]["run"]
     assert "|| true" not in run
     assert "rev-parse --verify" in run and "exit 1" in run
 

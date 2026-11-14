@@ -1,6 +1,11 @@
 # GitHub Action: fail a pull request that weakens a rule since its base branch, unless a reviewer
-# accepts it with a label. Install your project (with invariants) in an earlier step; this action
-# runs the `inv` on PATH, since `inv check` imports your app.
+# accepts it with a label. The action installs invariants into an interpreter of its own (a venv under
+# RUNNER_TEMP) before anything of the pull request is installed, and runs that interpreter with
+# `python -I -m invariants.cli`, never the `inv` on PATH: a pull request can declare a console script
+# named `inv` or drop a .pth file into the project's environment. Your project's dependencies are read
+# from that environment's site-packages (--site), after invariants' own, and its .pth files are not run.
+# Installing a pull request still runs its code in this job (a build backend, setup.py): see
+# docs/start.md, "Make the check unskippable", for what that means and how to install without it.
 name: invariants check
 description: Fail a pull request that weakens a rule, a pinned pydantic constraint or a door rule.
 branding:
@@ -19,9 +24,49 @@ inputs:
   accept-label:
     description: A pull-request label that a reviewer adds to accept the weakenings listed in the log.
     default: accept-weakening
+  python:
+    description: >-
+      The interpreter of the environment that holds your project's dependencies (default `python` on
+      PATH, e.g. from actions/setup-python). The gate's own venv is made from it; after `install` it is
+      only asked, with `-I -S` (no site hooks), where its site-packages are.
+    default: python
+  install:
+    description: >-
+      A command that installs your project's dependencies, run after the gate's interpreter is set up
+      (prefer wheels and no build of the project, e.g. `pip install --only-binary :all: -r requirements.txt`;
+      inv imports the project itself from the checkout). Leave empty when an earlier step installs them.
+    default: ""
+  path:
+    description: >-
+      Extra directories to import the app from (one per line, relative to working-directory), as
+      `inv check --path`: for example a sibling package an editable install would have put on the path.
+    default: ""
 runs:
   using: composite
   steps:
+    - name: set up the invariants gate
+      shell: bash
+      env:
+        INV_PYTHON: ${{ inputs.python }}
+      run: |
+        set -euo pipefail
+        gate="${RUNNER_TEMP:?}/invariants-gate"
+        base_py="$(command -v "$INV_PYTHON")"
+        cd "$RUNNER_TEMP"                  # not the checkout: nothing of the pull request is read here
+        "$base_py" -I -m venv "$gate"
+        gate_py="$gate/bin/python"
+        [ -x "$gate_py" ] || gate_py="$gate/Scripts/python.exe"
+        "$gate_py" -I -m pip install --quiet --disable-pip-version-check "${GITHUB_ACTION_PATH:?}/invariants-py[schema]"
+        echo "invariants gate: $gate_py"
+    - name: install the project's dependencies
+      if: ${{ inputs.install != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INV_INSTALL: ${{ inputs.install }}
+      run: |
+        set -euo pipefail
+        bash -c "$INV_INSTALL"
     - name: inv check
       shell: bash
       working-directory: ${{ inputs.working-directory }}
@@ -29,8 +74,14 @@ runs:
         INV_BASE: ${{ inputs.base || (github.base_ref && format('origin/{0}', github.base_ref)) || '' }}
         INV_ALLOW_WEAKENING: ${{ contains(github.event.pull_request.labels.*.name, inputs.accept-label) && '1' || '' }}
         INV_RULE_FILE: ${{ inputs.rule-file }}
+        INV_PYTHON: ${{ inputs.python }}
+        INV_PATH: ${{ inputs.path }}
+        BASH_ENV: ""      # a variable an earlier step exported cannot make this shell source a file first
       run: |
         set -euo pipefail
+        gate="${RUNNER_TEMP:?}/invariants-gate"
+        gate_py="$gate/bin/python"
+        [ -x "$gate_py" ] || gate_py="$gate/Scripts/python.exe"
         args=()
         if [ -n "$INV_RULE_FILE" ]; then args+=("$INV_RULE_FILE"); fi
         if [ -n "$INV_BASE" ]; then
@@ -44,5 +95,12 @@ runs:
           fi
           args+=(--base "$INV_BASE")
         fi
+        while IFS= read -r dir; do
+          if [ -n "$dir" ]; then args+=(--path "$dir"); fi
+        done <<< "$INV_PATH"
+        # the project's site-packages, asked without running its site hooks (-S: no .pth file runs)
+        while IFS= read -r dir; do
+          if [ -n "$dir" ]; then args+=(--site "$dir"); fi
+        done < <("$INV_PYTHON" -I -S -c 'import sysconfig; p = sysconfig.get_paths(); print("\n".join(dict.fromkeys([p["purelib"], p["platlib"]])))')
         # ${args[@]+...}: with set -u, bash before 4.4 (macOS /bin/bash 3.2) calls an empty "${args[@]}" unbound
-        inv check ${args[@]+"${args[@]}"}
+        "$gate_py" -I -m invariants.cli check ${args[@]+"${args[@]}"}

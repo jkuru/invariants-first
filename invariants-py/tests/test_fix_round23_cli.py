@@ -94,12 +94,17 @@ def test_action_runs_with_no_arguments_under_set_u(tmp_path, bash):
         pytest.skip("action.yml lives at the monorepo root, not in the sdist")
     if not shutil.which(bash):
         pytest.skip(f"no {bash}")
-    run = yaml.safe_load((REPO / "action.yml").read_text())["runs"]["steps"][0]["run"]
-    stub = tmp_path / "bin"
-    stub.mkdir()
-    (stub / "inv").write_text('#!/bin/sh\necho "inv $# $*"\n')
-    (stub / "inv").chmod(0o755)
-    env = {**os.environ, "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}", "INV_BASE": "", "INV_RULE_FILE": ""}
+    run = yaml.safe_load((REPO / "action.yml").read_text())["runs"]["steps"][-1]["run"]
+    # the gate's own interpreter (round 29), standing in for `python -I -m invariants.cli`, and the
+    # project's interpreter, which reports no site-packages
+    gate = tmp_path / "runner" / "invariants-gate" / "bin"
+    gate.mkdir(parents=True)
+    (gate / "python").write_text('#!/bin/sh\nshift 3\necho "inv $# $*"\n')
+    (gate / "python").chmod(0o755)
+    (tmp_path / "project-python").write_text("#!/bin/sh\n")
+    (tmp_path / "project-python").chmod(0o755)
+    env = {**os.environ, "RUNNER_TEMP": str(tmp_path / "runner"), "INV_PYTHON": str(tmp_path / "project-python"),
+           "INV_PATH": "", "INV_BASE": "", "INV_RULE_FILE": ""}
     r = subprocess.run([shutil.which(bash), "-c", run], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "inv 1 check", r.stderr
     r = subprocess.run([shutil.which(bash), "-c", run], cwd=tmp_path, capture_output=True, text=True,

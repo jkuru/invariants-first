@@ -9,10 +9,15 @@ from typing import Callable
 
 from .. import lock, scan as scanner
 from ..errors import LoadError
+from ..scan.text import safe_output
 
 OK, FAILED, USAGE, UNRESOLVED, ABLATED = 0, 1, 2, 3, 4
 DEFAULT_FILES = ("invariants.yaml", "invariants.yml", "invariants.json")
 ALLOW_WEAKENING_ENV = "INV_ALLOW_WEAKENING"
+# --site DIRs: the site-packages of the environment that holds the app's dependencies, when `inv`
+# runs from an interpreter of its own (the GitHub Action). Read after this interpreter's own path,
+# and only where the app is imported; their .pth files are not run.
+SITE: list[str] = []
 
 
 class Usage(Exception):
@@ -20,11 +25,13 @@ class Usage(Exception):
 
 
 def _out(text: str) -> None:
-    print(text, flush=True)
+    """Print a line (or lines) of `inv`'s own output; control characters and a line starting a
+    GitHub Actions workflow command, which a file name or message from the tree can carry, are escaped."""
+    print(safe_output(text), flush=True)
 
 
 def _err(text: str) -> None:
-    print(text, file=sys.stderr)
+    print(safe_output(text), file=sys.stderr)
 
 
 def _rule_file(arg: str | None) -> pathlib.Path:

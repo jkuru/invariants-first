@@ -13,6 +13,7 @@ from __future__ import annotations
 # ruff: noqa: F401   (the names below are the package's API)
 import argparse
 import os
+import pathlib
 import sys
 from typing import Any, Callable, Sequence
 
@@ -47,6 +48,10 @@ def parser() -> argparse.ArgumentParser:
                                  "[tool.setuptools.packages.find] where and scan roots, the rule file's "
                                  "directory and the project root are on the import path already, ahead "
                                  "of site-packages")
+            sp.add_argument("--site", action="append", default=[], metavar="DIR",
+                            help="import your app's dependencies from DIR too, after inv's own (repeatable): "
+                                 "the site-packages of your project's environment when inv runs from an "
+                                 "interpreter of its own; its .pth files are not run")
         sp.set_defaults(fn=fn)
         return sp
 
@@ -214,6 +219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # the reviewer's switch is read here, before anything could import the app (which never happens
     # in this process: the imports run in a child, worker.py)
     a.allow_weakening_env = os.environ.get(ALLOW_WEAKENING_ENV) == "1"
+    from . import common
+    common.SITE[:] = [str(pathlib.Path(d).resolve()) for d in getattr(a, "site", None) or []]
     try:
         return a.fn(a)
     except Usage as e:

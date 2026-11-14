@@ -619,7 +619,11 @@ root is a weakening that a person accepts, like any other. The agent hook `inv h
 blocks an agent's edit of `[tool.invariants]`.
 
 `--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
-`--format sarif` gives SARIF 2.1.0 for code-scanning tools. A rule ablated through `INV_ABLATE` (with
+`--format sarif` gives SARIF 2.1.0 for code-scanning tools. The text output prints a path or message
+from the tree on one line: a control character in it (a newline in a file name, `\r`, a terminal
+escape) is shown escaped (`\n`, `\r`, `\x1b`), and a line that would start a GitHub Actions workflow
+command (`::error::`) is printed with a backslash first, so a file name cannot write to a CI log's
+annotations. A rule ablated through `INV_ABLATE` (with
 `INV_ABLATE_TESTING=1`; `INV_ABLATE` alone is ignored) is not scanned, so a scan inside a falsifier is
 ablated too. A scan-only rule in the long form still needs a `bad` and a `structure` enforcer; the
 `door:` / `sink:` short form supplies both.

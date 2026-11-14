@@ -389,7 +389,7 @@ def test_shipped_hook_configs_name_real_commands():
     assert hooks[0]["id"] == "inv-check" and hooks[0]["entry"] == "inv check --relock --fail-on-repin"
     assert hooks[0]["language"] == "system" and hooks[0]["pass_filenames"] is False
     action = yaml.safe_load((root / "action.yml").read_text())
-    run = action["runs"]["steps"][0]["run"]
-    assert 'inv check ${args[@]+"${args[@]}"}' in run and "--base" in run
-    assert "INV_ALLOW_WEAKENING" in action["runs"]["steps"][0]["env"]
+    run = action["runs"]["steps"][-1]["run"]
+    assert '"$gate_py" -I -m invariants.cli check ${args[@]+"${args[@]}"}' in run and "--base" in run
+    assert "INV_ALLOW_WEAKENING" in action["runs"]["steps"][-1]["env"]
     assert textwrap.dedent(run)
