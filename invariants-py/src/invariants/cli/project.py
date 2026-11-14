@@ -259,6 +259,10 @@ def write_scan_settings(rule_file: pathlib.Path, roots: list[str], extend: list[
     shown = ", ".join(f"{k} = {json.dumps(v)}" for k, v in want.items())
     if not want:
         return []
+    if (rule_file.resolve().parent / lock.LOCK_NAME).exists():
+        return [f"note: {lock.LOCK_NAME} already exists beside {rule_file.name}, so init leaves {py.name} as it "
+                f"is (its scan settings decide which code the lock's checks read); to scan what init scanned, "
+                f"add {shown} to [tool.invariants.scan] there yourself"]
     import tomllib
     try:
         text = py.read_bytes().decode("utf-8") if py.is_file() else ""

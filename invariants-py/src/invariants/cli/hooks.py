@@ -929,6 +929,35 @@ def _touches_invariants_table(path: pathlib.Path, tool_input: dict[str, Any]) ->
     return not lock.same(_invariants_table(before), _invariants_table(after))
 
 
+_INIT_SCAN_FLAGS = ("--root", "--exclude")
+
+
+def _init_writes_scan(command: str) -> bool:
+    """`inv init` (or `python -m invariants.cli init`) with --root or --exclude: init writes those to
+    [tool.invariants.scan] in pyproject.toml. A command the hook cannot parse that names init with one
+    of them counts too."""
+    tokens = _tokens(_ansi_c(command))
+    if tokens is None:
+        return " init" in command and any(f in command for f in _INIT_SCAN_FLAGS)
+    for words, _ in _segments(tokens):
+        words = _command_words(words)
+        if words and _is_python(words[0]):
+            i = next((j for j, w in enumerate(words) if w == "-m" or (w.startswith("-m") and len(w) > 2)), None)
+            if i is None:
+                continue
+            mod = words[i][2:] or (words[i + 1] if i + 1 < len(words) else "")
+            words = words[i + (1 if words[i][2:] else 2):]
+            if mod not in ("invariants.cli", "invariants"):
+                continue
+        elif words and pathlib.PurePath(words[0]).name == "inv":
+            words = words[1:]
+        else:
+            continue
+        if words[:1] == ["init"] and any(w.partition("=")[0] in _INIT_SCAN_FLAGS for w in words[1:]):
+            return True
+    return False
+
+
 def _pretool(event: dict[str, Any]) -> int:
     given = event.get("tool_input")
     tool_input: dict[str, Any] = given if isinstance(given, dict) else {}
@@ -962,6 +991,11 @@ def _pretool(event: dict[str, Any]) -> int:
              "[tool.setuptools.packages] whose find.where gives the default scan roots), or a shell command "
              "that writes pyproject.toml. The scan roots and excludes decide which code is checked for back "
              "doors; tell the user what you want to change and let them make the edit.")
+        return 2
+    if _lock_dir(cwd) and _init_writes_scan(command):
+        _err("invariants: blocked `inv init` with --root or --exclude under a directory that holds "
+             f"{lock.LOCK_NAME}: init writes them to the scan settings in pyproject.toml, which decide which "
+             "code is checked for back doors. Tell the user what you want to change and let them make the edit.")
         return 2
     hit = _weakening_switch(command)
     if hit:

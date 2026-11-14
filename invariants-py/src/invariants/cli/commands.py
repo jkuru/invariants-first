@@ -20,6 +20,7 @@ from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UN
 from .git_base import _base_step, base_read, base_scan_default
 from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
                       source_dirs, write_scan_settings)
+from .static_guards import guard_problems
 from .worker import Imported, emit, imported, reraise
 
 if TYPE_CHECKING:
@@ -644,6 +645,8 @@ def cmd_check(a: argparse.Namespace) -> int:
     mediated = any(r.get("mediation") for r in raw_rules)
     scan = {"root": a.root, "exclude": a.exclude}
     imp = _check_imports(a, path, lock_path, doc, importable, scan)
+    if importable:
+        _static_guards_early(imp, path, a.path, doc)
     failed = False
     _out(f"inv check: {path}")
 
@@ -677,7 +680,7 @@ def cmd_check(a: argparse.Namespace) -> int:
                                argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
     if importable:
-        code, text = imp.verify()
+        code, text = _guards_step(imp, path, a.path, doc)
         step("guards", code, text)
     else:
         _out("  skip  guards: nothing to import (no target, edge target or python contract; a guard on a "
@@ -744,6 +747,37 @@ def _check_imports(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib
         imp.before("scan-step", lambda: _captured(cmd_scan, argparse.Namespace(
             rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
     return imp
+
+
+def _static_guards(imp: Imported, path: pathlib.Path, extra: Sequence[str], doc: dict[str, Any]) -> tuple[int, list[str]]:
+    """The guard check read from the source (static_guards), in this process, before the child runs."""
+    got: tuple[int, list[str]] = imp.before("static-guards", lambda: guard_problems(path, doc, extra))
+    return got
+
+
+def _static_guards_early(imp: Imported, path: pathlib.Path, extra: Sequence[str], doc: dict[str, Any]) -> None:
+    """Read the guards from the source before the child runs (it could rewrite a source file); an
+    error is kept and reported by the guards step."""
+    with contextlib.suppress(Exception):
+        _static_guards(imp, path, extra, doc)
+
+
+def _guards_step(imp: Imported, path: pathlib.Path, extra: Sequence[str], doc: dict[str, Any]) -> tuple[int, str]:
+    """`inv check`'s guards step: the decorators read from the source in this process, and the child's
+    `inv verify`; it passes only when both do. The child's verdict alone is never enough: the code it
+    imports could have replaced the check that computed it."""
+    try:
+        _, problems = _static_guards(imp, path, extra, doc)
+    except Exception as e:
+        problems = [f"the guards could not be read from the source ({_describe(e, typed=True)}); "
+                          f"`inv check` fails closed"]
+    code, text = imp.verify()
+    if problems:
+        lines = ["source: FAIL", *(f"  {p}" for p in problems)]
+        return FAILED, "\n".join([*lines, *([text] if text and code != OK else [])])
+    if code != OK:
+        return code, text
+    return OK, text
 
 
 def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:

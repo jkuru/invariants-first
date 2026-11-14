@@ -62,13 +62,17 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
         import yaml
         try:
             refuse_aliases(text, str(source))
+            root = yaml.compose(_named(text, str(source)), Loader=yaml.SafeLoader)
+            refuse_duplicate_keys(root, str(source))
             doc = yaml.safe_load(_named(text, str(source)))
-            _yaml_lines(yaml.compose(_named(text, str(source)), Loader=yaml.SafeLoader), where)
+            _yaml_lines(root, where)
         except yaml.YAMLError as e:
             raise LoadError(f"{source}: {e}") from e
     else:
         try:
-            doc = json.loads(text)
+            doc = json.loads(text, object_pairs_hook=_unique_pairs)
+        except _Repeated as e:
+            raise LoadError(f"{source}: {_json_repeat(text, e.key)}") from None
         except json.JSONDecodeError as e:
             raise LoadError(f"{source}: {e}") from e
     if not isinstance(doc, dict):
@@ -81,6 +85,55 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
             expand_short_forms({"rules": [raw]})
     expand_shared_accepts(doc)                         # the top-level allow_unresolved, rule by rule
     return doc, where
+
+
+class _Repeated(ValueError):
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.key = key
+
+
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise _Repeated(k)
+        out[k] = v
+    return out
+
+
+def _json_repeat(text: str, key: str) -> str:
+    """The message for a JSON key repeated in one object, with the lines that key appears on."""
+    import re
+    pat = re.compile(r'"' + re.escape(json.dumps(key)[1:-1]) + r'"\s*:')
+    lines = sorted({text.count("\n", 0, m.start()) + 1 for m in pat.finditer(text)})
+    on = f" (lines {', '.join(map(str, lines))})" if len(lines) > 1 else ""
+    return (f"the key {key!r} appears twice in one object{on}; JSON keeps only the last one, so write each "
+            f"key once")
+
+
+def refuse_duplicate_keys(root: Any, name: str) -> None:
+    """LoadError at a key repeated in one YAML mapping (PyYAML keeps the last value silently, so a
+    second `sink:` or `door:` entry with the same key would replace the first unseen), naming both lines."""
+    import yaml
+    work = [root]
+    while work:
+        node = work.pop()
+        if isinstance(node, yaml.MappingNode):
+            seen: dict[tuple[str, str], int] = {}
+            for k, v in node.value:
+                if isinstance(k, yaml.ScalarNode):
+                    ident = (k.tag, k.value)
+                    line = k.start_mark.line + 1
+                    if ident in seen:
+                        raise LoadError(f"{name}:{line}: the key {k.value!r} appears twice in one mapping (lines "
+                                        f"{seen[ident]} and {line}); YAML keeps only the last one, so write each "
+                                        f"key once")
+                    seen[ident] = line
+                work.append(k)
+                work.append(v)
+        elif isinstance(node, yaml.SequenceNode):
+            work.extend(node.value)
 
 
 def refuse_aliases(text: str, name: str) -> None:

@@ -92,6 +92,21 @@ class LockVersionError(LockError):
     """The stored lock has a version this library cannot compare."""
 
 
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"the key {k!r} appears twice in one object")
+        out[k] = v
+    return out
+
+
+def loads(text: str) -> Any:
+    """A lock's JSON text, refusing a key repeated in one object (json keeps the last one silently,
+    so a hand-edited lock could hide a pin behind a second copy of its key): ValueError."""
+    return json.loads(text, object_pairs_hook=_unique_pairs)
+
+
 def read(path: pathlib.Path) -> dict[str, Any]:
     """Read a lockfile; LockError when it is missing, not JSON, or not shaped like a lock, or (under
     `inv mcp`: INV_CONFINE_ROOT set) when it resolves outside the confined root, checked before it is
@@ -101,10 +116,10 @@ def read(path: pathlib.Path) -> dict[str, Any]:
     except LoadError as e:
         raise LockError(str(e)) from None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise LockError(f"{path}: no lockfile ({e.strerror}); run `inv lock`") from e
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except (ValueError, UnicodeDecodeError) as e:
         raise LockError(f"{path}: not a valid lockfile: {e}") from e
     if not isinstance(data, dict):
         raise LockError(f"{path}: not a valid lockfile (expected a JSON object, got {type(data).__name__})")
