@@ -103,13 +103,26 @@ def _finite(v: Any, where: str, depth: int, safe: str | None = None) -> Any:
     if isinstance(v, float):
         if not math.isfinite(v):
             raise _err(f"field {safe}: {_NON_FINITE}", f"field {where}: {_NON_FINITE}")
-    elif type(v) in _LISTS:
-        for i, x in enumerate(v):
-            _finite(x, f"{where}[{i}]", depth + 1, f"{safe}[{i}]")
-    elif type(v) in _DICTS:
-        for k, x in v.items():
+    elif isinstance(v, dict):                   # any dict (FrozenDict, OrderedDict, a subclass): its own storage
+        for k, x in dict.items(v):
+            _finite(k, f"{where} key", depth + 1, f"{safe} key")
             _finite(x, f"{where}.{k}", depth + 1, f"{safe}.*")     # a reply-made key: only in the feedback
+    elif isinstance(v, _SEQUENCES):             # list, tuple, set, frozenset and subclasses (str/bytes are none)
+        for i, x in enumerate(_items(v)):
+            _finite(x, f"{where}[{i}]", depth + 1, f"{safe}[{i}]")
     return v
+
+
+_SEQUENCES: tuple[Any, ...] = (list, tuple, set, frozenset)
+
+
+def _items(v: Any) -> Any:
+    """The elements v holds, read from its base type's storage (a subclass's own __iter__ is not run)."""
+    base: Any
+    for base in _SEQUENCES:
+        if isinstance(v, base):
+            return base.__iter__(v)
+    return iter(())
 
 
 def _check(v: Any, t: Any, where: str, depth: int, safe: str | None = None) -> Any:

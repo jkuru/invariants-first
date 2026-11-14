@@ -38,7 +38,10 @@ def env_ablated() -> set[str]:
     Honoured outside pytest (an `inv scan` or app subprocess of a falsifier), it logs at ERROR once
     per rule set: in production it means those rules' in-process guards are off.
     """
-    names = set(filter(None, (x.strip() for x in os.environ.get(ABLATE_ENV, "").split(","))))
+    raw = os.environ.get(ABLATE_ENV)
+    if not raw:                          # the hot path: Registry.is_ablated asks on every guarded call
+        return set()
+    names = set(filter(None, (x.strip() for x in raw.split(","))))
     if not names:
         return set()
     if os.environ.get(ABLATE_ARM_ENV) != "1":

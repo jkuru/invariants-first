@@ -24,6 +24,7 @@ log = logging.getLogger("invariants.http")
 
 _TITLES = {
     "rejected": "The request violates an invariant",
+    "abstained": "The model abstained, so the request was not carried out",
     "rule-error": "An invariant could not be checked",
     "halted": "An internal invariant failed",
     "routed": "The request was sent for review",
@@ -55,7 +56,8 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
     ReviewNotOpened -> 503; a rule_error under fail_closed -> 503 whatever on_violation did with it
     (a rule that could not be evaluated is an outage, never a routed success: a route or escalate
     enforcer that opened a review for it keeps the review_id in the body); Routed and Escalation
-    -> 202 (with review_id); Halted -> 500; Rejected -> statuses.reject.
+    -> 202 (with review_id); Halted -> 500; Rejected -> statuses.reject (type urn:invariants:abstained
+    when an edge refused a reply whose verdict is abstain, else urn:invariants:rejected).
     Clause messages are included only with expose_messages (they are rule-file text).
     """
     s = statuses or StatusMap()
@@ -70,6 +72,8 @@ def problem(exc: InvariantError, statuses: StatusMap | None = None,
         status, slug = s.escalate, "escalated"
     elif isinstance(exc, Halted):
         status, slug = s.halt, "halted"
+    elif out is not None and out.kind == "abstain":   # an edge refused a reply the model sent to a person
+        status, slug = s.reject, "abstained"
     else:
         status, slug = s.reject, "rejected"
     body: dict[str, Any] = {"type": f"urn:invariants:{slug}", "title": _TITLES[slug], "status": status}

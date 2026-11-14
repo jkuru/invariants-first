@@ -78,7 +78,6 @@ class Registry:
         self.allow_non_finite = False              # True: a NaN/Infinity read by a rule is data, not a rule_error
         self.evidence: collections.defaultdict[str, collections.Counter[str]] = (
             collections.defaultdict(collections.Counter))           # reach counters
-        self.ablated: set[str] = env_ablated()      # INV_ABLATE (testing only): for the registry's life
         # inv.ablated(scope="registry") blocks open now, per rule: a count, so overlapping blocks
         # (two threads, or nested) keep the rule ablated until the last one exits
         self._reg_ablated: collections.Counter[str] = collections.Counter()
@@ -91,6 +90,13 @@ class Registry:
             _REGISTRIES.add(self)
         except TypeError:                          # a subclass made itself unhashable: no fork reset
             pass
+
+    @property
+    def ablated(self) -> set[str]:
+        """The rules INV_ABLATE ablates now (honoured only with INV_ABLATE_TESTING=1): read from the
+        environment on every ask, as the loader's log and `inv scan` read it, never cached when the
+        registry was built (the default one is built at import, before a test or app sets it)."""
+        return env_ablated()
 
     def _after_fork_in_child(self) -> None:
         """A fresh lock (shared with the sink, as always): one another parent thread held at the fork

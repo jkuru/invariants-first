@@ -292,11 +292,15 @@ map, or a pydantic model with `extra='forbid'`):
   text, with the value, is `ParseError.feedback`. That is what the model gets as `inv_feedback`, and
   what outcomes and logs show with `inv.configure(debug=True)`.
 - **Abstain.** When `model_policy.abstain.field` equals `abstain.value` (the same plain type: `True`
-  is not `1`), the call raises `Escalation` and opens a review before `bad` runs. That is in
+  is not `1`), the call records the abstain (an event with outcome `abstain`, action `escalate`:
+  counted, observed and exported like any outcome, and a decision for `--inv-ablate`), opens a
+  review and raises `Escalation` (its `outcome` the abstain), before `bad` runs. That is in
   effective mode `enforce` only: below it (a `detect` or `candidate` rule, or a `model_call` enforcer
   in `mode: detect`) nothing blocks, so the abstain is recorded (an event with outcome `abstain`,
   action `proceed`), no review is opened, and the call returns the `Checked` with verdict `abstain`,
-  as a parse error in detect returns verdict `parse_error`. An edge in force refuses it.
+  as a parse error in detect returns verdict `parse_error`. An edge in force refuses it, by its
+  `on_violation`, as outcome `abstain` (never a `rule_error`): over HTTP a reject is 422
+  `urn:invariants:abstained`, a route or escalate 202 with the review it opened.
 - **Field names.** Attribute reads on a `Checked` go to its reply (`checked.amount`) only for names
   the `Checked` class does not have. A dataclass or pydantic reply field named `value`, `attempts`,
   `rule` or `verdict` (the `Checked`'s own metadata), one starting `_inv_`, or one named like an
@@ -408,7 +412,9 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   `--inv-ablate` reports the guard as not load-bearing. Give such a rule an in-process enforcer too,
   or leave it below `enforce`.
 - **Environment ablation.** `INV_ABLATE` is honoured only with `INV_ABLATE_TESTING=1`, which the
-  pytest plugin sets for falsifier runs and their subprocesses. Set both in a production process and
+  pytest plugin sets for falsifier runs and their subprocesses. It is read when a guard asks (not
+  cached when a registry is built), so setting or unsetting it takes effect at once in every
+  registry, the default one included. Set both in a production process and
   those rules' guards are off. The loader logs this at ERROR outside a pytest session (and on stderr
   when no logging is configured), but does not refuse, because an `inv scan` or app subprocess of a
   falsifier must see it. See [SECURITY.md](../SECURITY.md).

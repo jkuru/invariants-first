@@ -57,7 +57,9 @@ def test_without_compares_to_one_fresh_resample(reg):
 def test_abstain_escalates_before_bad(reg):
     runs7 = reg.evidence["R-7"]["runs"]
     _, esc = model('{"cause": "CANNOT_COMPLY", "message": ""}')
-    assert isinstance(esc, inv.Escalation) and len(esc.attempts) == 1 and reg.evidence["R-7"]["runs"] == runs7
+    # one recorded outcome, the abstain (action escalate): bad never ran
+    assert isinstance(esc, inv.Escalation) and len(esc.attempts) == 1 and reg.evidence["R-7"]["runs"] == runs7 + 1
+    assert reg.sink[-1]["outcome"] == "abstain" and reg.sink[-1]["action"] == "escalate"
     assert esc.attempts[0]["outcome"] == "abstain" and esc.rule == "R-7"
 
 

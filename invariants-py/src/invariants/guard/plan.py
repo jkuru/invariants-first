@@ -18,7 +18,7 @@ from ..errors import CoverageError, Escalation, ParseError
 from ..evaluate import aact, ablated, act, evaluate, report
 from ..model import Outcome, Rule
 from ..providers import ProviderFailed, prefetch_async, prefetch_many
-from ..registry import Handoff, Registry, current, note_decision
+from ..registry import Handoff, Registry, current
 from ..snapshot import take_snapshot
 from .checked import Checked
 from .replies import _field_of, _same, parse, parse_error_text, recheck, rule_view
@@ -252,18 +252,23 @@ class _ModelRun:
                 return "abstain", reply
         return "eval", reply
 
-    def handoff(self, reply: Any) -> Handoff:
-        note_decision(self.rule.id)          # an abstain is the rule's decision (see --inv-ablate)
-        return Handoff(self.rule.id, "escalate", None, {"reply": reply, **self.base}, list(self.record),
-                       reason="abstain")
+    def handoff(self, reply: Any) -> tuple[Handoff, Outcome]:
+        """An abstain at effective enforce: its event (outcome abstain, action escalate) is recorded like
+        any other outcome (counted, observed, exported, and a decision for --inv-ablate), then the
+        review handoff."""
+        out = self.abstained()
+        ev = report(self.reg, self.rule, self.enf, out, "escalate", self.record, started=self.started)
+        return Handoff(self.rule.id, "escalate", out, {"reply": reply, **self.base}, list(self.record), ev,
+                       reason="abstain"), out
 
     def abstained(self) -> Outcome:
-        """The outcome of an abstain below enforce: recorded (action proceed), no review, no decision."""
+        """The outcome of an abstain: below enforce recorded with action proceed (no review, no
+        decision); at enforce with action escalate (handoff)."""
         return Outcome("abstain", self.rule.id, [f"model abstained ({(self.ab or {}).get('value')})"])
 
-    def escalation(self, review: str) -> Escalation:
+    def escalation(self, out: Outcome, review: str) -> Escalation:
         return Escalation(f"{self.rule.id}: model abstained ({(self.ab or {}).get('value')}); sent to a person "
-                          f"(opened {review})", None, self.record, review, rule=self.rule.id, point="model_call")
+                          f"(opened {review})", out, self.record, review, rule=self.rule.id, point="model_call")
 
     def eval_base(self, reply: Any) -> dict[str, Any]:
         return {**self.base, "reply": rule_view(reply)}
@@ -308,13 +313,17 @@ class _ModelRun:
                     # recorded and the call goes on with verdict abstain (an edge in force refuses it)
                     yield "finish", (self.abstained(), v)
                     return
-                raise self.escalation((yield "hand_off", self.handoff(v)))
+                handoff, out = self.handoff(v)
+                raise self.escalation(out, (yield "hand_off", handoff))
             if step == "finish":
                 yield "finish", v
                 return
 
 
 # --- @inv.edge ---------------------------------------------------------------------------------
+_VERDICTS = ("violation", "rule_error", "parse_error", "abstain")   # the non-ok verdicts inv.model_call gives
+
+
 def _received(value: Any) -> tuple[str | None, Any]:
     """(verdict, value) of a received Checked; verdict None when it was not built by inv.model_call
     (no verdict, or a verdict that is not a plain string)."""
@@ -471,7 +480,9 @@ class _EdgePlan:
             out = Outcome("rule_error", rule.id, [f"received a {refined.__name__} that inv.model_call did not "
                                                   f"build (it has no verdict)"])
         elif c.verdict != "ok":
-            out = Outcome(c.verdict if c.verdict in ("violation", "rule_error", "parse_error") else "rule_error",
+            # a received abstain is its own refusal (the model sent it to a person; on_violation decides:
+            # reject -> 422, route or escalate -> 202), never a rule_error (503, and an error spike)
+            out = Outcome(c.verdict if c.verdict in _VERDICTS else "rule_error",
                           rule.id, [f"received a {refined.__name__} with verdict {c.verdict}"])
         elif c.perr is not None:
             out = Outcome("parse_error", rule.id, error=c.perr)

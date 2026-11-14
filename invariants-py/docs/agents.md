@@ -43,7 +43,9 @@ understand ──> propose ──> verify ──> human approval ──> lock
   arguments name (dot-directories, `venv`, `node_modules`, `build`, `dist` and the like left
   out), each `-p` plugin and each `pytest_plugins` entry, and what those import. A module is the
   project's when it is found inside the lock's directory tree (from the script's directory, the
-  working directory, the tree or its `src/`); a symlinked one is read where it points. Such a
+  working directory, the tree or its `src/`); a symlinked one is read where it points. The module
+  `python -m MOD` runs (`MOD.py` or `MOD/__main__.py`, under the working directory, its `src/`, the
+  tree or its `src/`) is the script itself, read as `python FILE` is. Such an imported
   module is blocked when its text names the lock (or `LOCK_NAME`), or names `pyproject` together
   with `invariants` or `setuptools` (a module that only reads pyproject.toml is ordinary). What it
   does not see: test modules (`test_*.py`; a test that writes the lock in a temporary copy is
