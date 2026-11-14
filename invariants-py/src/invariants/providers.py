@@ -163,7 +163,24 @@ def _arg_key(v: Any) -> Any:
         hash(v)
         return (type(v), v)
     except Exception:
-        return ("id", id(v))            # unhashable: share only the very same object
+        return _Same(v)                 # unhashable: share only the very same object
+
+
+class _Same:
+    """A cache key part for an unhashable argument: equal only to one for the very same object, which
+    it keeps alive as long as the cache holds the key (a bare id() could be reused by another object
+    once the first is freed, and so read the provider value cached for it)."""
+
+    __slots__ = ("v",)
+
+    def __init__(self, v: Any) -> None:
+        self.v = v
+
+    def __hash__(self) -> int:
+        return id(self.v)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Same) and other.v is self.v
 
 
 def _raised(reg: Registry, name: str, e: BaseException) -> ProviderFailed:

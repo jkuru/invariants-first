@@ -243,7 +243,7 @@ def test_route_and_escalate_hand_off_with_bound_values(iso):
     inv.configure(iso, review_store=store)
     e = raises(inv.Routed, fx.probe2, None, 9)
     assert e.review_id == "R1" and store.got[0].action == "route" and store.got[0].bound["args"]["x"] == 9
-    assert e.bound["args"]["x"] == 9
+    assert e.bound == ("args",) and e.outcome.bound is None      # the exception carries the names, not the values
 
 
 def test_escalation_and_abstain_open_reviews(iso):

@@ -13,9 +13,12 @@ body again with the same arguments on every attempt and sets inv_feedback to the
 after a format failure, and to None on the first attempt and on a semantic resample (a fresh
 sample that never sees the rule text). So `complete(prompt, None)` opens a new conversation, and
 `complete(prompt, feedback)` sends the feedback as a follow-up user turn after the model's previous
-reply in the current one. The current conversation is context-local (a contextvar), so threads and
-asyncio tasks each keep their own; call the model from the body itself (an `async def` body uses
-`acomplete`), not from a worker thread the body starts.
+reply in the current one. The current conversation belongs to the model_call invocation whose body
+is running: a model call nested in that body (another @inv.model_call the body calls first, on the
+same model) has its own, and the outer invocation's feedback still continues the outer conversation.
+Outside a model call it is context-local (a contextvar), so threads and asyncio tasks each keep their
+own; call the model from the body itself (an `async def` body uses `acomplete`), not from a worker
+thread the body starts.
 
 With a reply tool, the model answers by calling a tool whose input is the structured reply, as an
 agent does, instead of writing JSON text:
@@ -60,6 +63,8 @@ import threading
 import weakref
 from collections.abc import Sequence
 from typing import Any
+
+from ..guard.plan import RUN_STATE
 
 __all__ = ["ChatModel", "AnthropicModel", "ReplayModel", "RecordingModel", "ReplayMismatch", "ConversationError",
            "ModelRefusal", "model_for", "reply_tool", "MODES", "DEFAULT_MODEL", "FEEDBACK_TEMPLATE",
@@ -260,10 +265,14 @@ class ChatModel:
     # --- the conversation ------------------------------------------------------------------------
     def _turn(self, prompt: Prompt, feedback: str | None) -> tuple[_Conversation, dict[str, Any]]:
         opening = _opening(prompt)
-        convs = _CONVERSATIONS.get()
+        run = RUN_STATE.get()           # in a model_call body: that invocation's own (a nested one has its own)
+        convs: dict[Any, _Conversation] = _CONVERSATIONS.get() if run is None else run
         if feedback is None:
             conv = _Conversation(opening)
-            _CONVERSATIONS.set({**convs, self._key: conv})      # copy on write: sibling contexts keep theirs
+            if run is None:
+                _CONVERSATIONS.set({**convs, self._key: conv})  # copy on write: sibling contexts keep theirs
+            else:
+                run[self._key] = conv
         else:
             got = convs.get(self._key)
             if got is None:

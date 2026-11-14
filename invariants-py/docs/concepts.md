@@ -66,7 +66,9 @@ and pages).
 
 When a rule fires, `on_violation` decides what is raised: `inv.Rejected`, `inv.Halted`,
 `inv.Escalation` or `inv.Routed`. Each of these carries `.rule`, `.outcome`, `.attempts`, `.point`
-and `.bound` (the values the rule read). `Routed` and `Escalation` also carry `.review_id`. If no
+and `.bound` (the names the rule bound, sorted: never their values, and `.outcome` holds none
+either, so an exception is safe to log or send back; the values go to the review a route or escalate
+opens). `Routed` and `Escalation` also carry `.review_id`. If no
 review can be opened, route and escalate raise `inv.ReviewNotOpened` instead (see
 [Operations](#operations)).
 
@@ -253,7 +255,8 @@ map, or a pydantic model with `extra='forbid'`):
 
 - **Parse.** The reply (JSON text, bytes, or an already-decoded object) must be a JSON object with
   exactly the schema's fields and types. Field types may be plain classes, `Any`, `Literal`,
-  `Optional` or unions, `list[T]`, `dict[str, T]`, or a nested dataclass; any other type is a
+  `Optional` or unions, `list[T]`, `dict[str, T]`, or a nested dataclass (a bare `list`, `dict`,
+  `tuple`, `set` or `frozenset` is read like `Any`: copied, and non-finite numbers in it refused); any other type is a
   `TypeError` when the function is decorated. A `datetime` field takes RFC 3339 text with a timezone
   (`"2024-01-31T09:30:00Z"`; without one it is a `parse_error`). A `timedelta` field takes CEL
   duration text (`"90s"`, `"1h30m"`) or ISO 8601 (`"PT1H30M"`, as pydantic writes it), and a `UUID`
@@ -265,6 +268,9 @@ map, or a pydantic model with `extra='forbid'`):
   by default), a `NaN`, `Infinity` or `-Infinity` token, a number that overflows to infinity like
   `1e999`, and a non-finite float anywhere in an already-decoded reply, `Any` fields included. A
   parse error is retried up to `format_retries` times, then the enforcer's `on_violation` applies.
+  Retries (and semantic resamples) run only at effective `enforce`: below it (detect, a candidate or
+  contested rule, a rule demoted by an error spike) the model is called once, and a parse error is
+  recorded (action `proceed`) and returned as verdict `parse_error`, with no feedback sent.
   No other exception leaves `model_call` for a reply. An exception that your own function raises is
   yours, and it propagates unchanged.
 - **Pydantic schemas are strict.** A pydantic reply is validated in pydantic's strict mode over its

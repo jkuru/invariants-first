@@ -182,7 +182,12 @@ def _check(v: Any, t: Any, where: str, depth: int, safe: str | None = None) -> A
         return float(v)
     if not isinstance(v, t) or (t in (int, float) and isinstance(v, bool)):
         raise _err(f"field {safe}: {_vt(v)} is not {_tname(t)}", f"field {where}: {_show(v)} is not {_tname(t)}")
+    if t in _BARE:                       # bare list/dict/tuple/set: items unchecked, so as Any (copy, finite)
+        return copy.deepcopy(_finite(v, where, depth, safe))
     return v
+
+
+_BARE = frozenset({list, dict, tuple, set, frozenset})     # container types without parameters
 
 
 # Field types a JSON reply carries as text, and the form each takes (the same forms pydantic reads).

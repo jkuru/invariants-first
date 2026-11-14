@@ -72,14 +72,19 @@ def import_module(name: str, what: str) -> Any:
     runs and its objects (os.environ, say) never reach a pin or an error. The standard library and
     installed packages are outside. Every module of the project imported after that (name's own
     submodules, and whatever the project's code imports) is checked the same way by the finder
-    install() puts first on sys.meta_path, before its code runs: a symlink inside the root to a
+    install() puts first on sys.meta_path, before its code runs, and every prefix of name already in
+    sys.modules (which no finder sees again) must have been loaded from inside it: a symlink inside the root to a
     directory or file outside it (`app/leak -> ../../vault`) is refused, not followed. A module that is
     not found raises ModuleNotFoundError, as import_module does; one found outside raises LoadError."""
     root = os.environ.get(CONFINE_ENV)
-    if root:
-        install()
-        _check_module(name, what, pathlib.Path(root).resolve())
-    return importlib.import_module(name)
+    if not root:
+        return importlib.import_module(name)
+    install()
+    top = pathlib.Path(root).resolve()
+    _check_module(name, what, top)
+    mod = importlib.import_module(name)
+    _check_loaded(name, what, top)          # what the project's import-time code put in sys.modules
+    return mod
 
 
 def _check_module(name: str, what: str, top: pathlib.Path) -> None:
@@ -98,6 +103,31 @@ def _check_module(name: str, what: str, top: pathlib.Path) -> None:
     places = _places(spec)
     if not places or not all(inside(p, top) for p in places):
         raise refused
+    _check_loaded(name, what, top)
+
+
+def _check_loaded(name: str, what: str, top: pathlib.Path) -> None:
+    """Every dotted prefix of name that sys.modules holds was loaded from inside top: ConfinedFinder
+    never sees a module already there (imported before, or put there by the project's own code)."""
+    parts = name.split(".")
+    for n in range(1, len(parts) + 1):
+        prefix = ".".join(parts[:n])
+        mod = sys.modules.get(prefix)
+        if mod is not None and not _loaded_inside(mod, top):
+            raise LoadError(f"{what}: module {prefix} is not a file inside {top}, the --root `inv mcp` confines "
+                            f"imports to (it was loaded from outside it); not imported (start the server with "
+                            f"a wider --root, or run `inv check` yourself)")
+
+
+def _loaded_inside(mod: Any, top: pathlib.Path) -> bool:
+    """An imported module (sys.modules holds it, under whatever name) was loaded from inside top: its
+    file, or every directory of a namespace package, resolves there."""
+    f = getattr(mod, "__file__", None)
+    if isinstance(f, str):
+        return inside(f, top)
+    spec = getattr(mod, "__spec__", None)
+    places = _places(spec) if isinstance(spec, importlib.machinery.ModuleSpec) else []
+    return bool(places) and all(inside(p, top) for p in places)
 
 
 def _places(spec: importlib.machinery.ModuleSpec) -> list[str]:

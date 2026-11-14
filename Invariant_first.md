@@ -744,8 +744,8 @@ Each enforcer has an `on_violation` action, which applies when the rule's mode i
 | `escalate` | `inv.Escalation` | a person must decide; a review is opened | 202 |
 | `route` | `inv.Routed` | send the case to a review queue and stop | 202 |
 
-Every exception carries `.rule`, `.outcome`, `.attempts`, `.point` and `.bound` (the values `bad`
-read), and `Routed` and `Escalation` carry the `.review_id`. Reviews go to the configured review
+Every exception carries `.rule`, `.outcome`, `.attempts`, `.point` and `.bound` (the names `bad`
+read, never their values: those go to the review), and `Routed` and `Escalation` carry the `.review_id`. Reviews go to the configured review
 store (`inv.MemoryReviews` by default, or `inv.JsonlReviews` for a file that survives restarts). If
 no review can be opened, the call raises `inv.ReviewNotOpened` (HTTP 503), which carries the work so
 it is not lost.

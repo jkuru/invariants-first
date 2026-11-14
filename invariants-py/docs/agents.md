@@ -129,7 +129,14 @@ standard library and installed packages included: `py:os.environ`, `py:this`) is
 is imported, so its import-time code never runs and none of its objects reach a pin or an error.
 The attribute path after the module stays inside `--root` too: it goes only through objects
 defined there (`app.mod:os.environ._data` or `py:app.mod.sys.modules` is refused), and a contract
-ref never goes through a module object at all (name the module before the colon).
+ref never goes through a module object at all (name the module before the colon). Where it ends,
+after one hop or more, is the project's: a module, class or function defined inside `--root`, or
+another object that no module loaded from outside it holds (`from os import environ` in a project
+module does not make `py:app.mod.environ` a target; a dict or an app object the project's code
+builds is fine). A plain value (a number, a string) is not checked. Every dotted prefix of a module
+name that `sys.modules` already holds (which no finder sees again, such as an entry the project's
+own code planted, `sys.modules["app.leak"] = os`) must have been loaded from inside `--root`,
+checked before the import and again after it.
 That holds below the top-level package too: while `INV_CONFINE_ROOT` is set, a finder first on
 `sys.meta_path` checks every module the child imports before its code runs, and refuses one of the
 project's (reached through a directory inside `--root`, such as a symlink `app/leak ->

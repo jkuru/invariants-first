@@ -226,7 +226,8 @@ the Response's `status_code` (nor `body`, `headers`, `media_type`, `charset` or 
 
 The response body names the rule and the outcome, and never includes error text or values.
 `inv_fastapi.verify_routes(app, doc)` checks that each openapi-bound rule matches exactly one
-guarded route. The module re-exports `PROBLEM_JSON`, `StatusMap` and `problem` from `asgi`.
+guarded route, whose guard evaluates every decorator and middleware enforcer of the rule (a plain
+`@inv.guard` evaluates decorator enforcers only). The module re-exports `PROBLEM_JSON`, `StatusMap` and `problem` from `asgi`.
 
 | Name | Kind | Purpose |
 |---|---|---|
@@ -337,8 +338,9 @@ with buffered:                       # or app = FastAPI(lifespan=exporters.lifes
 
 A real model for a `model_call` body, with deterministic replay and recording; see
 [models.md](models.md). `AnthropicModel` needs the `anthropic` extra, imported on its first request;
-the rest needs nothing. One model_call invocation, with its format retries, is one conversation: a
-`feedback` text is sent as a follow-up user turn after the model's previous reply.
+the rest needs nothing. One model_call invocation, with its format retries, is one conversation (a
+model call nested in its body has its own): a `feedback` text is sent as a follow-up user turn after
+the model's previous reply.
 
 ```python
 from invariants.integrations.anthropic import AnthropicModel, ReplayModel

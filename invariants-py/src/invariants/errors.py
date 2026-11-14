@@ -1,6 +1,7 @@
 """Exceptions raised by the loader, verify, and the guards."""
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,15 +31,22 @@ class ParseError(Exception):
 
 
 class InvariantError(Exception):
-    """Base for guard outcomes that stop a call."""
+    """Base for guard outcomes that stop a call.
+
+    It never carries the values the rule read: .bound is the names they were bound to (sorted), and
+    .outcome is the outcome without them. The values go to the review a route or escalate opens (the
+    Handoff), never into an exception that a caller may log, serialize or send back.
+    """
 
     def __init__(self, msg: str, outcome: Outcome | None = None, attempts: list[dict[str, Any]] | None = None,
                  review_id: str | None = None, rule: str | None = None, point: str | None = None) -> None:
         super().__init__(msg)
+        self.bound: tuple[str, ...] = tuple(sorted(outcome.bound or ())) if outcome is not None else ()
+        if outcome is not None and outcome.bound is not None:
+            outcome = dataclasses.replace(outcome, bound=None)
         self.outcome, self.attempts, self.review_id = outcome, attempts or [], review_id
         self.rule = rule if rule is not None else (outcome.rule if outcome is not None else None)
         self.point = point
-        self.bound: dict[str, Any] = dict(outcome.bound or {}) if outcome is not None else {}
 
 
 class Rejected(InvariantError):

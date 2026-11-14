@@ -27,6 +27,7 @@ from ..errors import CoverageError, InvariantError
 from ..guard.decorators import _guard as _core_guard
 from ..loader import read_document
 from ..registry import Registry, current
+from ..registry.coverage import _unevaluated
 from ..model import Rule
 from ..providers import ProviderFailed
 from .asgi import PROBLEM_JSON, StatusMap, problem
@@ -173,7 +174,9 @@ def verify_routes(app: _fastapi.FastAPI, source: str | pathlib.Path | dict[str, 
                   reg: Registry | None = None) -> int:
     """Every rule bound to an openapi operation finds exactly one route, guarded for that rule.
 
-    When the rule names a target, the route's handler must be that target. Returns the number of
+    When the rule names a target, the route's handler must be that target. The handler's guard must
+    evaluate every decorator and middleware enforcer the rule has (a plain @inv.guard evaluates
+    decorator enforcers only; integrations.fastapi.guard both). Returns the number of
     bound rules; raises CoverageError listing every problem.
     """
     doc = source if isinstance(source, dict) else read_document(source)
@@ -196,6 +199,9 @@ def _verify_routes(app: _fastapi.FastAPI, contracts: dict[str, Any], rules: dict
             problems.append(f"{rule.id}: the handler of {op!r} is not wrapped by its guard")
         elif rule.target is not None and endpoint is not rule.target:
             problems.append(f"{rule.id}: the handler of {op!r} is not {rule.target_key}")
+        elif missing := _unevaluated(rule, getattr(endpoint, "__inv_points__", ("decorator",))):
+            problems.append(f"{rule.id}: the guard on the handler of {op!r} does not evaluate point "
+                            f"{', '.join(missing)} (use integrations.fastapi.guard, which evaluates both)")
         else:
             bound += 1
     if problems:
