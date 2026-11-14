@@ -421,6 +421,15 @@ def _init_doors(a: argparse.Namespace, path: pathlib.Path, project: pathlib.Path
         raise Usage(f"--graphify: {e}") from e
 
 
+def _has_path_law(path: pathlib.Path) -> bool:
+    """The rule file holds a rule `inv check` scans (as cmd_check decides: one with mediation)."""
+    try:
+        doc = read_document(path)
+    except Exception:
+        return True                                  # unreadable here: say nothing rather than guess
+    return any(isinstance(r, dict) and r.get("mediation") for r in doc.get("rules") or [])
+
+
 def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
     """`inv init`'s last step: `inv lock` on the rule file it wrote, and what to do next."""
     _out("running `inv lock` to pin them ...")
@@ -435,7 +444,19 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
         code = FAILED
     if code == OK:
         _out("next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit "
-             "(see docs/start.md)")
+             "(the invariants docs: start.md, \"Make the check unskippable\")")
+        given = {"roots": scan_settings(argparse.Namespace(root=a.root, exclude=a.exclude), path)["roots"]
+                 if a.root else None, "exclude": list(a.exclude) if a.exclude else None}
+        if a.root or a.exclude:      # what init scanned is not what `inv check` will, unless pyproject says so
+            settings = "; ".join(f"{k} = {json.dumps(v)}" for k, v in given.items() if v)
+            _out(f"note: these drafts were scanned with {' '.join(f'--root {r}' for r in a.root)}"
+                 f"{' ' if a.root and a.exclude else ''}{' '.join(f'--exclude {g}' for g in a.exclude)}, but "
+                 f"`inv check` reads its scan settings from [tool.invariants.scan] in pyproject.toml; add "
+                 f"{settings} there, or pass the same flags to every `inv check`")
+        if not _has_path_law(path):
+            _out("note: no path law (a rule with a sink and a door) was written, so `inv check` will skip its "
+                 "scan step and no back door is checked yet; see the commented-out door drafts in "
+                 f"{path.name}, or write one by hand (start.md, \"Path laws\")")
     else:
         _err(f"`inv lock` failed, so no lock was written; {path} is kept. Next: fix what it reports above "
              f"in {path} or in the code it names (a contract or rule `inv lock` cannot pin can be commented "

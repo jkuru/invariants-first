@@ -27,3 +27,8 @@ testpaths = ["tests"]
 inv_rules = "invariants.yaml"
 addopts = "-q -p no:cacheprovider"
 filterwarnings = ["ignore:Using .httpx. with .starlette.testclient.:Warning"]
+
+[tool.invariants.scan]
+# The clean scan reads the app only: bypass/ is a deliberate back door (tests/test_scan.py scans it on
+# purpose) and bench/ calls the store directly to time it.
+roots = ["src"]

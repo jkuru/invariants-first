@@ -170,7 +170,7 @@ wrote invariants.yaml
     found 1 back door(s) in support_agent/admin.py; frozen in allow, so check passes and a new one fails
 running `inv lock` to pin them ...
 wrote invariants.lock: 2 rule(s), 0 target(s), 0 provider(s), 4 contract(s), 4 schema(s)
-next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (the invariants docs: start.md, "Make the check unskippable")
 ```
 
 It found three kinds of law.

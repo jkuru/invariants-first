@@ -50,7 +50,8 @@ class Halted(InvariantError):
 
 
 class Escalation(InvariantError):
-    """on_violation: escalate (and abstain, always). Carries the attempt record."""
+    """on_violation: escalate, or an abstain at a model_call whose enforcer is in force (below enforce an
+    abstain is recorded and the call goes on with verdict abstain). Carries the attempt record."""
 
 
 class Routed(InvariantError):

@@ -53,7 +53,7 @@ wrote invariants.yaml
   found no door (no write is called from a service function (a *Service, *Manager or similar class, or a services module), from a function only route handlers call, or from a function 2 or more callers go through)
 running `inv lock` to pin them ...
 wrote invariants.lock: 0 rule(s), 0 target(s), 0 provider(s), 1 contract(s), 1 schema(s)
-next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (the invariants docs: start.md, "Make the check unskippable")
 ```
 
 The rule file it writes looks like this (the instructions above the suggested rules, and the
@@ -163,7 +163,7 @@ wrote invariants.yaml
     found 1 back door(s) in quota/worker.py; frozen in allow, so check passes and a new one fails
 running `inv lock` to pin them ...
 wrote invariants.lock: 3 rule(s), 0 target(s), 0 provider(s), 2 contract(s), 2 schema(s)
-next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (the invariants docs: start.md, "Make the check unskippable")
 ```
 
 Each rule is a few lines, plus the back doors it found:
@@ -402,7 +402,14 @@ invariants.lock  @your-org/payments-owners
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
   it sends the agent back with the failure, once per stop, so it can't loop.
 
-Both commands read Claude Code's hook JSON on stdin, and both block by exiting with code 2.
+Both commands read Claude Code's hook JSON on stdin, and both block by exiting with code 2. The JSON
+carries the tool and its input; to try a hook by hand:
+
+```bash
+echo '{"tool_name": "Edit", "tool_input": {"file_path": "invariants.lock"}, "cwd": "'"$PWD"'"}' | inv hook pretool
+echo '{"tool_name": "Bash", "tool_input": {"command": "python tools/repin.py"}, "cwd": "'"$PWD"'"}' | inv hook pretool
+echo $?     # 2: blocked, with the reason on stderr; 0: allowed
+```
 
 The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
 command can always be talked past (a name read from a file, an import the hook cannot follow: test

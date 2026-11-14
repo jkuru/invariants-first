@@ -109,6 +109,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 ### The lock
 
+- `a && true` and `a || false` (for a bool `a`) are the same condition as `a`: no weakening, and the
+  message no longer says "matches fewer cases".
+
 - `inv lock` writes `invariants.lock` (lock version 3), which pins what each rule's meaning depends
   on: the rule's semantics, its targets' signatures and resolved types (through aliases and into
   dataclass, TypedDict and pydantic fields), parameter constraints, providers, contracts (pydantic,
@@ -226,6 +229,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv status` reports each rule's standing with its reasons.
 
 ### CLI
+
+- `inv init` says when it wrote no path law (so `inv check` will skip its scan), and when its
+  `--root`/`--exclude` differ from the `[tool.invariants.scan]` settings `inv check` will read.
+- The pretool hook reads each command segment in every directory an earlier `cd` or `pushd` moves to
+  (`cd tools && python ../run.py`). `inv status` says a rule below `enforce` flags (logs) a bad call
+  rather than refusing it. The cel-expr cost message names the real limit (at most 9,999 iterations).
 
 - `inv init` drafts `invariants.yaml` from the laws the code already has (constrained pydantic
   models as contracts, service-to-repository door rules with today's back doors frozen in `allow`,

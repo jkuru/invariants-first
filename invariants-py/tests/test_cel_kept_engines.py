@@ -160,7 +160,7 @@ def test_cel_expr_cost_message_is_kept_whole():
         pytest.skip("needs cel-expr-python")
     ten = "[1,2,3,4,5,6,7,8,9,10]"
     src = f"{ten}.all(a, {ten}.all(b, {ten}.all(c, {ten}.all(d, {ten}.all(f, true)))))"
-    with pytest.raises(CelError, match=r"cost limit exceeded \(cel-expr: 10,000 comprehension iterations"):
+    with pytest.raises(CelError, match=r"cost limit exceeded \(cel-expr: at most 9,999 comprehension iterations"):
         ev("cel-expr", src)
 
 

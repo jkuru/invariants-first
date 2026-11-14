@@ -464,8 +464,8 @@ _BUDGET = re.compile(r"(?:[A-Z][A-Z_]*: )*" + re.escape(_BUDGET_TEXT))
 
 def _cost(msg: str) -> str:
     if _BUDGET.match(msg):                  # at the start: a key or value holding the text is not it
-        return (f"cost limit exceeded (cel-expr: {ITERATION_LIMIT:,} comprehension iterations per clause, "
-                f"nested comprehensions multiply)")
+        return (f"cost limit exceeded (cel-expr: at most {ITERATION_LIMIT - 1:,} comprehension iterations per "
+                f"clause, nested comprehensions multiply)")
     return msg
 
 

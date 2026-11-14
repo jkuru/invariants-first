@@ -46,7 +46,7 @@ ENGINE_FUNCTIONS = frozenset({
 # holds no request data.
 _STATUS = re.compile(r"(?:[A-Z][A-Z_]*: )*")
 _OWN = re.compile("|".join((                # the library's own texts, raised inside the engine
-    r"cost limit exceeded(?: \(cel-expr: [0-9,]+ comprehension iterations per clause, nested comprehensions "
+    r"cost limit exceeded(?: \(cel-expr: at most [0-9,]+ comprehension iterations per clause, nested comprehensions "
     r"multiply\))?",
     re.escape(NON_FINITE), re.escape(NON_FINITE_RESULT),
     r"(?:timestamp|duration)\(\): (?:not an RFC 3339 timestamp \(e\.g\. 2024-01-31T09:30:00Z\)|not a duration "

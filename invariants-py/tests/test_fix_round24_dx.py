@@ -327,7 +327,7 @@ def test_status_is_plain_and_keeps_its_json_fields(tmp_path):
     assert rows["REFUND-DOOR"]["guarded"] is None and rows["REFUND-DOOR"]["ablation"] == "not needed"
     text = run_inv("status", cwd=root).stdout
     assert "REFUND (detect: logs a bad call, does not block it)" in text
-    assert ("  checks:  py:bill24s.service.BillingService.refund refuses a call when: refund must be positive"
+    assert ("  checks:  py:bill24s.service.BillingService.refund flags (logs, does not refuse) a call when: refund must be positive"
             in text)
     assert "  checks:  every call to py:bill24s.repo.RefundRepo.save_refund goes through " in text
     assert "  guard:   yes" in text and "  ablation proved it: not run" in text

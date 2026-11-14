@@ -65,10 +65,10 @@ shipped 500 for o-1
 ```text
 $ inv status --import shipping
 SHIP-1 (detect: logs a bad call, does not block it)
-  checks:  py:shipping.ship refuses a call when: one shipment is at most 100 units
+  checks:  py:shipping.ship flags (logs, does not refuse) a call when: one shipment is at most 100 units
   guard:   yes
   ablation proved it: not run
-  next:    write a test that makes it refuse (expects inv.Rejected) and list it under tests: (then the rule blocks instead of logging)
+  next:    write a test that makes it refuse (expects inv.Rejected) and list it under tests: (falsified_by: in a long-form rule), then the rule blocks instead of logging
 verify: pass
 ```
 

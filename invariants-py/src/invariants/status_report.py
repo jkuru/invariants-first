@@ -75,11 +75,13 @@ def checks_text(rule: Rule) -> str:
     if not _door_only(rule):
         clauses = [m if m != rule.id else str(c) for c, m in zip(_whens(rule), (m for _, m in rule.clauses))]
         where = rule.target_key or "its guard"
+        blocks = rule.status == "enforce"             # below enforce a rule logs what it would refuse
         if rule.policy is not None:
-            parts.append(f"the model reply of {where} parses into {rule.policy.get('schema')} and is refused when: "
-                         + "; ".join(clauses))
+            parts.append(f"the model reply of {where} parses into {rule.policy.get('schema')} and is "
+                         f"{'refused' if blocks else 'flagged (logged, not refused)'} when: " + "; ".join(clauses))
         else:
-            parts.append(f"{where} refuses a call when: " + "; ".join(clauses))
+            parts.append(f"{where} {'refuses' if blocks else 'flags (logs, does not refuse)'} a call when: "
+                         + "; ".join(clauses))
     if med.get("sink"):
         door = med.get("door") or rule.target_key
         parts.append(f"every call to {_names(med['sink'])} goes through {_names(door)}")
@@ -125,7 +127,7 @@ def next_steps(rule: Rule, report: Report, row: dict[str, Any]) -> list[str]:
     if not _door_only(rule):
         if not rule.raw.get("falsified_by"):
             out.append("write a test that makes it refuse (expects inv.Rejected) and list it under tests: "
-                       "(then the rule blocks instead of logging)")
+                       "(falsified_by: in a long-form rule), then the rule blocks instead of logging")
         elif row["ablation"] == "not run":
             out.append(f"prove its tests fail without it: {ABLATE_CMD}")
         elif row["ablation"] == "no":
