@@ -4,20 +4,19 @@ schema table once, and any other file by its digest. Imports the modules contrac
 from __future__ import annotations
 
 import dataclasses
-import enum
 import inspect
 import json
 import pathlib
 from typing import Any
 
+from .. import _typeinfo as ti
 from ..confinement import confined
 from ..errors import LoadError
 from ..resolve import resolve_ref
 from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha
 from .pin_jsonschema import json_schema
 from .pin_signatures import _signature_pin
-from .pin_types import (_DATA_KEYS, SCHEMA_PROSE, Schemas, _class_ref, _is_schema_class, _is_typeddict,
-                        _type_schema, resolved_schema, strip_prose)
+from .pin_types import _DATA_KEYS, SCHEMA_PROSE, Schemas, _class_ref, _type_schema, resolved_schema, strip_prose
 
 
 def _python_ref(name: str, ref: str) -> Any:
@@ -191,12 +190,12 @@ def _python_contract_pin(name: str, ref: str, entry: dict[str, Any], pins: Schem
     obj = _python_ref(name, ref)
     if inspect.ismodule(obj):
         return entry                                # its targets and providers carry the pins
-    if (isinstance(obj, type) and dataclasses.is_dataclass(obj)) or _is_typeddict(obj):
+    if (isinstance(obj, type) and dataclasses.is_dataclass(obj)) or ti.is_typeddict(obj):
         entry["schema"] = pins.add({"name": _class_ref(obj), "jsonschema": json_schema(obj)})
-    elif _is_schema_class(obj) or isinstance(obj, dict) or getattr(obj, "__inv_pydantic__", None) is not None:
+    elif ti.is_schema_class(obj) or isinstance(obj, dict) or getattr(obj, "__inv_pydantic__", None) is not None:
         label = _class_ref(obj) if isinstance(obj, type) else ref
         entry["schema"] = pins.add({"name": label, **resolved_schema(obj)})
-    elif isinstance(obj, type) and issubclass(obj, enum.Enum):
+    elif ti.is_enum(obj):
         entry["schema"] = pins.add({"name": _class_ref(obj), **_plain({"type": _type_schema(obj, {}, set())})})
     elif callable(obj):
         entry.update(_signature_pin(obj, f"contract {name}", pins))

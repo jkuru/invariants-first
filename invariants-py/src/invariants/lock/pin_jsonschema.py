@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import collections.abc
 import dataclasses
-import enum
 import typing
 from typing import Any
 
+from .. import _typeinfo as ti
 from .contracts import MAX_DEPTH, _plain
-from .pin_types import _class_shape, _is_alias, _is_typeddict, _unalias, strip_prose
+from .pin_types import strip_prose
 
 
 def json_schema(cls: type) -> Any:
@@ -78,20 +78,21 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     d = depth + 1
     if t is Any:
         return {}
-    u = _unalias(t)
-    if u is not t:                                             # PEP 695: type X = ..., and X[int]
+    u = ti.unalias(t)
+    if u is not t:                                             # PEP 695: type X = ..., and X[int]; NewType
         return _json_type(u, defs, d)
-    if _is_alias(typing.get_origin(t)):                        # X[...] its parameters do not take
-        return {**_json_type(typing.get_origin(t).__value__, defs, d), "x-python-type": repr(t)}
+    value = ti.alias_value(t)
+    if value is not None:                                      # X[...] its parameters do not take
+        return {**_json_type(value, defs, d), "x-python-type": repr(t)}
     if t in _JSON_TYPES:
         return {"type": _JSON_TYPES[t]}
     origin, args = typing.get_origin(t), typing.get_args(t)
-    if origin is typing.Annotated:
+    if ti.is_annotated(t):
         return {**_json_type(args[0], defs, d), **_annotated_bounds(args[0], args[1:])}
-    if origin is typing.Literal:
+    if ti.is_literal(t):
         vals = [_plain(a) for a in args]
         return {"const": vals[0]} if len(vals) == 1 else {"enum": vals}
-    if origin is typing.Union or type(t).__name__ == "UnionType":
+    if ti.is_union(t):
         return {"anyOf": [_json_type(a, defs, d) for a in args]}
     if origin in _ARRAYS or t in _ARRAYS:
         items = [a for a in args if a is not Ellipsis]
@@ -99,17 +100,15 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
                                     {"prefixItems": [_json_type(a, defs, d) for a in items]} if items else {})}
     if origin in _MAPS or t in _MAPS:
         return {"type": "object", **({"additionalProperties": _json_type(args[1], defs, d)} if len(args) == 2 else {})}
-    if isinstance(t, type) and issubclass(t, enum.Enum):
+    if ti.is_enum(t):
         return {"enum": [_plain(m.value) for m in t]}
-    if isinstance(t, type) and (dataclasses.is_dataclass(t) or _is_typeddict(t)):
+    if isinstance(t, type) and (dataclasses.is_dataclass(t) or ti.is_typeddict(t)):
         return _json_object(t, defs, d)
     return {"x-python-type": getattr(t, "__qualname__", repr(t))}
 
 
 def _annotated_bounds(base: Any, meta: tuple[Any, ...]) -> dict[str, Any]:
-    base = _unalias(base)                                      # an alias of a list is an array
-    while typing.get_origin(base) is typing.Annotated:
-        base = _unalias(typing.get_args(base)[0])
+    base = ti.strip(base)                                      # an alias of a list is an array
     array = typing.get_origin(base) in _ARRAYS or base in _ARRAYS
     out: dict[str, Any] = {}
     # pydantic's Field(le=...) keeps its bounds as annotated_types objects in .metadata, not as
@@ -137,7 +136,7 @@ def _json_object(cls: type, defs: dict[str, Any], depth: int) -> dict[str, Any]:
     if isinstance(defs, _Defs):
         defs.owners[name] = cls
     defs[name] = {}                                            # placeholder: cuts recursion
-    shape = _class_shape(cls)
+    shape = ti.class_shape(cls)
     defs[name] = {"type": "object", "properties": {n: _json_type(t, defs, depth) for n, t in shape.fields.items()},
                   "required": shape.required}
     return ref

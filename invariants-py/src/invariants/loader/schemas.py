@@ -6,11 +6,10 @@ import dataclasses
 import enum
 import functools
 import inspect
-import sys
-import types
 import typing
 from typing import Any
 
+from .. import _typeinfo as ti
 from ..errors import LoadError
 from ..resolve import resolve
 
@@ -31,10 +30,12 @@ def _parse_type(s: str) -> tuple[type, bool]:
     return t, nullable
 
 
-def _type_set(ann: Any) -> frozenset[Any]:
-    if typing.get_origin(ann) in (typing.Union, types.UnionType):
-        return frozenset(typing.get_args(ann))
-    return frozenset({ann})
+def _type_set(ann: Any, _depth: int = 0) -> frozenset[Any]:
+    """The types an annotation stands for, through aliases, NewTypes and Annotated: Optional[UserId]
+    (UserId = NewType("UserId", int)) is {int, NoneType}."""
+    ann = ti.strip(ann)
+    members = ti.union_args(ann) if _depth < ti.MAX_UNWRAP else None      # `type U = U | int`: bounded
+    return frozenset({ann}) if members is None else frozenset().union(*(_type_set(a, _depth + 1) for a in members))
 
 
 def _params(obj: Any) -> set[str]:
@@ -47,8 +48,7 @@ def _params(obj: Any) -> set[str]:
 
 def closed_schema(schema: Any) -> Any:
     """A pydantic model becomes its closed dataclass (integrations.pydantic.closed); others are unchanged."""
-    mod = sys.modules.get("pydantic")
-    if mod is not None and isinstance(schema, type) and issubclass(schema, mod.BaseModel):
+    if ti.is_pydantic_model(schema):
         from ..integrations.pydantic import closed
         return closed(schema)
     return schema

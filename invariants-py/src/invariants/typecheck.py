@@ -27,13 +27,12 @@ from __future__ import annotations
 import collections.abc
 import dataclasses
 import datetime
-import enum
 import inspect
-import types
 import typing
 import uuid
 from typing import Any, Iterable
 
+from . import _typeinfo as ti
 from .cel import subset, values
 from .cel.errors import CelError
 
@@ -139,11 +138,11 @@ def _field_names(py: Any) -> frozenset[str] | None:
     names: set[str] = set()
     if dataclasses.is_dataclass(py):
         names |= {f.name for f in dataclasses.fields(py)}
-    elif isinstance(getattr(py, "model_fields", None), dict):
+    elif ti.is_pydantic_model(py):
         if (getattr(py, "model_config", None) or {}).get("extra") == "allow":
             return None                          # extra fields are readable attributes
         names |= set(py.model_fields)
-    elif typing.is_typeddict(py):
+    elif ti.is_typeddict(py):
         return frozenset(_hints(py) or getattr(py, "__annotations__", {}))     # its keys, never dict's methods
     else:
         return None
@@ -167,21 +166,34 @@ def merge(a: T, b: T) -> T:
 
 
 def from_py(ann: Any, _depth: int = 0) -> T:
-    """The static type of a Python annotation (dyn when it cannot tell)."""
-    if _depth > 8 or ann is Any or ann is inspect.Parameter.empty or isinstance(ann, (str, typing.TypeVar)):
+    """The static type of a Python annotation (dyn when it cannot tell), read through PEP 695 aliases,
+    NewTypes, Annotated and a TypedDict key's Required / NotRequired / ReadOnly, as the lock pins it."""
+    if _depth > 8:
+        return DYN
+    u = ti.unalias(ann)                          # type X = ..., X[int], NewType("UserId", int)
+    if u is not ann:
+        return from_py(u, _depth + 1)
+    value = ti.alias_value(ann)                  # X[...] its parameters do not take: its value
+    if value is not None:
+        return from_py(value, _depth + 1)
+    inner, quals = ti.key_qualifiers(ann)
+    if quals:
+        return from_py(inner, _depth + 1)
+    if ann is Any or ann is inspect.Parameter.empty or isinstance(ann, (str, typing.TypeVar)):
         return DYN
     if ann is None or ann is type(None):
         return T({"null"})
     origin = typing.get_origin(ann)
-    if origin is typing.Annotated:
+    if ti.is_annotated(ann):
         return from_py(typing.get_args(ann)[0], _depth + 1)
-    if origin in (typing.Union, types.UnionType):
+    members = ti.union_args(ann)
+    if members is not None:
         out: T | None = None
-        for a in typing.get_args(ann):
+        for a in members:
             t = from_py(a, _depth + 1)
             out = t if out is None else merge(out, t)
         return out or DYN
-    if origin is typing.Literal:
+    if ti.is_literal(ann):
         return T({_kind_of(v) for v in typing.get_args(ann)}) if all(_kind_of(v) for v in typing.get_args(ann)) \
             else DYN
     base = origin or ann
@@ -201,7 +213,7 @@ def from_py(ann: Any, _depth: int = 0) -> T:
     for refused_type, why in values.REFUSED:
         if issubclass(base, refused_type):
             return T(None, refused=why)
-    if issubclass(base, enum.Enum):
+    if ti.is_enum(base):
         kinds = {_kind_of(m.value) for m in base}
         return DYN if "" in kinds or not kinds else T(kinds)
     if base is bool:
@@ -220,7 +232,7 @@ def from_py(ann: Any, _depth: int = 0) -> T:
         return from_py(getattr(base, "model_fields")["root"].annotation, _depth + 1)   # read as its .root (values.py)
     if _listlike_type(base):
         return T(None, refused=values.LISTLIKE.format(base.__name__))
-    if typing.is_typeddict(base):
+    if ti.is_typeddict(base):
         return T({"map"}, py=base)          # a record of its keys (field() reads its annotations)
     if issubclass(base, collections.abc.Mapping):
         return T({"map"}, elem=from_py(args[1], _depth + 1) if len(args) == 2 else DYN)
@@ -232,7 +244,7 @@ def from_py(ann: Any, _depth: int = 0) -> T:
                 elem = t if elem is None else merge(elem, t)
             return T({"list"}, elem=elem or DYN)
         return T({"list"}, elem=from_py(args[0], _depth + 1) if args else DYN)
-    if dataclasses.is_dataclass(base) or isinstance(getattr(base, "model_fields", None), dict):
+    if dataclasses.is_dataclass(base) or ti.is_pydantic_model(base):
         return T({"map"}, py=base)
     return T(None, py=base)        # some other object: its annotated fields are known, its kind is not
 
@@ -243,8 +255,7 @@ def _listlike_type(base: type) -> bool:
     so a clause reading one is refused at load. An abstract annotation (Sequence[int], Iterable[int])
     is not: the value passed may be a list."""
     if issubclass(base, (list, tuple, str, bytes, bytearray, collections.abc.Mapping)) \
-            or base.__module__ in ("collections.abc", "typing") or typing.is_typeddict(base) \
-            or dataclasses.is_dataclass(base) or isinstance(getattr(base, "model_fields", None), dict):
+            or base.__module__ in ("collections.abc", "typing") or ti.is_schema_class(base):
         return False
     return hasattr(base, "__iter__") or hasattr(base, "__len__") or hasattr(base, "__getitem__")
 

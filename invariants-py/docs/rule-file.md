@@ -87,7 +87,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 
 | Field | Meaning |
 |---|---|
-| `type` | `int`, `str`, `bool`, `float`, `list`, `dict` or `py:mod.Class`, optionally `\| null`. The function's return annotation must match. |
+| `type` | `int`, `str`, `bool`, `float`, `list`, `dict` or `py:mod.Class`, optionally `\| null`. The function's return annotation must match, read through aliases (`type UserId = int`), `NewType` and `Annotated`: `-> Optional[UserId]` matches `int \| null`. |
 | `from` | `py:` path of a function marked `@inv.provider("name")` (sync or `async def`). Its parameters must be exactly the keys of `args`. |
 | `args` | Parameter -> binding path (`args.x`, `self`, `reply.y`, or a bound name). |
 | `concurrent` | Optional, `true` or `false`. `true` lets this async provider be awaited together with other async providers that opted in (`asyncio.gather`). By default async providers run one at a time, in the order they are declared here, which is what providers sharing one `AsyncSession` or connection need. When the record says nothing, `@inv.provider("name", concurrent=True)` on the function opts in. A change is recorded by `inv lock`, never as a weakening. |

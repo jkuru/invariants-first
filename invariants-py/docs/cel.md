@@ -309,7 +309,11 @@ It is conservative. Unannotated names, `Any`, plain `dict`, `self` and `old_self
 other classes are not checked. A property or class attribute counts as a field (pydantic's
 `BaseModel` API does not). int, uint and double compare with each other but do not mix in
 arithmetic ([Numbers](#numbers)). `null` and dyn compare with anything. Timestamps (`datetime`) and
-durations (`timedelta`) are families of their own, and `UUID` is a string.
+durations (`timedelta`) are families of their own, and `UUID` is a string. Annotations are read
+through PEP 695 aliases (`type Cents = int`, `Page[int]`), `NewType`, `Annotated` and a TypedDict
+key's `Required`/`NotRequired`/`ReadOnly`, as the lock pins them: `args.amount == "x"` with
+`amount: Cents` is refused like it is with `amount: int`, and a `typing_extensions.TypedDict` is a
+closed record like a `typing.TypedDict`.
 
 ## Known engine differences
 

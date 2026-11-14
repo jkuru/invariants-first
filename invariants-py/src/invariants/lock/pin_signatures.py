@@ -7,10 +7,11 @@ import inspect
 import typing
 from typing import Any
 
+from .. import _typeinfo as ti
 from ..errors import LoadError
 from .contracts import MAX_DEPTH, _plain
 from .pin_jsonschema import _BOUND_ATTRS, _LEN_ATTRS, _Defs, _json_type
-from .pin_types import Schemas, _is_alias, _type_schema, _unalias, strip_prose
+from .pin_types import Schemas, _type_schema, strip_prose
 
 
 def _callable_hints(obj: Any) -> tuple[Any, dict[str, Any] | None]:
@@ -82,14 +83,14 @@ def _has_constraints(t: Any, depth: int = 0) -> bool:
     """t is, or holds (in a union, a container, an alias), an Annotated type with a constraint."""
     if depth > MAX_DEPTH:
         return False
-    u = _unalias(t)
+    u = ti.unalias(t)
     if u is not t:
         return _has_constraints(u, depth + 1)
-    origin = typing.get_origin(t)
-    if _is_alias(origin) and _has_constraints(origin.__value__, depth + 1):
+    value = ti.alias_value(t)
+    if value is not None and _has_constraints(value, depth + 1):
         return True                                            # X[...] its parameters do not take
     args = typing.get_args(t)
-    if typing.get_origin(t) is typing.Annotated:
+    if ti.is_annotated(t):
         return any(_constrains(m) for m in args[1:]) or _has_constraints(args[0], depth + 1)
     return any(_has_constraints(a, depth + 1) for a in args if not isinstance(a, (str, int, float, bool)))
 

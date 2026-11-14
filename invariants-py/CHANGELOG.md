@@ -31,6 +31,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `inv validate` checks the file against the bundled JSON Schema (`inv.schema_path()`) and runs every
   load-time check: unknown fields, enum values, root paths, bindings, providers, the functions each
   CEL backend has, and a static type check of every clause. Every defect is a `LoadError`.
+- The type check, a provider's declared type and the lock's pins read an annotation the same way
+  (one internal reader): through PEP 695 aliases, `NewType`, `Annotated` and TypedDict key
+  qualifiers. The type check used to read an alias or a `NewType` (and a list or map of one) as
+  dyn, and a `typing_extensions.TypedDict` as an open map, so a clause such as `args.amount == "x"`
+  with `amount: Cents` (`type Cents = int`) passed the load; it is now refused as with `int`. A
+  provider returning `UserId` (`NewType("UserId", int)`), an alias of `int` or `Annotated[int, ...]`
+  now matches `type: int` instead of being refused.
 - Load errors say what to do: a near miss is named (`unknown field(s) ['tset'] (did you mean
   'tests'?)`, `billing has no 'servce'; did you mean 'service'?`, `args.amout ... (did you mean
   args.amount? its parameters: ...)`, `amount is a parameter of py:...: write args.amount`, a
