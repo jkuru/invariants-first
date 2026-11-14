@@ -12,7 +12,6 @@ a rule.
 - [How each field is judged](#how-each-field-is-judged)
 - [How `bad` is compared](#how-bad-is-compared)
 - [Lock versions](#lock-versions)
-- [Upgrading from a release with rules below the API](#upgrading-from-a-release-with-rules-below-the-api)
 - [Where the CLI imports from](#where-the-cli-imports-from)
 - [Limitations](#limitations)
 
@@ -178,9 +177,7 @@ These changes are marked **WEAKENED**:
   only);
 - a removed contract: a rule may name it, and a contract no rule names (the pydantic models
   `inv init` pins) is itself the pin of its constraints;
-- an added scan exclude, an added always-skipped directory, or any added or removed scan root;
-- a pin for a feature this release removed (see
-  [Upgrading](#upgrading-from-a-release-with-rules-below-the-api)).
+- an added scan exclude, an added always-skipped directory, or any added or removed scan root.
 
 **Constraints the code already has.** A `pydantic` contract (or a pydantic model in a target's
 signature) is pinned as its JSON Schema, so its constraints are pinned too; so is a dataclass or
@@ -332,16 +329,6 @@ This invariants reads and writes lock version 3 only. `inv lock` and `inv lock -
 lock of an older version (delete it and re-run `inv lock`) and of a newer one (upgrade invariants).
 A malformed lock is refused too: a `lock_version` that is not an integer (`true` included), or a
 section or entry of the wrong shape, is a `LockError` that names the file and the place.
-
-## Upgrading from a release with rules below the API
-
-This release removed the features that reached below the API: provider `consistency`, target
-`transaction`, `effects: transactional`, `mediation.tables` (and the `tables:` short form), storage
-enforcers and `{type: sql}` contracts. First remove them from the rule file: each one is a load
-error that says what to do. Then run `inv lock`. A lock taken before this release shows each
-removed pin once as a **WEAKENED** change, with the note "removed in this version: it reached
-below the API (see the CHANGELOG); accept it once with `inv lock --accept-weakening`". Review the
-list, and have a person run `inv lock --accept-weakening` once.
 
 ## Where the CLI imports from
 

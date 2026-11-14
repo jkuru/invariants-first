@@ -427,11 +427,6 @@ Start with the [README quickstart](../README.md#quickstart) and [concepts](conce
 form and the long form pin to the same lock, so switching a rule from one to the other isn't a
 change.
 
-Earlier versions also had rules below the API (pinned `.sql` constraints, `tables:`, storage
-enforcers, `transactional` effects, provider consistency levels). They were removed. A rule file
-that still uses one fails to load with a message that says what to do, and an old lock shows each
-removed pin once as a weakening (see [lockfile.md](lockfile.md#upgrading-from-a-release-with-rules-below-the-api)).
-
 ## Limits
 
 - **Sinks are found by name and by the writes in their bodies.** A repository whose class or module

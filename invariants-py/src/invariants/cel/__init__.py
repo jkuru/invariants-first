@@ -6,7 +6,7 @@ CelSyntaxError at compile time and CelError at evaluation time.
 
 Built-in backends: subset (stdlib, the default) and cel-expr (cel-expr-python).
 INV_CEL_BACKEND=subset|cel-expr|auto picks one; auto takes cel-expr if it is installed, else
-subset. The celpy backend (cel-python) was removed; naming it is a ValueError.
+subset.
 """
 from __future__ import annotations
 
@@ -82,8 +82,6 @@ if hasattr(os, "register_at_fork"):
 # The engine module each built-in backend needs; a backend whose module is missing is unavailable.
 _REQUIRES = {"cel-expr": "cel_expr_python"}
 AUTO_ORDER = ("cel-expr", "subset")
-# Backends that no longer exist: naming one is an error that says what to use instead.
-_REMOVED = frozenset({"celpy", "cel-python"})
 
 
 def _importable(name: str) -> bool:
@@ -98,11 +96,8 @@ def _importable(name: str) -> bool:
 
 def resolve_name(name: str | None = None) -> str:
     """The backend name to use: name, else $INV_CEL_BACKEND, else 'subset'; 'auto' picks the
-    first importable of cel-expr, subset. A removed backend (celpy) is a ValueError."""
+    first importable of cel-expr, subset."""
     key = name or os.environ.get(ENV_VAR) or DEFAULT
-    if key in _REMOVED and key not in _FACTORIES:
-        raise ValueError(f"the {key!r} CEL backend (cel-python) was removed; use 'subset' or 'cel-expr' "
-                         f"(set {ENV_VAR} or backend= to one of them)")
     if key == "auto":
         return next(n for n in AUTO_ORDER if n in _FACTORIES and _importable(n))
     return key

@@ -291,7 +291,6 @@ def test_missing_sink_and_door(tmp_path):
     ({"sink": []}, "mediation.sink"),
     ({"sink": "app.store.write"}, "py:"),
     ({"sink": "py:a.b", "door": [1]}, "mediation.door"),
-    ({"sink": "py:a.b", "tables": ["pools"]}, "tables was removed"),
     ({"door": "py:a.b"}, "need mediation.sink"),
 ])
 def test_mediation_config(med, msg):

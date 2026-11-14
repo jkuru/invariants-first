@@ -15,12 +15,9 @@ def _str_list(v: Any, where: str) -> list[str]:
 
 
 def _not_scanned(rid: str, raw: dict[str, Any], med: Any) -> str | None:
-    """Why the rule is not scanned (retired, ablated, no sink), or None; raises on removed or malformed fields."""
+    """Why the rule is not scanned (retired, ablated, no sink), or None; raises on malformed fields."""
     if not isinstance(med, dict):
         raise ScanConfigError(f"{rid}: mediation must be a mapping")
-    if "tables" in med:
-        raise ScanConfigError(f"{rid}: mediation.tables was removed (raw SQL is below the API): a door rule "
-                              f"checks which API calls the repository; delete it")
     if raw.get("status") == "retired":
         return "retired"
     # rules turned off for an ablation run: INV_ABLATE (when armed) and in-process ablated_everywhere

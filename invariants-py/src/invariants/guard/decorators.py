@@ -147,7 +147,7 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
     The body calls the model and returns its raw reply; annotate it with what it really returns
     (`-> str`): with returns=, the decorated function returns that inv.Checked subclass, and type
     checkers see it so. Without returns=, the body's return annotation must be the Checked
-    subclass (the 0.x form; the body then needs a cast or a `type: ignore` under mypy).
+    subclass (the body then needs a cast or a `type: ignore` under mypy).
 
     Once retries are spent, the model_call enforcer's on_violation decides. schema may be a
     dataclass, a {field: type} map or a pydantic model with extra='forbid'. On an async def,

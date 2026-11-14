@@ -56,16 +56,6 @@ def test_cel_missing_engine_is_unavailable(monkeypatch):
     assert e is not None and "not installed" in str(e)
 
 
-@pytest.mark.parametrize("name", ["celpy", "cel-python"])
-def test_cel_celpy_backend_was_removed(monkeypatch, name):
-    for how in ("arg", "env"):
-        if how == "env":
-            monkeypatch.setenv(cel.ENV_VAR, name)
-        e = raises(ValueError, cel.get_backend, name if how == "arg" else None)
-        assert e is not None and "removed" in str(e) and "'subset'" in str(e) and "'cel-expr'" in str(e)
-    assert name not in cel.available_backends()
-
-
 def test_cel_register_backend_drops_engine_requirement(monkeypatch):
     monkeypatch.setitem(cel._REQUIRES, "fake", "no_such_module_xyz")
     cel.register_backend("fake", subset.SubsetBackend)

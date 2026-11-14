@@ -24,9 +24,7 @@ two engines, how Python values reach a rule, and where the engines still differ.
 | `cel-expr` | cel-expr-python | The CEL C++ runtime. Needs the `cel` extra (it brings `protobuf` too). |
 
 Pick a backend with `INV_CEL_BACKEND=subset|cel-expr|auto`, or with
-`inv.load(..., backend=...)`. `auto` picks cel-expr if it is installed, else subset. The `celpy`
-backend (cel-python) was removed: naming it is a `ValueError` that says to use `subset` or
-`cel-expr`.
+`inv.load(..., backend=...)`. `auto` picks cel-expr if it is installed, else subset.
 
 Every backend uses the same front end, so a rule parses the same way everywhere. Rule text must
 stay within that grammar: `1e3`, `1u` and `b"..."` are parse errors. The loader checks every

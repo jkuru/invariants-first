@@ -1,9 +1,7 @@
 # Rule file reference
 
 A rule file is JSON or YAML. `inv validate` checks it against the bundled JSON Schema
-(`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere. A field that an earlier release had and this one removed
-(`consistency`, `transaction`, `tables`, `effects: transactional`, `point: storage`, a `{type: sql}`
-contract) is a load error that says what to do instead.
+(`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere.
 How the fields fit together is in [Invariant-first](design-guide.md).
 
 ## The short form

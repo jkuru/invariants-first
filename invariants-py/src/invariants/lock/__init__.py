@@ -51,7 +51,7 @@ from .cel_sites import new_error_sites
 from .contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
                         ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LOCK_NAME,
                         LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
-                        PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, REMOVED_NOTE, SCHEMA_CONTRACTS, STATUS_RANK,
+                        PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, STATUS_RANK,
                         TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
 from .pin_contracts import contract_hash
 from .pin_jsonschema import json_schema, stdlib_json_schema

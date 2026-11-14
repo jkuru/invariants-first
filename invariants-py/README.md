@@ -348,9 +348,8 @@ Both exit 1, so CI goes red. More patterns are in the [cookbook](docs/cookbook.m
   two concurrent callers can both pass, and what the store does about that is its own business.
 - **Standing.** Computed, not claimed: `held` only when the rule is enforced, its chokepoint is
   named, no residual path is listed, and `inv verify` and `inv scan` pass.
-- **Nothing below the API.** Storage enforcers, transactional targets, provider consistency levels,
-  `tables:` and `.sql` contracts were removed in this release; an old rule file that uses one fails
-  to load with a message saying what to do ([CHANGELOG](CHANGELOG.md)).
+- **Nothing below the API.** Rules name APIs only. What happens below the lowest API (SQL,
+  triggers, transactions, isolation levels) is the implementation's business.
 
 All of it, including `old_self` transition rules, model calls and edges, is explained in
 [docs/concepts.md](docs/concepts.md).

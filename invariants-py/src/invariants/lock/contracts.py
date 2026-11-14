@@ -102,8 +102,6 @@ RANKS: dict[str, dict[str, int]] = {
     "enforcer.on_error": ERROR_RANK, "enforcer.timing": TIMING_RANK,
     "target.effects": EFFECTS_RANK, "rule.compensable": COMPENSABLE_RANK,
 }
-REMOVED_NOTE = ("removed in this version: it reached below the API (see the CHANGELOG); accept it once with "
-                "`inv lock --accept-weakening`")
 NOTES = {
     "rule.bind": "a binding changes what bad reads",
     "rule.subject": "the rule now checks a different contract, operation or target",
@@ -123,9 +121,6 @@ NOTES = {
     "modelPolicy.abstain": "what counts as an abstention changed",
     "rule.compares_to": "the reply is no longer compared with held data",
     "contract.type": "the contract the rule names is read differently",
-    # below-the-API fields this version removed: a lock taken before shows them as gone, once
-    "rule.mediation.tables": REMOVED_NOTE, "target.transaction": REMOVED_NOTE, "provider.consistency": REMOVED_NOTE,
-    "contract.constraints": REMOVED_NOTE,
     "contract.ref": "the contract the rule names points elsewhere",
     "contract.app": "the OpenAPI document is read from a different app",
 }

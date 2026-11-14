@@ -318,17 +318,11 @@ def parse(raw: Any, schema: Any, *, max_size: int | None = None) -> Any:
 
 
 # --- what a rule reads, and the edge's re-check --------------------------------------------------
-INSTANCE_ATTR = "_inv_model"        # (0.x) on a closed pydantic reply: the validated model instance
-
-
 def rule_view(reply: Any) -> Any:
     """What a rule reads as `reply`: the parsed reply itself (a dict, a dataclass instance, or the
     validated pydantic model instance, whose datetime, timedelta, UUID, Enum and nested fields are
     mapped to CEL by cel/values.py exactly as arguments are)."""
-    try:
-        return object.__getattribute__(reply, INSTANCE_ATTR)
-    except Exception:
-        return reply
+    return reply
 
 
 def _field_of(reply: Any, name: str) -> Any:

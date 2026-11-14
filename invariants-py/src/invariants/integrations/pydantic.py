@@ -324,11 +324,6 @@ def closed(model: type[_pd.BaseModel]) -> type:
     return cls
 
 
-def _rebuild(model: type[_pd.BaseModel], data: dict[str, Any]) -> Any:
-    """Unpickle a 0.x closed-schema reply: validated again into a model instance."""
-    return validate(model, data)
-
-
 def schema_for(schema: Any) -> Any:
     """closed(schema) for a pydantic model; any other schema unchanged."""
     return closed(schema) if is_model(schema) else schema

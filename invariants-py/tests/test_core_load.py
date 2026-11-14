@@ -100,22 +100,6 @@ def test_load_rejects_missing_artifact():
     assert e is not None and "missing" in str(e)
 
 
-@pytest.mark.parametrize("mutate,needle", [
-    (lambda d: d["targets"]["py:pool.PoolService.resize_door"].update(effects="transactional"),
-     "effects: transactional was removed"),
-    (lambda d: d["targets"]["py:jobs.split_work"].update(transaction="py:pool.PoolService"),
-     "transaction: transactional targets were removed"),
-    (lambda d: d["providers"]["pool_leased"].update(consistency="same_txn"), "consistency levels were removed"),
-    (lambda d: rule(d, "R-20")["enforcers"].append({"point": "storage", "timing": "pre_effect", "mode": "enforce"}),
-     "storage enforcers were removed"),
-    (lambda d: rule(d, "R-21")["mediation"].update(sink="py:pool.set_size", tables=["pools"]),
-     "tables (raw SQL write checks) were removed"),
-])
-def test_removed_below_the_api_fields_say_what_to_do(mutate, needle):
-    e = load_error(mutate)
-    assert e is not None and needle in str(e), str(e)
-
-
 def test_verify_fails_for_unguarded_target(reg):
     bad = load_variant(lambda d: d["rules"].append(
         {"id": "R-23x", "status": "detect", "statement": "set_size only via the door",

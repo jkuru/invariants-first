@@ -1,4 +1,4 @@
-"""Shape checks on raw records: known fields, removed fields and values, enum values, root paths."""
+"""Shape checks on raw records: known fields, enum values, root paths."""
 from __future__ import annotations
 
 from typing import Any
@@ -7,33 +7,10 @@ from ..errors import LoadError
 from ..model import ENUMS, MEDIATION_FIELDS, PATH_ROOTS
 from ..registry import Registry
 
-# Below-the-API fields that 0.x accepted and this version removed, with what to do instead.
-REMOVED = {
-    "consistency": "provider consistency levels were removed: a provider is a plain read at the enforcer's "
-                   "timing; delete the field",
-    "transaction": "transactional targets were removed: rules live on API boundaries; check the service "
-                   "method's arguments (pre_effect) and delete the field",
-    "tables": "tables (raw SQL write checks) were removed: a door rule checks which API calls the "
-              "repository; delete the field",
-}
-REMOVED_VALUES = {
-    ("effects", "transactional"): "effects: transactional was removed (rules stay on the API boundary); "
-                                  "use effects: external, or none for a pure function",
-    ("point", "storage"): "storage enforcers were removed: the database's own constraints are the "
-                          "implementation's business; delete this enforcer or make it a pre_effect "
-                          "decorator check",
-}
-
-
 def _check_fields(obj: Any, allowed: frozenset[str] | set[str], where: str) -> None:
     if not isinstance(obj, dict):
         raise LoadError(f"{where}: expected a mapping")
     unknown = set(obj) - allowed
-    for k in sorted(unknown & set(REMOVED), key=str):
-        raise LoadError(f"{where}: {k}: {REMOVED[k]}")
-    for k, v in obj.items():
-        if isinstance(v, str) and (k, v) in REMOVED_VALUES:
-            raise LoadError(f"{where}: {REMOVED_VALUES[(k, v)]}")
     if unknown:
         raise LoadError(f"{where}: unknown field(s) {sorted(unknown, key=str)}")
     for k, v in obj.items():

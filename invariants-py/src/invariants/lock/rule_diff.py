@@ -10,7 +10,7 @@ from typing import Any
 from .cel_canon import Typer, _clause_key, _disjuncts, _unique
 from .cel_mono import judge_bad
 from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, MORE_IS_WEAKER,
-                        NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, REMOVED_NOTE, Change, _json_paths,
+                        NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, Change, _json_paths,
                         policy, same)
 from .schema_diff import _param_schema_changes, constraint_weakening
 
@@ -296,8 +296,7 @@ def _enforcer_changes(where: str, va: Any, vb: Any) -> list[Change]:
     for k in sorted(set(ka) | set(kb)):
         ea, eb = ka.get(k), kb.get(k)
         if eb is None:
-            out.append(Change(where, f"enforcer {k} removed", ea, None, True,
-                              REMOVED_NOTE if isinstance(ea, dict) and ea.get("point") == "storage" else ""))
+            out.append(Change(where, f"enforcer {k} removed", ea, None, True))
         elif ea is None:
             out.append(Change(where, f"enforcer {k} added", None, eb))
         else:
@@ -389,8 +388,7 @@ def _entry_changes(where: str, kind: str, a: dict[str, Any], b: dict[str, Any],
         if loc == "target.effects":
             for c in cs:
                 if c.weakened:
-                    c.note = (REMOVED_NOTE if x == "transactional" else
-                              "declared pure, so the scan no longer needs a sink for it")
+                    c.note = "declared pure, so the scan no longer needs a sink for it"
         out += cs
     return out
 

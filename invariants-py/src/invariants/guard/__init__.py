@@ -10,5 +10,5 @@ from __future__ import annotations
 
 from .checked import Checked, FrozenDict, FrozenList  # noqa: F401
 from .decorators import C, C_co, ModelCallDecorator, P, R, edge, guard, model_call  # noqa: F401
-from .replies import (INSTANCE_ATTR, check_schema, instance_class, parse, parse_error_text, recheck,  # noqa: F401
+from .replies import (check_schema, instance_class, parse, parse_error_text, recheck,  # noqa: F401
                       rule_view, supported_field_type)

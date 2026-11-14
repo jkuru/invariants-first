@@ -9,10 +9,7 @@ call, an external client. A rule is a law on one of those boundaries, and there 
   `sink`), checked by `inv scan`.
 
 Rules stay on the boundary. What happens inside an implementation, and below the lowest API (SQL,
-triggers, transactions, isolation levels, private fields), is the implementation's business. Earlier
-releases had features that reached below the API (storage enforcers, `tables`, `transactional`
-effects, provider consistency levels, `.sql` contracts). They were removed; a rule file that still
-uses one fails to load with a message that says what to do instead.
+triggers, transactions, isolation levels, private fields), is the implementation's business.
 
 This page explains the moving parts: what a rule is, where it runs, what it can answer, and how
 the library decides whether a rule really holds. Every rule-file field is listed in
