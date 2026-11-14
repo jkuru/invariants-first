@@ -11,7 +11,10 @@ sourceless `.pyc`) cannot be read; it is noted too, never scanned as empty.
 A symlinked directory is followed, as Python's import system follows it: its files are named by the
 link's path (`pkg/admin -> ../.vendor/admin` gives `pkg.admin.tasks`), a link back into its own
 ancestry is not followed twice, and a target outside every root is still scanned and noted. A link
-inside an always-skipped directory is not followed (a virtualenv's `lib64`, pnpm's node_modules)."""
+inside an always-skipped directory is not followed (a virtualenv's `lib64`, pnpm's node_modules).
+Confined (`inv mcp`: confinement.confine_root()), a symlink to a directory or file that resolves
+outside the confinement root is not followed either: it is collected as refused, and the scan reports
+it as unresolved, naming only the link."""
 from __future__ import annotations
 
 import dataclasses
@@ -21,6 +24,7 @@ import pathlib
 import zipfile
 from typing import Iterable, Iterator
 
+from ..confinement import confine_root
 from .contracts import SKIP_DIRS
 
 # the directories the scan always skips, as the lock pins them: SKIP_DIRS and every dot-directory
@@ -93,15 +97,27 @@ class Found:
     outside: list[tuple[pathlib.Path, pathlib.Path]] = dataclasses.field(default_factory=list)
     # (root, archive, the exclude glob that leaves it out from every root holding it, else None)
     archives: list[tuple[pathlib.Path, pathlib.Path, str | None]] = dataclasses.field(default_factory=list)
+    # (root, link): a symlink not followed because it resolves outside the confinement root (inv mcp)
+    refused: list[tuple[pathlib.Path, pathlib.Path]] = dataclasses.field(default_factory=list)
 
 
 def _files(root: pathlib.Path, found: Found | None = None) -> list[pathlib.Path]:
     """Every importable file under root, following symlinked directories (each target once per walk, never
-    one back into the link's own ancestry). A zip archive is collected into found."""
+    one back into the link's own ancestry). A zip archive is collected into found. Confined, a symlink
+    (to a directory or a file) that resolves outside the confinement root is not followed, and is
+    collected into found.refused."""
+    top = confine_root()
     if root.is_file():
         return [root]
     out: list[pathlib.Path] = []
     entered: set[str] = set()
+
+    def out_of_bounds(p: pathlib.Path) -> bool:
+        if top is None or pathlib.Path(os.path.realpath(p)).is_relative_to(top):
+            return False
+        if found is not None:
+            found.refused.append((root, p))
+        return True
 
     def walk(d: pathlib.Path, real: str, chain: frozenset[str], rel: tuple[str, ...]) -> None:
         try:
@@ -120,6 +136,8 @@ def _files(root: pathlib.Path, found: Found | None = None) -> list[pathlib.Path]
                     continue
                 if any(x in SKIP_DIRS or x.startswith(".") for x in (*rel, e.name)):
                     continue                          # a link in a skipped directory is not followed
+                if out_of_bounds(p):
+                    continue                          # confined: a link out of the root is not followed
                 target = os.path.realpath(p)
                 if target in chain or target == real or target in entered:
                     continue                          # a cycle, or a target this walk already entered by a link
@@ -127,6 +145,9 @@ def _files(root: pathlib.Path, found: Found | None = None) -> list[pathlib.Path]
                 if found is not None:
                     found.outside.append((root, p))
                 walk(p, target, chain | {real}, (*rel, e.name))
+            elif link and top is not None and e.name.endswith((".py", *_NO_SOURCE, *_ARCHIVES)) and (
+                    any(x in SKIP_DIRS or x.startswith(".") for x in rel) or out_of_bounds(p)):
+                continue                              # confined: a file link out of the root is not read
             elif e.name.endswith((".py", *_NO_SOURCE)):
                 if p.is_file():
                     out.append(p)
@@ -199,6 +220,13 @@ def _layout(roots: Iterable[pathlib.Path], exclude: Iterable[str], found: Found 
                     link not in links or len(r.parts) > len(links[link].parts)):
                 links[link] = r
         found.outside += [(r, link) for link, r in links.items()]
+        refused: dict[pathlib.Path, pathlib.Path] = {}  # each refused link once, from the deepest root
+        for r, link in walked.refused:
+            if link not in refused or len(r.parts) > len(refused[link].parts):
+                refused[link] = r
+        refused = {link: r for link, r in refused.items()       # left out by an exclude glob: not scanned anyway
+                   if not (exclude and _excluded(link.relative_to(r), exclude))}
+        found.refused += [(r, link) for link, r in refused.items()]
         seen: set[pathlib.Path] = set()
         for r, arc, _ in walked.archives:             # named from the deepest root, like a module
             if arc in seen:

@@ -212,14 +212,20 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   (which replaces them); the lock pins the effective list.
 - `inv hook pretool|stop`: Claude Code hooks that refuse a command accepting a weakening, a direct
   edit of `invariants.lock` or of the scan settings in `pyproject.toml`, a command that rewrites
-  either without naming it (a project script whose text names it, `git apply`, `git stash pop`,
-  `git checkout REF -- .`, `git restore --source`), an edit of `.claude/settings.json` or
-  `.claude/settings.local.json` (the hooks' own configuration), and finishing while `inv check`
-  fails. They are an early warning; `inv check --base` in CI is the gate.
+  either without naming it (a project script whose text names it, a project module the script
+  imports or, for pytest, a conftest.py, a `-p` plugin or a module they import whose text names
+  it; `git apply`, `git stash pop`, `git checkout REF -- .`, `git restore --source`), an edit of
+  `.claude/settings.json` or `.claude/settings.local.json` (the hooks' own configuration), and
+  finishing while `inv check` fails. They are an early warning (test modules and computed imports
+  are not read); `inv check --base` in CI is the gate.
 - `inv mcp` and `inv-mcp`: a read-only MCP server over stdio (`scan`, `check`, `status`, `explain`,
   `propose_rules`); it never writes the rule file, the lock or `allow`, and never reads a file or
   imports a module (the standard library and installed packages included) outside its `--root`
-  for a rule file inside it.
+  for a rule file inside it. That holds through symlinks: under `INV_CONFINE_ROOT` a finder first
+  on `sys.meta_path` refuses, before its code runs, any module of the project (a submodule, one a
+  package's `__path__` leads to, one the project's code imports) that resolves outside the root;
+  and the scan the server runs does not follow a symlink under the source roots that resolves
+  outside it, reporting it as `unresolved/outside-root` with the link's path only.
 - `inv validate`, `inv lock`, `inv verify`, `inv scan`, `inv status`, and `inv --version`.
 - Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls, 4 the scan
   skipped an ablated `enforce` rule (3 and 4 are not passes).

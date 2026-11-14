@@ -3,14 +3,16 @@ expansion, computed targets, weakening switches)."""
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import pathlib
 import re
 import sys
-from typing import Any
+from typing import Any, Iterator
 
 from .. import lock
+from ..scan.contracts import SKIP_DIRS
 from .commands import cmd_check
 from .common import ALLOW_WEAKENING_ENV, DEFAULT_FILES, OK, _captured, _err
 from .project import scan_inputs
@@ -284,6 +286,8 @@ _UV_VALUE_OPTIONS = frozenset({"--with", "--with-editable", "--with-requirements
                                "--directory", "--package", "--extra", "--group", "--env-file", "--index",
                                "--default-index", "--index-url", "--extra-index-url", "--cache-dir", "--config-file"})
 _SCRIPT_MAX = 2_000_000
+_IMPORT_MAX = 400                                # project files read behind one Python run
+_PYTEST = frozenset({"pytest", "py.test"})
 _WALK_MAX = 20_000
 
 
@@ -333,29 +337,42 @@ def _is_python(word: str) -> bool:
 def _python_scripts(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> list[pathlib.Path]:
     """The files a simple command runs as Python: `python[3] FILE`, `python -m MOD` (FILE under cwd),
     `python - < FILE`, `uv run [python] FILE`, or `./FILE.py` run directly."""
+    return _python_run(words, redirects, cwd)[0]
+
+
+def _python_run(words: list[str], redirects: list[tuple[str, str]],
+                cwd: str) -> tuple[list[pathlib.Path], str | None, list[str] | None]:
+    """(the files a simple command runs as Python, the module of `python -m MOD`, the arguments of a
+    pytest run: `pytest`, `py.test`, `python -m pytest`, `uv run pytest`; None when it is not one)."""
     words = _command_words(words)
     if not words:
-        return []
+        return [], None, None
     names: list[str] = []
     if pathlib.PurePath(words[0]).name == "uv" and words[1:2] == ["run"]:
         rest = words[2:]
         while rest and rest[0].startswith("-"):
             rest = rest[2:] if rest[0] in _UV_VALUE_OPTIONS else rest[1:]
+        if rest and pathlib.PurePath(rest[0]).name in _PYTEST:
+            return [], None, rest[1:]
         if rest and not _is_python(rest[0]):
-            return [pathlib.Path(cwd, rest[0])] if rest[0].endswith(".py") else []
+            return ([pathlib.Path(cwd, rest[0])] if rest[0].endswith(".py") else []), None, None
         words = rest
     if not words:
-        return []
+        return [], None, None
+    if pathlib.PurePath(words[0]).name in _PYTEST:
+        return [], None, words[1:]
     if words[0].endswith(".py"):
-        return [pathlib.Path(cwd, words[0])]
+        return [pathlib.Path(cwd, words[0])], None, None
     if not _is_python(words[0]):
-        return []
+        return [], None, None
     args = words[1:]
     while args:
         a = args.pop(0)
         if a == "-m" and args:
+            if args[0] == "pytest":
+                return [], None, args[1:]
             mod = pathlib.Path(cwd, *args[0].split("."))
-            return [mod.with_suffix(".py"), mod / "__main__.py"]
+            return [mod.with_suffix(".py"), mod / "__main__.py"], args[0], None
         if a in ("-W", "-X"):
             args = args[1:]
         elif a == "-":
@@ -365,7 +382,7 @@ def _python_scripts(words: list[str], redirects: list[tuple[str, str]], cwd: str
             break
     if not names:                                   # `python - < FILE`, `python < FILE`
         names = [t for op, t in redirects if op == "<"]
-    return [pathlib.Path(cwd, n) for n in names]
+    return [pathlib.Path(cwd, n) for n in names], None, None
 
 
 def _script_rewrites(path: pathlib.Path) -> str | None:
@@ -383,6 +400,140 @@ def _script_rewrites(path: pathlib.Path) -> str | None:
     if lock.LOCK_NAME in text or "lock_name" in text:
         return lock.LOCK_NAME
     return "pyproject.toml" if "pyproject" in text else None
+
+
+def _lock_tree(d: pathlib.Path) -> pathlib.Path | None:
+    """The nearest directory, d or one above it, that holds invariants.lock."""
+    return next((x for x in (d, *d.parents) if (x / lock.LOCK_NAME).exists()), None)
+
+
+def _module_rewrites(text: str) -> str | None:
+    """The protected file a module a script imports (or a conftest.py) names in its text (casefolded):
+    the lock (or LOCK_NAME), or pyproject.toml together with the settings in it the hook guards
+    ([tool.invariants], [tool.setuptools]). Narrower than a script's own text, where pyproject alone
+    counts: a library module that reads pyproject.toml is common, one that edits those tables is not."""
+    if lock.LOCK_NAME in text or "lock_name" in text:
+        return lock.LOCK_NAME
+    return "pyproject.toml" if "pyproject" in text and ("invariants" in text or "setuptools" in text) else None
+
+
+def _imports(tree: ast.AST, file: pathlib.Path) -> Iterator[tuple[list[pathlib.Path] | None, str]]:
+    """(the directory a relative import starts from, else None; the dotted name) for each import in a
+    module: `import a.b`, `from a import b` (b may be a module), `from . import x`, a constant
+    importlib.import_module("a.b") or __import__("a"), and a conftest's pytest_plugins strings."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            yield from ((None, a.name) for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            start = None
+            if node.level:
+                d = file.parent
+                for _ in range(node.level - 1):
+                    d = d.parent
+                start = [d]
+            mod = node.module or ""
+            if mod:
+                yield start, mod
+            yield from ((start, f"{mod}.{a.name}" if mod else a.name) for a in node.names if a.name != "*")
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) \
+                and isinstance(node.args[0].value, str) and (
+                    (isinstance(node.func, ast.Name) and node.func.id in ("__import__", "import_module"))
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr == "import_module")):
+            yield None, node.args[0].value
+        elif isinstance(node, ast.Assign) and any(isinstance(x, ast.Name) and x.id == "pytest_plugins"
+                                                  for x in node.targets):
+            vals = node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]
+            yield from ((None, v.value) for v in vals if isinstance(v, ast.Constant) and isinstance(v.value, str))
+
+
+def _module_files(name: str, bases: list[pathlib.Path]) -> list[pathlib.Path]:
+    """The files an import of name runs, from the first base holding its top-level package: each
+    package's __init__.py on the way, then the module (a.py, or a/__init__.py)."""
+    parts = [x for x in name.split(".") if x]
+    if not parts or not all(x.isidentifier() for x in parts):
+        return []
+    for base in bases:
+        if not ((base / parts[0]).is_dir() or (base / f"{parts[0]}.py").is_file()):
+            continue
+        out = [f for i in range(1, len(parts)) if (f := base.joinpath(*parts[:i], "__init__.py")).is_file()]
+        mod = base.joinpath(*parts)
+        out += [f for f in (mod.with_suffix(".py"), mod / "__init__.py") if f.is_file()]
+        return out
+    return []
+
+
+def _conftests(cwd: pathlib.Path, tree: pathlib.Path, args: list[str]) -> list[pathlib.Path]:
+    """The conftest.py files a pytest run under tree may load: in cwd and each directory above it up to
+    tree, and under cwd and the directories the arguments name (hidden and always-skipped directories
+    left out; the walk is bounded)."""
+    out = [d / "conftest.py" for d in (cwd, *cwd.parents) if d.is_relative_to(tree)]
+    starts = [cwd, *(p for a in args if not a.startswith("-")
+                     and (p := pathlib.Path(cwd, a.split("::")[0])).is_dir())]
+    seen = 0
+    for start in starts:
+        for top, dirs, files in os.walk(start):
+            dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in SKIP_DIRS)
+            if "conftest.py" in files:
+                out.append(pathlib.Path(top, "conftest.py"))
+            seen += len(files) + len(dirs)
+            if seen > _WALK_MAX:
+                break
+    return [f for f in dict.fromkeys(out) if f.is_file()]
+
+
+def _run_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> tuple[str, str] | None:
+    """(protected file, the project file that names it) for a Python run inside a tree that holds the
+    lock: one of the project-local modules the script (or `python -m MOD`) imports, transitively, or,
+    for pytest, a conftest.py, a `-p` plugin, or a module one of them imports. A module is
+    project-local when it is found in that tree (from the script's directory, cwd, the tree or its
+    src/; a relative import that climbs above the tree is not followed); a symlinked one is read where
+    it points. Bounded at _IMPORT_MAX files; test modules themselves are not read (a test that merely
+    mentions the lock is ordinary)."""
+    files, module, pytest_args = _python_run(words, redirects, cwd)
+    here = pathlib.Path(os.path.realpath(cwd))
+    names: list[str] = []
+    queue: list[tuple[pathlib.Path, bool]] = []    # (file, it is the script itself)
+    if pytest_args is not None:
+        tree = _lock_tree(here)
+        if tree is None:
+            return None
+        queue += [(f, False) for f in _conftests(here, tree, pytest_args)]
+        names += [b for a, b in zip(pytest_args, pytest_args[1:]) if a == "-p" and not b.startswith("no:")]
+    else:
+        found = [pathlib.Path(os.path.realpath(f)) for f in files if f.is_file()]
+        if not found and not module:
+            return None
+        tree = _lock_tree(found[0].parent if found else here)   # `-m MOD` may live in src/, not under cwd
+        if tree is None:
+            return None
+        queue += [(f, True) for f in found]
+        if module:
+            names.append(module)                      # its packages' __init__.py run first
+    bases = list(dict.fromkeys([*(pathlib.Path(os.path.realpath(f.parent)) for f in files), here, tree,
+                                tree / "src"]))
+    queue += [(f, False) for n in names for f in _module_files(n, bases)]
+    seen: set[pathlib.Path] = set()
+    while queue and len(seen) < _IMPORT_MAX:
+        at, script = queue.pop(0)
+        f = pathlib.Path(os.path.realpath(at))         # a module found in the tree is read where it points
+        if f in seen or not pathlib.Path(os.path.abspath(at)).is_relative_to(tree):
+            continue
+        seen.add(f)
+        try:
+            with f.open("rb") as fh:
+                raw = fh.read(_SCRIPT_MAX)
+        except OSError:
+            continue
+        hit = None if script else _module_rewrites(raw.decode("utf-8", "replace").casefold())
+        if hit:                                       # (a script's own text is _script_rewrites' to read)
+            return hit, os.path.relpath(f, here)
+        try:
+            parsed = ast.parse(raw)
+        except (SyntaxError, ValueError):
+            continue
+        for start, name in _imports(parsed, f):
+            queue += [(m, False) for m in _module_files(name, start or [f.parent, *bases])]
+    return None
 
 
 def _tree_holds(d: pathlib.Path) -> str | None:
@@ -497,10 +648,11 @@ def _git_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) 
     return next((h for s in specs if (h := _pathspec_hits(s, base))), None)
 
 
-def _indirect_write(command: str, cwd: str) -> tuple[str, str] | None:
-    """(protected file, the command) for a command that may rewrite the lock or pyproject.toml without
-    naming it: a Python script of the project whose text names it, or a git command that applies a
-    patch, a stash or another commit's version of it."""
+def _indirect_write(command: str, cwd: str) -> tuple[str, str, str | None] | None:
+    """(protected file, the command, the project file it runs that names it, else None) for a command
+    that may rewrite the lock or pyproject.toml without naming it: a Python script of the project whose
+    text names it (or a project module it imports, or a conftest.py pytest loads), or a git command
+    that applies a patch, a stash or another commit's version of it."""
     tokens = _tokens(_ansi_c(command))
     if tokens is None:
         return None
@@ -508,7 +660,10 @@ def _indirect_write(command: str, cwd: str) -> tuple[str, str] | None:
         hit = next((h for s in _python_scripts(words, redirects, cwd) if (h := _script_rewrites(s))), None)
         hit = hit or _git_rewrites(words, redirects, cwd)
         if hit:
-            return hit, " ".join(words)
+            return hit, " ".join(words), None
+        via = _run_rewrites(words, redirects, cwd)
+        if via:
+            return via[0], " ".join(words), via[1]
     return None
 
 
@@ -599,8 +754,9 @@ def _pretool(event: dict[str, Any]) -> int:
     written = _shell_writes(command, cwd)
     indirect = None if written else _indirect_write(command, cwd)
     if indirect:
-        name, how = indirect
-        _err(f"invariants: blocked `{how}`: it can rewrite {name} without naming it (a project script whose "
+        name, how, via = indirect
+        through = f" (through {via}, a project file it imports or loads)" if via else ""
+        _err(f"invariants: blocked `{how}`{through}: it can rewrite {name} without naming it (a project script whose "
              f"text names it, or a patch, stash or other commit's copy). The lock is written only by "
              f"`inv lock` or `inv check --relock`, which refuse a weakening, and the scan settings in "
              f"pyproject.toml are the user's to edit; run those or tell the user.")

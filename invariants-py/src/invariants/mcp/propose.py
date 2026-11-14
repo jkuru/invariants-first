@@ -15,6 +15,7 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
                        args: dict[str, Any]) -> dict[str, Any]:
     """`inv init`'s discovery, rendered into a temporary directory and checked by the scan."""
     from .. import bootstrap, cli, doors, graphify
+    from ..confinement import confining
     from ..errors import LoadError
     root = _root(server_root, args)
     limit = args.get("max_doors")
@@ -30,29 +31,30 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
     no_graphify = _opt_bool(args, "no_graphify")
     exclude = _strs(args, "exclude")
     _settings_inside(server_root, target)
-    try:
-        roots = [pathlib.Path(r) for r in given] or cli.source_dirs(target) or [root]
-        for r in roots:
-            if not r.exists():
-                raise ToolError(f"source root {r} does not exist")
-        scan_roots = cli._roots(argparse.Namespace(root=given), target)
-        for r in [*roots, *map(pathlib.Path, scan_roots)]:
-            _inside(server_root, root, str(r), "source root")
-        found = bootstrap.discover(root, roots, exclude)
-        graph = None if no_graphify else graphify.find(root, graph_path)
-        if graph is not None:                            # the default graphify-out/graph.json may be a symlink
-            _inside(server_root, root, str(graph), "graphify graph")
-        scan_exclude = cli._exclude(argparse.Namespace(exclude=exclude), target)
-        found.doors = doors.discover(scan_roots, scan_exclude, limit=limit, graph=graph, project=root)
-        text = bootstrap.render(found)
-        with tempfile.TemporaryDirectory(prefix="inv-propose-") as d:
-            draft = pathlib.Path(d) / RULE_FILES[0]
-            draft.write_text(text, encoding="utf-8")
-            doc = cli.read_document(draft)
-            from .. import scan as scanner
-            report = scanner.scan(doc, scan_roots, scan_exclude)
-    except (LoadError, graphify.GraphifyError, cli.Usage) as e:
-        raise ToolError(str(e)) from e
+    with confining(server_root):     # the walk of the roots stops at a symlink out of --root
+        try:
+            roots = [pathlib.Path(r) for r in given] or cli.source_dirs(target) or [root]
+            for r in roots:
+                if not r.exists():
+                    raise ToolError(f"source root {r} does not exist")
+            scan_roots = cli._roots(argparse.Namespace(root=given), target)
+            for r in [*roots, *map(pathlib.Path, scan_roots)]:
+                _inside(server_root, root, str(r), "source root")
+            found = bootstrap.discover(root, roots, exclude)
+            graph = None if no_graphify else graphify.find(root, graph_path)
+            if graph is not None:                            # the default graphify-out/graph.json may be a symlink
+                _inside(server_root, root, str(graph), "graphify graph")
+            scan_exclude = cli._exclude(argparse.Namespace(exclude=exclude), target)
+            found.doors = doors.discover(scan_roots, scan_exclude, limit=limit, graph=graph, project=root)
+            text = bootstrap.render(found)
+            with tempfile.TemporaryDirectory(prefix="inv-propose-") as d:
+                draft = pathlib.Path(d) / RULE_FILES[0]
+                draft.write_text(text, encoding="utf-8")
+                doc = cli.read_document(draft)
+                from .. import scan as scanner
+                report = scanner.scan(doc, scan_roots, scan_exclude)
+        except (LoadError, graphify.GraphifyError, cli.Usage) as e:
+            raise ToolError(str(e)) from e
     rows = report.as_dict()["rules"]
     door_rules = []
     for dr in found.doors.doors + found.doors.dropped:
