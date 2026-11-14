@@ -82,6 +82,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   one: `missing/allow-unresolved-unused` there). The text, JSON (`accepted_by`) and SARIF output say
   which shared entry accepted a finding.
 
+- Round 33 (loader): a clause is type-checked once per enforcer that evaluates it, with its own
+  point and target; the rule-level map (typed as a decorator on `subject.target`) only when no
+  enforcer has one, so a monitor rule is no longer refused for reading its rows against the
+  target's annotations. The abstain check and the "only restates the enum" note read a `Literal`
+  under `Annotated` or a PEP 695 alias, compare members by value and type (`true` is not `1`, an
+  `Enum` member is its value), and leave the abstain value out only when one is configured (a
+  `Literal[..., None]` field listed without `null` got the note). A top-level `allow_unresolved`
+  error names the file and the entry's line. YAML keys repeated as YAML reads them (`1` and `01`,
+  `true` and `yes`, `null` and `~`, `1.0` and `1.00`) are refused as a repeated key. The JSON
+  Schema refuses an unknown `subject` key, a `provider.<name>.<field>` path (the loader refused it
+  already) and a provider argument that is not a dotted name.
+
 ### Run time
 
 - `@inv.guard("ID")` checks a target's rules before (`pre_effect`) or after (`post_effect`) the
@@ -296,6 +308,10 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - A plain `inv lock` over a stored lock whose schemas table has a hand-edited entry wrote a changed
   schema with "the change cannot be shown" and exit 0, though the change could loosen it. A changed
   schema whose old entry the stored lock does not hold is WEAKENED: `--accept-weakening` writes it.
+
+- A `$ref` added beside other keywords was judged by both sides' shared dialect, so an OpenAPI 3.0
+  contract moved to 3.1 that added one was WEAKENED ("ignored next to it"), though JSON Schema
+  2020-12 still applies them. The new side's own dialect decides (round 33).
 
 ### Static checks
 

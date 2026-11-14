@@ -251,7 +251,9 @@ input. That covers:
   validator does (`$id`, `$anchor`, `$dynamicAnchor`, Draft 7's `"$id": "#name"`, JSON pointers), so
   an `$anchor` or `$id` edit that makes an unchanged `$ref` name another schema is judged by the
   old and new targets' bodies: **WEAKENED** unless they are the same. In Draft 7 and earlier (and
-  OpenAPI 3.0) a `$ref` added beside other keywords is **WEAKENED**: they are ignored next to it;
+  OpenAPI 3.0) a `$ref` added beside other keywords is **WEAKENED**: they are ignored next to it.
+  The new side's own dialect decides this: an OpenAPI 3.0 contract moved to 3.1 (JSON Schema
+  2020-12, where they still apply) that adds a `$ref` beside them is a tightening;
 - `additionalProperties` relaxed: `false` to anything else (absent, `true`, `{}` or a schema), a
   schema to absent or `true`, or, on a model (the schema's root, a `$defs` entry, or an object with
   `properties`, where absent means extras are ignored), absent to `true` (or to a schema), so extra

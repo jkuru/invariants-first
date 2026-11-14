@@ -358,6 +358,7 @@ class _Doc:
 
     def __init__(self, entry: Any, head: str, dialect: str) -> None:
         self.entry, self.dialect = entry, dialect
+        self.own = _dialect(entry, head)          # this side's dialect alone (dialect is the pair's)
         self.roots = _schema_roots(entry, head)
         self.base: dict[tuple[Any, ...], str] = {}
         self.resources: dict[str, tuple[Any, ...]] = {}
@@ -790,7 +791,7 @@ def _ref_verdict(nk: tuple[Any, ...], k: str, o: Any, n: Any, da: _Doc, db: _Doc
     if o is None:
         node = _at(db.entry, nk)
         others = [x for x in node if x != k and x not in _ANNOTATIONS] if isinstance(node, dict) else []
-        if n is not None and da.dialect in ("draft4", "draft7") and others:
+        if n is not None and db.own in ("draft4", "draft7") and others:   # the new side ignores them
             return f"{k} added beside {', '.join(sorted(others))}: before 2019-09 they are ignored next to it"
         return None
     if n is None:

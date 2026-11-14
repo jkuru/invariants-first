@@ -58,14 +58,18 @@ def _type_env(rule: Rule, reg: Registry, i: Any, names: dict[str, str]) -> dict[
 
 
 def _typecheck(rule: Rule, reg: Registry, sources: list[tuple[str, str]]) -> None:
-    """Refuse a clause whose operand types have no overload (spec 2.1: type-checked at load)."""
-    for i, names in rule.names_for.items():
+    """Refuse a clause whose operand types have no overload (spec 2.1: type-checked at load), in the
+    environment of each enforcer that evaluates it (its own point and target); the rule-level map
+    (inv.evaluate's) only when no enforcer has one: typed as a decorator on subject.target, it would
+    give a monitor's rows the target's types (fix round 33)."""
+    own = {i: m for i, m in rule.names_for.items() if i != "rule"}
+    for i, names in (own or rule.names_for).items():
         env = _type_env(rule, reg, i, names)
         for src, msg in sources:
             try:
                 read = tc.check_clause(src, env)
             except tc.TypeMismatch as e:
-                where = "" if i == "rule" else f" (enforcer {i}, point {rule.enforcers[i]['point']})"
+                where = "" if i == "rule" or len(own) == 1 else f" (enforcer {i}, point {rule.enforcers[i]['point']})"
                 raise LoadError(f"{rule.id}: clause {msg!r} is ill-typed{where}: {e}") from None
             except cel.CelSyntaxError:
                 continue                                # the backend parsed it; leave it to the backend

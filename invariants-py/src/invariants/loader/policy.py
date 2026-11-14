@@ -4,6 +4,7 @@ from __future__ import annotations
 import typing
 from typing import Any
 
+from .._typeinfo import strip
 from ..errors import LoadError
 from ..model import POLICY_FIELDS, Rule
 from ..registry import Registry
@@ -11,8 +12,16 @@ from .schemas import _params, literal_eq, schema_fields, schema_name
 from .shapes import _check_fields
 
 
-def _restates_enum(prog: Any, fields: dict[str, Any], abstain_value: Any) -> str | None:
-    """A clause `!(reply.F in [...])` whose list covers F's closed enum (minus the abstain value)."""
+def _enum_members(t: Any) -> tuple[Any, ...] | None:
+    """The members of a closed enum field: a Literal[...] under any Annotated layer or PEP 695 alias."""
+    t = strip(t)
+    return typing.get_args(t) if typing.get_origin(t) is typing.Literal else None
+
+
+def _restates_enum(prog: Any, fields: dict[str, Any], ab: Any) -> str | None:
+    """A clause `!(reply.F in [...])` whose list covers F's closed enum (minus the abstain value, when
+    one is configured). Members are matched as literal_eq does: True is not 1, an Enum member stands
+    for its value."""
     probe = getattr(prog, "negated_membership", None)
     got = probe() if probe else None
     if not got:
@@ -20,10 +29,11 @@ def _restates_enum(prog: Any, fields: dict[str, Any], abstain_value: Any) -> str
     path, values = got
     if len(path) != 2 or path[0] != "reply":
         return None
-    t = fields.get(path[1])
-    if typing.get_origin(t) is not typing.Literal:
+    members = _enum_members(fields.get(path[1]))
+    if members is None:
         return None
-    return path[1] if set(typing.get_args(t)) - {abstain_value} <= set(values) else None
+    left = [m for m in members if not (ab is not None and literal_eq(ab["value"], m))]
+    return path[1] if all(any(literal_eq(v, m) for v in values) for m in left) else None
 
 
 def _policy_shape(rid: str, pol: Any) -> tuple[dict[str, Any], Any, Any]:
@@ -62,10 +72,10 @@ def _abstain_in_schema(rid: str, ab: Any, fields: dict[str, Any], name: str) -> 
     """The abstain field is a schema field, and its value a member of the field's closed enum."""
     if ab["field"] not in fields:
         raise LoadError(f"{rid}: abstain field {ab['field']!r} is not in {name} (fields: {sorted(fields)})")
-    t = fields[ab["field"]]
-    if typing.get_origin(t) is typing.Literal and not any(literal_eq(ab["value"], a) for a in typing.get_args(t)):
+    members = _enum_members(fields[ab["field"]])
+    if members is not None and not any(literal_eq(ab["value"], a) for a in members):
         raise LoadError(f"{rid}: abstain value {ab['value']!r} is not a member of the closed enum "
-                        f"{name}.{ab['field']} {list(typing.get_args(t))}")
+                        f"{name}.{ab['field']} {list(members)}")
 
 
 def _load_policy(rule: Rule, reg: Registry) -> None:
@@ -91,7 +101,7 @@ def _load_policy(rule: Rule, reg: Registry) -> None:
     if ab is not None:
         _abstain_in_schema(rid, ab, fields, name)
     for prog, msg in rule.clauses:
-        f = _restates_enum(prog, fields, (ab or {}).get("value"))
+        f = _restates_enum(prog, fields, ab)
         if f:
             note = f"{rid}: clause {msg!r} only restates the enum {name}.{f}: held by the schema (rung 1)"
             rule.notes.append(note)
