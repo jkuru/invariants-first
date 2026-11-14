@@ -1,0 +1,87 @@
+# Release: build the sdist and wheel and upload them to PyPI with trusted publishing (OpenID
+# Connect; no API token is stored in the repository). A draft until the "Before publishing" list in
+# invariants-py/RELEASING.md is done: the first job refuses to go on while that section exists, so
+# this workflow cannot upload placeholder metadata. It runs only by hand (Actions > release > Run
+# workflow), never on a push or a tag.
+#
+# Before the first run, a maintainer:
+#   1. creates the project on PyPI and on TestPyPI under the final distribution name;
+#   2. registers this repository, this workflow file (release.yml) and the environments below
+#      (`testpypi`, `pypi`) as trusted publishers there;
+#   3. creates the two GitHub environments, with required reviewers on `pypi`.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to upload: testpypi (a rehearsal) or pypi"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: invariants-py
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse while the release blockers are open
+        run: |
+          if grep -q '^## Before publishing' RELEASING.md; then
+            echo "RELEASING.md still lists release blockers under 'Before publishing'; settle them first" >&2
+            exit 1
+          fi
+          if grep -q 'example.invalid' src/invariants/scan/sarif.py; then
+            echo "the SARIF informationUri is still the placeholder" >&2
+            exit 1
+          fi
+
+  build:
+    needs: ready
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build the sdist and wheel
+        run: |
+          python -m pip install build twine
+          python -m build
+      - name: Check the metadata renders
+        run: python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: invariants-py/dist/
+
+  upload:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      id-token: write        # trusted publishing: the only permission the upload needs
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Upload to TestPyPI
+        if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+      - name: Upload to PyPI
+        if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

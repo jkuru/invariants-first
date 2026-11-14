@@ -13,9 +13,10 @@ Thank you for helping. This project is small and young, so issues and pull reque
   scoped fixture, so its guards do not leak into other tests.
 - The standalone example projects live in `apps/` at the root of the monorepo, next to this
   library. They use only the public API, have their own `pyproject.toml`, tests and `ci.sh`, and are
-  not part of the library's test suite. A change that affects them must keep both `apps/*/ci.sh`
-  green. The GitHub Action (`action.yml`), the pre-commit hook (`.pre-commit-hooks.yaml`) and CI
-  (`.github/`) also live at the monorepo root.
+  not part of the library's test suite. A change that affects them must keep all three
+  `apps/*/ci.sh` (pool-service, fact-pipeline, support-agent) green. The GitHub Action
+  (`action.yml`), the pre-commit hook (`.pre-commit-hooks.yaml`) and CI (`.github/`) also live at
+  the monorepo root.
 - Documentation: the README is the front page; reference detail belongs in `docs/`. Commands and
   outputs shown in the README and `docs/cookbook.md` are real; re-run them when behaviour changes.
 
@@ -37,6 +38,7 @@ python -O -m pytest tests -q        # asserts must not carry behaviour
 python -m mypy
 PYTHON=$(command -v python) ../apps/pool-service/ci.sh
 PYTHON=$(command -v python) ../apps/fact-pipeline/ci.sh
+PYTHON=$(command -v python) ../apps/support-agent/ci.sh
 ```
 
 ## CEL conformance cases
