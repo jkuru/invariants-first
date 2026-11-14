@@ -195,6 +195,12 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
         rel = link.relative_to(top).as_posix()
         idx.notes.append(f"{rel} is a symlink to a directory outside the source roots: it is scanned under "
                          f"the name of the package that holds the link")
+    for top, link in walked.refused:                  # confined (inv mcp): never followed, so never read
+        rel = link.relative_to(top).as_posix()
+        idx.problems.append((top, link, 0, "unresolved/outside-root",
+                             f"{rel} is a symlink that resolves outside the directory `inv mcp` confines reads "
+                             f"to (its --root): it is not followed, so the code it holds is not checked; run "
+                             f"`inv scan` yourself, or start the server with a wider --root"))
     for top, arc, globbed in walked.archives:
         rel = arc.relative_to(top).as_posix()
         if globbed is not None or third_party(top, arc, idx.third_party) is not None or not (count := holds_code(arc)):

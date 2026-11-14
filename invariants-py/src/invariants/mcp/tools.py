@@ -10,7 +10,9 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-from ..confinement import CONFINE_ENV
+import contextlib
+
+from ..confinement import CONFINE_ENV, confining
 from .confine import ToolError, _opt_str, _rel, _root, _rule_file, _source_roots, _strs
 
 CHILD_TIMEOUT = 600
@@ -23,15 +25,18 @@ def finding_id(f: dict[str, Any]) -> str:
 
 # --- scan ---------------------------------------------------------------------------------------
 def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence[str] = (),
-             exclude: Sequence[str] = ()) -> dict[str, Any]:
-    """What `inv scan --format json` computes, with the roots and excludes it would use."""
+             exclude: Sequence[str] = (), server_root: pathlib.Path | None = None) -> dict[str, Any]:
+    """What `inv scan --format json` computes, with the roots and excludes it would use. For a rule file
+    inside server_root, the walk is confined to it (as `check` is): a symlink under the roots that
+    resolves outside is not followed, and is an unresolved finding naming only the link."""
     from .. import cli, scan as scanner
     from ..errors import LoadError
     try:
         doc = cli.read_document(rule_file)
         ns_root = argparse.Namespace(root=[str((root / r).resolve()) for r in source_roots])
-        report = scanner.scan(doc, cli._roots(ns_root, rule_file), cli._exclude(argparse.Namespace(exclude=list(exclude)),
-                                                                                  rule_file))
+        with confined_scan(server_root, rule_file):
+            report = scanner.scan(doc, cli._roots(ns_root, rule_file),
+                                  cli._exclude(argparse.Namespace(exclude=list(exclude)), rule_file))
     except (LoadError, scanner.ScanConfigError, cli.Usage) as e:
         raise ToolError(str(e)) from e
     data = report.as_dict()
@@ -51,10 +56,18 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
             "exit_code": code, **data}
 
 
+def confined_scan(server_root: pathlib.Path | None, rule_file: pathlib.Path) -> contextlib.AbstractContextManager[None]:
+    """confining(server_root) for a rule file inside it; nothing for the server's own --rules outside it,
+    whose roots are its operator's (the same split as INV_CONFINE_ROOT for `check` and `status`)."""
+    if server_root is None or not rule_file.resolve().is_relative_to(server_root):
+        return contextlib.nullcontext()
+    return confining(server_root)
+
+
 def tool_scan(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
     return run_scan(root, _rule_file(root, args, default_rules, server_root), _source_roots(server_root, root, args),
-                    _strs(args, "exclude"))
+                    _strs(args, "exclude"), server_root)
 
 
 # --- check and status (child processes: they import the app) ------------------------------------
@@ -189,7 +202,7 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
                               "If the rule itself is wrong, a person edits it; a relaxed condition is a weakening "
                               "the lock refuses without --accept-weakening."]
         return out
-    scan = run_scan(root, rule_file, _source_roots(server_root, root, args), _strs(args, "exclude"))
+    scan = run_scan(root, rule_file, _source_roots(server_root, root, args), _strs(args, "exclude"), server_root)
     findings = [f for f in scan["findings"] if f["rule"] == rule_id]
     accepted = [f for f in scan.get("accepted", []) if f["rule"] == rule_id]
     if accepted:

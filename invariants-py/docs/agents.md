@@ -24,12 +24,33 @@ understand ──> propose ──> verify ──> human approval ──> lock
   ([start.md](start.md#4-make-the-check-unskippable-5-minutes)). A changed root set is a weakening
   in the lock either way. It also blocks the cheap ways around those checks: running a Python
   script inside the lock's directory tree whose text names the lock (or `LOCK_NAME`) or
-  `pyproject`, `git apply`/`git am` of a patch that names either, `git stash pop|apply` of an entry
+  `pyproject`, or one that imports such a module (below), `git apply`/`git am` of a patch that
+  names either, `git stash pop|apply` of an entry
   that changes either, `git checkout REF -- PATHS` or `git restore --source REF PATHS` whose
   pathspec may match either (`.`, a directory holding it, a glob), and any edit of
   `.claude/settings.json` or `.claude/settings.local.json`, where the hooks themselves are
   configured. The hook is a text check on one command and an early warning, not the gate: a
   determined agent can still get past it. `inv check --base origin/main` in CI is the gate.
+
+  Behind `python FILE`, `python -m MOD`, `uv run ...` and a pytest run (`pytest`, `py.test`,
+  `python -m pytest`, `uv run pytest`) the hook also reads the project's own modules: those the
+  script imports, transitively (`import a.b`, `from . import x`, each package's `__init__.py`, a
+  constant `importlib.import_module("m")`), and for pytest every `conftest.py` in the working
+  directory and above it up to the lock's directory, below it and below the directories the
+  arguments name (dot-directories, `venv`, `node_modules`, `build`, `dist` and the like left
+  out), each `-p` plugin and each `pytest_plugins` entry, and what those import. A module is the
+  project's when it is found inside the lock's directory tree (from the script's directory, the
+  working directory, the tree or its `src/`); a symlinked one is read where it points. Such a
+  module is blocked when its text names the lock (or `LOCK_NAME`), or names `pyproject` together
+  with `invariants` or `setuptools` (a module that only reads pyproject.toml is ordinary). What it
+  does not see: test modules (`test_*.py`; a test that writes the lock in a temporary copy is
+  ordinary, and so is one that reads it), a name computed at run time (`import_module(name)`,
+  `open("invariants." + ext)`, a path read from a file or the environment), an import it cannot
+  resolve to a file in the tree (an installed package, `PYTHONPATH`, a `.pth` file, an editable
+  install from elsewhere, a relative import climbing above the tree), plugins named in
+  `pytest.ini`, `tox.ini`, `setup.cfg` or `[tool.pytest.ini_options]` (`addopts = -p`,
+  `pythonpath`), entry-point plugins, a script run by other tools (`make`, `tox`, `nox`, a shell
+  script), and anything past 400 files.
 - **`inv check` never reads the graph or calls a model.** The graph and the agent only suggest. What
   CI enforces is decided by the rule file, the lock and the source, read the same way on every run.
 
@@ -83,6 +104,18 @@ its contents never reach a lock diff or an error in the tool's output. The modul
 confined the same way: a target, contract or provider module whose file is not inside `--root` (the
 standard library and installed packages included: `py:os.environ`, `py:this`) is refused before it
 is imported, so its import-time code never runs and none of its objects reach a pin or an error.
+That holds below the top-level package too: while `INV_CONFINE_ROOT` is set, a finder first on
+`sys.meta_path` checks every module the child imports before its code runs, and refuses one of the
+project's (reached through a directory inside `--root`, such as a symlink `app/leak ->
+../../vault`, or a submodule of a package whose `__init__.py` is inside `--root`, whose `__path__`
+may have been extended) that resolves, symlinks followed, outside it. The standard library and
+installed packages the project's code imports are reached from outside `--root` and load as before.
+The tools that scan in the server's own process (`scan`, `explain`, `propose_rules`) are confined
+the same way for a rule file inside `--root`: the walk of the source roots does not follow a
+symlink (to a directory or a file) that resolves outside it. It reads nothing behind the link and
+reports it as an unresolved finding, `unresolved/outside-root`, that names only the link's path, so
+a rule never passes on code that was skipped. A symlink to a directory elsewhere inside `--root` is
+followed as before, and so is everything under plain `inv scan`.
 Plain `inv check` does not set it: it reads a ref wherever the rule file points and imports any
 module the rule file names. Neither ever writes an object's value into an error: a target or
 contract that has no signature or source is named with its type (`a _Environ object`), never its
