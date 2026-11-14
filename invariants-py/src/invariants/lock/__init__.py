@@ -47,21 +47,16 @@ from ..errors import LoadError
 # the public names of the stages, re-exported (with the private ones this module composes)
 from .cel_canon import Typer, canon_tree, clause_types, make_typer
 from .cel_mono import compare_bad
-from .cel_sites import new_error_sites
-from .contracts import (ANALYSED, COMPENSABLE_RANK, COMPUTED, DEFAULT_SCAN_EXCLUDE, DOC_FIELDS, EFFECTS_RANK,
-                        ENFORCER_DEFAULTS, ERROR_RANK, FEEDBACK_DEFAULT, FIELD_POLICY, LOCK_NAME,
-                        LOCK_VERSION, MAX_DEFS, MAX_DEPTH, MEDIATION_DOC, MODE_RANK, MORE_IS_WEAKER, NEUTRAL, NOTES, PIN,
-                        PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, STATUS_RANK,
-                        TIMING_RANK, VIOLATION_RANK, WEAKENING, Change, _is_ref, _sha, canonical, policy, same)
+from .contracts import (ANALYSED, COMPUTED, DEFAULT_SCAN_EXCLUDE, FIELD_POLICY, LOCK_NAME, LOCK_VERSION, MORE_IS_WEAKER,
+                        NEUTRAL, PIN, PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, WEAKENING, Change,
+                        _is_ref, _sha, canonical, policy, same)
 from .pin_contracts import contract_hash
 from .pin_jsonschema import json_schema, stdlib_json_schema
-from .pin_signatures import param_schemas, signature_types
-from .pin_types import SCHEMA_PROSE, Schemas, resolved_schema, strip_prose
-from .pinning import (build, expand_applies_to, mediated, normalize_semantic, rule_semantics, scan_pin,
-                      scan_skip)
+from .pin_signatures import signature_types
+from .pin_types import Schemas, resolved_schema, strip_prose
+from .pinning import build, expand_applies_to, mediated, rule_semantics, scan_pin, scan_skip
 from .rule_diff import _entry_changes, _rule_changes, _scan_changes
-from .schema_diff import (EXACT_CONSTRAINTS, JUDGED_SCHEMAS, LOWER_BOUNDS, STRUCTURAL, UPPER_BOUNDS, _schema_changes,
-                          constraint_weakening, pin_json_schema)
+from .schema_diff import _schema_changes, constraint_weakening
 
 DUMP_WIDTH = 128
 

@@ -69,7 +69,6 @@ class Server:
     def __init__(self, root: pathlib.Path, rules: pathlib.Path | None = None) -> None:
         self.root = root.resolve()
         self.rules = rules.resolve() if rules is not None else None
-        self.initialized = False
 
     def handle(self, msg: Any) -> dict[str, Any] | None:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
@@ -80,8 +79,6 @@ class Server:
         method, params = msg["method"], msg.get("params", {})       # absent: {}; anything else must be an object
         notification = "id" not in msg
         if notification:
-            if method == "notifications/initialized":
-                self.initialized = True
             return None                             # notifications (cancelled, initialized, ...) get no reply
         mid = msg["id"]
         if not isinstance(params, dict):

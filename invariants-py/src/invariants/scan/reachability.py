@@ -62,12 +62,6 @@ def door_only(idx: _Index, edges: list[_Edge], sites: list[_Site], entries: list
     return {f for f in from_trusted - free - escaped if f in idx.funcs and idx.funcs[f].node is not None}
 
 
-def _shortest(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferred_ok: bool,
-              allowed: frozenset[str] | set[str] = frozenset()) -> tuple[list[str], _Edge] | None:
-    """The shortest of _paths: the first call path from start to a goal, or None."""
-    return next(_paths(start, goals, succ, inferred_ok, allowed), None)
-
-
 def _paths(start: str, goals: set[str], succ: dict[str, list[_Edge]], inferred_ok: bool,
            allowed: frozenset[str] | set[str] = frozenset()) -> Iterator[tuple[list[str], _Edge]]:
     """BFS: for each call into a goal reachable from start, the shortest call path to it that passes at

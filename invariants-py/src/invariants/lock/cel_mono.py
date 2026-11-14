@@ -14,20 +14,6 @@ from .cel_canon import Typer, _num, canon_tree
 from .cel_sites import new_error_sites
 
 
-def _new_sites_text(old: str, new: str, typer: Typer | None) -> list[str]:
-    """new_error_sites() for an edit the polarity walk would call stronger, else []."""
-    from ..cel import subset
-    try:
-        ta, tb = canon_tree(subset.parse(old), typer), canon_tree(subset.parse(new), typer)
-    except Exception:
-        return []
-    effects: list[int] = []
-    added: list[Any] = []
-    if not _walk(ta, tb, 1, effects, typer, added) or not effects or not all(e > 0 for e in effects):
-        return []
-    return new_error_sites(ta, tb, added)
-
-
 # polarity analysis over canonical CEL subset trees ------------------------------------------------
 _CMP = {">": (1, -1), ">=": (1, -1), "<": (-1, 1), "<=": (-1, 1)}
 _OP_STRENGTH = {(">", ">="): 1, (">=", ">"): -1, ("<", "<="): 1, ("<=", "<"): -1}

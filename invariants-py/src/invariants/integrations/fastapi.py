@@ -100,7 +100,6 @@ def register(app: _fastapi.FastAPI, reg: Registry | None = None) -> None:
         if live is not None:                         # one loaded generation: its rules with its contracts
             view = registry._view()
             _verify_routes(live, view.contracts, view.rules)
-    check.__inv_app__ = ref  # type: ignore[attr-defined]
     r.add_verifier(check, key=("fastapi", ref))
 
 

@@ -333,7 +333,7 @@ Look at `_Walker._receiver()` ([scan/](invariants-py/src/invariants/scan/)). It 
 
 ## 3.4 How `allow:` Blocks Transit Bypasses and Monkeypatching
 
-Let’s look at how `_check_rule()` and `_shortest()` ([scan/](invariants-py/src/invariants/scan/)) verify a door rule with `allow:`:
+Let’s look at how `_check_rule()` and `_paths()` ([scan/](invariants-py/src/invariants/scan/)) verify a door rule with `allow:`:
 
 ```yaml
   - id: STRIPE-GATEWAY-DOOR
@@ -346,9 +346,9 @@ Let’s look at how `_check_rule()` and `_shortest()` ([scan/](invariants-py/src
 
 Suppose an AI coding agent tries to be sneaky. It sees that `goodwill_refund` is in `allow:`, so instead of calling `StripeGateway.refund` directly, the agent writes a new tool `sneaky_tool` that calls `goodwill_refund()`!
 
-Here is how `_shortest()` ([scan/](invariants-py/src/invariants/scan/)) catches it:
+Here is how `_paths()` ([scan/](invariants-py/src/invariants/scan/)) catches it:
 1. First, `scan/` removes only `doors` (`BillingService.refund`) from the graph—**it does NOT remove `allowed` functions**.
-2. Next, `_shortest()` runs a breadth-first search (BFS) from every entrypoint (`start`) to the `sink`, tracking a 2-tuple state:
+2. Next, `_paths()` runs a breadth-first search (BFS) from every entrypoint (`start`) to the `sink`, tracking a 2-tuple state:
    ```python
    State = tuple[str, bool]  # (current_function, has_the_path_ever_left_allowed?)
    ```

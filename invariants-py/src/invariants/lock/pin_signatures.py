@@ -15,7 +15,7 @@ from .pin_types import Schemas, _is_alias, _type_schema, _unalias, strip_prose
 
 def _callable_hints(obj: Any) -> tuple[Any, dict[str, Any] | None]:
     """The unwrapped callable and its resolved annotations (a class's are its __init__'s), or None when
-    a name cannot be resolved. signature_types and param_schemas read them; a signature pin reads once."""
+    a name cannot be resolved. signature_types and a signature pin read them."""
     fn = inspect.unwrap(obj)
     src = fn.__init__ if inspect.isclass(fn) else fn
     try:
@@ -104,14 +104,6 @@ def _annotation_schema(t: Any) -> Any:
         defs: dict[str, Any] = _Defs()
         top = _json_type(t, defs, 0)
         return _plain(strip_prose({**top, "$defs": defs} if defs else top))
-
-
-def param_schemas(obj: Any) -> dict[str, Any]:
-    """{param: JSON Schema} for each parameter (and `return`) whose annotation carries a constraint
-    (`Annotated[int, Field(gt=0)]`, `Annotated[str, MaxLen(10)]`, also inside Optional or list). The
-    resolved `types` drop Annotated metadata, so these pins are what makes a constraint removed or
-    loosened in a signature a weakening (judged like any pinned schema). Empty when none has one."""
-    return _param_schemas(*_callable_hints(obj))
 
 
 def _param_schemas(fn: Any, hints: dict[str, Any] | None) -> dict[str, Any]:

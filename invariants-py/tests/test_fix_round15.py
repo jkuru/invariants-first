@@ -56,8 +56,8 @@ def test_legitimate_tightenings_stay_stronger(old, new):
 def test_new_error_sites_are_described():
     ta = lock.canon_tree(subset.parse('args.region in ["xx"]'))
     tb = lock.canon_tree(subset.parse('args.region in ["xx", args.cfg.extra]'))
-    assert lock.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
-    assert lock.new_error_sites(ta, ta) == []
+    assert lock.cel_sites.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
+    assert lock.cel_sites.new_error_sites(ta, ta) == []
 
 
 def test_a_uint_factor_keeps_its_polarity_but_may_overflow():

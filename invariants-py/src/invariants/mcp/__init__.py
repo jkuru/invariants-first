@@ -23,9 +23,7 @@ the server has no tool that does.
 # - protocol.py: the tool table, the JSON-RPC Server, serve and main (`python -m invariants.mcp`: __main__.py)
 from __future__ import annotations
 
-from .confine import RULE_FILES, ToolError  # noqa: F401
+from .confine import ToolError  # noqa: F401
 from .propose import tool_propose_rules  # noqa: F401
-from .protocol import (INSTRUCTIONS, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,  # noqa: F401
-                       PARSE_ERROR, PROTOCOL_VERSION, READ_ONLY, TOOLS, Server, Tool, main, serve, tools_list)
-from .tools import (CHILD_TIMEOUT, FIXES, MEANING, STEP, finding_id, run_scan, tool_check, tool_explain,  # noqa: F401
-                    tool_scan, tool_status)
+from .protocol import TOOLS, Server, main, serve  # noqa: F401
+from .tools import tool_check, tool_explain, tool_scan, tool_status  # noqa: F401

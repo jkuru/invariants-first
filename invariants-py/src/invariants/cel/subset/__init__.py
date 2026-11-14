@@ -19,15 +19,14 @@ matches()), functions (the built-ins), evaluator (the tree walk, the macros), pr
 """
 from __future__ import annotations
 
-from .catalog import _GETTERS, ARITY, CONVERSIONS, FUNCTIONS, INV_ARITY, arity_error
+from .catalog import _GETTERS, ARITY, CONVERSIONS, FUNCTIONS, arity_error
 from .convert import _convert
-from .cost import DEFAULT_BUDGET, STEPS_PER_COST, CostExceeded
-from .data import check_int, map_key
-from .equality import _eq, lookup, whole
+from .cost import DEFAULT_BUDGET, CostExceeded
+from .data import check_int
+from .equality import _eq
 from .evaluator import evaluate
-from .lexer import INT_MAX, INT_MIN, UINT_MAX, decode_string, tokenize
-from .operators import ieee_div_zero
-from .parser import Node, parse
+from .lexer import decode_string, tokenize
+from .parser import parse
 from .program import SubsetBackend, SubsetProgram
 from .tree import ELEM, SIZE, _macro_parts, free_names, kids, reads, references
 

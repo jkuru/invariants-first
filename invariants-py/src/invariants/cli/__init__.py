@@ -18,14 +18,11 @@ from typing import Any, Callable, Sequence
 from .. import scan as scanner
 from ..errors import LoadError
 from ..loader import read_document
-from .commands import (cmd_check, cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify,
-                       update_artifacts)
-from .common import ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, USAGE, Usage, _describe, _err
-from .git_base import BaseUnavailable, base_changes
-from .hooks import (GREP_COMMANDS, OPAQUE, PROTECTED, READ_COMMANDS, READ_GIT, READ_INV, SUSPECT, WEAKENING_FLAGS,
-                    WEAKENING_SWITCHES, WRITE_COMMANDS, cmd_hook)
+from .commands import cmd_check, cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify
+from .common import ABLATED, ALLOW_WEAKENING_ENV, FAILED, OK, UNRESOLVED, USAGE, Usage, _describe, _err
+from .hooks import cmd_hook
 from .project import (DEFAULT_SCAN_EXCLUDE, _exclude, _pyproject, _roots, _setuptools_where, _str_list, import_roots,
-                      outside_roots, project_root, scan_config, scan_inputs, scan_settings, source_dirs)
+                      project_root, scan_inputs, source_dirs)
 
 _Subparser = Callable[[argparse.ArgumentParser], None]
 

@@ -50,7 +50,12 @@ def test_ablation_hooks_are_wired_by_the_package():
 
 
 
-# --- _shortest / _paths ----------------------------------------------------------------------------
+# --- _paths ----------------------------------------------------------------------------
+def _shortest(*args):
+    """The first path _paths finds (the shortest), or None."""
+    return next(reachability._paths(*args), None)
+
+
 def _succ(*edges: _Edge) -> dict[str, list[_Edge]]:
     out: dict[str, list[_Edge]] = {}
     for e in edges:
@@ -64,21 +69,21 @@ def _e(a: str, b: str, inferred: bool = False) -> _Edge:
 
 def test_shortest_finds_the_shortest_path_and_its_last_edge():
     succ = _succ(_e("a", "b"), _e("b", "sink"), _e("a", "c"), _e("c", "d"), _e("d", "sink"))
-    names, last = reachability._shortest("a", {"sink"}, succ, False)
+    names, last = _shortest("a", {"sink"}, succ, False)
     assert names == ["a", "b", "sink"] and (last.caller, last.callee) == ("b", "sink")
-    assert reachability._shortest("sink", {"a"}, succ, False) is None
+    assert _shortest("sink", {"a"}, succ, False) is None
 
 
 def test_shortest_skips_inferred_edges_unless_asked():
     succ = _succ(_e("a", "sink", inferred=True))
-    assert reachability._shortest("a", {"sink"}, succ, False) is None
-    assert reachability._shortest("a", {"sink"}, succ, True)[0] == ["a", "sink"]
+    assert _shortest("a", {"sink"}, succ, False) is None
+    assert _shortest("a", {"sink"}, succ, True)[0] == ["a", "sink"]
 
 
 def test_shortest_lets_through_only_a_path_of_allowed_functions():
     succ = _succ(_e("job", "sink"), _e("new", "job"))
-    assert reachability._shortest("job", {"sink"}, succ, False, {"job"}) is None      # frozen back door
-    assert reachability._shortest("new", {"sink"}, succ, False, {"job"})[0] == ["new", "job", "sink"]
+    assert _shortest("job", {"sink"}, succ, False, {"job"}) is None      # frozen back door
+    assert _shortest("new", {"sink"}, succ, False, {"job"})[0] == ["new", "job", "sink"]
 
 
 def test_paths_yields_one_path_per_call_into_a_goal():
