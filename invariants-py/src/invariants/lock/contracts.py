@@ -60,6 +60,9 @@ FIELD_POLICY: dict[str, str] = {
     # the file
     "file.spec": NEUTRAL, "file.contracts": ANALYSED, "file.targets": ANALYSED, "file.providers": ANALYSED,
     "file.rules": ANALYSED,
+    # the top-level allow_unresolved is given to each rule it lists before the lock reads the file: the
+    # lock judges each rule's mediation.allow_unresolved (fix round 30)
+    "file.allow_unresolved": ANALYSED,
     "contract.type": WEAKENING, "contract.ref": WEAKENING, "contract.app": WEAKENING,
     "contract.schema": PIN, "contract.operations": PIN, "contract.hash": PIN, "contract.signature": PIN,
     "contract.types": PIN, "contract.param_schemas": PIN,

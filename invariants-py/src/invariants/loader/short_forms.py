@@ -18,9 +18,11 @@ def _py_list(rid: str, key: str, v: Any) -> list[str]:
     return list(items)
 
 
-def _check_accepts(rid: str, entries: Any) -> None:
+def _check_accepts(rid: str, entries: Any, shared: str | None = None) -> None:
     """A top-level allow_unresolved checked as the scan checks mediation.allow_unresolved, its errors
-    naming the field as the rule spells it (allow_unresolved[0], not mediation.allow_unresolved[0])."""
+    naming the field as the rule spells it (allow_unresolved[0], not mediation.allow_unresolved[0]).
+    shared: the place of one entry of the file's top-level allow_unresolved (`allow_unresolved[2]`),
+    which its errors name instead."""
     from ..scan import ScanConfigError
     from ..scan.mediation import _accepts
     try:
@@ -28,6 +30,8 @@ def _check_accepts(rid: str, entries: Any) -> None:
     except ScanConfigError as e:
         long, short = f"{rid}: mediation.allow_unresolved", f"{rid}: allow_unresolved"
         msg = str(e)
+        if shared is not None and msg.startswith(long + "[0]"):
+            raise LoadError(shared + msg[len(long) + 3:]) from None
         raise LoadError(short + msg[len(long):] if msg.startswith(long) else msg) from None
 
 
@@ -50,18 +54,22 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
                         f"{', '.join(moved)} at the top too, not under mediation")
     if "allow_unresolved" in raw:
         _check_accepts(rid, raw["allow_unresolved"])
-    sinks = _py_list(rid, "sink", raw.pop("sink"))
+    paired = isinstance(raw["sink"], dict)             # each sink mapped to the doors that may reach it
+    if paired:
+        from .shapes import _check_pairs
+        _check_pairs(rid, raw["sink"], "sink")
+    sink = raw.pop("sink") if paired else _py_list(rid, "sink", raw.pop("sink"))
     doors = _py_list(rid, "door", raw.pop("door")) if "door" in raw else []
     allow_raw = raw.pop("allow", None)
     allow = _py_list(rid, "allow", allow_raw) if allow_raw not in (None, []) else []   # emptied: none left
-    new = {**(med or {}), "sink": sinks if len(sinks) > 1 else sinks[0]}
+    new = {**(med or {}), "sink": sink if paired or len(sink) > 1 else sink[0]}
     if doors:
         new["door"] = doors if len(doors) > 1 else doors[0]
     if allow:
         new["allow"] = allow
     if "allow_unresolved" in raw:                      # reviewed unresolved sites, as written
         new["allow_unresolved"] = raw.pop("allow_unresolved")
-    if not doors and "guard" not in raw:
+    if not doors and not paired and "guard" not in raw:
         raise LoadError(f"{rid}: a door rule names its door: add door: py:module.function (the function every "
                         f"write must go through), or guard: to make the guarded function the door")
     raw["mediation"] = new
@@ -147,4 +155,57 @@ def expand_short_forms(doc: dict[str, Any]) -> dict[str, Any]:
             _expand_tests(raw, rid)
         if "guard" in raw:
             _expand_guard(raw, rid)
+    expand_shared_accepts(doc)
+    return doc
+
+
+def expand_shared_accepts(doc: dict[str, Any]) -> dict[str, Any]:
+    """The file's top-level allow_unresolved, given to the rules each entry lists, in place (after the
+    rules' short forms are expanded). An entry names one reviewed site, as a rule's own entry does, and
+    the path laws it is accepted under:
+
+        allow_unresolved:
+          - {at: "app/plugins.py:41", code: unresolved/reflection, sha: 3f9c0a17be52d4e1,
+             why: "loads the exporters named in settings; none imports a store", rules: [LEDGER-DOOR, USER-DOOR]}
+
+    Each listed rule gets the entry (with its rules list, so the scan says which entry accepted a finding)
+    at the end of its mediation.allow_unresolved: it accepts the site once under each rule, and the lock
+    pins it rule by rule, so adding an entry or a rule to its list is a weakening there, as adding a
+    rule's own entry is."""
+    if "allow_unresolved" not in doc:
+        return doc
+    entries = doc.pop("allow_unresolved")
+    if entries is None:
+        return doc
+    if not isinstance(entries, list):
+        raise LoadError("allow_unresolved must be a list of entries {at, code, sha, why, rules}")
+    rules = doc.get("rules")
+    by_id = {r["id"]: r for r in rules if isinstance(r, dict) and isinstance(r.get("id"), str)} \
+        if isinstance(rules, list) else {}
+    for i, e in enumerate(entries):
+        where = f"allow_unresolved[{i}]"
+        if not isinstance(e, dict):
+            raise LoadError(f"{where} must be a mapping {{at, code, sha, why, rules}}")
+        if "rules" not in e:
+            raise LoadError(f"{where}: an entry here names its rules (rules: [ID, ...], the path laws it accepts "
+                            f"the site under); an entry for one rule may go in that rule's own allow_unresolved")
+        ids = e["rules"]
+        if not (isinstance(ids, list) and ids and all(isinstance(r, str) for r in ids)):
+            raise LoadError(f"{where}: rules must list the ids of the path laws the entry accepts its site under")
+        for rid in ids:
+            if ids.count(rid) > 1:
+                raise LoadError(f"{where}: rule {rid} is listed twice")
+            if rid not in by_id:
+                raise LoadError(f"{where}: rule {rid} does not exist")
+            med = by_id[rid].get("mediation")
+            if not (isinstance(med, dict) and "sink" in med):
+                raise LoadError(f"{where}: rule {rid} is not a path law (it declares no sink), so it has no "
+                                f"unresolved site to accept")
+        _check_accepts(ids[0], [e], where)
+        for rid in ids:
+            med = by_id[rid]["mediation"]
+            own = med.get("allow_unresolved")
+            if own is not None and not isinstance(own, list):
+                continue                                   # malformed: the scan says so
+            med["allow_unresolved"] = [*(own or []), {**e, "rules": list(ids)}]
     return doc

@@ -93,6 +93,25 @@ error raised while importing one of your modules names that module; a module tha
 an absolute one: `inv.load(pathlib.Path(__file__).parent / "invariants.yaml")`. In a directory with
 no Python source, `inv init` exits 2 and writes nothing; run it in the project, or pass `--root DIR`.
 
+With `--root DIR` or `--exclude GLOB`, `inv init` also writes what it scanned into
+`[tool.invariants.scan]` of the `pyproject.toml` beside the rule file (the one `inv check` reads), so
+the next `inv check`, and the lock `inv init` takes, scan exactly what it scanned: `roots` relative
+to the rule file, and the globs as `extend_exclude` (they add to the default excludes, as they did
+for init). It creates the file or the table when missing, and otherwise only inserts lines: the rest
+of the file is kept byte for byte. It prints what it wrote:
+
+```text
+$ inv init --root lib --exclude '*/legacy/*'
+wrote invariants.yaml
+  ...
+wrote [tool.invariants.scan] to pyproject.toml (created it): roots = ["lib"]; extend_exclude = ["*/legacy/*"]; `inv check` scans what init scanned
+```
+
+It never changes settings already there: when `[tool.invariants.scan]` already sets `roots` or
+`extend_exclude` to something else, it prints a note naming both and leaves the file as it is (then
+`inv check` scans what the file says: edit it by hand, or pass the same flags to every `inv check`).
+A table written as dotted keys or inline cannot be extended by inserting lines; it says what to add.
+
 ## 2. Value laws: what the lock catches
 
 An agent raises a limit so its failing test passes:
@@ -180,6 +199,24 @@ Each rule is a few lines, plus the back doors it found:
     allow:
       - "py:scripts.admin.goodwill_refund"
 ```
+
+When a repository's writes each have their own door (a refund recorded by `BillingService.refund`,
+a cancellation by `BillingService.cancel`), the rule maps each sink to its doors instead of listing
+both, so a refund record written inside `cancel` is a back door too (the list form would let any door
+reach any write):
+
+```yaml
+  # each write has its own door(s): a door of one write is no door for another
+  - id: LEDGER-REPO-DOOR
+    sink:
+      "py:support_agent.repo.LedgerRepo.cancel_subscription": ["py:support_agent.service.BillingService.cancel"]
+      "py:support_agent.repo.LedgerRepo.insert_credit": ["py:support_agent.service.BillingService.credit"]
+      "py:support_agent.repo.LedgerRepo.record_refund": ["py:support_agent.service.BillingService.refund"]
+```
+
+A repository write that no door calls keeps every door, as in the list form. An unresolved site
+that several drafted rules see is drafted once, in a top-level `allow_unresolved` entry listing
+those rules ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)).
 
 There is no decorator, and nothing runs in production: `inv check` reads the source. Today's code
 passes, because the known back doors are frozen in `allow`. The next one fails:

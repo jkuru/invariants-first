@@ -17,7 +17,8 @@ def to_sarif(report: Report, version: str = "0") -> dict[str, Any]:
     results = [_result(f, codes) for f in report.findings]
     for f in report.accepted:
         res = _result(f, codes)
-        res["suppressions"] = [{"kind": "external", "status": "accepted", "justification": f.why or ""}]
+        why = (f.why or "") + (f" ({f.accepted_by})" if f.accepted_by else "")    # a shared entry says which
+        res["suppressions"] = [{"kind": "external", "status": "accepted", "justification": why}]
         results.append(res)
     return {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",

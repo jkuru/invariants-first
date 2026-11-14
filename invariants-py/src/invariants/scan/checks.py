@@ -85,6 +85,25 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Si
     return out
 
 
+def _merge_groups(parts: list[list[Finding]]) -> list[Finding]:
+    """The findings of a rule checked part by part (Mediation.groups: a sink mapping), as one list: a
+    finding two parts give alike (a parse error, a door two sinks share that is missing, the same site) is
+    one, and an allow entry is unused (missing/allow-unused) only when every part finds it unused (allow
+    is rule-wide)."""
+    unused = [{f.message for f in got if f.code == "missing/allow-unused"} for got in parts]
+    everywhere = set.intersection(*unused) if unused else set()
+    seen: set[tuple[object, ...]] = set()
+    out: list[Finding] = []
+    for got in parts:
+        for f in got:
+            key = (f.kind, f.code, f.file, f.line, f.col, f.message)
+            if key in seen or (f.code == "missing/allow-unused" and f.message not in everywhere):
+                continue
+            seen.add(key)
+            out.append(f)
+    return out
+
+
 def _shadow_findings(idx: _Index, rid: str, idioms: _Idioms) -> list[Finding]:
     """A standard-library import that the importing file's own directory shadows (idx.shadows; fix round
     29), under this rule when that directory's module holds a sink, door or allowed function of it, or code

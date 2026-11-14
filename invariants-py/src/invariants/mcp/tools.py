@@ -172,8 +172,13 @@ def _rule_summary(raw: dict[str, Any]) -> dict[str, Any]:
     med = raw.get("mediation") or {}
     as_list = (lambda v: [v] if isinstance(v, str) else list(v or []))
     door = med.get("door", (raw.get("subject") or {}).get("target") if med.get("sink") else None)
+    sink = med.get("sink")
+    pairs = {s: as_list(d) for s, d in sink.items()} if isinstance(sink, dict) else None
+    if pairs is not None:                              # each sink with its own doors (fix round 30)
+        door = list(dict.fromkeys(d for ds in pairs.values() for d in ds))
     return {"id": raw.get("id"), "status": raw.get("status"), "statement": raw.get("statement"),
-            "subject": raw.get("subject"), "bad": raw.get("bad"), "sinks": as_list(med.get("sink")),
+            "subject": raw.get("subject"), "bad": raw.get("bad"), "sinks": as_list(sink),
+            **({"pairs": pairs} if pairs is not None else {}),
             "doors": as_list(door), "allow": as_list(med.get("allow")),
             "allow_unresolved": list(med.get("allow_unresolved") or raw.get("allow_unresolved") or []),
             "falsified_by": raw.get("falsified_by") or [], "kind": "path law" if med.get("sink") else "value law"}
@@ -231,6 +236,9 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
         out["findings"] = findings
         out["explanation"] = (f"{rule_id} is a path law: every call path from an entrypoint to "
                               f"{', '.join(rule['sinks'])} must pass a door ({', '.join(rule['doors']) or 'none'})"
+                              + ("; each sink through its own doors only: " + "; ".join(
+                                  f"{s} through {' or '.join(d)}" for s, d in rule["pairs"].items())
+                                 if "pairs" in rule else "")
                               + (f"; frozen back doors: {', '.join(rule['allow'])}" if rule["allow"] else "")
                               + f". The scan says: {out['scan_result']}"
                               + (f" with {len(findings)} finding(s); explain each by its id." if findings else "."))

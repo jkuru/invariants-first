@@ -202,7 +202,9 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         gone = [x for x in sinks_a if x not in sinks_b]
         out.append(Change(where, "mediation.sink", sinks_a or None, sinks_b or None, bool(gone),
                           "a protected sink is no longer checked" if gone else ""))
-    if _as_list(a.get("door")) != _as_list(b.get("door")) and (doors_a != doors_b or not sinks_a):
+    if isinstance(a.get("sink"), dict) or isinstance(b.get("sink"), dict):
+        out += _pairing_changes(where, a, b, doors_a, doors_b)
+    elif _as_list(a.get("door")) != _as_list(b.get("door")) and (doors_a != doors_b or not sinks_a):
         came = [x for x in doors_b if x not in doors_a]
         weak = bool(sinks_a) and bool(came)           # a new door on an existing scan lets more paths through
         out.append(Change(where, "mediation.door", _as_list(a.get("door")) or None, _as_list(b.get("door")) or None,
@@ -220,6 +222,42 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
     for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow", "allow_unresolved"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
+    return out
+
+
+def _pairing(med: dict[str, Any], doors: list[str]) -> dict[str, list[str]]:
+    """Each sink -> the doors that may reach it: a sink mapping as written, or (the list form) every door
+    for every sink."""
+    sink = med.get("sink")
+    if isinstance(sink, dict):
+        return {str(s): _as_list(d) if isinstance(d, (str, list)) else [json.dumps(d)] for s, d in sink.items()}
+    return {s: list(doors) for s in _as_list(sink)}
+
+
+def _pairing_changes(where: str, a: dict[str, Any], b: dict[str, Any], doors_a: list[str],
+                     doors_b: list[str]) -> list[Change]:
+    """A sink mapping on either side (fix round 30): judged sink by sink, for the sinks on both sides (a
+    sink added or dropped is mediation.sink's change). A door that may now reach a sink it could not
+    reach before is WEAKENED (a door added to a sink's list, or the list form, in which every door
+    reaches every sink, replacing a mapping); a door that no longer reaches a sink is a tightening; the
+    same doors per sink, written another way (the other form, or mediation.door beside a mapping), are
+    no weakening."""
+    pa, pb = _pairing(a, doors_a), _pairing(b, doors_b)
+    out: list[Change] = []
+    for s in [x for x in pb if x in pa]:
+        came = [d for d in pb[s] if d not in pa[s]]
+        went = [d for d in pa[s] if d not in pb[s]]
+        if came:
+            out.append(Change(where, f"mediation.sink {s}: doors", pa[s], pb[s], True,
+                              f"{', '.join(came)} may now reach {s}"
+                              + (" (the list form lets every door reach every sink)"
+                                 if not isinstance(b.get("sink"), dict) else "")))
+        elif went:
+            out.append(Change(where, f"mediation.sink {s}: doors", pa[s], pb[s], False,
+                              f"{', '.join(went)} no longer reaches {s}"))
+    if not out and (not same(a.get("sink"), b.get("sink")) or not same(a.get("door"), b.get("door"))):
+        out.append(Change(where, "mediation.sink (pairing)", a.get("sink"), b.get("sink"), False,
+                          "every sink keeps the same doors, written another way"))
     return out
 
 
@@ -314,6 +352,13 @@ def _same_sites(where: str, la: list[Any], ka: list[Any], lb: list[Any], kb: lis
         elif not same(o.get("why"), e.get("why")):
             out.append(Change(where, f"mediation.allow_unresolved: new reason for {_entry(e)}", None, None, False,
                               "the reviewer reworded it"))
+        elif not same(o.get("rules"), e.get("rules")):    # the file's top-level allow_unresolved (fix round 30)
+            shared = e.get("rules")
+            out.append(Change(where, f"mediation.allow_unresolved: {_entry(e)} "
+                                     + (f"now shared by rules {', '.join(map(str, shared))}"
+                                        if isinstance(shared, list) and shared else "no longer shared"),
+                              None, None, False, "the same site is accepted under this rule (each rule a shared "
+                                                 "entry lists is judged on its own)"))
     return out
 
 

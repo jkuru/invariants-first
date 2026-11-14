@@ -54,6 +54,26 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   reported. An entry that no longer reaches a sink without a door fails the check
   (`missing/allow-unused`) until it is deleted, and so does an entry that names no function
   (`missing/allow`). An empty or null `allow` means none.
+- In the list form any door may reach any sink. When each write has its own door, `sink:` (and
+  `mediation.sink`) may instead map each sink to the door or doors that may reach it:
+
+  ```yaml
+  - id: LEDGER-REPO-DOOR
+    sink:
+      py:support_agent.repo.LedgerRepo.record_refund: [py:support_agent.service.BillingService.refund]
+      py:support_agent.repo.LedgerRepo.insert_credit: [py:support_agent.service.BillingService.credit]
+      py:support_agent.repo.LedgerRepo.cancel_subscription: py:support_agent.service.BillingService.cancel
+  ```
+
+  A door listed for one sink is no door for another: a refund record written inside
+  `BillingService.cancel` is a `bypass` of `record_refund` (the list form lets it through). Each sink
+  is checked against its own doors; a door may be listed for several sinks. `door:` is then left out,
+  or names exactly the doors the mapping lists (any other value is a scan error, which `inv validate`
+  reports); `subject.target` is no default door here, and `guard:` still makes the rule check the
+  guarded function's arguments. `allow` and `allow_unresolved` stay rule-wide: an `allow` entry is
+  unused only when no sink's check uses it, and a finding two sinks' checks give alike (a parse error,
+  one unresolved site) is reported once. The mapping needs at least one sink, each a `py:` path mapped
+  to a `py:` path or a non-empty list of them.
 - With `guard:` as well, the guarded function is the door, and the rule also checks its arguments
   (give `bad`, and optionally `tests`). The rule then expands as the `guard:` form does: one
   decorator enforcer instead of the structure one, and `status` `enforce` with `tests` or `detect`
@@ -72,10 +92,19 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   as `mediation: {allow_unresolved: [...]}`, but not in both places; an entry error names it as
   written (`allow_unresolved[0]`). `inv check`'s hint names the spelling of the failing rule's form.
   `door` and `allow` beside a top-level `sink:` go at the top too, not under `mediation`.
+- One reviewed site several path laws see (a plugin loader every rule reports as
+  `unresolved/reflection`) may be accepted once for all of them, in the file's top-level
+  `allow_unresolved` (see "Top level" below): each entry carries `rules: [ID, ...]` and accepts its
+  site once under each rule it lists.
 - The lock reports these as weakenings: a new `allow` entry, a new `allow_unresolved` entry (a
   second entry with the same file, code and sha included: each accepts one finding, so it accepts one
   more copy of that statement), one that drops its column, a new door, a removed sink, and removing
-  the rule. Deleting an `allow` or `allow_unresolved` entry or a door is a tightening.
+  the rule. With a sink mapping it judges sink by sink: a door that may now reach a sink it could not
+  (added to that sink's list, or the list form replacing the mapping, since there every door reaches
+  every sink) is a weakening, and the same doors per sink written another way is not. A shared
+  `allow_unresolved` entry is pinned in each rule it lists: a new one, or a rule added to its
+  `rules`, is a weakening for that rule. Deleting an `allow` or `allow_unresolved` entry, a door, a
+  sink's door, or a rule from a shared entry's `rules` is a tightening.
 
 `inv init` drafts door rules from the code: see [start.md](start.md#3-path-laws-doors-and-back-doors).
 
@@ -88,6 +117,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 | `targets` | `"py:pkg.mod.fn": {effects: none \| external}`. Effects belong to the target, once. An unlisted target is `external`. |
 | `providers` | `name: {type, from, args}`. See below. |
 | `rules` | The list of rules. |
+| `allow_unresolved` | Reviewed unresolved sites shared by several path laws: `[{at, code, sha, why, rules: [ID, ...]}]`. An entry is checked as a rule's own entry is, and `rules` names one or more path laws (rules with a sink) of this file, each once. The loader gives each listed rule the entry, at the end of its `mediation.allow_unresolved` (with `rules`, so the scan's text, JSON and SARIF say which shared entry accepted a finding); it then accepts its site once under each rule, and is `missing/allow-unresolved-unused` under a rule where it matches nothing. The lock pins it in each rule. Errors name it `allow_unresolved[0]`. |
 
 ## Providers
 
@@ -118,7 +148,7 @@ not a lock: two concurrent callers can both pass it.
 | `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
 | `compensable` | Optional, `true` or `false`: a violation can be undone after the fact. Nothing at run time reads it; the lock pins it, and setting it to `true` is a weakening. |
 | `enforcers` | See below. |
-| `mediation` | `{chokepoint, residual_paths, sink, door, allow, allow_unresolved}`. `allow` lists known back doors the scan lets through (see "The door form" above). `allow_unresolved` lists unresolved findings a person reviewed and accepts, one site each: `{at: "path:line[:col]", code: "unresolved/...", sha, why}` ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`. |
+| `mediation` | `{chokepoint, residual_paths, sink, door, allow, allow_unresolved}`. `allow` lists known back doors the scan lets through (see "The door form" above). `allow_unresolved` lists unresolved findings a person reviewed and accepts, one site each: `{at: "path:line[:col]", code: "unresolved/...", sha, why}` ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`; `sink` may map each sink to the doors that may reach it (see "The door form" above). |
 | `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
 | `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |
