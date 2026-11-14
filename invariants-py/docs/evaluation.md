@@ -286,13 +286,16 @@ experiment above.
 
 | Codebase | What `inv init` wrote | Back doors found and frozen | `inv check` as drafted |
 |---|---|---|---|
-| pool-service (copy) | 7 pydantic models, 13 constraints; 1 door rule for `store` with 7 service doors | 7: 4 of the 6 planted in `rogue.py` (the other 2 are raw SQL, found with `--sql`), a benchmark, 2 endpoints writing the store | pass |
+| pool-service (copy) | 7 pydantic models, 13 constraints; 1 door rule for `store` with 7 service doors | 7: 4 of the 6 planted in `rogue.py` (the other 2 are raw SQL, found at the time with `inv init --sql`, since removed), a benchmark, 2 endpoints writing the store | pass |
 | ORM app (SQLAlchemy repo, Django-style manager, Stripe gateway, no SQL) | 2 models, 7 constraints; 3 door rules | 3: a worker skipping the quota check, 2 admin-script calls | pass |
-| ledger app (raw SQL store) | 1 door rule | 1 (2 with `--sql`) | pass |
+| ledger app (raw SQL store) | 1 door rule | 1 (2 with `inv init --sql` at the time) | pass |
 | full-stack FastAPI template (SQLModel; read only, nothing executed) | 9 models, 26 constraints; no door rule: no service layer | none to freeze; its direct writes are listed | not run (its code was not installed) |
 
-Three rounds of scripted agent-style changes ran against the ledger app (in API-only and `--sql`
-modes) and the ORM app: 52 changes, of which the 35 that loosen a law or add a back door were
+`--sql` was an `inv init` mode of that release. Addendum 2 (above) records its removal with the other
+features below the API: these figures are history, not a command to run today.
+
+Three rounds of scripted agent-style changes ran against the ledger app (in API-only and the since-removed
+`--sql` modes) and the ORM app: 52 changes, of which the 35 that loosen a law or add a back door were
 blocked for the stated reason and the 17 safe ones passed. Rounds 1 and 2 ran in the development
 venv. Round 3 ran on a freshly built wheel in a fresh venv, after the full test matrix (Python 3.11
 and 3.14, the three CEL backends of the time (subset, cel-expr, celpy; celpy was removed later, so

@@ -27,7 +27,12 @@ Pick a backend with `INV_CEL_BACKEND=subset|cel-expr|auto`, or with
 `inv.load(..., backend=...)`. `auto` picks cel-expr if it is installed, else subset.
 
 Every backend uses the same front end, so a rule parses the same way everywhere. Rule text must
-stay within that grammar: a bytes literal (`b"..."`) is a parse error. Exponents (`1e3`) and uint
+stay within that grammar: a bytes literal (`b"..."`) is a parse error. String escapes are CEL's
+(`\n`, `\t`, `\\`, `\'`, `\"`, `` \` ``, `\?`, `\a`, `\b`, `\f`, `\r`, `\v`, `\xHH`, `\uHHHH`,
+`\UHHHHHHHH`, octal `\000` to `\377`); any other backslash (`'\d+'`) is a parse error on every
+backend, so a regex is written as a raw string (`r'\d+'`, no escapes; a backslash may not come right
+before the closing quote) or with the backslash doubled (`'\\d+'`). A string literal may not span
+lines (no newline between its quotes). Exponents (`1e3`) and uint
 literals (`1u`) parse; a uint literal is `uint(n)`, so it loads on cel-expr only ([Number
 literals](#number-literals)). The loader checks every
 function a clause calls against the chosen backend: a name it does not have (a typo such as
@@ -110,7 +115,10 @@ Standard functions per backend (global `f(x)` or receiver `x.f()` form as CEL de
 
 `type()` is cel-expr's only, and the loader reads a bare type name in a clause as an undeclared
 name: `type(x) == int` and `type(x) == google.protobuf.Timestamp` are a `LoadError` ("reads undeclared
-name(s) ['int']") on every backend. Compare with the type of a literal instead: `type(x) == type(1)`.
+name(s) ['int']: int is a CEL type name, which a clause cannot read: compare with the type of a value,
+type(x) == type(1)") on every backend. Compare with the type of a literal instead: `type(x) ==
+type(1)` (`type(0u)`, `type(1.0)`, `type('')`, `type(true)`, `type(bytes(''))`, `type([])`, `type({})`,
+`type(null)`, `type(timestamp(0))`). A clause that calls `isinstance()` gets the same advice.
 
 On bytes, on every backend: `size()` is the byte length, `<` `<=` `>` `>=` order lexicographically by
 byte, `+` concatenates, and `==`, `!=` and `in` compare bytes with bytes (never with a string).
@@ -323,7 +331,11 @@ two return different values. Keep rules off `string()` of a double, and away fro
 they must run on every backend. These used to differ and now agree: cel-expr's hex `double("0x10")`
 is a `rule_error` as on the subset; `has()` on a value with no fields (`has(x.f)` with `x` null, a
 number, a string or a list) is a `rule_error` on the subset as on cel-expr (on a map it tests the
-key; a null field is present); an int and a double past 2^53 compare exactly
+key; a null field is present), and `has(x.f)` reads `x.f` whole, so a present field holding a value
+the library refuses (NaN, a `Decimal`, a set, a generator, also nested inside it) is a `rule_error`
+on both; arithmetic inside a `has()` argument is checked finite on cel-expr as elsewhere; a
+backslash escape CEL does not have (`'\d'`) is a parse error on both (the subset read it as `d`,
+and the rewritten text cel-expr evaluated then had `d` too); an int and a double past 2^53 compare exactly
 ([Numbers](#numbers)); a string holding a surrogate code point is a `rule_error` on both
 ([Strings, maps and keys](#strings-maps-and-keys)); and a constant timezone the subset refuses
 (`t.getHours('+25:00')`, which cel-cpp read as a 25-hour offset) is a `rule_error` on both.

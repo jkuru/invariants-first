@@ -106,6 +106,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `numpy.float64`); the subset does `size()`, ordering and `+` on bytes, as cel-expr.
 - On the subset, looking up a value that can never be a map key (bytes, `null`, a list, a map, a
   timestamp: `null in args.m`) is a `rule_error`, as on cel-expr, not a quiet `false`.
+- String literals follow CEL's escapes on every backend: an unknown escape (`'\d+'`), an octal
+  escape past `\377` and a newline inside the quotes are parse errors (`LoadError`), where the
+  subset read `'\d+'` as `'d+'` and so did cel-expr whenever the front end rewrote the clause (any
+  `matches()` or `contains()`). Raw strings (`r'\d+'`) parse, and the error says to use one.
+- `has(x.f)` on the subset reads `x.f` whole, as cel-expr's projection does: a present field holding
+  a refused value (NaN, a `Decimal`, a set, a generator) is a `rule_error` on both, not `true`; on
+  cel-expr, arithmetic inside a `has()` argument is checked finite, as everywhere else.
+- `isinstance()` in a clause is refused with advice that loads (`type(x) == type(1)` on cel-expr); a
+  bare CEL type name (`type(x) == int`) is refused with the same advice instead of a bare
+  "undeclared name".
+- `inv.evaluate(rule, base)` (the rule-level names, `"rule"`) binds auto-bound providers when an
+  enforcer has a `view:`; it was a `rule_error` ("undeclared reference") there.
 
 ### The lock
 

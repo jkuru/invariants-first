@@ -594,8 +594,9 @@ kept as one record for every method of that name, however many there are.
   there.
 - **The always-skipped directories are counted.** `inv scan` prints how many files each
   always-skipped directory left out (`skipped (directories the scan always skips): build/ 3 file(s)`;
-  `skipped` in `--format json`). The list is `invariants.scan.SKIPPED` (dot-directories, then
-  `__pycache__`, `build`, `dist`, `node_modules`, `site-packages`, `venv`).
+  `skipped` in `--format json`). The list is every dot-directory and each name in `invariants.scan.SKIP_DIRS`
+  (`__pycache__`, `build`, `dist`, `node_modules`, `site-packages`, `venv`), the list the lock pins
+  as `skip` ([lockfile](lockfile.md)).
 - **A file in an always-skipped directory that reaches scanned code is reported.** A file there that
   imports any scanned module (`from facade import send`, also through a module that re-exports the
   sink), statically or by a literal dynamic import (`importlib.import_module("payments")`,

@@ -243,6 +243,9 @@ def _select(o: Any, f: str, test: bool = False) -> Any:
         else:
             ok = not callable(v)
     if test:
+        if ok:      # has(x.f) reads x.f whole, as the engines convert it: a value the library refuses
+            from .equality import whole     # (NaN, a Decimal, a set, a generator; inside a map or list
+            whole(v)                        # too) is an error, as it is on cel-expr
         return ok                   # CEL has(): presence only, a null value is present
     if not ok:
         raise CelError(f"no such field {f!r} on {type(o).__name__}")

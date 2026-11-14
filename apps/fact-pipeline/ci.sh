@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI for fact-pipeline: rule file, lock, coverage, scan, then the tests with the invariants plugin.
+# CI for fact-pipeline: rule file, lock, coverage, scan, standing, then the tests with the invariants plugin.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -35,6 +35,7 @@ echo "== inv validate";     "$INV" validate invariants.yaml
 echo "== inv lock --check"; "$INV" lock invariants.yaml --check
 echo "== inv verify";       "$INV" verify invariants.yaml --import fact_pipeline.pipeline
 echo "== inv scan";         "$INV" scan invariants.yaml
+echo "== inv status";       "$INV" status invariants.yaml --import fact_pipeline.pipeline
 echo "== pytest";           "$PY" -m pytest -q --inv-verify --inv-ablate --inv-report \
                               --inv-report-json build/inv-report.json
 echo "ci: ok"

@@ -7,6 +7,8 @@ name = "support-agent"
 version = "0.1.0"
 description = "A tool-calling support agent whose API laws are checked by the invariants library."
 requires-python = ">=3.11"
+# invariants-first: ci.sh installs it from this checkout first (pip install -e ../../invariants-py[...]),
+# so pip finds it installed; it is not on PyPI yet, so outside the monorepo install it the same way first.
 dependencies = [
     "invariants-first[pydantic,schema]>=0.1.0",
     "pydantic>=2.5",
