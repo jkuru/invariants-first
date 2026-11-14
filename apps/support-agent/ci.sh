@@ -12,7 +12,8 @@ cd "$(dirname "$0")"
 if [ -n "${PYTHON:-}" ]; then PY="$PYTHON"
 elif [ -n "${VIRTUAL_ENV:-}" ]; then PY="$VIRTUAL_ENV/bin/python"
 else
-  if [ ! -f .venv/.ci-ready ]; then          # made on the first run; a failed setup is redone
+  if [ ! -f .venv/.ci-ready-2 ]; then        # made on the first run; a failed setup is redone; -2: venvs made
+    # before the libraries split out of invariants-first lack them, so they are made again
     BASE="${BASE_PYTHON:-python3}"           # the interpreter the venv is made from (3.11 or later)
     "$BASE" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
       || { echo "ci.sh: $BASE is older than 3.11; set BASE_PYTHON or PYTHON" >&2; exit 2; }
@@ -29,7 +30,7 @@ else
       echo "ci.sh: the langgraph extra did not install; installing '.[dev]' alone (delete .venv to retry)" >&2
       .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
     fi
-    touch .venv/.ci-ready
+    touch .venv/.ci-ready-2
   fi
   PY=.venv/bin/python
 fi
