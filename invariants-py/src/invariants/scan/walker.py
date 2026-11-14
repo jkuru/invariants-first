@@ -18,7 +18,7 @@ from .astutil import (
 )
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Fan, _Module, _Site
 from .indexer import _class_scope_nodes, _Index
-from .inference import _Inference, _rebinds
+from .inference import _Inference, _plain_named_sets, _rebinds
 
 # fix round 26: the methods that run where their class is called (an edge from each call of the class)
 _CONSTRUCTORS = frozenset({"__init__", "__new__", "__post_init__"})
@@ -112,7 +112,10 @@ class _Walker(_Inference):
                 func = self.idx.funcs[fid]
                 self._defined(stmt, fid, func.cls, owner, local, self_cls)
                 me = None
-                if func.cls and stmt.args.args and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list):
+                if func.cls and stmt.args.args and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list) \
+                        and not _rebinds(stmt, stmt.args.args[0].arg):
+                    # fix round 29: a method that rebinds its first parameter (`self = other`, `for self in`,
+                    # `except E as self`, `self += x`, `cls = Repo`) has no self of its class: a plain local
                     me = (stmt.args.args[0].arg, func.cls)
                 names = _locals(stmt)                  # once per function, not per statement
                 self._class_scope = None               # a method body does not see the class body's names
@@ -914,7 +917,10 @@ class _Walker(_Inference):
         lit = name.value if isinstance(name, ast.Constant) and isinstance(name.value, str) else None
         obj = self._resolve(node.args[0], local, me)
         self._site(fq.split(".")[1], owner, node, f"{obj or '?'}|{lit if lit is not None else ''}")
-        if lit is None:                                 # the class of the receiver, for a computed name
+        # the class of the receiver, for a computed name; fix round 29: a computed setattr is narrowed only
+        # when its name is known not to be __class__ (a dataclass field's, a __setattr__ or __setstate__ passing
+        # its own on): any other may retype the object, and every alias of it the scan has typed
+        if lit is None and (fq != "builtins.setattr" or id(node) in _plain_named_sets(self.idx, self.mod)):
             self.sites[-1].recv = self._receiver_class(node.args[0], obj, owner, local, me)
         if lit is not None and obj and f"{obj}.{lit}" in _REFLECTIVE:       # getattr(builtins, "getattr")
             self._site("reflection", owner, node, f"{lit} looked up by name")

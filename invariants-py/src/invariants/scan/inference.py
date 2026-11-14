@@ -391,6 +391,14 @@ class _Inference:
             me_name = fn.args.args[0].arg
             params = self._types_in(fn, set(), (me_name, cls), fid)
             for node in _under(fn):
+                # fix round 29: a for / async for / with-as / comprehension target binds what the scan does not
+                # pair with a value (`for self.repo in repos`, `with cm() as self.repo`): unknown
+                loose = [node.target] if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else \
+                    [node.optional_vars] if isinstance(node, ast.withitem) and node.optional_vars is not None else []
+                for t in loose:
+                    for x in ast.walk(t):
+                        if isinstance(x, ast.Attribute) and isinstance(x.value, ast.Name) and x.value.id == me_name:
+                            seen[x.attr].add(None)
                 pairs = _pairs(node) if isinstance(node, ast.Assign) else \
                     [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
                 for t, v in pairs:
@@ -759,6 +767,7 @@ def _set_from_outside(idx: _Index, mod: _Module) -> set[str]:
     owners = {id(idx.funcs[m].node): cid for cid, info in idx.classes.items() if info["module"] == mod.name
               for m in info["methods"].values()}
     out: set[str] = set()
+    fields = _plain_named_sets(idx, mod)
     for fn in _walk_of(tree, ast.FunctionDef, ast.AsyncFunctionDef, ast.Module):
         # only a method's first parameter is the object itself (self); in a plain function,
         # `ctx.repo = other` sets another object's attribute
@@ -766,25 +775,140 @@ def _set_from_outside(idx: _Index, mod: _Module) -> set[str]:
                  and fn.args.args else None)
         for node in _own_under(fn):
             if isinstance(node, WRITES):
-                out |= _attrs_set(node, first)
+                out |= _attrs_set(node, first, fields)
         for _, obj in _computed_dict_writes(fn, tree=tree):
             if isinstance(obj, ast.Name) and obj.id == first and id(fn) in owners:
                 out.add(f"{owners[id(fn)]}:*")              # self.__dict__.update(kw): any attribute
     return out
 
 
-def _attrs_set(node: ast.AST, first: str | None) -> set[str]:
+def _attrs_set(node: ast.AST, first: str | None, fields: frozenset[int] = frozenset()) -> set[str]:
     """The attribute names one node sets on an object other than `first` (the method's self): `obj.x = ...`,
     `obj.x += ...`, `del obj.x`, `setattr(obj, "x", ...)`; and on any object, self too, the reflective
     writes (`object.__setattr__(self, "x", v)`, `self.__dict__["x"] = v`), which skip the plain bindings
-    the scan types, and `obj.x.__class__ = ...`, which retypes what obj.x holds."""
+    the scan types, and `obj.x.__class__ = ...`, which retypes what obj.x holds. A write that may retype
+    an object (`x.__class__ = ...`, or a computed setattr, whose name may be `__class__`: _retypes) on
+    `obj.x` counts as setting x, and on a plain name x (a module-level singleton) too (fix round 29)."""
     out: set[str] = set()
     for obj, name, reflective in _attr_writes(node):
-        if name == "__class__" and isinstance(obj, ast.Attribute):
-            out.add(obj.attr)
+        if _retypes(node, name, fields):
+            if isinstance(obj, ast.Attribute):
+                out.add(obj.attr)
+            elif isinstance(obj, ast.Name) and obj.id != first:
+                out.add(obj.id)
         if name and (reflective or not (isinstance(obj, ast.Name) and obj.id == first)):
             out.add(name)
     return out
+
+
+def _computed_set(node: ast.AST) -> bool:
+    """node is a setattr whose name the scan cannot read could be anything: `setattr(o, k, v)`,
+    `object.__setattr__(o, k, v)`, `o.__setattr__(k, v)` (a `__dict__` write never changes the class)."""
+    if not isinstance(node, ast.Call):
+        return False
+    f = node.func
+    return _dotted(f) in ("setattr", "builtins.setattr") or (isinstance(f, ast.Attribute) and f.attr == "__setattr__")
+
+
+def _retypes(node: ast.AST, name: str | None, fields: frozenset[int]) -> bool:
+    """The attribute write may set `__class__` (fix round 29): it names it, or it is a computed setattr
+    whose name is not a dataclass field's (_plain_named_sets)."""
+    return name == "__class__" or (name is None and _computed_set(node) and id(node) not in fields)
+
+
+_PLAIN_NAMED_SETS: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[int]]] = weakref.WeakKeyDictionary()
+_DUNDER_FIELDS: weakref.WeakKeyDictionary[_Index, bool] = weakref.WeakKeyDictionary()
+
+
+def _plain_named_sets(idx: _Index, mod: _Module) -> frozenset[int]:
+    """The computed setattrs in mod that cannot set `__class__` on their own (fix round 29): one whose name is
+    a dataclass field's, `setattr(o, f.name, v)` inside `for f in dataclasses.fields(x):` (`fields`
+    imported from dataclasses, f not rebound in the loop; a field is never named `__class__` unless a
+    class declares a dunder field, so no scanned class body may annotate a dunder name); a `__setattr__`
+    that passes its own name parameter on; and a `__setstate__` that sets each key of its state."""
+    per = _PLAIN_NAMED_SETS.setdefault(idx, {})
+    if mod.name in per:
+        return per[mod.name]
+    if idx not in _DUNDER_FIELDS:
+        _DUNDER_FIELDS[idx] = any(isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name)
+                                  and st.target.id.startswith("__") and st.target.id.endswith("__")
+                                  for info in idx.classes.values() for st in getattr(info.get("node"), "body", ()))
+    out: set[int] = set()
+    if not _DUNDER_FIELDS[idx]:
+        names = {"dataclasses.fields"} if any(
+            isinstance(n, ast.Import) and any(a.name == "dataclasses" and a.asname is None for a in n.names)
+            for n in _walk_of(mod.tree, ast.Import)) else set()
+        if any(isinstance(n, ast.ImportFrom) and n.module == "dataclasses" and not n.level
+               and any(a.name == "fields" and a.asname is None for a in n.names)
+               for n in _walk_of(mod.tree, ast.ImportFrom)):
+            names.add("fields")
+        for loop in _walk_of(mod.tree, ast.For, ast.AsyncFor) if names else ():
+            if not (isinstance(loop, (ast.For, ast.AsyncFor)) and isinstance(loop.target, ast.Name)
+                    and isinstance(loop.iter, ast.Call) and _dotted(loop.iter.func) in names):
+                continue
+            var = loop.target.id
+            inner = [n for st in loop.body for n in ast.walk(st)]
+            if any(isinstance(n, ast.Name) and n.id == var and not isinstance(n.ctx, ast.Load) for n in inner) or \
+                    any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+                                       ast.ExceptHandler, ast.Global, ast.Nonlocal)) for n in inner):
+                continue
+            for n in inner:
+                if isinstance(n, ast.Call) and _computed_set(n):
+                    k = _set_name(n)
+                    if isinstance(k, ast.Attribute) and k.attr == "name" and isinstance(k.value, ast.Name) \
+                            and k.value.id == var:
+                        out.add(id(n))
+    for fn in _walk_of(mod.tree, ast.FunctionDef, ast.AsyncFunctionDef):
+        if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(fn.args.args) >= 2) \
+                or fn.name not in ("__setattr__", "__setstate__") or _rebinds(fn, fn.args.args[1].arg):
+            continue
+        p = fn.args.args[1].arg
+        if fn.name == "__setattr__":
+            # a __setattr__ that passes its own name on (`object.__setattr__(self, name, value)`): the name
+            # is what a write elsewhere set, and that write is judged where it is
+            out.update(id(n) for n in _own_under(fn) if isinstance(n, ast.Call) and _computed_set(n)
+                       and isinstance(k := _set_name(n), ast.Name) and k.id == p)
+        elif not _explicit_setstate(idx):
+            # `for k, v in state.items(): setattr(self, k, v)` in __setstate__: pickle and copy pass it what
+            # __getstate__ (or __reduce_ex__, from the instance __dict__) gave, whose keys are attribute
+            # names, never __class__; unless scanned code calls __setstate__ itself
+            stores = collections.Counter(n.id for n in _own_under(fn)
+                                         if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load))
+            for loop in _own_under(fn):
+                if not isinstance(loop, ast.For):
+                    continue
+                it, tg = loop.iter, loop.target
+                over = (isinstance(it, ast.Name) and it.id == p) or (
+                    isinstance(it, ast.Call) and not it.args and isinstance(it.func, ast.Attribute)
+                    and it.func.attr in ("items", "keys") and isinstance(it.func.value, ast.Name)
+                    and it.func.value.id == p)
+                key = tg.elts[0] if isinstance(tg, ast.Tuple) and tg.elts else tg
+                if not over or not isinstance(key, ast.Name) or stores[key.id] != 1:
+                    continue
+                out.update(id(n) for st in loop.body for n in ast.walk(st) if isinstance(n, ast.Call)
+                           and _computed_set(n) and isinstance(k := _set_name(n), ast.Name) and k.id == key.id)
+    per[mod.name] = got = frozenset(out)
+    return got
+
+
+def _set_name(n: ast.Call) -> ast.expr | None:
+    """The name argument of a setattr-style call: `setattr(o, k, v)`, `object.__setattr__(o, k, v)`,
+    `o.__setattr__(k, v)`."""
+    at = 0 if isinstance(n.func, ast.Attribute) and n.func.attr == "__setattr__" and len(n.args) < 3 else 1
+    return n.args[at] if len(n.args) > at else None
+
+
+_SETSTATE_CALLED: weakref.WeakKeyDictionary[_Index, bool] = weakref.WeakKeyDictionary()
+
+
+def _explicit_setstate(idx: _Index) -> bool:
+    """Scanned code calls or takes `x.__setstate__` itself (with a state the scan cannot read)."""
+    got = _SETSTATE_CALLED.get(idx)
+    if got is None:
+        got = _SETSTATE_CALLED[idx] = any(isinstance(n, ast.Attribute) and n.attr == "__setstate__"
+                                          and isinstance(n.ctx, ast.Load)
+                                          for m in idx.modules.values() for n in _walk_of(m.tree, ast.Attribute))
+    return got
 
 
 # ---- classes whose construction or identity the code can alter: their inferred types are not trusted ----
@@ -856,6 +980,7 @@ class _Subversions:
         self.values: dict[int, ast.expr] = {}                  # assigned attribute target -> its value
         self.methods = {id(self.idx.funcs[m].node): cid for cid, info in idx.classes.items()
                         if info["module"] == mod.name for m in info["methods"].values()}
+        self.fields = _plain_named_sets(idx, mod)
 
     def _fq(self, node: ast.AST) -> str | None:
         return self.inf._resolve(node, set(), None) if _dotted(node) else None
@@ -969,7 +1094,7 @@ class _Subversions:
                     child.args[2] if isinstance(child, ast.Call) and len(child.args) > 2 \
                     and _dotted(child.func) in ("setattr", "builtins.setattr") else None
                 for obj, name, _ in _attr_writes(child):
-                    self._write(obj, name, me, value)
+                    self._write(obj, name, me, value, _retypes(child, name, self.fields))
             if inner is not me:
                 around.append((child.__dict__["_inv_span"][2], inner))
                 me = inner
@@ -988,12 +1113,16 @@ class _Subversions:
                 child.args[2] if isinstance(child, ast.Call) and len(child.args) > 2 \
                 and _dotted(child.func) in ("setattr", "builtins.setattr") else None
             for obj, name, _ in (_attr_writes(child) if isinstance(child, WRITES) else ()):
-                self._write(obj, name, me, value)
+                self._write(obj, name, me, value, _retypes(child, name, self.fields))
             self._writes(child, inner)
 
-    def _write(self, obj: ast.expr, name: str | None, me: dict[str, str], value: ast.expr | None = None) -> None:
+    def _write(self, obj: ast.expr, name: str | None, me: dict[str, str], value: ast.expr | None = None,
+               retypes: bool = False) -> None:
         cls = me.get(obj.id) if isinstance(obj, ast.Name) else None
         fq = cls or self._fq(obj)
+        if cls and name is None and retypes:
+            self.found.add(cls)          # fix round 29: setattr(self, k, v) may set self.__class__, as assigning it does
+            return
         if name == "__class__":
             if fq in self.idx.classes:
                 self.found.add(fq)                             # self.__class__ = Other, Safe.__class__ = M
@@ -1199,7 +1328,7 @@ def _returns_made(fn: ast.AST, hook: str) -> bool:
 def _rebinds(fn: ast.AST, name: str) -> bool:
     """fn (or a function nested in it) binds name again: an assignment, a for/with/except/match target,
     `del`, an import, or a nonlocal/global declaration of it."""
-    for node in ast.walk(fn):
+    for node in _under(fn):
         if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
             return True
         if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:

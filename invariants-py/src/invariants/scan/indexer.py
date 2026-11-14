@@ -75,6 +75,10 @@ class _Index:
         self.no_source: dict[str, pathlib.Path] = {}     # importable module with no source (.so, .pyd, .pyc)
         # (root, file, line, code, message) reported under every scanned rule, like a parse error
         self.problems: list[tuple[pathlib.Path, pathlib.Path, int, str, str]] = []
+        # a standard-library import the importing file's own directory shadows: (module, line, name, the
+        # package or module of that directory it may be instead)
+        self.shadows: list[tuple[_Module, int, str, str]] = []
+        self.shadow_held: dict[str, frozenset[str]] = {}    # such a package -> the scanned functions under it
         self.skipped_dirs: collections.Counter[str] = collections.Counter()   # always-skipped dir -> files
         self.skipped_files: list[tuple[pathlib.Path, pathlib.Path, str]] = []  # (root, file, its directory)
         self.skipped_imports: dict[pathlib.Path, list[tuple[int, str]]] = {}   # skipped file -> its imports
@@ -261,6 +265,19 @@ class _Index:
                 for name in names:
                     name = self.real(name)
                     head = name.split(".")[0]
+                    if (head in tops or head in sys.stdlib_module_names) and head not in mod.rebase and own \
+                            and f"{own}.{name}" in known and not _before_path(head) and fits(mod, node, own, name):
+                        # fix round 29: the file's own directory holds it too, and is first on sys.path when a
+                        # script there runs (`python cli/main.py`), but not otherwise (`python -m cli.main`). A
+                        # standard-library name is reported under a rule only when the module of the file's own
+                        # directory holds code that bears on it (checks._shadow_findings): `types.py` in a package
+                        # beside `import types` is common, and only matters when what it holds reaches the sink
+                        if head in tops:
+                            self.problems.append((mod.root, mod.file, node.lineno, "unresolved/unknown-module",
+                                                  _shadow_text(name, "a top-level module under the roots", own)))
+                        else:
+                            self.shadows.append((mod, node.lineno, name, f"{own}.{head}"))
+                        continue
                     if head in tops or head in mod.rebase or head in sys.stdlib_module_names or head not in tails:
                         continue
                     if own and f"{own}.{name}" in known and fits(mod, node, own, name):
@@ -853,8 +870,32 @@ class _Index:
                 binds.update({x: 2 for x in n.names})
             elif isinstance(n, (ast.Import, ast.ImportFrom)):
                 binds.update((a.asname or a.name).split(".")[0] for a in n.names)
-        self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
+        # fix round 29: and the bindings only a module-scope walk names (a match capture, `except E as x`,
+        # `case {**x}`), which rebind a singleton as any other assignment does
+        from .inference import _module_binds
+        scope = _module_binds(tree)
+        self._values[module] = out = {k: v for k, v in found.items() if max(binds[k], scope[k]) == 1}
         return out
+
+
+_BEFORE_PATH: dict[str, bool] = {}
+
+
+def _shadow_text(name: str, other: str, own: str) -> str:
+    return (f"imports {name}, which is both {other} and {own}.{name} in the importing file's own directory "
+            f"(shadowed): which one Python imports depends on how the program starts (a script's own directory "
+            f"comes first on sys.path), so calls through it cannot be traced; import it by its full name, or "
+            f"rename the module")
+
+
+def _before_path(name: str) -> bool:
+    """name is a builtin or frozen module, which Python finds before it looks at sys.path (no file in a
+    script's directory can shadow it)."""
+    got = _BEFORE_PATH.get(name)
+    if got is None:
+        got = _BEFORE_PATH[name] = name in sys.builtin_module_names or \
+            importlib.machinery.FrozenImporter.find_spec(name) is not None
+    return got
 
 
 _NESTED_SCOPES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.FunctionDef,
