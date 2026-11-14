@@ -55,7 +55,8 @@ from .pin_contracts import contract_hash
 from .pin_jsonschema import json_schema, stdlib_json_schema
 from .pin_signatures import signature_types
 from .pin_types import Schemas, resolved_schema, strip_prose
-from .pinning import build, expand_applies_to, mediated, rule_semantics, scan_pin, scan_skip
+from .pinning import (build, expand_applies_to, imports_code, mediated, rule_semantics, scan_pin, scan_skip,
+                      static_pins, with_static)
 from .rule_diff import _entry_changes, _rule_changes, _scan_changes
 from .schema_diff import _schema_changes, constraint_weakening
 

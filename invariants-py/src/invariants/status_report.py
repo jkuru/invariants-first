@@ -16,6 +16,10 @@ from .registry.coverage import _ablation_problems, _target_problems
 from .scan import Report
 
 DOWNGRADE = {"held": "enforce(known-callers)"}
+# an unresolved site cannot go in allow: (that freezes a resolved call path); a person who reviewed
+# it accepts it in allow_unresolved, by the sha the scan gives it
+UNRESOLVED_NEXT = ("make each unresolved call resolvable, or accept a reviewed unresolved site in "
+                   "allow_unresolved (inv scan --format json gives its sha)")
 ABLATE_CMD = ("pytest --inv-rules invariants.yaml --inv-ablate --inv-report-json build/inv-report.json, then "
               "inv status --ablation build/inv-report.json")
 NO_ABLATION = (f"held is unproven: no ablation results were given, so nothing shows a falsifier fails with "
@@ -123,7 +127,11 @@ def next_steps(rule: Rule, report: Report, row: dict[str, Any]) -> list[str]:
         out.append(f"put @inv.guard({rule.id!r}) on {rule.target_key} (inv verify lists why it does not count)")
     result = report.rule_result(rule.id)
     if result in ("fail", "unresolved"):
-        out.append("fix the call paths `inv scan` reports (or freeze a known one in allow:)")
+        kinds = {f.kind for f in report.findings if f.rule == rule.id}
+        if kinds - {"unresolved"} or not kinds:
+            out.append("fix the call paths `inv scan` reports (or freeze a known one in allow:)")
+        if "unresolved" in kinds:
+            out.append(UNRESOLVED_NEXT)
     if not _door_only(rule):
         if not rule.raw.get("falsified_by"):
             out.append("write a test that makes it refuse (expects inv.Rejected) and list it under tests: "

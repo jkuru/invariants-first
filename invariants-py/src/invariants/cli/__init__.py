@@ -12,6 +12,7 @@ from __future__ import annotations
 
 # ruff: noqa: F401   (the names below are the package's API)
 import argparse
+import os
 import sys
 from typing import Any, Callable, Sequence
 
@@ -210,6 +211,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.print_usage(sys.stderr)
         _err(f"inv: choose a command: {', '.join(c[0] for c in _COMMANDS)}")
         return USAGE
+    # the reviewer's switch is read here, before anything could import the app (which never happens
+    # in this process: the imports run in a child, worker.py)
+    a.allow_weakening_env = os.environ.get(ALLOW_WEAKENING_ENV) == "1"
     try:
         return a.fn(a)
     except Usage as e:

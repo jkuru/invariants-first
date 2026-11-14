@@ -2,6 +2,9 @@
 
 A rule file is JSON or YAML. `inv validate` checks it against the bundled JSON Schema
 (`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere.
+YAML anchors and aliases (`&name`, `*name`, `<<: *name`) are refused, with the line they are on: a
+few nested aliases stand for billions of values, and a rule file is written out in full. `inv lock`
+pins only a file `inv validate` accepts.
 How the fields fit together is in [Invariant-first](design-guide.md).
 
 ## The short form

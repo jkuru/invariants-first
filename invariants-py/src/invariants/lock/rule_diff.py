@@ -243,8 +243,7 @@ def _accept_changes(where: str, old: Any, new: Any) -> list[Change]:
     lb = new if isinstance(new, list) else [] if new is None else [new]
     ka, kb = [_accept_key(e) for e in la], [_accept_key(e) for e in lb]
     if None in ka or None in kb:
-        return [Change(where, "mediation.allow_unresolved", old, new, True,
-                       "a malformed entry; treated as a possible weakening")]
+        return _malformed_accepts(where, la, ka, lb, kb)
     na = collections.Counter(k[:3] for k in ka if k is not None)
     nb = collections.Counter(k[:3] for k in kb if k is not None)
     ca = collections.Counter(k[:3] for k in ka if k is not None and k[3] is None)
@@ -259,11 +258,12 @@ def _accept_changes(where: str, old: Any, new: Any) -> list[Change]:
         if nb[site] > na[site]:
             more = (f" ({nb[site]} entries for it instead of {na[site]}: each accepts one finding of that "
                     f"statement)" if na[site] else "")
-            out.append(Change(where, "mediation.allow_unresolved", None, e, True,
+            verb = "another entry for" if na[site] else "added"
+            out.append(Change(where, f"mediation.allow_unresolved: {verb} {_entry(e)}", None, None, True,
                               f"an unresolved site is now accepted without the scan's proof: {e['at']} "
                               f"({e['code']}){more}"))
         elif cb[site] > ca[site]:
-            out.append(Change(where, "mediation.allow_unresolved", None, e, True,
+            out.append(Change(where, f"mediation.allow_unresolved: {_entry(e)} lost its column", None, None, True,
                               f"the entry for {e['at']} ({e['code']}) no longer names a column, so it matches more"))
     seen = set()
     for e, k in zip(la, ka):
@@ -273,10 +273,46 @@ def _accept_changes(where: str, old: Any, new: Any) -> list[Change]:
         msg = (f"{e['at']} ({e['code']}) has {nb[k[:3]]} entries instead of {na[k[:3]]}: fewer findings of "
                f"that statement are accepted" if nb[k[:3]] else
                f"{e['at']} ({e['code']}) is no longer accepted: the scan reports it again")
-        out.append(Change(where, "mediation.allow_unresolved", e, None, False, msg))
+        out.append(Change(where, f"mediation.allow_unresolved: removed {_entry(e)}", None, None, False, msg))
     if not out:                                        # the same sites: moved lines or a new why
-        out.append(Change(where, "mediation.allow_unresolved", old, new, False,
-                          "the same sites are accepted (a new line or reason)"))
+        out += _same_sites(where, la, ka, lb, kb) or [
+            Change(where, "mediation.allow_unresolved: reordered", None, None, False,
+                   "the same sites are accepted (a new line or reason)")]
+    return out
+
+
+def _entry(e: dict[str, Any]) -> str:
+    """One allow_unresolved entry, named: its place, code and sha."""
+    return f"{e['at']} ({e['code']}, sha {e['sha']})"
+
+
+def _malformed_accepts(where: str, la: list[Any], ka: list[Any], lb: list[Any], kb: list[Any]) -> list[Change]:
+    """Each malformed allow_unresolved entry, by its index, as a possible weakening."""
+    out = []
+    for side, entries, keys in (("stored", la, ka), ("new", lb, kb)):
+        for i, (e, k) in enumerate(zip(entries, keys)):
+            if k is None:
+                out.append(Change(where, f"mediation.allow_unresolved[{i}] ({side})", None,
+                                  e if side == "new" else None, True,
+                                  "a malformed entry; treated as a possible weakening"))
+    return out
+
+
+def _same_sites(where: str, la: list[Any], ka: list[Any], lb: list[Any], kb: list[Any]) -> list[Change]:
+    """The same sites accepted: each entry whose line (at) or reason (why) changed, by its site."""
+    out = []
+    rest = list(zip(la, ka))
+    for e, k in zip(lb, kb):
+        i = next((i for i, (_, ok) in enumerate(rest) if ok is not None and k is not None and ok[:3] == k[:3]), None)
+        if i is None:
+            continue
+        o, _ = rest.pop(i)
+        if o.get("at") != e.get("at"):
+            out.append(Change(where, f"mediation.allow_unresolved: moved {o['at']} -> {e['at']} "
+                                     f"({e['code']}, sha {e['sha']})", None, None, False, "the code above it moved"))
+        elif not same(o.get("why"), e.get("why")):
+            out.append(Change(where, f"mediation.allow_unresolved: new reason for {_entry(e)}", None, None, False,
+                              "the reviewer reworded it"))
     return out
 
 

@@ -34,8 +34,48 @@ WRITE_COMMANDS = frozenset({"cp", "mv", "tee", "dd", "rm", "ln", "install", "rsy
                             "touch", "sort", "patch", "sed", "gsed", "perl", "ruby", "awk", "gawk", "ditto", "scp",
                             "curl", "wget", "tar", "unzip", "chmod", "chown"})
 # a command that runs other code the hook cannot read: blocked when it mentions the lock or pyproject
-OPAQUE = re.compile(r"\$\(|`|\$\{|<\(|>\(|\beval\b|\bpython[0-9.]*\s+-[c\s]|\bpython[0-9.]*\s+-$"
+OPAQUE = re.compile(r"\$\(|`|\$\{|<\(|>\(|\beval\b"
                     r"|\b(?:ba|z|da|k)?sh\s+-c\b|\bxargs\b|\b(?:perl|ruby|node)\s+-e\b|\bGIT_[A-Z_]*=|\bgit\s+config\b")
+_PYTHON = re.compile(r"\bpython[0-9.]*(?=\s|$)")
+_PY_VALUE_FLAGS = frozenset("WX")                # -W arg, -X opt: the rest of the cluster, or the next word
+_PY_LONG_VALUE = frozenset({"--check-hash-based-pycs"})
+
+
+def _python_code(command: str) -> bool:
+    """Some `python` in the command runs code from a string or stdin: an option cluster holding c
+    before the script or -m (`-c`, `-Ic`, `-I -c`, `-u -c`, `-W ignore -c`, `-cprint(1)`), or `-`."""
+    return any(_runs_string(command[m.end():].split()) for m in _PYTHON.finditer(command))
+
+
+def _runs_string(words: list[str]) -> bool:
+    """python's own options (the words after `python`) hold a cluster with c, or `-` (stdin)."""
+    i = 0
+    while i < len(words):
+        w = words[i].strip("'\"")
+        if w == "-":
+            return True
+        if w == "--" or not w.startswith("-"):
+            return False                             # the script: what follows is its arguments
+        if w.startswith("--"):
+            i += 2 if w in _PY_LONG_VALUE else 1
+            continue
+        for j, ch in enumerate(w[1:], 1):
+            if ch == "c":
+                return True
+            if ch == "m":
+                return False                         # a module: the words after it are its own
+            if ch in _PY_VALUE_FLAGS:
+                i += 0 if j + 1 < len(w) else 1      # the value is the rest of the word, or the next one
+                break
+        i += 1
+    return False
+
+
+def _opaque(command: str) -> bool:
+    """The hook cannot read what the command runs (OPAQUE, or python code from a string)."""
+    return bool(OPAQUE.search(command)) or _python_code(command)
+
+
 SUSPECT = re.compile(r"lock|pyproject|toml|invariants", re.IGNORECASE)
 _GLOB = re.compile(r"[*?\[{]")
 _BRACE_LIMIT = 256
@@ -258,7 +298,7 @@ def _shell_writes(command: str, cwd: str | None = None) -> str | None:
     lowered = command.lower()
     named = [n for n, word in zip(PROTECTED, ("lock", "pyproject")) if word in lowered]
     tokens = _tokens(command)
-    if tokens is None or OPAQUE.search(command):
+    if tokens is None or _opaque(command):
         hit = next((n for n in PROTECTED if _mentions(command, n)), None) or (named[0] if named else None)
         if hit:
             return hit
@@ -304,7 +344,7 @@ def _shell_hook_config(command: str) -> bool:
     if ".claude" not in command.casefold():
         return False
     tokens = _tokens(command)
-    if tokens is None or OPAQUE.search(command):
+    if tokens is None or _opaque(command):
         return "settings" in command.casefold()
     for words, redirects in _segments(tokens):
         for w in [*words, *(t for _, t in redirects)]:

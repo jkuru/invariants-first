@@ -59,6 +59,7 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
     if path.suffix.lower() in YAML_SUFFIXES:
         import yaml
         try:
+            refuse_aliases(text, str(source))
             doc = yaml.safe_load(_named(text, str(source)))
             _yaml_lines(yaml.compose(_named(text, str(source)), Loader=yaml.SafeLoader), where)
         except yaml.YAMLError as e:
@@ -75,6 +76,40 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
         with where.located(where.rules.get(i)):
             expand_short_forms({"rules": [raw]})
     return doc, where
+
+
+def refuse_aliases(text: str, name: str) -> None:
+    """LoadError at the first YAML anchor (`&a`) or alias (`*a`, a `<<: *a` merge too) in a rule file.
+    An alias repeats a node without copying it, so a few lines of nested aliases stand for billions
+    of nodes, and every check that walks the document would hang on them; a rule file has no need of
+    them. Read from the parser's events, before anything is built (linear in the text)."""
+    import yaml
+    for ev in yaml.parse(_named(text, name), Loader=yaml.SafeLoader):
+        if isinstance(ev, yaml.AliasEvent) or getattr(ev, "anchor", None) is not None:
+            kind = "an alias" if isinstance(ev, yaml.AliasEvent) else "an anchor"
+            line = ev.start_mark.line + 1 if ev.start_mark is not None else 0
+            raise LoadError(f"{name}:{line}: {kind} (YAML &name or *name) is not allowed in a rule file; "
+                            f"write the value out where it is used")
+
+
+EXPANDED_LIMIT = 1_000_000
+
+
+def check_expanded(doc: Any, name: str, limit: int = EXPANDED_LIMIT) -> None:
+    """LoadError when a loaded YAML document (an OpenAPI file, which may use anchors) stands for more
+    than `limit` values once its aliases are expanded: counted with a stop at the limit, so a nested
+    alias bomb is refused in linear time instead of hanging what walks it."""
+    seen, work = 0, [doc]
+    while work:
+        v = work.pop()
+        seen += 1
+        if seen > limit:
+            raise LoadError(f"{name}: more than {limit} values once its YAML aliases are expanded; not read")
+        if isinstance(v, dict):
+            work.extend(v.keys())
+            work.extend(v.values())
+        elif isinstance(v, list):
+            work.extend(v)
 
 
 def _named(text: str, name: str) -> io.StringIO:

@@ -15,8 +15,8 @@ from typing import Any
 
 from ..errors import LoadError
 from ..resolve import resolve
-from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MEDIATION_DOC, _plain, _sha,
-                        canonical)
+from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MEDIATION_DOC, PY_CONTRACTS,
+                        SCHEMA_CONTRACTS, _is_ref, _plain, _sha, canonical)
 from .pin_contracts import contract_hash
 from .pin_signatures import _signature_pin
 from .pin_types import Schemas, _class_ref, resolved_schema
@@ -171,3 +171,109 @@ def _target_pin(key: str, declared: dict[str, Any], pins: Schemas) -> dict[str, 
         label = _class_ref(schema) if isinstance(schema, type) else key
         pin["reply_schema"] = pins.add({"name": label, **resolved_schema(schema)})
     return pin
+
+
+# --- the pins that need no import -----------------------------------------------------------------
+# `inv lock` and `inv check` take the pins that import the app (signatures, model schemas, a live
+# app's OpenAPI document) in a child process (cli/worker.py) and the rest here, in the process that
+# compares them, from the rule document it read before the child ran: the child's word is taken for
+# what only the imported code can say, never for the rules, the scan, a target's declared effects, a
+# provider's declared fields or a contract read from a file.
+def imports_code(c: Any) -> bool:
+    """The contract is pinned by importing a module (a python, pydantic, dataclass or schema class
+    `module:attr`, or an openapi `app:`); a file contract is read, never imported."""
+    if not isinstance(c, dict):
+        return True
+    ref = c.get("ref")
+    return ((c.get("type") == "openapi" and "app" in c) or c.get("type") in PY_CONTRACTS
+            or (c.get("type") in SCHEMA_CONTRACTS and isinstance(ref, str) and ":" in ref))
+
+
+def static_pins(doc: dict[str, Any], base_dir: pathlib.Path,
+                scan: dict[str, list[str]] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+    """The parts of build() that need no import (a contract that does is None), and the message of
+    each file contract that cannot be pinned."""
+    expanded = expand_applies_to(doc)
+    declared = doc.get("targets") or {}
+    rules: dict[str, Any] = {}
+    keys: set[str] = set(declared)
+    for raw in doc.get("rules") or []:
+        rules[raw["id"]] = _rule_pin(raw, expanded)
+        keys.update(rules[raw["id"]]["targets"])
+    targets = {k: {"effects": declared.get(k, {"effects": "external"}).get("effects")} for k in sorted(keys)}
+    providers = {n: _provider_fields(p) for n, p in sorted((doc.get("providers") or {}).items())
+                 if isinstance(p, dict)}
+    ops = _subject_operations(doc)
+    pins = Schemas()
+    contracts: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for n, c in sorted((doc.get("contracts") or {}).items()):
+        if imports_code(c):
+            contracts[n] = None
+            continue
+        try:
+            contracts[n] = contract_hash(n, c, base_dir, ops.get(n), pins)
+        except LoadError as e:
+            contracts[n] = None
+            errors[n] = str(e)
+    lock = {"lock_version": LOCK_VERSION, "spec": doc.get("spec"), "rules": rules, "targets": targets,
+            "providers": providers, "contracts": contracts, "schemas": pins.table}
+    if scan is not None and mediated(doc):
+        lock["scan"] = scan_pin(scan["roots"], scan["exclude"], scan.get("skip"))
+    return _plain(lock), errors
+
+
+def _provider_fields(p: dict[str, Any]) -> dict[str, Any]:
+    """A provider's declared fields, as _provider_pin pins them (concurrent only when set)."""
+    entry = {k: p.get(k) for k in ("type", "from", "args")}
+    if "concurrent" in p:
+        entry["concurrent"] = p["concurrent"]
+    return _plain(entry)
+
+
+def with_static(imported: dict[str, Any], static: dict[str, Any]) -> dict[str, Any]:
+    """The fresh lock: the imported pins (a lock build() made in the child) with every part that
+    needs no import taken from static_pins. LoadError when the child pinned other entries than the
+    rule file names."""
+    for sec in ("targets", "providers", "contracts"):
+        got = imported.get(sec)
+        if not isinstance(got, dict) or sorted(got) != sorted(static[sec]):
+            raise LoadError(f"the process that imports the app pinned other {sec} than the rule file names")
+    out = {k: static[k] for k in ("lock_version", "spec", "rules")}
+    out["targets"] = {k: {**_obj(imported["targets"][k]), **v} for k, v in static["targets"].items()}
+    out["providers"] = {n: {**_obj(imported["providers"][n]), **v} for n, v in static["providers"].items()}
+    out["contracts"] = {n: (imported["contracts"][n] if v is None else v) for n, v in static["contracts"].items()}
+    if "scan" in static:
+        out["scan"] = static["scan"]
+    table = imported.get("schemas")
+    out["schemas"] = _reachable(out, {**(table if isinstance(table, dict) else {}), **static["schemas"]})
+    return _plain(out)
+
+
+def _obj(v: Any) -> dict[str, Any]:
+    return v if isinstance(v, dict) else {}
+
+
+def _reachable(lock: dict[str, Any], table: dict[str, Any]) -> dict[str, Any]:
+    """The schema entries the lock's entries reach: one the child pinned for a file contract that
+    this process pinned itself is dropped, so the table holds no orphan."""
+    def refs(node: Any, out: list[str]) -> None:
+        if isinstance(node, dict):
+            if _is_ref(node):
+                out.append(node["$ref"])
+            for v in node.values():
+                refs(v, out)
+        elif isinstance(node, list):
+            for v in node:
+                refs(v, out)
+    work: list[str] = []
+    for sec in ("rules", "targets", "providers", "contracts"):
+        refs(lock.get(sec) or {}, work)
+    kept: dict[str, Any] = {}
+    while work:
+        r = work.pop()
+        if r in kept or r not in table:
+            continue
+        kept[r] = table[r]
+        refs(table[r], work)
+    return kept

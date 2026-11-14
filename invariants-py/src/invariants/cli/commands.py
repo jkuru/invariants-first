@@ -2,27 +2,32 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import pathlib
+import re
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .. import lock, scan as scanner, status_report
 from ..confinement import confined
 from ..errors import CoverageError, LoadError
-from ..loader import load, read_document, schema_path
+from ..loader import read_document, schema_path
 from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
                      _describe, _err, _out, _print_changes, _rule_file)
-from .git_base import _base_step
+from .git_base import _base_step, base_read, base_scan_default
 from .project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
                       source_dirs)
+from .worker import Imported, emit, imported, reraise
 
 if TYPE_CHECKING:
     from ..doors import DoorsFound
 
 
-NO_JSONSCHEMA = "jsonschema is not installed; schema check skipped (the loader checks still run)"
+UNRESOLVED_HINT = ("a person who reviewed an unresolved site can accept it in mediation.allow_unresolved "
+                   "(at, code, sha, why); `inv scan --format json` gives each finding's sha")
+NO_JSONSCHEMA ="jsonschema is not installed; schema check skipped (the loader checks still run)"
 
 
 def _schema_errors(doc: Any) -> list[str] | None:
@@ -45,19 +50,11 @@ VALIDATE_CHECKS: tuple[tuple[str, Callable[[dict[str, Any]], Any]], ...] = (
 )
 
 
-def cmd_validate(a: argparse.Namespace) -> int:
-    path = _rule_file(a.rulefile)
+def static_problems(doc: Any) -> tuple[list[str], bool]:
+    """What `inv validate` finds in the raw document without importing anything: the bundled JSON
+    Schema's messages and VALIDATE_CHECKS' (each labelled), and whether the schema check ran."""
     problems: list[str] = []
-    try:
-        doc = read_document(path)
-    except LoadError as e:
-        _err(f"invalid: {e}")
-        return FAILED
     schema = _schema_errors(doc)
-    if schema is None:
-        _err(f"note: {NO_JSONSCHEMA}")
-    else:
-        problems += schema
     for label, check in VALIDATE_CHECKS:
         try:
             check(doc)
@@ -65,23 +62,55 @@ def cmd_validate(a: argparse.Namespace) -> int:
         # whether or not the schema check ran before it to explain why
         except (LoadError, scanner.ScanConfigError, KeyError, TypeError, AttributeError, ValueError) as e:
             problems.append(f"{label}: {e}")
-    notes: list[str] = []
-    with _import_path(path, a.path), isolated():
-        try:
-            reg = load(path)
-            notes = list(reg.notes)
-        except LoadError as e:
-            problems.append(f"load: {_describe(e)}")
+    return problems + _schema_lines(schema or []), schema is not None
+
+
+def cmd_validate(a: argparse.Namespace) -> int:
+    path = _rule_file(a.rulefile)
+    imp = imported(a, path)
+    try:
+        doc = imp.doc if imp.doc is not None else read_document(path)
+    except LoadError as e:
+        _err(f"invalid: {e}")
+        return FAILED
+    problems, schema_ran = static_problems(doc)
+    if not schema_ran:
+        _err(f"note: {NO_JSONSCHEMA}")
+    loaded = imp.load()
+    emit(loaded.get("output", ""))
+    if "raised" in loaded:
+        reraise(loaded["raised"])
+    if "problem" in loaded:
+        problems.insert(_specific(problems), loaded["problem"])
     if problems:
         _err(f"invalid: {path}")
         for p in problems:
             _err(f"  {p}")
         return FAILED
-    for n in notes:
+    for n in loaded.get("notes") or []:
         _out(f"note: {n}")
     ids = [r["id"] for r in doc.get("rules") or []]
     _out(f"ok: {path}: {len(ids)} rule(s) {', '.join(ids)}")
     return OK
+
+
+SCHEMA_LINE = 200
+
+
+def _schema_lines(schema: list[str]) -> list[str]:
+    """The JSON Schema's messages, each cut to SCHEMA_LINE characters: a oneOf failure quotes the
+    whole value, and the loader's message for the same place says what is wrong in words."""
+    out = []
+    for line in schema:
+        if len(line) > SCHEMA_LINE:
+            line = line[:SCHEMA_LINE - 4] + " ..."
+        out.append(line)
+    return out
+
+
+def _specific(problems: list[str]) -> int:
+    """Where the loader's message goes: after the other specific messages, before the schema's."""
+    return next((i for i, p in enumerate(problems) if p.startswith("schema: ")), len(problems))
 
 
 def update_artifacts(path: pathlib.Path) -> list[str]:
@@ -117,29 +146,90 @@ def cmd_lock(a: argparse.Namespace) -> int:
     if a.update_artifacts:
         _report_updated_artifacts(path, a.accept_weakening)
     lock_path = pathlib.Path(a.lock) if a.lock else path.with_name(lock.LOCK_NAME)
-    doc = read_document(path)
-    fresh, types = _fresh_lock(a, path, doc)
+    imp = imported(a, path)
+    doc = imp.doc if imp.doc is not None and not a.update_artifacts else read_document(path)
+    imp.doc = doc
+    if _refuse_invalid(a, path, doc, imp):
+        return FAILED
+    stored_read = _lock_inputs(a, path, lock_path, doc, imp)
+    fresh = _fresh_lock(a, path, doc, imp)
     stored: dict[str, Any] | None = None
-    if lock_path.exists() or a.check:
-        try:
-            stored = lock.read(lock_path)
-        except lock.LockVersionError:
-            raise
-        except LoadError as e:
-            if a.check:
-                _err(f"stale: {e}")
-                return FAILED
-            raise
+    if isinstance(stored_read, BaseException):
+        if isinstance(stored_read, lock.LockVersionError) or not a.check:
+            raise stored_read
+        _err(f"stale: {stored_read}")
+        return FAILED
+    stored = stored_read
     changes: list[lock.Change] = []
     header = ""
     if stored is not None:
         damaged = lock.schema_problems(stored)
         if a.check and _damaged(damaged, lock_path):
             return FAILED
-        changes, header = _against_stored(stored, damaged, fresh, types, path, lock_path)
+        changes, header = _against_stored(stored, damaged, fresh, imp, path, lock_path)
     if a.check:
         return _check_result(changes, path, lock_path)
     return _write_lock(a, lock_path, stored, fresh, changes, header)
+
+
+def _refuse_invalid(a: argparse.Namespace, path: pathlib.Path, doc: dict[str, Any], imp: Imported) -> bool:
+    """`inv lock` on a rule file `inv validate` rejects: say so as validate does (True), and pin nothing.
+    The loader's own refusal is raised by the pin step as before."""
+    problems, _ = static_problems(doc)
+    if not problems:
+        return False
+    loaded = imp.load()
+    if "problem" in loaded:
+        problems.insert(_specific(problems), loaded["problem"])
+    _err(f"invalid: {path}")
+    for p in problems:
+        _err(f"  {p}")
+    _err(f"`inv lock` pins only a rule file `inv validate` accepts; fix {path.name}, then run `inv lock` again")
+    return True
+
+
+def _lock_inputs(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path, doc: dict[str, Any],
+                 imp: Imported) -> dict[str, Any] | BaseException | None:
+    """Everything `inv lock` reads besides the pins, read before the child that imports the app runs
+    (it could rewrite a file): the stored lock (returned: the lock, the error reading it raised, or
+    None when there is none and not --check), the scan settings, and the scan a lock that pinned none
+    is compared with. Registers the pins and the stored lock's clause types with the child."""
+    exists, stored = _read_stored(imp, lock_path)
+    stored_read = stored if exists or a.check else None
+    old = _old_lock(stored_read)
+    if old is not None:
+        imp.want_old(old)
+    scan, scan_error = imp.before(("scan", tuple(a.root), tuple(a.exclude)), lambda: _scan_for_lock(a, path, doc))
+    imp.want_build(scan, scan_error is not None)
+    if old is not None and "scan" not in old and scan is not None:
+        with contextlib.suppress(Exception):         # raised where it was asked for, as before
+            _scan_default(imp, path)
+    return stored_read
+
+
+def _read_stored(imp: Imported, lock_path: pathlib.Path) -> tuple[bool, dict[str, Any] | BaseException]:
+    """Whether the lock file exists, and the stored lock or the error reading it raised."""
+    def read() -> tuple[bool, dict[str, Any] | BaseException]:
+        try:
+            return lock_path.exists(), lock.read(lock_path)
+        except LoadError as e:
+            return lock_path.exists(), e
+    got: tuple[bool, dict[str, Any] | BaseException] = imp.before(("stored", str(lock_path)), read)
+    return got
+
+
+def _scan_default(imp: Imported, path: pathlib.Path) -> dict[str, Any]:
+    """The scan a stored lock that pinned none scanned: the roots and excludes of the configuration."""
+    got: dict[str, Any] = imp.before("scan-default",
+                                     lambda: scan_settings(argparse.Namespace(root=[], exclude=[]), path))
+    return got
+
+
+def _old_lock(stored: dict[str, Any] | BaseException | None) -> dict[str, Any] | None:
+    """The stored lock a comparison reads (its damaged schema entries dropped), if it can be read."""
+    if not isinstance(stored, dict):
+        return None
+    return lock.without_damaged_schemas(stored) if lock.schema_problems(stored) else stored
 
 
 def _report_updated_artifacts(path: pathlib.Path, accept_weakening: bool) -> None:
@@ -152,26 +242,29 @@ def _report_updated_artifacts(path: pathlib.Path, accept_weakening: bool) -> Non
              "--accept-weakening once the artifact and its conformance test are reviewed")
 
 
-def _fresh_lock(a: argparse.Namespace, path: pathlib.Path,
-                doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str, lock.Typer | None]]:
-    """The lock the rule file pins now and its clause types, with the app imported from this checkout."""
-    with _import_path(path, a.path), isolated() as reg:
-        load(path)
-        try:
-            fresh = lock.build(doc, path.resolve().parent,
-                               scan_settings(a, path) if lock.mediated(doc) else None)
-        except (LoadError, Usage, scanner.ScanConfigError):
-            raise
-        except Exception as e:
-            unpinnable = contract_problems(doc, path.resolve().parent)
-            if not unpinnable:
-                raise
-            raise LoadError("; ".join(unpinnable) + f" (comment out or delete it in {path.name}, or fix the "
-                            f"model, then run `inv lock` again)") from e
-        types = lock.clause_types(reg)
-        for w in outside_roots(path, doc, a.path):
-            _err(w)
-    return fresh, types
+def _fresh_lock(a: argparse.Namespace, path: pathlib.Path, doc: dict[str, Any],
+                imp: Imported) -> dict[str, Any]:
+    """The lock the rule file pins now, computed in the child that imports the app from this checkout."""
+    scan, scan_error = imp.before(("scan", tuple(a.root), tuple(a.exclude)), lambda: _scan_for_lock(a, path, doc))
+    got = imp.build(scan, scan_error is not None)
+    if scan_error is not None:
+        raise scan_error
+    for w in got.get("warnings") or []:
+        _err(w)
+    fresh: dict[str, Any] = got["fresh"]
+    return fresh
+
+
+def _scan_for_lock(a: argparse.Namespace, path: pathlib.Path,
+                   doc: dict[str, Any]) -> tuple[dict[str, Any] | None, Usage | None]:
+    """The scan settings the lock pins (None when no rule has a sink), or the usage error computing
+    them raised (raised once the rule file is known to load, as before)."""
+    if not lock.mediated(doc):
+        return None, None
+    try:
+        return scan_settings(a, path), None
+    except Usage as e:
+        return None, e
 
 
 def contract_problem(name: str, c: Any, base_dir: pathlib.Path) -> str | None:
@@ -208,7 +301,7 @@ def _damaged(damaged: list[str], lock_path: pathlib.Path) -> bool:
 
 
 def _against_stored(stored: dict[str, Any], damaged: list[str], fresh: dict[str, Any],
-                    types: dict[str, lock.Typer | None], path: pathlib.Path,
+                    imp: Imported, path: pathlib.Path,
                     lock_path: pathlib.Path) -> tuple[list[lock.Change], str]:
     """The changes from a current-version stored lock (a damaged schemas table left out) to the fresh one."""
     if damaged:
@@ -217,8 +310,8 @@ def _against_stored(stored: dict[str, Any], damaged: list[str], fresh: dict[str,
         for d in damaged:
             _out(f"  {d}")
     old = lock.without_damaged_schemas(stored) if damaged else stored
-    default = (scan_settings(argparse.Namespace(root=[], exclude=[]), path)
-               if "scan" not in old and "scan" in fresh else None)
+    default = _scan_default(imp, path) if "scan" not in old and "scan" in fresh else None
+    types = imp.types(old)
     changes = _compare(lambda: lock.changes(old, fresh, types, default), lock_path)
     return changes, f"{lock_path}: {len(changes)} change(s) against the stored lock"
 
@@ -393,9 +486,13 @@ def _check_drafted_contracts(found: Any, path: pathlib.Path, extra: Sequence[str
     so one pydantic cannot give a JSON Schema for is written commented out, with the reason, instead
     of failing the lock step."""
     from .. import bootstrap
-    with _import_path(path, extra), isolated():
-        for name, m in bootstrap.contracts(found):
-            m.problem = contract_problem(name, bootstrap.contract_record(m), path.resolve().parent)
+    drafted = list(bootstrap.contracts(found))
+    if not drafted:
+        return
+    imp = Imported(path, extra)
+    imp.want_contracts([(name, bootstrap.contract_record(m)) for name, m in drafted])
+    for (_, m), problem in zip(drafted, imp.contracts()):
+        m.problem = problem
 
 
 def _already_exists(path: pathlib.Path) -> str:
@@ -430,6 +527,17 @@ def _has_path_law(path: pathlib.Path) -> bool:
     return any(isinstance(r, dict) and r.get("mediation") for r in doc.get("rules") or [])
 
 
+_DOOR_DRAFT = re.compile(r"^[ \t]*#[ \t]*-[ \t]*id:.*\n[ \t]*#[ \t]+door:", re.MULTILINE)
+
+
+def _has_door_draft(path: pathlib.Path) -> bool:
+    """The rule file holds a door rule `inv init` wrote commented out (`# - id: ...` then `#   door:`)."""
+    try:
+        return bool(_DOOR_DRAFT.search(path.read_text(encoding="utf-8")))
+    except OSError:
+        return False
+
+
 def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
     """`inv init`'s last step: `inv lock` on the rule file it wrote, and what to do next."""
     _out("running `inv lock` to pin them ...")
@@ -454,9 +562,10 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
                  f"`inv check` reads its scan settings from [tool.invariants.scan] in pyproject.toml; add "
                  f"{settings} there, or pass the same flags to every `inv check`")
         if not _has_path_law(path):
+            drafts = (f"see the commented-out door drafts in {path.name}, or write one by hand"
+                      if _has_door_draft(path) else "write one by hand")
             _out("note: no path law (a rule with a sink and a door) was written, so `inv check` will skip its "
-                 "scan step and no back door is checked yet; see the commented-out door drafts in "
-                 f"{path.name}, or write one by hand (start.md, \"Path laws\")")
+                 f"scan step and no back door is checked yet; {drafts} (start.md, \"Path laws\")")
     else:
         _err(f"`inv lock` failed, so no lock was written; {path} is kept. Next: fix what it reports above "
              f"in {path} or in the code it names (a contract or rule `inv lock` cannot pin can be commented "
@@ -466,13 +575,21 @@ def _init_lock(a: argparse.Namespace, path: pathlib.Path) -> int:
 
 
 def cmd_check(a: argparse.Namespace) -> int:
-    """Everything CI, pre-commit and an agent hook need, with one exit code."""
+    """Everything CI, pre-commit and an agent hook need, with one exit code.
+
+    This process never imports the app: the reviewer's switch is read first, and everything that
+    imports (the load, the pins, the guard check) runs in one child (worker.py)."""
+    allow_env = getattr(a, "allow_weakening_env", None)
+    if allow_env is None:
+        allow_env = os.environ.get(ALLOW_WEAKENING_ENV) == "1"
     path = _rule_file(a.rulefile)
     lock_path = path.with_name(lock.LOCK_NAME)
     doc = read_document(path)
     raw_rules = [r for r in doc.get("rules") or [] if isinstance(r, dict)]
     importable = _importable(doc, a.imports)
     mediated = any(r.get("mediation") for r in raw_rules)
+    scan = {"root": a.root, "exclude": a.exclude}
+    imp = _check_imports(a, path, lock_path, doc, importable, scan)
     failed = False
     _out(f"inv check: {path}")
 
@@ -487,32 +604,31 @@ def cmd_check(a: argparse.Namespace) -> int:
         for line in text.splitlines():
             _out(f"        {line}")
 
-    code, text = _captured(cmd_validate, argparse.Namespace(rulefile=str(path), path=a.path))
+    code, text = _captured(cmd_validate, argparse.Namespace(rulefile=str(path), path=a.path, imported=imp))
     step("rules", code, text, f"{len(raw_rules)} rule(s), {len(doc.get('contracts') or {})} contract(s) load")
     if code == OK and NO_JSONSCHEMA in text:      # on a failure it is among the lines printed already
         _out(f"  note  rules: {NO_JSONSCHEMA}")
     if code != OK:
         _out("fail")
         return FAILED
-    scan = {"root": a.root, "exclude": a.exclude}
-    code, text = _lock_step(a, path, lock_path, scan)
+    code, text = _lock_step(a, path, lock_path, scan, imp)
     step("lock", code, text, None if text.startswith("re-pinned") else f"{lock_path.name} matches")
     if a.base:
-        allow = a.allow_weakening or os.environ.get(ALLOW_WEAKENING_ENV) == "1"
+        allow = a.allow_weakening or allow_env
+        base = imp.before(("base", a.base), lambda: base_read(lock_path, a.base))
         code, text = _captured(lambda ns: _base_step(path, lock_path, a.base, a.path, allow,
-                                                     scan_settings(ns, path) if mediated else None),
+                                                     scan_settings(ns, path) if mediated else None, imp, base),
                                argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
     if importable:
-        code, text = _captured(cmd_verify, argparse.Namespace(rulefile=str(path), path=a.path, imports=a.imports,
-                                                              json=False))
+        code, text = imp.verify()
         step("guards", code, text)
     else:
         _out("  skip  guards: nothing to import (no target, edge target or python contract; a guard on a "
              "targetless rule is checked with --import MODULE)")
     if mediated:
-        code, text = _captured(cmd_scan, argparse.Namespace(rulefile=str(path), root=a.root, exclude=a.exclude,
-                                                            format="text", output=None))
+        code, text = imp.before("scan-step", lambda: _captured(cmd_scan, argparse.Namespace(
+            rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
         accepted = [line for line in text.splitlines() if line.startswith("accepted ")]
         ok_line = "no path skips a door or guard"
         if accepted:      # reviewed sites pass, but the reader sees each one, never a bare "no path skips"
@@ -521,10 +637,42 @@ def cmd_check(a: argparse.Namespace) -> int:
         if code == OK:
             for line in accepted:
                 _out(f"        {line}")
+        elif any(line.startswith("unresolved ") and "[sha " not in line for line in text.splitlines()):
+            _out(f"        hint: {UNRESOLVED_HINT}")
     else:
         _out("  skip  scan: no rule declares a sink or door")
     _out("fail" if failed else "pass")
     return FAILED if failed else OK
+
+
+def _check_imports(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path, doc: dict[str, Any],
+                   importable: list[str], scan: dict[str, Any]) -> Imported:
+    """The one child `inv check` runs: the load, and (when the rule file passes the checks that import
+    nothing) the pins, the clause types against the stored lock, and the guard check."""
+    imp = Imported(path, a.path, doc)
+    imp.want_load()
+    try:
+        clean = not static_problems(doc)[0]
+    except Exception:
+        clean = False
+    if not clean:
+        return imp
+    # what the verdict reads is read now, before the child runs: the stored lock, the lock at --base,
+    # the scan settings and the scan itself (the child could rewrite a source file)
+    _lock_inputs(argparse.Namespace(check=True, **scan), path, lock_path, doc, imp)
+    if a.base:
+        base = imp.before(("base", a.base), lambda: base_read(lock_path, a.base))
+        if isinstance(base, tuple) and base[0] is not None:
+            imp.want_old(base[0])
+            if "scan" not in base[0] and lock.mediated(doc):
+                with contextlib.suppress(Exception):
+                    base_scan_default(imp, path, a.base)
+    if importable:
+        imp.want_verify(a.imports)
+    if any(isinstance(r, dict) and r.get("mediation") for r in doc.get("rules") or []):
+        imp.before("scan-step", lambda: _captured(cmd_scan, argparse.Namespace(
+            rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
+    return imp
 
 
 def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:
@@ -544,14 +692,16 @@ def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:
 
 
 def _lock_step(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path,
-               scan: dict[str, Any]) -> tuple[int, str]:
+               scan: dict[str, Any], imp: Imported) -> tuple[int, str]:
     """`inv check`'s lock step: `inv lock --check`, and with --relock a re-pin that refuses a weakening."""
     code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=True, update_artifacts=False,
-                                                        lock=None, accept_weakening=False, path=a.path, **scan))
+                                                        lock=None, accept_weakening=False, path=a.path,
+                                                        imported=imp, **scan))
     if code != OK and a.relock and lock_path.exists():
         code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=False,
                                                             update_artifacts=False, lock=None,
-                                                            accept_weakening=False, path=a.path, **scan))
+                                                            accept_weakening=False, path=a.path,
+                                                            imported=imp, **scan))
         if code == OK:
             text = f"re-pinned {lock_path.name}: no change weakens a rule (review the lock diff)"
             if a.fail_on_repin:

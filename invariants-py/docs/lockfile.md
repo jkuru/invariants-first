@@ -354,6 +354,28 @@ not an installed copy or another checkout that shares the venv. When a pinned mo
 imported from outside the project (it is not under any of those roots), `inv lock` and
 `inv verify` print a warning naming the file it came from; pass `--path` to point at the source.
 
+## What the lock trusts
+
+`inv validate`, `inv lock`, `inv check` and `inv init` import the app in a child process (one per
+command, `python -I` with the same import path). The process that compares the pins, decides
+WEAKENED, reads `INV_ALLOW_WEAKENING` and writes the lock never imports the project, so a module
+cannot change the verdict by what it does at import time: setting `INV_ALLOW_WEAKENING`, replacing
+`invariants.lock.changes`, or faking the whole lock. That process also reads everything the verdict
+depends on before the child runs (the rule file, the stored lock, the lock at `--base`, the scan of
+the sources), so a module that rewrites a file at import does not change what is compared. It takes
+from the child only what importing alone can tell: the targets' and providers' signatures, the
+schemas of pydantic, dataclass and TypedDict contracts, a live app's OpenAPI document, and the
+clause types read from those signatures. The rules, the scan settings, declared effects and
+provider fields, and contracts read from files are pinned in the deciding process itself.
+
+So the lock trusts the code it imports to describe itself. A module that lies about its own
+signature or schema at import (a `__signature__`, a `model_json_schema` override, an `openapi()`
+that returns something else) gets that pinned, and a module can do anything the CI user can (write
+files, change the installed tools for a later step). Treat the guarded, contract and model modules
+as part of the rules: give them, the rule file, the lock and the CI workflow a code owner (start.md,
+"Make the check unskippable"). `inv verify` and `inv status` import the app in their own process
+and decide no weakening.
+
 The full synopsis is `inv lock [file] [--check] [--accept-weakening] [--lock FILE]
 [--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]...`. `--allow-weakening` is
 another spelling of `--accept-weakening`.

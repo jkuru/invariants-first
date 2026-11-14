@@ -50,6 +50,17 @@ These are security issues:
   in its output.
 - A route or escalate whose review is silently dropped: a store failure must raise `ReviewNotOpened`
   carrying the hand-off, or reach the configured `review_fallback`.
+- A way for code imported by `inv check`, `inv lock`, `inv validate`, `inv init` or the stop hook to
+  change whether a change is judged WEAKENED, other than by describing its own signatures and
+  schemas: those commands import the app only in a child process, and the process that decides
+  never imports the project and reads the rule file, the locks and the scanned sources before the
+  child runs.
+
+The trust boundary of the lock: it trusts the code it imports to describe itself. A module that
+reports a false signature or schema at import (or rewrites the installed tools for a later CI step)
+is outside what the lock can check; that is why the guarded, contract and model modules and the CI
+workflow need a code owner, like the rule file and the lock (docs/start.md, docs/lockfile.md "What
+the lock trusts").
 
 Operational hazards, by design:
 

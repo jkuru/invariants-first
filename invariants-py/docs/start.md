@@ -342,11 +342,17 @@ The action fetches the base branch and fails with an error if the fetch fails or
 missing afterwards, rather than skipping the comparison.
 
 Labels can be added by anyone with write access, and that includes an agent holding a token. Also
-make a person own the rule files with a `CODEOWNERS` line, and require code-owner review on `main`:
+make a person own the rule files with a `CODEOWNERS` line, and require code-owner review on `main`.
+The lock's signature and schema pins are read by importing your code, so `inv check` trusts the code
+it imports to describe itself: own the guarded modules, the contract and model modules, and the CI
+workflow that runs the check the same way (a change to the workflow can drop the step altogether):
 
 ```text
-invariants.yaml  @your-org/payments-owners
-invariants.lock  @your-org/payments-owners
+invariants.yaml        @your-org/payments-owners
+invariants.lock        @your-org/payments-owners
+src/payments/api.py    @your-org/payments-owners   # guarded targets and doors
+src/payments/models.py @your-org/payments-owners   # contracts and models the lock pins
+.github/workflows/     @your-org/payments-owners
 ```
 
 **Claude Code.** Add this to `.claude/settings.json`:
@@ -381,7 +387,8 @@ invariants.lock  @your-org/payments-owners
   before `git` (a pager or external diff runs code). `git add invariants.lock` is allowed too, so
   `inv lock && git add invariants.lock` is fine: only `inv lock` and `inv check --relock` write the
   lock. A command the hook cannot read is blocked when it mentions `lock` or `pyproject`: one that
-  does not parse, or uses `$(...)`, backticks, `${...}`, `eval`, `sh -c`, `xargs` or `python -c`;
+  does not parse, or uses `$(...)`, backticks, `${...}`, `eval`, `sh -c`, `xargs`, `python -c` (with any options
+  before it: `python -I -c`, `python3 -Ic`) or `python -`;
   a writing command with an expanded name (`$f`) is blocked when the command mentions the lock,
   `invariants`, `pyproject` or `toml`. In a directory that holds `invariants.lock` (or below one),
   a write-capable command (`cp`, `mv`, `tee`, `dd`, `rm`, `ln`, `install`, `rsync`, `sed -i` and
