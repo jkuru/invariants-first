@@ -295,7 +295,8 @@ Three rounds of scripted agent-style changes ran against the ledger app (in API-
 modes) and the ORM app: 52 changes, of which the 35 that loosen a law or add a back door were
 blocked for the stated reason and the 17 safe ones passed. Rounds 1 and 2 ran in the development
 venv. Round 3 ran on a freshly built wheel in a fresh venv, after the full test matrix (Python 3.11
-and 3.14, three CEL backends, `-O`, mypy, both apps' CI) passed.
+and 3.14, the three CEL backends of the time (subset, cel-expr, celpy; celpy was removed later, so
+two remain), `-O`, mypy, the CI of the two apps that existed then) passed.
 
 **What this does not show.** The apps and the changes were written by the same author as the
 library, the ORM app's repositories were written to look typical rather than taken from a real

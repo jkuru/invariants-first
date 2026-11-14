@@ -90,3 +90,16 @@ def test_library_does_not_import_example_apps():
         for app in ("import jobs", "import pool", "import triage"):
             assert app not in text, f"{f} imports an example app"
         assert "eval(" not in text.replace("evaluate(", "").replace("_eval(", "") and "exec(" not in text, f
+
+
+def test_the_design_guide_and_its_monorepo_copy_are_identical():
+    """docs/design-guide.md and the monorepo root's Invariant_first.md are one handbook in two places;
+    edit docs/design-guide.md and copy it. (The root copy is absent from an sdist: nothing to compare.)"""
+    import pathlib
+    import pytest
+    here = pathlib.Path(__file__).resolve().parents[1]
+    copy = here.parent / "Invariant_first.md"
+    if not copy.is_file():
+        pytest.skip("not in the monorepo")
+    assert copy.read_bytes() == (here / "docs" / "design-guide.md").read_bytes(), \
+        "Invariant_first.md drifted from docs/design-guide.md: cp docs/design-guide.md ../Invariant_first.md"

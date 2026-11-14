@@ -1005,23 +1005,23 @@ invariants.yaml ──► loader ──► registry ──► @inv.guard / @inv.
                     (checks      (rules,      (binds args, calls providers,              (ok, violation,  (proceed, reject,
                      everything   targets,     evaluates CEL, records an event)            rule_error,      halt, escalate,
                      at load)     providers)                                               parse_error)     route)
-invariants.yaml ──► lockfile ──► inv lock, inv check   (what is pinned, and the weakening gate)
+invariants.yaml ──► lock ──────► inv lock, inv check   (what is pinned, and the weakening gate)
 source code     ──► scan ──────► inv scan, inv check   (the call graph and the path laws)
 source code     ──► bootstrap, doors, graphify ──► inv init   (drafts the rule file, checked by the scan)
 ```
 
 | Module | Does |
 |---|---|
-| `loader.py`, `typecheck.py`, `schema/` | reads the rule file, expands the short forms, refuses what cannot hold, type-checks every clause |
+| `loader/`, `typecheck.py`, `schema/` | reads the rule file (`loader.reading`), expands the short forms (`short_forms`), checks each rule's shape and policy (`shapes`, `policy`, `rules`), binds targets and contracts (`typebind`, `schemas`, `paths`), and refuses what cannot hold; `typecheck` type-checks every clause |
 | `registry/` | loaded rules, modes, standing and `verify` (`registry`), the current registry and the module-level calls (`context`), the event sink and hooks (`events`), ablation state (`ablation`), review stores (`reviews`), the process session (`session`), coverage checks (`coverage`) |
 | `guard/`, `providers.py`, `evaluate.py` | the decorators (`guard.decorators`), the per-call core shared by sync and async (`guard.plan`), reply parsing and checked values (`guard.replies`, `guard.checked`), provider binding, the evaluator and the actions |
 | `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime); `INV_CEL_BACKEND` picks one |
-| `scan/` | the call graph (`indexer`, `inference`, `walker`) and the path-law check (`reachability`, `checks`), with SARIF and text output |
+| `scan/` | the call graph (`indexer`, `inference`, `walker`) and the path-law check (`reachability`, `checks`, `mediation`), reviewed `allow_unresolved` sites (`accept`), with SARIF and text output |
 | `lock/` | the pins (`pinning`, over `pin_types`, `pin_jsonschema`, `pin_signatures` and `pin_contracts`), the semantic diff and the weakening gate (`schema_diff`, `cel_mono` over `cel_canon` and `cel_sites`, `rule_diff`, composed in `lock`), over the shared tables in `contracts` |
-| `bootstrap.py`, `doors.py`, `graphify.py` | `inv init` |
-| `cli/` | the `inv` command: parser and exit codes (`cli`), commands (`commands`), the `--base` gate (`git_base`), the coding-agent hooks (`hooks`) |
+| `bootstrap/`, `doors.py`, `graphify.py` | `inv init`: finding the laws (`bootstrap.finding`), translating them to CEL (`translate`), writing the draft (`writing`) |
+| `cli/` | the `inv` command: the parser (`cli`), exit codes and shared helpers (`common`), reading `[tool.invariants]` from `pyproject.toml` (`project`), commands (`commands`), the `--base` gate (`git_base`), the coding-agent hooks (`hooks`) |
 | `mcp/` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`docs/agents.md`): the JSON-RPC session (`protocol`), argument confinement to `--root` (`confine`), the tools (`tools`, `propose`) |
-| `pytest_plugin.py` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-report` |
+| `pytest_plugin/` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-ablate-lenient`, `--inv-report`, `--inv-report-json` |
 | `integrations/` | FastAPI and ASGI (`application/problem+json`), pydantic (closed schemas, contracts), OpenTelemetry (one span per evaluation), Anthropic (`integrations.anthropic`: Claude, trace replay and recording for a model-call body; `docs/models.md`) |
 
 ### 11.2 Commands
@@ -1029,14 +1029,14 @@ source code     ──► bootstrap, doors, graphify ──► inv init   (draft
 | Command | Does |
 |---|---|
 | `inv init` | drafts `invariants.yaml` from the laws the code already has, then runs `inv lock` |
-| `inv check [--relock] [--base REF]` | rules, lock, guards and scan, with one exit code |
+| `inv check [--relock] [--base REF] [--accept-weakening]` | rules, lock, guards and scan, with one exit code |
 | `inv validate` | the JSON Schema and every load-time check |
 | `inv lock [--check] [--accept-weakening]` | writes or checks the lock |
 | `inv verify --import MOD` | every target guarded, every guard names a rule |
 | `inv scan [--format text\|json\|sarif]` | the path-law check |
-| `inv status --import MOD` | each rule's standing, with reasons |
-| `inv hook pretool\|stop` | the agent hooks |
-| `inv mcp [--root DIR] [rulefile]` | a read-only MCP server over stdio for coding agents (also installed as `inv-mcp`; `docs/agents.md`) |
+| `inv status --import MOD [--ablation JSON]` | each rule's standing, with reasons; `held` is proven only with `--ablation` |
+| `inv hook [rulefile] pretool\|stop` | the agent hooks |
+| `inv mcp [--root DIR] [rulefile]` | a read-only MCP server over stdio for coding agents (also installed as `inv-mcp [--root ROOT] [--rules RULES]`; `docs/agents.md`) |
 
 Exit codes: 0 ok, 1 a check failed, 2 a usage error, 3 the scan has unresolved calls, 4 the scan
 skipped an ablated `enforce` rule. Only 0 is a pass.
