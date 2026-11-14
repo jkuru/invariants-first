@@ -5,7 +5,10 @@ cd "$(dirname "$0")"
 
 # Pick the interpreter: $PYTHON, else an activated venv, else a private .venv made on first run.
 # The private venv installs the library from this checkout when the example sits in
-# apps/ of the monorepo (else from the package index), then this app with its dev extras.
+# apps/ of the monorepo (else from the package index), then this app with its dev and langgraph
+# extras. When langgraph cannot be installed (offline, say), it falls back to the dev extra alone
+# and says so: tests/test_langgraph.py then skips. REQUIRE_LANGGRAPH=1 (the monorepo's CI sets it)
+# makes a missing langgraph an error instead, whichever interpreter runs the tests.
 if [ -n "${PYTHON:-}" ]; then PY="$PYTHON"
 elif [ -n "${VIRTUAL_ENV:-}" ]; then PY="$VIRTUAL_ENV/bin/python"
 else
@@ -18,7 +21,12 @@ else
     if [ -f ../../invariants-py/pyproject.toml ] && [ -d ../../invariants-py/src/invariants ]; then
       .venv/bin/python -m pip install -q --disable-pip-version-check -e "../../invariants-py[pydantic,schema]"
     fi
-    .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
+    if ! .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev,langgraph]'; then
+      [ "${REQUIRE_LANGGRAPH:-}" != 1 ] \
+        || { echo "ci.sh: the langgraph extra did not install, and REQUIRE_LANGGRAPH=1" >&2; exit 2; }
+      echo "ci.sh: the langgraph extra did not install; installing '.[dev]' alone (delete .venv to retry)" >&2
+      .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
+    fi
     touch .venv/.ci-ready
   fi
   PY=.venv/bin/python
@@ -30,6 +38,12 @@ if [ -z "$INV" ]; then echo "ci.sh: no inv next to $PY or on PATH; install the i
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p build
 step() { printf '\n== %s\n' "$*"; }
+
+if ! "$PY" -c 'import langgraph' 2>/dev/null; then
+  [ "${REQUIRE_LANGGRAPH:-}" != 1 ] \
+    || { echo "ci.sh: langgraph is not importable from $PY, and REQUIRE_LANGGRAPH=1 (pip install -e '.[langgraph]')" >&2; exit 2; }
+  echo "ci.sh: langgraph is not installed for $PY; tests/test_langgraph.py will skip (pip install -e '.[langgraph]')" >&2
+fi
 
 step "inv check";         "$INV" check
 step "inv status";        "$INV" status --import support_agent.graph

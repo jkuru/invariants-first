@@ -586,6 +586,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   that resolves outside the root is refused before it is read;
   and the scan the server runs does not follow a symlink under the source roots that resolves
   outside it, reporting it as `unresolved/outside-root` with the link's path only.
+- The MCP `check` and `status` tools take `path` and `import`, as `inv check --path DIR --import
+  MODULE` and `inv status` do, so a targetless guard or an app found only through `--import` can
+  be checked from an agent. Each `path` resolves inside the server's `--root` (symlinks followed) or
+  is a tool error; each `import` must be a dotted module name (`app.api`), never a path or an
+  option, and the child confines what it imports to `--root` as before.
+- CI: the core-only job installs the library with no extras (`pip install -e . pytest`) and runs
+  an import of every module and the core tests on PyYAML alone before it installs the test
+  dependencies for the full suite (still without cel-expr); the build job installs the wheel into a
+  fresh venv with no extras and runs `inv --version`, the same import and the core tests against
+  it. The support-agent example's private venv installs its `langgraph` extra (falling back to
+  `dev` alone, and saying so, when it cannot: `tests/test_langgraph.py` then skips);
+  `REQUIRE_LANGGRAPH=1`, which the monorepo's CI sets, makes a missing langgraph an error.
 - `inv --version` (`-V`) prints `inv (invariants) 0.1.0`; a bare `inv` lists the commands (`validate`,
   `lock`, `verify`, `scan`, `init`, `check`, `hook`, `status`, `mcp`).
 - Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls, 4 the scan

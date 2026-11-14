@@ -13,7 +13,7 @@ from typing import Any, Sequence
 import contextlib
 
 from ..confinement import CONFINE_ENV, confining
-from .confine import ToolError, _opt_str, _rel, _root, _rule_file, _source_roots, _strs
+from .confine import ToolError, _import_paths, _imports, _opt_str, _rel, _root, _rule_file, _source_roots, _strs
 
 CHILD_TIMEOUT = 600
 
@@ -90,6 +90,13 @@ def _inv(root: pathlib.Path, server_root: pathlib.Path, rule_file: pathlib.Path,
     return p.returncode, p.stdout, p.stderr
 
 
+def _import_options(server_root: pathlib.Path, root: pathlib.Path, args: dict[str, Any]) -> list[str]:
+    """--path=DIR and --import=MODULE for the child, from the path and import arguments (each path inside
+    the server's --root, each module a dotted name; the = form, so no value is read as an option)."""
+    return ([f"--path={p}" for p in _import_paths(server_root, root, args)]
+            + [f"--import={m}" for m in _imports(args)])
+
+
 STEP = re.compile(r"^  (ok|FAIL|skip)\s+([^:]+?)(?::\s*(.*))?$")
 
 
@@ -101,6 +108,7 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
         argv += ["--root", r]
     for g in _strs(args, "exclude"):
         argv += ["--exclude", g]
+    argv += _import_options(server_root, root, args)
     code, out, err = _inv(root, server_root, rule_file, *argv)   # never --relock, --base or --allow-weakening
     steps: list[dict[str, Any]] = []
     for line in out.splitlines():
@@ -116,7 +124,8 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
 def tool_status(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
     root = _root(server_root, args)
     rule_file = _rule_file(root, args, default_rules, server_root)
-    code, out, err = _inv(root, server_root, rule_file, "status", str(rule_file), "--json")
+    code, out, err = _inv(root, server_root, rule_file, "status", str(rule_file), "--json",
+                          *_import_options(server_root, root, args))
     if code != 0:
         raise ToolError(f"inv status exited {code}: {(err or out).strip()}")
     try:

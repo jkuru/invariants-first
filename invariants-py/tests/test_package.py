@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import re
 
 import invariants as inv
 from invariants import cli
@@ -63,8 +64,19 @@ def test_py_typed_is_shipped():
     assert (pathlib.Path(inv.__file__).parent / "py.typed").is_file()
 
 
+# PEP 440's canonical public version (its Appendix B), without the packaging library: a release
+# segment, then optional pre-, post- and dev-release parts.
+PEP440 = re.compile(r"([1-9][0-9]*!)?(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*((a|b|rc)(0|[1-9][0-9]*))?"
+                    r"(\.post(0|[1-9][0-9]*))?(\.dev(0|[1-9][0-9]*))?")
+
+
 def test_version():
-    assert inv.__version__ == "0.1.0" == importlib.metadata.version("invariants-first")
+    assert inv.__version__ == importlib.metadata.version("invariants-first")
+    assert PEP440.fullmatch(inv.__version__), inv.__version__
+    for good in ("0.1", "1.0.0", "2!1.0rc1.post2.dev3"):
+        assert PEP440.fullmatch(good)
+    for bad in ("v0.1.0", "0.1.0-beta", "01.0", "0.1.0+local", ""):
+        assert not PEP440.fullmatch(bad)
 
 
 def test_cli_without_command_is_usage_error(capsys):
