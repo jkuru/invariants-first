@@ -25,7 +25,7 @@ from ..registry import WRAPPED, _wraps
 from ..resolve import resolve
 from .checked import Checked
 from .plan import _EdgePlan, _ModelRun, acheck, aprefetch, check, start
-from .replies import check_schema
+from .replies import check_checked_fields, check_schema
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -222,6 +222,7 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
             raise TypeError(f"@inv.model_call: {fn.__qualname__}'s inv_feedback must be a named parameter, "
                             f"not *args, **kwargs or positional-only")
         refined = _refined(fn, sig, returns, rule_id)
+        check_checked_fields(schema, refined, f"@inv.model_call({rule_id!r}) on {fn.__qualname__}")
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)

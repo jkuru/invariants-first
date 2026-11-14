@@ -20,11 +20,11 @@ _Builtin = Callable[[str, bool, list[Any], list[int]], Any]
 
 def _size(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
     sized = as_container(vals[0]) if len(vals) == 1 else None
-    if not isinstance(sized, (str, list, tuple, Mapping)):
-        raise CelError("size() needs one string, list or map")
+    if not isinstance(sized, (str, bytes, list, tuple, Mapping)):
+        raise CelError("size() needs one string, bytes, list or map")
     if isinstance(sized, Mapping):
         return _on_map(sized, "size()", lambda: len(whole(sized)) if has_enum_key(sized) else len(sized))
-    return len(sized)
+    return len(sized)                   # bytes: the byte length, as in CEL
 
 
 def _string_test(name: str, recv: bool, vals: list[Any], budget: list[int]) -> bool:

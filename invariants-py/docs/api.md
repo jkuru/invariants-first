@@ -50,6 +50,11 @@ Key behaviours that the one-line docstrings leave out:
 - The value of a `Checked` over a `{field: type}` schema is a frozen dict (`guard.FrozenDict`, its
   lists `FrozenList`): equal to and read like the parsed dict, but `update`, `pop`, item assignment
   and the list methods raise `TypeError`, through `.value` or through attribute forwarding.
+- Attribute reads on a `Checked` are forwarded to its value only for names the class does not have,
+  so `@inv.model_call` refuses (`TypeError` at decoration) a dataclass or pydantic reply field named
+  `value`, `attempts`, `rule`, `verdict`, `_inv_*` or like an attribute of the `Checked` subclass:
+  `checked.verdict` is always the model-call verdict, never a reply field
+  ([concepts.md](concepts.md#model-calls)).
 - Registries are context-local. `inv.ablated(id, scope="registry")` turns a rule off for every
   thread and task that uses the registry; see [concepts.md](concepts.md#ablation).
 - `inv.__version__` is read from the installed metadata.
@@ -190,7 +195,11 @@ inv_fastapi.install(app, reject_status=422)        # guard exceptions become pro
 
 Rules bind to the handler's parameters as FastAPI parsed them, for example `args.order.quantity`
 or `args.region`. They bind to handler parameter names, not to OpenAPI JSON paths. A
-`post_effect` rule reads the response model as `result`. The HTTP status depends on the outcome:
+`post_effect` rule reads the response model as `result` (a returned dict is validated into it
+first). A `Response` the handler returns (`JSONResponse({...}, status_code=404)`) is sent as it is:
+a `post_effect` clause that reads a field of `result` then finds no such field, a `rule_error` that
+the enforcer's `on_error` decides (`fail_closed` answers 503, `fail_open_and_page` pages and sends
+the response). The HTTP status depends on the outcome:
 
 | Outcome | Status |
 |---|---|

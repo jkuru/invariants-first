@@ -20,7 +20,7 @@ import weakref
 from typing import Any, Callable
 
 import fastapi as _fastapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 
 from ..errors import CoverageError, InvariantError
@@ -44,7 +44,8 @@ def _return_model(fn: Callable[..., Any]) -> type | None:
 
 def _coerce(fn: Callable[..., Any], model: type) -> Callable[..., Any]:
     def to_model(v: Any) -> Any:
-        return v if isinstance(v, model) else getattr(model, "model_validate")(v)
+        # a Response the handler returns (JSONResponse(..., status_code=404)) is FastAPI's to send as it is
+        return v if isinstance(v, (model, Response)) else getattr(model, "model_validate")(v)
 
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
@@ -62,6 +63,9 @@ def guard(*keys: str, response_model: type | None = None) -> Callable[[Callable[
 
     When the handler returns a dict and its return annotation (or response_model) is a pydantic
     model, the dict is validated into that model first, so post_effect rules read the response model.
+    A Response the handler returns (JSONResponse(..., status_code=404)) passes through as it is: a
+    post_effect clause that reads a field of result then finds no such field on it, a rule_error
+    that the enforcer's on_error decides (fail_closed rejects), never a 500 from validating it.
     It evaluates both decorator and middleware enforcers.
     """
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:

@@ -207,7 +207,7 @@ tool through the door, a tighter cap re-pinned by `--relock`) passed:
 | 5 | a new tool through the frozen back door; then allowing it | scan: bypass; lock: WEAKENED |
 | 6 | the model over-refunds, uses another customer's order, over-credits | PLAN-1: resampled once, then a person; BILL-1 and BILL-2 at the door for any caller |
 | 7 | invalid JSON, an unknown tool name, an extra field | the closed schema: retried with the parser error, at most 3 attempts |
-| 8 | the model abstains | a review is opened, nothing runs |
+| 8 | the model abstains | a review is opened, nothing runs (in detect: recorded, verdict `abstain`) |
 | 9 | a forged plan, a plan checked for another customer | the executor edge |
 | 10 | the plan changed after the check, the ledger moved since | the executor edge re-checks on what it receives |
 | 11 | the guard deleted from a door | verify |

@@ -56,7 +56,11 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   a pydantic model with `extra="forbid"`), retries a format failure with the parser's message,
   resamples a reply that breaks a rule without showing the model the rule (never when the rule
   compares the reply with held data: `compares_to: held_data`), and turns an abstention into a
-  review. It returns an `inv.Checked` value.
+  review. It returns an `inv.Checked` value. Below effective `enforce` (detect, a candidate rule) an
+  abstain never blocks: it is recorded (outcome `abstain`, action `proceed`) and the call returns
+  verdict `abstain`, sync and async alike. A dataclass or pydantic reply field that a `Checked`
+  attribute would shadow (`value`, `attempts`, `rule`, `verdict`, `_inv_*`, an attribute of the
+  subclass) is a `TypeError` at decoration.
 - `@inv.edge` on the consumer of a reply re-validates the schema and re-checks `bad` against state as
   it is now (`inv.Checked` is forgeable, so the edge never trusts it).
 - An edge hands its consumer exactly the value it re-checked: the received `Checked` must be exactly
@@ -95,6 +99,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - A `matches()` pattern has a shared limit (4,096 characters, 64 nested groups, 5,000 instructions
   with repeats expanded), and the subset charges its compile to the budget; a timestamp getter
   whose zone moves past year 1 or 9999 is a `rule_error` on every backend.
+- A `str`, `int`, `float` or `bytes` subclass is read as its plain value on every backend (the
+  subset compared `class Role(str)` unequal to every string literal, and refused arithmetic on
+  `numpy.float64`); the subset does `size()`, ordering and `+` on bytes, as cel-expr.
 
 ### The lock
 
@@ -244,7 +251,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `check_contracts()`.
 - `integrations.fastapi` and `integrations.asgi`: route guards bound to the parsed parameters, and
   `application/problem+json` responses (422 reject, 202 route or escalate, 500 halt, 503 a
-  fail-closed rule error) whose bodies never echo values.
+  fail-closed rule error) whose bodies never echo values. A `Response` a guarded handler returns
+  (`JSONResponse(..., status_code=404)`) is sent as it is, never validated into the response model
+  (it was a 500); a `post_effect` clause on `result` then is a `rule_error` its `on_error` decides.
 - `integrations.otel`: one span per evaluation. `integrations.exporters.BufferedExporter`: a
   bounded, background exporter.
 - `integrations.anthropic`: Claude in a model-call body, with trace replay and recording for tests.

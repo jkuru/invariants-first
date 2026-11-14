@@ -83,7 +83,8 @@ Every evaluation has one of four outcomes:
 
 Any clause true is a violation; otherwise any clause error is a `rule_error`; otherwise the outcome
 is `ok`. A rule error is never a violation: its enforcer's `on_error` decides what happens. Detect
-mode reports and always proceeds.
+mode reports and always proceeds. A model call that abstains below `enforce` records one more
+outcome, `abstain` (action `proceed`; see [Model calls](#model-calls)).
 
 ## Status and mode
 
@@ -287,7 +288,18 @@ map, or a pydantic model with `extra='forbid'`):
   text, with the value, is `ParseError.feedback`. That is what the model gets as `inv_feedback`, and
   what outcomes and logs show with `inv.configure(debug=True)`.
 - **Abstain.** When `model_policy.abstain.field` equals `abstain.value` (the same plain type: `True`
-  is not `1`), the call raises `Escalation` and opens a review before `bad` runs.
+  is not `1`), the call raises `Escalation` and opens a review before `bad` runs. That is in
+  effective mode `enforce` only: below it (a `detect` or `candidate` rule, or a `model_call` enforcer
+  in `mode: detect`) nothing blocks, so the abstain is recorded (an event with outcome `abstain`,
+  action `proceed`), no review is opened, and the call returns the `Checked` with verdict `abstain`,
+  as a parse error in detect returns verdict `parse_error`. An edge in force refuses it.
+- **Field names.** Attribute reads on a `Checked` go to its reply (`checked.amount`) only for names
+  the `Checked` class does not have. A dataclass or pydantic reply field named `value`, `attempts`,
+  `rule` or `verdict` (the `Checked`'s own metadata), one starting `_inv_`, or one named like an
+  attribute of your `Checked` subclass would read the metadata instead of the reply (a judge's
+  `verdict='deny'` read as the `Checked`'s `verdict` `ok`), so it is a `TypeError` when the function is
+  decorated, naming the field: rename it (`reply_verdict`), or use a `{field: type}` schema, whose
+  reply is read by key (`checked.value['verdict']`).
 - **Bad.** Then `bad` runs, and on a violation `on_violation` applies, after up to
   `semantic_resamples` fresh resamples. `compares_to: held_data` forces `semantic_resamples: 0`.
 - **Off, retired and ablated.** When the rule is retired, its `model_call` enforcer is in effective

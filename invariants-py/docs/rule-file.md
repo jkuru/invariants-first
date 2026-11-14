@@ -121,6 +121,7 @@ checker (`invariants/cel/values.py`; [cel.md](cel.md#python-to-cel-types) has th
 | `None` | `null` (`x == null` and `has(r.x)` work for an `Optional` field) |
 | `bool`, `int` (int64), `float` (finite), `str`, `bytes` | `bool`, `int`, `double`, `string`, `bytes` |
 | `Enum` member | its value |
+| a `str`, `int`, `float` or `bytes` subclass | its plain value (`class Role(str)` is a `string`) |
 | `uuid.UUID` | `string` (canonical lower-case form) |
 | `datetime` with a `tzinfo` | `timestamp` (the same instant, in UTC) |
 | `timedelta` | `duration` |

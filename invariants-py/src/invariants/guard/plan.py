@@ -257,6 +257,10 @@ class _ModelRun:
         return Handoff(self.rule.id, "escalate", None, {"reply": reply, **self.base}, list(self.record),
                        reason="abstain")
 
+    def abstained(self) -> Outcome:
+        """The outcome of an abstain below enforce: recorded (action proceed), no review, no decision."""
+        return Outcome("abstain", self.rule.id, [f"model abstained ({(self.ab or {}).get('value')})"])
+
     def escalation(self, review: str) -> Escalation:
         return Escalation(f"{self.rule.id}: model abstained ({(self.ab or {}).get('value')}); sent to a person "
                           f"(opened {review})", None, self.record, review, rule=self.rule.id, point="model_call")
@@ -299,6 +303,11 @@ class _ModelRun:
             if step == "eval":
                 step, v = self.judged(v, (yield "prefetch", v) if prefetch else None)
             if step == "abstain":
+                if self.reg.mode(self.rule, self.enf) != "enforce":
+                    # below enforce nothing blocks (detect, a candidate or detect rule): the abstain is
+                    # recorded and the call goes on with verdict abstain (an edge in force refuses it)
+                    yield "finish", (self.abstained(), v)
+                    return
                 raise self.escalation((yield "hand_off", self.handoff(v)))
             if step == "finish":
                 yield "finish", v

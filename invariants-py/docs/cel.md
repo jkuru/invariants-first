@@ -101,6 +101,9 @@ Standard functions per backend (global `f(x)` or receiver `x.f()` form as CEL de
 | `uint`, `bytes`, `type` | no (`LoadError`) | yes |
 | string extensions (`split`, `lowerAscii`, `substring`, ...), math and list extensions | no | no |
 
+On bytes, on every backend: `size()` is the byte length, `<` `<=` `>` `>=` order lexicographically by
+byte, `+` concatenates, and `==`, `!=` and `in` compare bytes with bytes (never with a string).
+
 ## Conversions
 
 The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a double (truncated toward zero; NaN, ±Infinity and values outside int64 are errors) or base-10 text (`"42"`, `" +5 "`; not `"4.2"`, `"0x10"` or `"1_000"`); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on other engines); compare the number instead. On cel-expr the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
@@ -120,6 +123,7 @@ load-time type checker uses the same table, so a rule reads the same value every
 | `float` | `double` | NaN or ±Infinity: `rule_error` (unless `allow_non_finite=True`) |
 | `str`, `bytes` | `string`, `bytes` | |
 | `Enum` member | its value | mapped by this table |
+| a `str`, `int`, `float` or `bytes` subclass (not an `Enum`) | its plain value | `class Role(str)` is a `string` (`args.role == 'guest'` holds for `Role('guest')`), `numpy.float64` a `double`; a `bool` stays a `bool` |
 | `uuid.UUID` | `string` | the canonical lower-case hyphenated form: `args.id == "1234...-...678"` |
 | `datetime` with a `tzinfo` | `timestamp` | the same instant, in UTC; microsecond precision |
 | `timedelta` | `duration` | up to ±10,000 years, as in CEL |
@@ -298,6 +302,7 @@ These are the cases where the backends still answer differently. None of them is
 | Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 220 terms, about 100 with a comprehension in the clause) | yes | `LoadError` naming cel-cpp's limit |
 | An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
+| `x in m` with `x` a value that cannot be a map key (bytes, `null`, a list) | `false` | `rule_error` (no such overload) |
 | Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
 | A string holding a NUL or a surrogate code point, a NaN or ±Infinity, or a list-like value that is not a list, that the clause references but does not need (`false && args.s == 'x'`, `true \|\| args.f > 1.0`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
 | `x in {...}` with a list, map or null `x` (`[1] in {'a': 1}`, `null in args.m`) | `false` | `rule_error` (no such overload) |

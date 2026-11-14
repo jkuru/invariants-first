@@ -643,7 +643,8 @@ The function returns the model's raw reply. The decorator does the rest, for eve
    error, the model is asked again, up to `format_retries` times, and told what was wrong: the
    parser's message arrives in its `inv_feedback` parameter.
 2. **Abstain.** If the reply says `action: ESCALATE_TO_HUMAN`, the model has declined. That is a
-   good answer, not a failure: a review is opened for a person and nothing runs.
+   good answer, not a failure: a review is opened for a person and nothing runs. (Below `enforce`,
+   in `detect`, nothing blocks: the abstain is recorded and the call returns verdict `abstain`.)
 3. **Check `bad`** against held data. PLAN-1 checks that the plan is for the customer on the ticket,
    that a refund is for that customer's own order and no more than is left of it, and that a credit
    is within the tier's allowance. On a violation, the model gets `semantic_resamples` fresh tries.

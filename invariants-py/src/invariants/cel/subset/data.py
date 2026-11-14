@@ -158,16 +158,18 @@ def _data(v: Any) -> Any:
     if isinstance(v, enum.Enum):
         v = v.value
     if isinstance(v, int) and not isinstance(v, bool):
-        if t is not Uint:
-            check_int(v)
-    elif isinstance(v, float):
-        check_finite(v)
+        if type(v) is not Uint:         # an int subclass (or an IntEnum's value) is a plain int, as on cel-expr
+            return check_int(int(v))
+    elif isinstance(v, float):          # a float subclass (numpy.float64) is a plain double
+        return check_finite(v if type(v) is float else float(v))
     elif isinstance(v, values.SCALARS):
         return values.scalar(v)
     elif isinstance(v, (set, frozenset)):
         raise CelError(values.SET)
-    elif isinstance(v, str):            # a str Enum value or a str subclass
-        values.text(v)
+    elif isinstance(v, str):            # a str Enum value or a str subclass: a plain string (as to_plain)
+        return values.text(v if type(v) is str else str(v))
+    elif isinstance(v, bytes):          # a bytes subclass: plain bytes
+        return v if type(v) is bytes else bytes(v)
     elif values.is_root_model(v):       # a pydantic RootModel is the value it wraps
         return _data(values.unroot(v))
     elif t is type(v) and len(_AS_IS) < 4096:   # a record or other object (not an Enum): as it is from now on

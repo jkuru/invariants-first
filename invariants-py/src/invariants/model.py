@@ -46,7 +46,8 @@ def effective_mode(mode: str, status: str) -> str:
 
 @dataclasses.dataclass
 class Outcome:
-    """One evaluation result: ok | violation | rule_error | parse_error."""
+    """One evaluation result: ok | violation | rule_error | parse_error (and abstain: a model call's
+    abstain below enforce, recorded and proceeding)."""
 
     kind: str
     rule: str

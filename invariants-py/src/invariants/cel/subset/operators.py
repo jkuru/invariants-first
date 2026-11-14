@@ -34,6 +34,8 @@ def _arith(op: str, a: Any, b: Any) -> Any:
         return _time_arith(op, a, b)
     if op == "+" and isinstance(a, str) and isinstance(b, str):
         return a + b
+    if op == "+" and isinstance(a, bytes) and isinstance(b, bytes):
+        return a + b                    # bytes concatenation, as in CEL
     if op == "+" and isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
         return list(a) + list(b)
     if not (_num(a) and _num(b)) or type(a) is not type(b) or (op == "%" and type(a) is float):
@@ -72,8 +74,9 @@ _ORDER = ("<", "<=", ">", ">=")
 
 
 def _order(op: str, a: Any, b: Any) -> bool:
-    """a < b, a <= b, a > b or a >= b: numbers, or two strings, bools, timestamps or durations."""
-    if not ((_num(a) and _num(b)) or _ty(a) == _ty(b) in ("str", "bool", "timestamp", "duration")):
+    """a < b, a <= b, a > b or a >= b: numbers, or two strings, bytes (lexicographic by byte), bools,
+    timestamps or durations."""
+    if not ((_num(a) and _num(b)) or _ty(a) == _ty(b) in ("str", "bytes", "bool", "timestamp", "duration")):
         raise CelError(f"no such overload: {_ty(a)} {op} {_ty(b)}")
     _finite(a)
     _finite(b)

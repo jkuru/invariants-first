@@ -345,6 +345,25 @@ def check_schema(schema: Any, who: str) -> None:
                             f"Literal, Optional, list[T], dict[str, T] or a nested dataclass)")
 
 
+def check_checked_fields(schema: Any, refined: type, who: str) -> None:
+    """TypeError if a reply field would be shadowed on the Checked value: attribute reads on a Checked
+    are forwarded to its value only for names the Checked class does not have, so a dataclass or
+    pydantic field named value, attempts, rule or verdict (the Checked's own metadata), _inv_*, or an
+    attribute of the Checked subclass would read the metadata instead of the reply (a judge's
+    verdict='deny' read as the Checked's verdict 'ok'). A {field: type} reply is a dict, read by key
+    (checked.value['verdict']), never by attribute forwarding: it is not checked."""
+    if instance_class(schema) is None:
+        return
+    for k in schema_fields(schema):
+        if isinstance(k, str) and (k.startswith("_inv_") or hasattr(refined, k)):
+            what = (f"the {refined.__name__} attribute {k!r}" if k not in ("value", "attempts", "rule", "verdict")
+                    else f"the inv.Checked metadata {k!r}")
+            raise TypeError(f"{who}: reply field {k!r} is shadowed by {what}: checked.{k} would read that, "
+                            f"not the reply. Rename the field in the schema (for example reply_{k}, and ask "
+                            f"the model for that key), or use a {{field: type}} schema, whose reply is read by "
+                            f"key: checked.value[{k!r}]")
+
+
 def recheck(reply: Any, schema: Any) -> Any:
     """The received value re-validated against the closed schema (a fresh copy); ParseError if it does not fit.
 
