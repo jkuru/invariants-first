@@ -285,6 +285,11 @@ def _hook_project(tmp_path: pathlib.Path, files: dict[str, str]) -> pathlib.Path
     ({"tests/conftest.py": "pytest_plugins = ['myplug']\n", "myplug.py": WRITES}, "uv run pytest tests"),
     ({"plug.py": WRITES}, "pytest -p plug"),
     ({"sub/conftest.py": WRITES, "sub/x/test_a.py": ""}, "py.test sub/x"),
+    ({"run.py": "from tools.fix import go\n", "tools/__init__.py": "", "tools/fix.py": WRITES},
+     "cd tools && python ../run.py"),
+    ({"run.py": "from tools.fix import go\n", "tools/__init__.py": "", "tools/fix.py": WRITES},
+     "(cd tools; python ../run.py)"),
+    ({"tools/run.py": "import fix\n", "tools/fix.py": WRITES}, "pushd tools && python run.py"),
 ])
 def test_hook_blocks_a_run_whose_project_modules_write_the_lock(tmp_path, files, command):
     root = _hook_project(tmp_path, files)
@@ -342,3 +347,10 @@ def test_hook_allows_the_apps_test_runs(app, command):
     for cwd in (root, root / "tests"):
         r = _hook(cwd, command)
         assert r.returncode == 0, (app, command, r.stderr)
+
+
+def test_hook_after_cd_still_allows_ordinary_commands(tmp_path):
+    root = _hook_project(tmp_path, {"tools/run.py": "print(1)\n"})
+    for command in ("cd tools && python run.py", "cd tools && ls", "cd $HOME && python run.py", "cd nowhere && ls"):
+        r = _hook(root, command)
+        assert r.returncode == 0, (command, r.stdout, r.stderr)

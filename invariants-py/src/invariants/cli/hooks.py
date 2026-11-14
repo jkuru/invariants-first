@@ -656,15 +656,26 @@ def _indirect_write(command: str, cwd: str) -> tuple[str, str, str | None] | Non
     tokens = _tokens(_ansi_c(command))
     if tokens is None:
         return None
+    dirs = [cwd]               # every directory a segment may run in: `cd tools && python ../x.py`, a subshell
     for words, redirects in _segments(tokens):
-        hit = next((h for s in _python_scripts(words, redirects, cwd) if (h := _script_rewrites(s))), None)
-        hit = hit or _git_rewrites(words, redirects, cwd)
-        if hit:
-            return hit, " ".join(words), None
-        via = _run_rewrites(words, redirects, cwd)
-        if via:
-            return via[0], " ".join(words), via[1]
+        if words[:1] in (["cd"], ["pushd"]) and len(words) == 2 and not _computed(words[1]):
+            dirs += [d for d in (os.path.normpath(os.path.join(c, os.path.expanduser(words[1]))) for c in dirs)
+                     if d not in dirs and os.path.isdir(d)]
+            continue
+        for here in dirs:
+            hit = next((h for s in _python_scripts(words, redirects, here) if (h := _script_rewrites(s))), None)
+            hit = hit or _git_rewrites(words, redirects, here)
+            if hit:
+                return hit, " ".join(words), None
+            via = _run_rewrites(words, redirects, here)
+            if via:
+                return via[0], " ".join(words), via[1]
     return None
+
+
+def _computed(word: str) -> bool:
+    """A shell word whose value the hook cannot know ($VAR, `cmd`, $(cmd))."""
+    return "$" in word or "`" in word
 
 
 def _weakening_switch(command: str) -> str | None:

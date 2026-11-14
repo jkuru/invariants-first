@@ -346,3 +346,20 @@ def test_an_inferred_path_through_a_cycle_covers_every_caller_in_it(tmp_path):
     (root / "late.py").write_text("import ops\n\ndef other(x):\n    ops.ping(x, 1)\n")
     [g] = _only(scan.scan(PAY, [root]), "unresolved/inferred-path")
     assert "entrypoint late.other" in g.reached_by and g.sha != f.sha
+
+
+@pytest.mark.parametrize("old, new", [("args.x > 1", "args.x > 1 && true"), ("args.a > args.b", "true && args.a > args.b"),
+                                      ("args.x > 1", "args.x > 1 || false"),
+                                      ("args.x > 1 || args.y < 2", "false || args.y < 2 || args.x > 1")])
+def test_an_identity_constant_in_a_bad_chain_is_the_same_condition(old, new):
+    """`a && true` and `a || false` are a, for a bool a: no weakening, and never 'matches fewer cases'."""
+    from invariants.cel import subset
+    from invariants.lock.cel_mono import judge_bad
+    assert judge_bad(old, new, subset.parse, None)[0] == "same"
+
+
+@pytest.mark.parametrize("old, new", [("args.x", "args.x && true"), ("args.x > 1", "args.x > 1 && args.y > 1")])
+def test_a_conjunct_that_may_not_be_a_bool_is_still_not_the_same(old, new):
+    from invariants.cel import subset
+    from invariants.lock.cel_mono import judge_bad
+    assert judge_bad(old, new, subset.parse, None)[0] != "same"

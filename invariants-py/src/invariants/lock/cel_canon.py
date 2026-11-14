@@ -230,6 +230,11 @@ class _Canon:
             c = self.canon(x, ren)
             flat += list(c[2]) if isinstance(c, tuple) and c[:2] == ("nary", op) else [c]
         flat = _unique(flat)                           # a || a is a
+        # a && true and a || false are a for a bool (or an error, which true && and false || keep). The
+        # unit is dropped from any chain: two or more operands are bool or an error already, and one left
+        # that may not be a bool stays a one-operand chain below, apart from the bare value
+        unit = _lit(op == "&&")
+        flat = [c for c in flat if c != unit] or flat
         if len(flat) == 1 and self.boolean(flat[0]):
             return flat[0]
         return ("nary", op, _order(flat))
