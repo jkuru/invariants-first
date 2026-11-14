@@ -39,7 +39,10 @@ def _type_set(ann: Any) -> frozenset[Any]:
 
 def _params(obj: Any) -> set[str]:
     fn = inspect.unwrap(obj)
-    return set(inspect.signature(fn).parameters) if callable(fn) else set()
+    try:
+        return set(inspect.signature(fn).parameters) if callable(fn) else set()
+    except (TypeError, ValueError):      # no signature; inspect's message would carry the object's repr
+        return set()
 
 
 def closed_schema(schema: Any) -> Any:
@@ -75,7 +78,7 @@ def type_hints(obj: Any, who: str, error: type[Exception] = TypeError,
 
 @functools.lru_cache(maxsize=512)
 def _dataclass_fields(schema: type) -> dict[str, Any]:
-    return type_hints(schema, f"schema {getattr(schema, '__qualname__', schema)!r}")
+    return type_hints(schema, f"schema {getattr(schema, '__qualname__', type(schema).__qualname__)!r}")
 
 
 def schema_fields(schema: Any) -> dict[str, Any]:
@@ -83,7 +86,7 @@ def schema_fields(schema: Any) -> dict[str, Any]:
     schema = closed_schema(schema)
     if isinstance(schema, type) and dataclasses.is_dataclass(schema):
         return dict(_dataclass_fields(schema))
-    return (type_hints(schema, f"schema {getattr(schema, '__qualname__', schema)!r}")
+    return (type_hints(schema, f"schema {getattr(schema, '__qualname__', type(schema).__qualname__)!r}")
             if dataclasses.is_dataclass(schema) else dict(schema))
 
 

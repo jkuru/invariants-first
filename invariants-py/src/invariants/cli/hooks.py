@@ -278,6 +278,240 @@ def _shell_writes(command: str, cwd: str | None = None) -> str | None:
     return None
 
 
+HOOK_CONFIG = ("settings.json", "settings.local.json")      # in a .claude directory: the hooks' own config
+_WRAPPERS = ("env", "sudo", "command", "exec", "nice", "nohup", "time", "builtin")
+_UV_VALUE_OPTIONS = frozenset({"--with", "--with-editable", "--with-requirements", "--python", "-p", "--project",
+                               "--directory", "--package", "--extra", "--group", "--env-file", "--index",
+                               "--default-index", "--index-url", "--extra-index-url", "--cache-dir", "--config-file"})
+_SCRIPT_MAX = 2_000_000
+_WALK_MAX = 20_000
+
+
+def _hook_config(path: pathlib.Path) -> bool:
+    """path is .claude/settings.json or .claude/settings.local.json (any letter case): Claude Code's
+    project (or user) settings, where the hooks themselves are configured."""
+    return path.parent.name.casefold() == ".claude" and path.name.casefold() in HOOK_CONFIG
+
+
+def _shell_hook_config(command: str) -> bool:
+    """A shell command that may write a .claude settings file (or the .claude directory): it names one
+    (or the directory, or a glob in it) and is not clearly read-only, or the hook cannot read it."""
+    command = _ansi_c(command)
+    if ".claude" not in command.casefold():
+        return False
+    tokens = _tokens(command)
+    if tokens is None or OPAQUE.search(command):
+        return "settings" in command.casefold()
+    for words, redirects in _segments(tokens):
+        for w in [*words, *(t for _, t in redirects)]:
+            folded = w.casefold().replace("\\", "/")
+            i = folded.find(".claude")
+            if i < 0:
+                continue
+            rest = folded[i + len(".claude"):].strip("/")
+            if (not rest or any(_names(rest, n) for n in HOOK_CONFIG)) and not _reads_only(words, redirects):
+                return True
+    return False
+
+
+def _command_words(words: list[str]) -> list[str]:
+    """The words of a simple command from the command itself: leading VAR=value assignments and
+    wrappers (env, sudo, nohup, ...) with their options dropped."""
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words = words[1:]
+    while words and pathlib.PurePath(words[0]).name in _WRAPPERS:
+        words = words[1:]
+        while words and (words[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+            words = words[1:]
+    return words
+
+
+def _is_python(word: str) -> bool:
+    return re.fullmatch(r"python[0-9.]*", pathlib.PurePath(word).name) is not None
+
+
+def _python_scripts(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> list[pathlib.Path]:
+    """The files a simple command runs as Python: `python[3] FILE`, `python -m MOD` (FILE under cwd),
+    `python - < FILE`, `uv run [python] FILE`, or `./FILE.py` run directly."""
+    words = _command_words(words)
+    if not words:
+        return []
+    names: list[str] = []
+    if pathlib.PurePath(words[0]).name == "uv" and words[1:2] == ["run"]:
+        rest = words[2:]
+        while rest and rest[0].startswith("-"):
+            rest = rest[2:] if rest[0] in _UV_VALUE_OPTIONS else rest[1:]
+        if rest and not _is_python(rest[0]):
+            return [pathlib.Path(cwd, rest[0])] if rest[0].endswith(".py") else []
+        words = rest
+    if not words:
+        return []
+    if words[0].endswith(".py"):
+        return [pathlib.Path(cwd, words[0])]
+    if not _is_python(words[0]):
+        return []
+    args = words[1:]
+    while args:
+        a = args.pop(0)
+        if a == "-m" and args:
+            mod = pathlib.Path(cwd, *args[0].split("."))
+            return [mod.with_suffix(".py"), mod / "__main__.py"]
+        if a in ("-W", "-X"):
+            args = args[1:]
+        elif a == "-":
+            break
+        elif not a.startswith("-"):
+            names.append(a)
+            break
+    if not names:                                   # `python - < FILE`, `python < FILE`
+        names = [t for op, t in redirects if op == "<"]
+    return [pathlib.Path(cwd, n) for n in names]
+
+
+def _script_rewrites(path: pathlib.Path) -> str | None:
+    """The protected file a Python script inside a directory tree that holds the lock names in its text
+    (so may rewrite): the lock, or pyproject.toml. None for a script outside such a tree, or one that
+    names neither."""
+    try:
+        p = pathlib.Path(os.path.realpath(path))
+        if not p.is_file() or not _lock_dir(str(p.parent)):
+            return None
+        with p.open("rb") as fh:
+            text = fh.read(_SCRIPT_MAX).decode("utf-8", "replace").casefold()
+    except OSError:
+        return None
+    if lock.LOCK_NAME in text or "lock_name" in text:
+        return lock.LOCK_NAME
+    return "pyproject.toml" if "pyproject" in text else None
+
+
+def _tree_holds(d: pathlib.Path) -> str | None:
+    """The protected file a directory holds, at any depth (.git skipped); the lock as well when the
+    tree is larger than the hook will walk."""
+    seen = 0
+    for top, dirs, files in os.walk(d):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        folded = {f.casefold() for f in files}
+        hit = next((n for n in PROTECTED if n in folded), None)
+        if hit:
+            return hit
+        seen += len(files) + len(dirs)
+        if seen > _WALK_MAX:
+            return lock.LOCK_NAME
+    return None
+
+
+def _pathspec_hits(spec: str, base: str) -> str | None:
+    """The protected file a git pathspec may match without naming it: a magic one (`:/`,
+    `:(glob)...`) or a directory ('.', a parent) holding it. One that names it, or a glob matching
+    it, is a write that names the file, which _shell_writes blocks before this is asked."""
+    if spec.startswith(":"):
+        return lock.LOCK_NAME
+    p = pathlib.Path(os.path.realpath(os.path.join(base, spec)))
+    return _tree_holds(p) if p.is_dir() else None
+
+
+def _stash_touches(base: str, ref: str | None) -> str | None:
+    """The protected file a stash entry changes (git stash show --name-only, untracked files included
+    when this git can list them); None when git cannot tell (git stash pop then fails as well)."""
+    import subprocess
+    for extra in (["--include-untracked"], []):
+        try:
+            p = subprocess.run(["git", "stash", "show", "--name-only", *extra, *([ref] if ref else [])],
+                               cwd=base, capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if p.returncode == 0:
+            names = {pathlib.PurePath(n).name.casefold() for n in p.stdout.splitlines()}
+            return next((n for n in PROTECTED if n in names), None)
+    return None
+
+
+def _patch_touches(paths: list[str], base: str) -> str | None:
+    """The protected file a patch may change: one its text names; the lock when there is no patch file
+    to read (stdin) or it cannot be read."""
+    if not paths or "-" in paths:
+        return lock.LOCK_NAME
+    for name in paths:
+        try:
+            text = pathlib.Path(base, name).read_text(encoding="utf-8", errors="replace").casefold()
+        except OSError:
+            return lock.LOCK_NAME
+        hit = next((n for n in PROTECTED if n in text), None)
+        if hit:
+            return hit
+    return None
+
+
+def _git_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> str | None:
+    """The protected file a git command may rewrite from somewhere the hook cannot see: `git apply` or
+    `git am` of a patch naming it, `git stash pop|apply` of an entry changing it, and
+    `git checkout REF [--] PATHS` or `git restore --source REF PATHS` with a pathspec that may match it."""
+    words = _command_words(words)
+    if not words or pathlib.PurePath(words[0]).name != "git":
+        return None
+    rest, base = words[1:], cwd
+    while rest and rest[0].startswith("-"):
+        opt = rest.pop(0)
+        if opt in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") and rest:
+            value = rest.pop(0)
+            if opt == "-C":
+                base = os.path.join(base, value)
+    if not rest:
+        return None
+    sub, args = rest[0], rest[1:]
+    if sub in ("apply", "am"):
+        if sub == "apply" and any(a in ("--check", "--stat", "--numstat", "--summary") for a in args) \
+                and "--apply" not in args:
+            return None                             # reports on the patch, applies nothing
+        files = [a for a in args if not a.startswith("-") or a == "-"]
+        files = files or [t for op, t in redirects if op == "<"]
+        return _patch_touches(files, base)
+    if sub == "stash" and args[:1] and args[0] in ("pop", "apply"):
+        ref = next((a for a in args[1:] if not a.startswith("-")), None)
+        return _stash_touches(base, ref)
+    if any(a == "--pathspec-from-file" or a.startswith("--pathspec-from-file=") for a in args):
+        return lock.LOCK_NAME if sub in ("checkout", "restore") else None
+    specs: list[str] = []
+    if sub == "checkout":
+        if "--" in args:
+            i = args.index("--")
+            if [a for a in args[:i] if not a.startswith("-")]:
+                specs = args[i + 1:]                # REF -- PATHS
+        else:
+            plain = [a for a in args if not a.startswith("-")]
+            specs = plain[1:]                       # REF PATHS
+    elif sub == "restore":
+        sourced = any(a in ("-s", "--source") or a.startswith("--source=") or (a.startswith("-s") and a[2:3].isalnum())
+                      for a in args)
+        if sourced:
+            out, skip = [], False
+            for a in args:
+                if skip:
+                    skip = False
+                elif a in ("-s", "--source"):
+                    skip = True
+                elif not a.startswith("-"):
+                    out.append(a)
+            specs = out
+    return next((h for s in specs if (h := _pathspec_hits(s, base))), None)
+
+
+def _indirect_write(command: str, cwd: str) -> tuple[str, str] | None:
+    """(protected file, the command) for a command that may rewrite the lock or pyproject.toml without
+    naming it: a Python script of the project whose text names it, or a git command that applies a
+    patch, a stash or another commit's version of it."""
+    tokens = _tokens(_ansi_c(command))
+    if tokens is None:
+        return None
+    for words, redirects in _segments(tokens):
+        hit = next((h for s in _python_scripts(words, redirects, cwd) if (h := _script_rewrites(s))), None)
+        hit = hit or _git_rewrites(words, redirects, cwd)
+        if hit:
+            return hit, " ".join(words)
+    return None
+
+
 def _weakening_switch(command: str) -> str | None:
     """A switch that accepts a weakening: the flags, the environment variable, or an abbreviation of a
     flag (5 characters or more; older argparse took them) the command passes."""
@@ -357,7 +591,20 @@ def _pretool(event: dict[str, Any]) -> int:
     command = str(tool_input.get("command") or "")
     files = [pathlib.Path(os.path.realpath(os.path.join(cwd, str(tool_input[k]))))
              for k in ("file_path", "path", "notebook_path") if tool_input.get(k)]
+    if any(_hook_config(f) for f in files) or _shell_hook_config(command):
+        _err("invariants: blocked an edit of .claude/settings.json or .claude/settings.local.json, where the "
+             "agent hooks (this one included) are configured. Tell the user what you want to change in them "
+             "and let them make the edit.")
+        return 2
     written = _shell_writes(command, cwd)
+    indirect = None if written else _indirect_write(command, cwd)
+    if indirect:
+        name, how = indirect
+        _err(f"invariants: blocked `{how}`: it can rewrite {name} without naming it (a project script whose "
+             f"text names it, or a patch, stash or other commit's copy). The lock is written only by "
+             f"`inv lock` or `inv check --relock`, which refuse a weakening, and the scan settings in "
+             f"pyproject.toml are the user's to edit; run those or tell the user.")
+        return 2
     lock_name, pyproject = lock.LOCK_NAME.casefold(), "pyproject.toml"   # a case-insensitive filesystem
     if any(f.name.casefold() == lock_name for f in files) or written == lock.LOCK_NAME:
         _err(f"invariants: blocked a direct edit of {lock.LOCK_NAME}. The lock is written only by "
@@ -388,7 +635,13 @@ def cmd_hook(a: argparse.Namespace) -> int:
              hook cannot read that mentions it): only `inv lock` and `inv check --relock` write the
              lock, and they refuse a weakening; and an edit of pyproject.toml's [tool.invariants]
              or [tool.setuptools.packages] tables (the scan settings are derived from them), or a
-             shell command that writes pyproject.toml.
+             shell command that writes pyproject.toml; a command that may rewrite either without
+             naming it: running a Python script inside the lock's directory tree whose text names
+             the lock (or LOCK_NAME) or pyproject, `git apply`/`git am` of a patch naming one,
+             `git stash pop|apply` of an entry that changes one, `git checkout REF -- PATHS` or
+             `git restore --source REF PATHS` whose pathspec may match one ('.', a directory
+             holding it, a glob); and any edit of .claude/settings.json or
+             .claude/settings.local.json, where the hooks themselves are configured.
     stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop).
 
     The hooks are an early warning against an agent's shortcuts, not the gate: a determined command

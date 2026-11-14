@@ -50,8 +50,8 @@ def _signature_pin(obj: Any, label: str, pins: Schemas) -> dict[str, Any]:
     fn = inspect.unwrap(obj)
     try:
         text = f"{getattr(fn, '__qualname__', label)}{inspect.signature(fn)}"
-    except (TypeError, ValueError) as e:
-        raise LoadError(f"{label}: no signature ({e})") from e
+    except (TypeError, ValueError) as e:    # inspect's message carries the object's repr: name its type only
+        raise LoadError(f"{label}: no signature (a {type(fn).__name__} object, not a function or class)") from e
     pin: dict[str, Any] = {"signature": text}
     fn, hints = _callable_hints(obj)
     types = _signature_types(fn, hints, pins)

@@ -22,7 +22,14 @@ understand ──> propose ──> verify ──> human approval ──> lock
   weakening, and an edit of the `pyproject.toml` settings the scan roots come from
   (`[tool.invariants]` and `[tool.setuptools.packages]`, whose `find.where` is a default root)
   ([start.md](start.md#4-make-the-check-unskippable-5-minutes)). A changed root set is a weakening
-  in the lock either way.
+  in the lock either way. It also blocks the cheap ways around those checks: running a Python
+  script inside the lock's directory tree whose text names the lock (or `LOCK_NAME`) or
+  `pyproject`, `git apply`/`git am` of a patch that names either, `git stash pop|apply` of an entry
+  that changes either, `git checkout REF -- PATHS` or `git restore --source REF PATHS` whose
+  pathspec may match either (`.`, a directory holding it, a glob), and any edit of
+  `.claude/settings.json` or `.claude/settings.local.json`, where the hooks themselves are
+  configured. The hook is a text check on one command and an early warning, not the gate: a
+  determined agent can still get past it. `inv check --base origin/main` in CI is the gate.
 - **`inv check` never reads the graph or calls a model.** The graph and the agent only suggest. What
   CI enforces is decided by the rule file, the lock and the source, read the same way on every run.
 
@@ -72,8 +79,14 @@ A filesystem root (`/`) is never a project root. The same holds for the director
 The files a rule file inside `--root` names are confined too: `check` and `status` run `inv` with
 `INV_CONFINE_ROOT` set to the server's `--root`, and a contract `ref` or an enforcer `artifact` that
 resolves outside it (`ref: ../outside_api.json`, or a symlink out) is refused before it is read, so
-its contents never reach a lock diff or an error in the tool's output. Plain `inv check` does not
-set it and reads a ref wherever the rule file points.
+its contents never reach a lock diff or an error in the tool's output. The modules it names are
+confined the same way: a target, contract or provider module whose file is not inside `--root` (the
+standard library and installed packages included: `py:os.environ`, `py:this`) is refused before it
+is imported, so its import-time code never runs and none of its objects reach a pin or an error.
+Plain `inv check` does not set it: it reads a ref wherever the rule file points and imports any
+module the rule file names. Neither ever writes an object's value into an error: a target or
+contract that has no signature or source is named with its type (`a _Environ object`), never its
+repr.
 The server's own `--rules`, chosen by whoever starts it, may sit anywhere (with its settings and refs).
 
 `explain` is the tool an agent should reach for when `inv check` fails. For a bypass it names the

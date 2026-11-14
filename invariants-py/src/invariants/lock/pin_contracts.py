@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import importlib
 import inspect
 import json
 import pathlib
 from typing import Any
 
-from ..confinement import confined
+from ..confinement import confined, import_module
 from ..errors import LoadError
 from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha
 from .pin_jsonschema import json_schema
@@ -23,7 +22,7 @@ from .pin_types import (_DATA_KEYS, SCHEMA_PROSE, Schemas, _class_ref, _is_schem
 def _python_ref(name: str, ref: str) -> Any:
     mod_name, _, attr = ref.partition(":")
     try:
-        mod = importlib.import_module(mod_name)
+        mod = import_module(mod_name, f"contract {name}")
     except ImportError as e:
         raise LoadError(f"contract {name}: cannot import {mod_name}: {e}") from e
     obj: Any = mod
@@ -213,8 +212,9 @@ def _python_contract_pin(name: str, ref: str, entry: dict[str, Any], pins: Schem
     else:
         try:
             entry["hash"] = _sha(inspect.getsource(obj).encode())
-        except (OSError, TypeError) as e:
-            raise LoadError(f"contract {name}: cannot pin {ref} ({e})") from e
+        except (OSError, TypeError) as e:                     # the type only: never the object's repr
+            raise LoadError(f"contract {name}: cannot pin {ref}: a {type(obj).__name__} object has no source "
+                            f"to digest ({type(e).__name__})") from e
     return entry
 
 

@@ -87,8 +87,10 @@ def _provider_pin(name: str, p: dict[str, Any], pins: Schemas) -> dict[str, Any]
     if isinstance(src, str) and src.startswith("py:"):
         try:
             entry.update(_signature_pin(resolve(src), f"provider {name}", pins))
-        except Exception as e:
+        except LoadError as e:
             raise LoadError(f"provider {name}: cannot pin {src} ({e})") from e
+        except Exception as e:                       # its text may carry an object's repr: the type only
+            raise LoadError(f"provider {name}: cannot pin {src} ({type(e).__name__})") from e
     return _plain(entry)
 
 

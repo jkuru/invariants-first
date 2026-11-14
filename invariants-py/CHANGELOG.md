@@ -102,10 +102,15 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   fails on a weakening since the lock at REF, unless `--allow-weakening` or `INV_ALLOW_WEAKENING=1`,
   and fails closed when REF or its lock cannot be compared (a REF with no lock is a first adoption).
 - `inv hook pretool|stop`: Claude Code hooks that refuse a command accepting a weakening, a direct
-  edit of `invariants.lock` or of the scan settings in `pyproject.toml`, and finishing while
-  `inv check` fails.
+  edit of `invariants.lock` or of the scan settings in `pyproject.toml`, a command that rewrites
+  either without naming it (a project script whose text names it, `git apply`, `git stash pop`,
+  `git checkout REF -- .`, `git restore --source`), an edit of `.claude/settings.json` or
+  `.claude/settings.local.json` (the hooks' own configuration), and finishing while `inv check`
+  fails. They are an early warning; `inv check --base` in CI is the gate.
 - `inv mcp` and `inv-mcp`: a read-only MCP server over stdio (`scan`, `check`, `status`, `explain`,
-  `propose_rules`); it never writes the rule file, the lock or `allow`.
+  `propose_rules`); it never writes the rule file, the lock or `allow`, and never reads a file or
+  imports a module (the standard library and installed packages included) outside its `--root`
+  for a rule file inside it.
 - `inv validate`, `inv lock`, `inv verify`, `inv scan`, `inv status`, and `inv --version`.
 - Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls, 4 the scan
   skipped an ablated `enforce` rule (3 and 4 are not passes).
@@ -141,6 +146,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   lock, and never passes `inv check --base`, without a person accepting it.
 - An unresolved call on a path to a sink, an unparseable reply and an unevaluable rule are never
   reported as a pass.
+- An error about an object a target, contract or provider resolves to (no signature, no source to
+  pin) names the object's type, never its repr, so its value never reaches `inv` or `inv mcp` output.
 
 ### Known limits
 

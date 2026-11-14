@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib
 import os
 import pathlib
 import sys
 from typing import Any, Iterator, Sequence
 
 from .. import lock
+from ..confinement import import_module
 from ..errors import LoadError
 from ..loader import load, read_document
 from ..registry import Registry
@@ -156,7 +156,7 @@ def _load_app(rule_file: pathlib.Path, imports: Sequence[str]) -> Registry:
     reg = load(rule_file)
     for mod in [*_contract_modules(read_document(rule_file)), *imports]:
         try:
-            importlib.import_module(mod)
+            import_module(mod, "contract module")
         except ImportError as e:
             raise LoadError(f"cannot import {mod}: {e}") from e
     return reg

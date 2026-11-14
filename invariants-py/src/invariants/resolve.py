@@ -1,9 +1,9 @@
 """Resolve 'py:module.attr' target strings to objects."""
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
+from .confinement import import_module
 from .errors import LoadError
 
 
@@ -16,7 +16,7 @@ def resolve(target: str) -> Any:
         raise LoadError(f"target {target!r}: not a dotted Python name (py:package.module.function)")
     for i in range(len(parts), 0, -1):
         try:
-            obj = importlib.import_module(".".join(parts[:i]))
+            obj = import_module(".".join(parts[:i]), f"target {target}")
             break
         except ModuleNotFoundError:
             continue
