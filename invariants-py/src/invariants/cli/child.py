@@ -34,8 +34,27 @@ def _exc(e: BaseException) -> dict[str, str]:
     return {"cls": "other", "text": _describe(e, typed=True)}
 
 
+def _identities() -> list[Any]:
+    """What the guard check runs, by identity: verify's command, the registry's check and its error,
+    and the decorators it checks for (invariants.guard, model_call, edge)."""
+    import sys
+    import invariants
+    from .. import errors, registry
+    from ..guard import decorators
+    from ..registry import coverage
+    here = sys.modules[__name__]
+    return [getattr(here, "cmd_verify", None),                  # [0]: what _verify runs getattr(sys.modules[cmd_verify.__module__], "cmd_verify", None),
+            getattr(registry.Registry, "verify", None), getattr(registry.Registry, "_verify", None),
+            getattr(registry.Registry, "_guard_problems", None), getattr(coverage, "_target_problems", None),
+            getattr(errors, "CoverageError", None), getattr(registry, "CoverageError", None),
+            getattr(sys.modules[cmd_verify.__module__], "CoverageError", None), _captured,
+            *(getattr(m, n, None) for m in (invariants, decorators) for n in ("guard", "model_call", "edge")),
+            getattr(decorators, "_guard", None), getattr(coverage, "WRAPPED", None)]
+
+
 def serve(req: dict[str, Any]) -> None:
     """The child: compute what `req["want"]` lists and write it as JSON to `req["out"]`."""
+    _SEEN[:] = _identities()                     # before anything imports the app
     path, extra, want = pathlib.Path(req["rulefile"]), req["extra"], req["want"]
     res: dict[str, Any] = {}
     loaded = True
@@ -127,10 +146,24 @@ def _record(types: dict[str, Any], olds: list[Any], fresh: dict[str, Any]) -> di
 
 
 def _verify(path: pathlib.Path, extra: Sequence[str], imports: list[str]) -> list[Any]:
-    """`inv check`'s guards step: `inv verify`, its output captured."""
-    code, text = _captured(cmd_verify, argparse.Namespace(rulefile=str(path), path=list(extra), imports=imports,
+    """`inv check`'s guards step: `inv verify`, its output captured. Refused when the app has replaced
+    what runs the check (defence in depth: the parent decides the guards from the source too)."""
+    if not _unchanged():
+        return [1, "verify: FAIL\n  the imported code replaced the guard check (invariants' verify) in the "
+                   "process that runs it"]
+    code, text = _captured(_SEEN[0], argparse.Namespace(rulefile=str(path), path=list(extra), imports=imports,
                                                           json=False))
+    if not _unchanged():
+        return [1, "verify: FAIL\n  the guard check was replaced while it ran"]
     return [code, text]
+
+
+_SEEN: list[Any] = []
+
+
+def _unchanged() -> bool:
+    now = _identities()
+    return len(now) == len(_SEEN) and all(a is b for a, b in zip(now, _SEEN))
 
 
 def _contracts(path: pathlib.Path, extra: Sequence[str], records: list[Any]) -> list[str | None]:

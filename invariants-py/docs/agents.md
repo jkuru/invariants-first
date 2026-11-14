@@ -23,7 +23,9 @@ understand ──> propose ──> verify ──> human approval ──> lock
   `--accept-weakening` only lets `--base` pass a weakening already in the lock.
   `inv hook pretool` blocks the agent's direct edits of the lock, any command that accepts a
   weakening, and an edit of the `pyproject.toml` settings the scan roots come from
-  (`[tool.invariants]` and `[tool.setuptools.packages]`, whose `find.where` is a default root)
+  (`[tool.invariants]` and `[tool.setuptools.packages]`, whose `find.where` is a default root),
+  and `inv init` with `--root` or `--exclude` in a tree that holds a lock (init writes those to
+  `[tool.invariants.scan]`; beside a lock it only prints what to add there by hand)
   ([start.md](start.md#4-make-the-check-unskippable-5-minutes)). A changed root set is a weakening
   in the lock either way. It also blocks the cheap ways around those checks: running a Python
   script inside the lock's directory tree whose text names the lock (or `LOCK_NAME`) or

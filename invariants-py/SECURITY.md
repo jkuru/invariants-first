@@ -54,7 +54,11 @@ These are security issues:
   change whether a change is judged WEAKENED, other than by describing its own signatures and
   schemas: those commands import the app only in a child process, and the process that decides
   never imports the project and reads the rule file, the locks and the scanned sources before the
-  child runs.
+  child runs. The same holds for whether `inv check`'s guards step passes for a target whose
+  decorator is missing from its source: that process reads each target's and edge target's
+  decorators from the source itself, and the step passes only when that check and the child's
+  `inv verify` both pass (docs/lockfile.md, "What the lock trusts", lists what the source check
+  leaves to the imported code).
 
 The trust boundary of the lock: it trusts the code it imports to describe itself. A module that
 reports a false signature or schema at import (or rewrites the installed tools for a later CI step)

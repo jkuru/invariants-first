@@ -94,7 +94,7 @@ def _base_lock(lock_path: pathlib.Path, ref: str) -> tuple[dict[str, Any] | None
     try:
         if code != 0:
             raise ValueError(text)
-        stored = json.loads(text)
+        stored = lock.loads(text)
         if not isinstance(stored, dict):
             raise ValueError("not a JSON object")
         lock.check_version(stored, name)

@@ -426,7 +426,33 @@ imported from outside the project (it is not under any of those roots), `inv loc
 command, `python -I` with the same import path). The process that compares the pins, decides
 WEAKENED, reads `INV_ALLOW_WEAKENING` and writes the lock never imports the project, so a module
 cannot change the verdict by what it does at import time: setting `INV_ALLOW_WEAKENING`, replacing
-`invariants.lock.changes`, or faking the whole lock. That process also reads everything the verdict
+`invariants.lock.changes`, or faking the whole lock.
+
+The guards step is decided there too, from the source. The child runs `inv verify`, but code it
+imports runs in the same process and could replace that check (`invariants.cli.child.cmd_verify`,
+say) with one that prints "pass". So the deciding process also reads, without importing anything,
+each rule's target and edge targets: it finds the module on the child's import path (the `--path`
+entries, the checkout's source roots, the rule file's directory, then `sys.path` and `--site`), parses
+the file, walks to the `def` the target names (through classes and `from M import name`
+re-exports), and checks its decorators: `@inv.guard` naming the rule's id or the target key, with the
+enforcers' points (`decorator`, `middleware`) among the literal `points=` (or the FastAPI guard's
+two); `@inv.model_call` for a rule with `model_policy`; `@inv.edge` on each edge target. Any import
+form of `invariants`, `invariants.guard`, `invariants.integrations.fastapi` or
+`invariants.integrations.pydantic` counts. The guards step passes only when this check and the
+child's `inv verify` both pass. It fails closed: a target with no `.py` source, a name bound more
+than once or inside an `if`/`try` block, a decorator whose rule ids are not literal strings, a
+decorator made some other way (`g = inv.guard("R-1")` then `@g`), or an import alias the module
+rebinds is a FAIL that says so; write the decorator on the `def` with literal ids. The child, for
+defence in depth, refuses to report when the code it imported replaced the check it runs or
+invariants' own decorators (`invariants.guard`, `model_call`, `edge`).
+
+What the source check does not decide, and so still trusts the imported code for: a guard naming a
+rule the file does not have, a guard on a targetless rule (found only in what is imported), a
+`model_call`'s schema, the bindings of a guard, FastAPI routes (`install`), and the object the
+target resolves to at run time (code that rebinds it with `setattr` or through `sys.modules`, which
+the source of its own module does not show, or a module that patches invariants' internals in a way
+the child's identity check does not cover). Those come from the child's `inv verify`, as the pins
+of signatures and schemas do. That process also reads everything the verdict
 depends on before the child runs (the rule file, the stored lock, the lock at `--base`, the scan of
 the sources), so a module that rewrites a file at import does not change what is compared:
 `--base` compares with the scan settings read then too, not a second read of `pyproject.toml`, and

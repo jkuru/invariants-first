@@ -468,6 +468,19 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `allow_unresolved` for review (the rule is written commented out until each says why).
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
+- `inv check`'s guards step took the child's `inv verify` verdict as it was, and the child imports
+  the app first: a module that replaced `invariants.cli.child.cmd_verify` at import passed the step
+  with `@inv.guard` removed from the door. The deciding process now reads each target's and edge
+  target's decorator from the source (never importing it), and the step passes only when that and
+  the child both pass; a target it cannot read from the source (no `.py` file, a name bound twice or
+  in a block, non-literal rule ids, a decorator made another way) fails closed. The child also
+  refuses to report when the imported code replaced its check (docs/lockfile.md, "What the lock
+  trusts").
+- `inv init --root/--exclude` beside an existing `invariants.lock` no longer writes
+  `[tool.invariants.scan]` into `pyproject.toml`: it prints what to add by hand. `inv hook pretool`
+  blocks `inv init` with `--root` or `--exclude` in a tree that holds a lock.
+- A key repeated in one mapping of the rule file (YAML or JSON) was read as its last value; it is a
+  LoadError naming the lines. A lock with a repeated key is not read either.
 - `inv status` reports each rule's standing with its reasons.
 
 ### CLI
