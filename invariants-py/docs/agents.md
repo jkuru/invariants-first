@@ -15,9 +15,12 @@ understand ──> propose ──> verify ──> human approval ──> lock
 
 - **The agent never approves its own rules.** It proposes; a person reads the proposal and writes
   `invariants.yaml`. A rule an agent wrote and accepted is a rule nobody reviewed.
-- **The agent never edits `mediation.allow` or `invariants.lock`.** `allow` is a list of frozen back
-  doors, and adding to it is a weakening. The lock is written only by `inv lock` and
-  `inv check --relock`, which refuse a weakening unless a person passes `--accept-weakening`.
+- **The agent never edits `mediation.allow`, `allow_unresolved` or `invariants.lock`.** `allow` is a
+  list of frozen back doors and `allow_unresolved` a list of unresolved sites a person has read;
+  adding to either is a weakening. The lock is written only by `inv lock`, which refuses a weakening
+  unless a person passes `--accept-weakening`, and by `inv check --relock`, which never re-pins a
+  weakening (it fails and names `inv lock --accept-weakening`). On `inv check`,
+  `--accept-weakening` only lets `--base` pass a weakening already in the lock.
   `inv hook pretool` blocks the agent's direct edits of the lock, any command that accepts a
   weakening, and an edit of the `pyproject.toml` settings the scan roots come from
   (`[tool.invariants]` and `[tool.setuptools.packages]`, whose `find.where` is a default root)
@@ -164,6 +167,6 @@ proves load-bearing are part of what they review.
 ## 5. Lock
 
 The person runs `inv lock` and commits `invariants.yaml` and `invariants.lock` together. From then on
-CI runs `inv check --base origin/main`, pre-commit runs `inv check --relock`, and the agent's hooks run
-`inv hook pretool` and `inv hook stop`. A later change that weakens a law fails until a person
+CI runs `inv check --base origin/main`, pre-commit runs `inv check --relock --fail-on-repin`, and
+the agent's hooks run `inv hook pretool` and `inv hook stop`. A later change that weakens a law fails until a person
 accepts it, whoever wrote the change.

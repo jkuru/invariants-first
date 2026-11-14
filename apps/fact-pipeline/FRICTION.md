@@ -10,7 +10,8 @@ enforcers, transactional targets and rollback, provider consistency, `tables:`, 
 are listed at the end, not kept. The schema's own triggers and constraints stay as the store's
 defence; their messages say `(db constraint)` (`a fact needs an evidence span (db constraint)`,
 `facts is append-only (db constraint)`), not a rule id, so a database refusal is never read as an API
-rule's. Entries 5, 6, 9, 12 and 14 (the `inv.Dependency` half) stay open, each with its reason.
+rule's. Entries 5, 6, 9 and 12 stay open, each with its reason; 14's `inv.Dependency` half was
+adopted on 2026-11-13.
 
 ## 1. `@inv.model_call` is sync only
 - **Tried:** an `async def` extractor under `@inv.model_call("K-2", ...)`.

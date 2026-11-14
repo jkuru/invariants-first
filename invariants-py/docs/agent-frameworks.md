@@ -52,8 +52,8 @@ is a `StateGraph`:
 
 ```
 START -> triage -> planner -> act -> done -> END
-                      \         \
-                       +---------+-> handoff -> END
+            \           \        \
+             +-----------+--------+-> handoff -> END
 ```
 
 ```python
@@ -71,15 +71,16 @@ def act(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
     plan = state.get("plan")
     if not isinstance(plan, CheckedPlan):
         return {"handoff_reason": "the plan in state is not a CheckedPlan; plan again"}
-    result = execute_plan(runtime.context, plan, state["customer_id"])      # the @inv.edge
-    ...
+    result, why = act_step(runtime.context, plan, state["customer_id"])   # calls the @inv.edge
+    return {"result": result, "handoff_reason": why, ...}
 
 app = builder().compile()
 app.invoke({"ticket": "refund 1200 on O-1", "customer_id": "C-1"}, context=ctx)
 ```
 
 The planner node runs the model call and puts the `CheckedPlan` in the graph state. The act node
-passes `state["plan"]` to the edge, which re-validates it and re-checks the rule on what it receives,
+passes `state["plan"]` to the edge (`act_step` calls `execute_plan`, the `@inv.edge`, and turns a
+refusal into a hand-off reason), which re-validates it and re-checks the rule on what it receives,
 so a node or a state update that swaps or edits the plan after the planner checked it is refused
 there (`tests/test_langgraph.py` adds a node that swaps in a plan for another customer's order, which
 the payment door alone would allow). Here the node unpacks the plan into the edge's own signature;

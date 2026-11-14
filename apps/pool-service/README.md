@@ -46,7 +46,7 @@ below the API.
 | Id | Statement | How it is enforced |
 |---|---|---|
 | R-1 | split_work shares are non-negative, within capacity, sum to total | post-effect guard on a pure function |
-| R-7 | a model's cause never contradicts the recorded job facts | `@inv.model_call` with the pydantic `CauseReply`, `job` provider (held data, immutable), abstain `CANNOT_COMPLY`, `@inv.edge` re-check on `remediate` |
+| R-7 | a model's cause never contradicts the recorded job facts | `@inv.model_call` with the pydantic `CauseReply`, the `job` provider, `compares_to: held_data` (a contradicting reply is not resampled), abstain `CANNOT_COMPLY`, `@inv.edge` re-check on `remediate` |
 | R-20 | leases never exceed pool size | pre-effect guard on `lease_slots` with two providers; `inv scan` (sink `insert_lease`) |
 | R-21 | a resize needs an APPROVED proposal by someone else | pre-effect guard on `resize_door`, approval provider |
 | R-22 | one resize never grows a pool more than 4x | pre-effect guard: the requested size against the current size |
@@ -57,7 +57,8 @@ below the API.
 ## Layout
 
 ```
-src/pool_service/    the package: store (raw SQL), service (doors), work, triage, fake_model, llm, api, main
+src/pool_service/    the package: store (raw SQL), db, service (doors), work, triage, fake_model, llm, config,
+                     api, main, openapi_app (the app the pool_api contract reads)
 bypass/              deliberately bad code that the scan must flag; excluded from the clean scan
 bench/bench_guards.py  guard overhead, p50/p99
 scripts/export_openapi.py  prints the OpenAPI document (the pool_api contract reads the live app)
@@ -106,7 +107,7 @@ writing anything.
 
 `./ci.sh` (it uses `$PYTHON`, else an activated venv, else a private `.venv` it creates) runs `inv validate`,
 `inv lock --check`, `inv verify`, the clean `inv scan --root src`, `inv status`, then
-`pytest --inv-verify --inv-ablate --inv-report`. R-23's falsifier, `tests/test_scan.py`, runs the bypass
+`pytest --inv-verify --inv-ablate --inv-report --inv-report-json build/inv-report.json`. R-23's falsifier, `tests/test_scan.py`, runs the bypass
 scan (`--root src --root bypass`) in a subprocess; under `--inv-ablate` the plugin sets `INV_ABLATE=R-23`,
 so the scan skips the rule and the falsifier fails, as it must. After a rule, target signature or API
 change, run `inv lock`: the pool_api contract reads the live app (`pool_service.openapi_app:app`), so

@@ -2,9 +2,11 @@
 
 `import invariants as inv` exposes exactly the names below: the package's `__all__`, which a test
 checks (tests/test_api_doc.py: every name in `__all__` has a row in the `invariants` tables, and every
-row names a name in `__all__`). The tables are generated from the installed package (the signatures and the first paragraph
-of each docstring), so they match the code. The integrations' public surface is each module's
-`__all__`.
+row names a name in `__all__`; each integration table names only public names of its module). The
+signatures are `inspect.signature` of the installed objects, with annotations unquoted and `self`
+left out; an overloaded function has one signature per overload. The purposes summarize each
+docstring. The test checks the names, not the signatures. The integrations' public surface is each
+module's `__all__`.
 
 - [`invariants`](#invariants)
 - [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel), [Buffered exporters](#invariantsintegrationsexporters), [Anthropic](#invariantsintegrationsanthropic)
@@ -24,7 +26,9 @@ Key behaviours that the one-line docstrings leave out:
   map or a pydantic model. With `returns=`, annotate the body with what it really returns
   (`-> str`); the decorated function returns `CheckedT` to mypy (awaitable for an `async def`), with
   no `type: ignore`. Without it, the body's return annotation must be the `Checked` subclass (the
-  older form). See [concepts.md](concepts.md#model-calls).
+  older form). An abstain at effective `enforce` escalates; below it (`detect`, a `candidate` rule)
+  it is recorded (outcome `abstain`, action `proceed`) and the call returns a `Checked` with verdict
+  `abstain`. See [concepts.md](concepts.md#model-calls).
 - `@inv.provider("a", "b")`: one function under several provider names. `inv.Dependency("store")`
   is a context-local value a provider reads (`with STORE.bound(store): ...`, `STORE.get()`).
 - `inv.verify(reg=None, modules=None)`: by default it checks the guards in the packages of the
@@ -69,7 +73,7 @@ Key behaviours that the one-line docstrings leave out:
 | `guard(*keys: str, points: tuple[str, ...] = ('decorator',)) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.guard("R-1", ...) or @inv.guard("py:jobs.split_work"): pre- and post-effect checks. |
 | `provider(name: str, *more: str, concurrent: bool = False) -> Callable[[F], F]` | function | @inv.provider("approval"): register a read-only provider; the loader checks name, args and return type. concurrent=True lets an async provider overlap other opted-in ones (the record's `concurrent:` overrides it). |
 | `Dependency(name: str) -> None` | class | A context-local value providers read: a store, a client, a tenant (contextvars underneath). |
-| `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept, with bounded retries. |
+| `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any, *, returns: None = None) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause): parse -> abstain -> bad -> accept, with bounded retries. |
 | `edge(rule_id: str, *, at: str \| None = None) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | @inv.edge("R-7") on the consumer of a Checked value (sync or async); at="state.plan" names it inside a state parameter. |
 | `Checked(*a: Any, **k: Any) -> None` | class | Base for refined types built by inv.model_call; carries value, attempts, rule and verdict. |
 | `parse(raw: Any, schema: Any, *, max_size: int \| None = None) -> Any` | function | Parse a reply into a closed schema (dataclass, {field: type} or pydantic model); extra or missing fields fail. |
@@ -143,7 +147,7 @@ Stacking `@inv.guard` with other decorators:
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Outcome(kind: str, rule: str, messages: list[str] = <factory>, error: str = '', bound: dict[str, Any] \| None = None) -> None` | class | One evaluation result: ok \| violation \| rule_error \| parse_error. |
+| `Outcome(kind: str, rule: str, messages: list[str] = <factory>, error: str = '', bound: dict[str, Any] \| None = None) -> None` | class | One evaluation result: ok \| violation \| rule_error \| parse_error (and abstain: a model call's abstain below enforce, recorded and proceeding). |
 | `Rule(raw: dict[str, Any], clauses: list[tuple[Program, str]], names: set[str], target: Any = None, effects: str = 'external', snapshot: list[tuple[str, ...]] = <factory>, names_for: dict[Any, dict[str, str]] = <factory>, notes: list[str] = <factory>, max_status: str = 'candidate', semantic_resamples: int = 0, refs: frozenset[tuple[str, ...]] = frozenset(), reads: frozenset[tuple[str, ...]] = frozenset()) -> None` | class | A loaded rule: the raw record plus what the loader computed. |
 | `Provider(name: str, raw: dict[str, Any], fn: Callable[..., Any], type: type, nullable: bool) -> None` | class | A declared, typed, read-only provider bound to its function. |
 
@@ -157,7 +161,7 @@ Stacking `@inv.guard` with other decorators:
 | `InvariantError` | class(Exception) | Base for guard outcomes that stop a call. |
 | `Rejected` | class(InvariantError) | on_violation: reject. The caller gets an error. |
 | `Halted` | class(InvariantError) | on_violation: halt. An internal invariant broke: a bug. |
-| `Escalation` | class(InvariantError) | on_violation: escalate (and abstain, always). Carries the attempt record. |
+| `Escalation` | class(InvariantError) | on_violation: escalate, and an abstain at effective `enforce` (below it an abstain is recorded and the call proceeds). Carries the attempt record. |
 | `Routed` | class(InvariantError) | on_violation: route. A review was opened (review_id); the call does not proceed. |
 | `ReviewNotOpened` | class(InvariantError) | route or escalate (or an abstain) could not open a review: the review store failed, and so did the review_fallback if one is configured. The call does not proceed, as with Routed/Escalation. |
 
@@ -258,7 +262,7 @@ dataclass for a pydantic model, so the core parse, retry, abstain and edge logic
 | `schema_for(schema: Any) -> Any` | function | closed(schema) for a pydantic model; any other schema unchanged. |
 | `model_of(reply: Any) -> _pd.BaseModel` | function | A fresh copy of a pydantic reply (the reply, or a Checked holding one), validated again. |
 | `parse(raw: Any, schema: Any) -> Any` | function | inv.parse, also accepting a pydantic model as the schema. |
-| `model_call(rule_id: str, schema: Any, *, returns: type[C] \| None = None)` | function | inv.model_call, also accepting a pydantic model as the schema. |
+| `model_call(rule_id: str, schema: Any, *, returns: type[C]) -> ModelCallDecorator[C]`; `model_call(rule_id: str, schema: Any, *, returns: None = None) -> Callable[[Callable[P, R]], Callable[P, R]]` | function | inv.model_call, also accepting a pydantic model as the schema. |
 | `resolve_ref(ref: Any) -> Any` | function | 'package.module:Class' -> the object: import the module, then walk attributes. No eval. |
 | `resolve_contract(spec: Any, name: str = '?') -> type[_pd.BaseModel]` | function | A {type: pydantic, ref: 'module:Class'} contract -> the closed model class, or LoadError. |
 | `check_contracts(source: str \| pathlib.Path \| dict[str, Any], reg: Registry \| None = None) -> dict[str, type[_pd.BaseModel]]` | function | Resolve every pydantic contract in a rule file and check the rules that name one. |
@@ -310,11 +314,11 @@ with buffered:                       # or app = FastAPI(lifespan=exporters.lifes
 | Name | Kind | Purpose |
 |---|---|---|
 | `BufferedExporter(target: Exporter, *, maxsize: int = 10000, on_full: str = 'drop_oldest') -> None` | class | An exporter that queues events (bounded) for a host-started thread to pass to target. |
-| `BufferedExporter.start() -> BufferedExporter` | method | Start the flusher thread (a no-op while it runs). Also `with exporter:`. |
-| `BufferedExporter.drain(timeout: float \| None = None) -> bool` | method | Export everything queued now; True when nothing is left. Without a flusher it exports in the calling thread. |
-| `BufferedExporter.close(timeout: float \| None = None) -> bool` | method | Flush the queue, then stop the flusher; idempotent. True when it stopped within timeout. |
+| `BufferedExporter.start() -> BufferedExporter` | method | Start the flusher thread (a no-op while it runs). Returns self. Also `with exporter:`. |
+| `BufferedExporter.drain(timeout: float \| None = None) -> bool` | method | Export everything queued now; True when nothing is left (within timeout; None: no limit). Without a flusher it exports in the calling thread. |
+| `BufferedExporter.close(timeout: float \| None = None) -> bool` | method | Flush the queue, then stop the flusher thread; idempotent. True when it stopped and the queue drained within timeout (False: the flusher still runs, or events are still queued or being exported). |
 | `BufferedExporter.dropped`, `.failed`, `.exported`, `.pending`, `.running` | attributes | Counts of dropped, failed and exported events; events queued now; whether the flusher runs. |
-| `lifespan(*exporters: BufferedExporter) -> Callable[[Any], AbstractAsyncContextManager[None]]` | function | An ASGI lifespan that runs the exporters' flushers while the app runs (close in a worker thread). |
+| `lifespan(*exporters: BufferedExporter) -> Callable[[Any], contextlib.AbstractAsyncContextManager[None]]` | function | An ASGI lifespan (Starlette/FastAPI `lifespan=`) that runs the exporters' flushers while the app runs (close in a worker thread). |
 | `ON_FULL` | `tuple[str, ...]` | currently `('drop_oldest', 'drop_new', 'block')`: the accepted `on_full` values |
 
 ### `invariants.integrations.anthropic`
@@ -333,12 +337,12 @@ llm = AnthropicModel(system="Answer with one JSON object.")      # or ReplayMode
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `AnthropicModel(model: str = 'claude-haiku-5-5', *, system: str \| None = None, max_tokens: int = 16000, client: Any = None, async_client: Any = None, feedback_template: str \| None = None, tool: dict \| None = None, tool_choice: dict \| None = None, **params: Any)` | class | A Claude model through the Messages API; `params` go to `messages.create`. With `tool=`, the reply is the model's call to that tool (see [agent-frameworks.md](agent-frameworks.md)). |
-| `reply_tool(name: str, schema: Any = None, *, description: str \| None = None, input_schema: dict \| None = None, strict: bool = False) -> dict` | function | A tool definition whose input is the structured reply, built from the model call's schema. |
-| `ReplayModel(path, *, system: str \| None = None, model: str = DEFAULT_MODEL, max_tokens: int = 16000, ignore=(), feedback_template: str \| None = None, tool=None, tool_choice=None, **params)` | class | Replies from a trace file, matched on the request; `ReplayMismatch` with a diff otherwise. `assert_done()`, `remaining`. |
-| `RecordingModel(inner: AnthropicModel, path)` | class | Sends through inner and writes the trace, marked `"fixture": "recorded"`. |
-| `ChatModel.complete(prompt: str \| Sequence[Message], feedback: str \| None = None) -> str` | method | The reply text (with a reply tool, the tool call's input as JSON text). feedback None opens a new conversation; a text continues the current one (as a `tool_result` with `is_error: true` after a tool call). `acomplete` for an async body. |
-| `model_for(mode: str, trace=None, *, system: str \| None = None, model: str = DEFAULT_MODEL, **kw: Any) -> ChatModel \| None` | function | The model for `replay`, `record`, `anthropic`; `None` for `fake`. |
+| `AnthropicModel(model: str = 'claude-haiku-5-5', *, system: str \| None = None, max_tokens: int = 16000, client: Any = None, async_client: Any = None, feedback_template: str \| None = None, tool: dict[str, Any] \| None = None, tool_choice: dict[str, Any] \| None = None, **params: Any) -> None` | class | A Claude model through the Messages API; `params` go to `messages.create`. `client` is an `anthropic.Anthropic` (or a stub with `.messages.create`), made on the first request by default (needs the `anthropic` extra and credentials); `async_client` is used by `acomplete`. With `tool=`, the reply is the model's call to that tool (see [agent-frameworks.md](agent-frameworks.md)). |
+| `reply_tool(name: str, schema: Any = None, *, description: str \| None = None, input_schema: dict[str, Any] \| None = None, strict: bool = False) -> dict[str, Any]` | function | A tool definition whose input is the structured reply, for `AnthropicModel(tool=...)` and `ReplayModel(tool=...)`, built from the model call's schema (or give `input_schema`). `strict=True` sets the API's strict tool use. |
+| `ReplayModel(path: str \| os.PathLike[str], *, system: str \| None = None, model: str = 'claude-haiku-5-5', max_tokens: int = 16000, ignore: Sequence[str] = (), feedback_template: str \| None = None, tool: dict[str, Any] \| None = None, tool_choice: dict[str, Any] \| None = None, **params: Any) -> None` | class | Replies from a trace file, matched on the whole request (messages, system, model, max_tokens and every other param); `ReplayMismatch` with a diff otherwise. `assert_done()`, `remaining`. |
+| `RecordingModel(inner: AnthropicModel, path: str \| os.PathLike[str]) -> None` | class | Sends through inner and writes every call to path as a trace marked `"fixture": "recorded"`, rewritten after each call. |
+| `ChatModel.complete(prompt: Prompt, feedback: str \| None = None) -> str` | method | `Prompt` is `str \| Sequence[dict[str, Any]]` (a text or the messages). The reply text (with a reply tool, the tool call's input as JSON text). feedback None opens a new conversation; a text continues the current one (as a `tool_result` with `is_error: true` after a tool call). `acomplete` for an async body. |
+| `model_for(mode: str, trace: str \| os.PathLike[str] \| None = None, *, system: str \| None = None, model: str = 'claude-haiku-5-5', **kw: Any) -> ChatModel \| None` | function | The model for `replay` (`ReplayModel(trace)`), `record` (a `RecordingModel` writing trace), `anthropic`; `None` for `fake`. `kw` goes to both models, so a replay compares what the live model would send; `ignore=` goes to `ReplayModel` only. |
 | `ReplayMismatch`, `ConversationError`, `ModelRefusal` | class | A replayed request no recorded call matches (an AssertionError); feedback with no conversation to continue; a `refusal` stop reason. |
 | `MODES` | `tuple[str, ...]` | currently `('replay', 'record', 'anthropic', 'fake')`: the modes `model_for` takes |
 | `DEFAULT_MODEL` | `str` | currently `'claude-haiku-5-5'` |
@@ -369,7 +373,7 @@ pytest --inv-rules invariants.yaml --inv-verify --inv-ablate --inv-report
 | `--inv-verify` | Fails the session when a target lacks its guard. |
 | `--inv-ablate` | Re-runs each rule's `falsified_by` tests with the rule turned off in every registry and in `INV_ABLATE` (so subprocesses see it). A falsifier that still passes fails the session with "guard not load-bearing". With no rules loaded (no rule file found, and none loaded by the tests) it is a usage error (exit 4), not a pass. What counts as caught, and what is `inconclusive`, is in [concepts.md](concepts.md#ablation). |
 | `--inv-ablate-lenient` | With `--inv-ablate`, fail only on a falsifier that still passes. |
-| `--inv-report` | Prints per-rule reach, ok, violation, rule_error and parse_error counts. |
+| `--inv-report` | Prints per-rule reach, ok, violation, rule_error, parse_error and abstain counts (abstain: a model call's abstain below `enforce`, which proceeds). |
 | `--inv-report-json PATH` | Writes the same counts as JSON. |
 
 Fixtures:
@@ -392,13 +396,13 @@ the merged results.
 |---|---|
 | `inv init` | `inv init [file] [--root DIR]... [--exclude GLOB]... [--no-lock] [--no-doors] [--graph|--graphify GRAPH] [--no-graphify] [--max-doors N] [--path DIR]...`: drafts the rule file from pydantic constraints, service-to-repository doors and function preconditions, then runs `inv lock`; reads `graphify-out/graph.json` for door hints when it exists; never overwrites. Before writing, it tries the lock's pin on each drafted contract (importing its model), and writes one it cannot pin (pydantic gives no JSON Schema for it, or its module does not import) commented out, with the reason. Private functions and `assert self.x is not None` checks are not suggested as rules, and a door is never a read-only function (`get_*`, `list_*`, ...). See [start.md](start.md). |
 | `inv check` | `inv check [file] [--relock [--fail-on-repin]] [--base REF] [--accept-weakening] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--path DIR]...`: `validate`, `lock --check`, `verify` and `scan` with one exit code; `--fail-on-repin` exits 1 after `--relock` re-pins, so the new lock is staged; `--base` also fails on a weakening since the lock at REF unless `--accept-weakening` or `INV_ALLOW_WEAKENING=1`, and fails closed when REF is missing, the checkout is not git, or the lock at REF cannot be compared (only a REF with no lock passes, as a first adoption). The `--root` and `--exclude` it scans with are compared with the ones the lock pins. |
-| `inv hook` | `inv hook pretool\|stop`: Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening, any direct edit of `invariants.lock` (symlinks resolved; a shell command naming it must be clearly read-only), and an edit of `[tool.invariants]` or `[tool.setuptools.packages]` (the scan roots) in `pyproject.toml`; `stop` runs `inv check --relock` once per stop. An early warning; `inv check --base` in CI is the gate. |
+| `inv hook` | `inv hook [file] {pretool,stop} [--path DIR]...` (the event before or after the rule file): Claude Code hooks reading the hook JSON on stdin; exit 2 blocks. `pretool` refuses a shell command that accepts a weakening, any direct edit of `invariants.lock` (symlinks resolved; a shell command naming it must be clearly read-only), an edit of `[tool.invariants]` or `[tool.setuptools.packages]` (the scan roots) in `pyproject.toml`, a command that rewrites either without naming it (a project script, a project module it imports or, for pytest, a `conftest.py` or `-p` plugin, whose text names it; `git apply`, `git stash pop`, `git checkout REF -- .`, `git restore --source`), and an edit of `.claude/settings.json` or `.claude/settings.local.json`; `stop` runs `inv check --relock` once per stop. An early warning; `inv check --base` in CI is the gate. See [agents.md](agents.md#the-rules). |
 | `inv validate` | `inv validate [file] [--path DIR]`: runs the JSON Schema check and every load-time check, and lists every error. |
 | `inv lock` | `inv lock [file] [--check] [--accept-weakening] [--lock FILE] [--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]...`: see [lockfile.md](lockfile.md). Both `inv lock` and `inv check` also take `--allow-weakening` as another spelling of `--accept-weakening` (`inv hook pretool` blocks both). `--root` and `--exclude` pin extra scan roots and excludes, as `inv check` is then run with them. |
 | `inv verify` | `inv verify [file] [--import MOD]... [--json] [--path DIR]...`: imports the app, then checks that every target is guarded and every guard names a rule. |
 | `inv scan` | `inv scan [file] [--root DIR]... [--exclude GLOB]... [--format text\|json\|sarif] [--output FILE]`: see [scan.md](scan.md). With no rule naming a sink, the text report is `no door rules to check (N file(s) scanned)`. `[tool.invariants.scan]` in `pyproject.toml` takes `roots`, `exclude` (replaces the default excludes) and `extend_exclude` (adds to them). |
 | `inv status` | `inv status [file] [--root DIR]... [--exclude GLOB]... [--import MOD]... [--json] [--ablation JSON] [--path DIR]...`: the standing of each rule, combining verify, scan and (with `--ablation`, the pytest `--inv-ablate --inv-report-json` file) ablation. The text says, per rule, what it checks, whether a guard wraps it (`yes`, `NO`, or not needed for a door rule), the scan result, whether ablation proved its tests fail without it (`yes`, `no`, `not run`, or `not needed` for a door rule) and what to do next. `--json` keeps `id`, `status`, `standing`, `reasons`, `ablation_proven`, `scan` and `scan_counts`, and adds those plain fields as `status_text`, `checks`, `guarded` (true, false or null), `ablation` and `next` (a list). Without `--ablation` a `held` row is labelled unproven: `"ablation_proven": false` and a reason in JSON, `held (unproven: no --ablation)` in text; `ablation_proven` is true only for a `held` backed by the report. |
-| `inv mcp` | `inv mcp [rulefile] [--root DIR]`: a read-only MCP server over stdio for coding agents (tools: scan, check, status, explain, propose_rules); it never writes the rule file, the lock or `allow`. The same server is installed as `inv-mcp [--root DIR] [--rules FILE]`. See [agents.md](agents.md). |
+| `inv mcp` | `inv mcp [rulefile] [--root DIR]`: a read-only MCP server over stdio for coding agents (tools: scan, check, status, explain, propose_rules); it never writes the rule file, the lock or `allow`, and for a rule file inside `--root` never reads a file or imports a module that resolves outside it, symlinks followed. The same server is installed as `inv-mcp [--root DIR] [--rules FILE]`. See [agents.md](agents.md). |
 
 Where `validate`, `lock`, `verify` and `status` import the app from is described in
 [lockfile.md](lockfile.md#where-the-cli-imports-from).

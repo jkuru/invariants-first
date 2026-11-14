@@ -45,18 +45,28 @@ your pydantic models, to read their JSON Schema, so run it where your project's 
 installed.
 
 ```text
+$ inv init
 wrote invariants.yaml
   read 3 source file(s)
   pinned 1 pydantic model(s) with 5 constraint(s)
   suggested 2 rule(s) from function preconditions (commented out; see the file)
-  found no door (no function that two or more callers go through to a write)
+  found no door (no write is called from a service function (a *Service, *Manager or similar class, or a services module), from a function only route handlers call, or from a function 2 or more callers go through)
 running `inv lock` to pin them ...
 wrote invariants.lock: 0 rule(s), 0 target(s), 0 provider(s), 1 contract(s), 1 schema(s)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
 ```
 
-The rule file it writes looks like this:
+The rule file it writes looks like this (the instructions above the suggested rules, and the
+second one, are left out here):
 
 ```yaml
+# invariants.yaml, drafted by `inv init` and pinned in invariants.lock. Review both, then commit them.
+#
+# The contracts below pin rules your code already has. From now on `inv check` fails when a
+# change lets a model accept more than it does today (a raised limit, a removed
+# constraint, a new enum value), unless someone accepts it with `inv lock --accept-weakening`.
+spec: invariant/v0.1
+
 contracts:
   # charge_id: min_length=1, charge_id: max_length=64, amount: gt=0, amount: le=10000, +1 more
   refund_request: {type: pydantic, ref: "billing.models:RefundRequest"}
@@ -71,8 +81,17 @@ rules:
 ```
 
 Review the file. Delete any contract or rule you don't care about, then commit both
-`invariants.yaml` and `invariants.lock`. If `inv lock` fails, it is usually a model `ref` that doesn't
-import from the project root. Fix the ref, or pass `--path DIR`, then run `inv lock` again.
+`invariants.yaml` and `invariants.lock`.
+
+A model `inv lock` cannot pin (pydantic gives it no JSON Schema, or its module does not import) is
+written commented out with the reason, so the lock step does not fail on it. If the lock step fails
+anyway, `inv init` keeps `invariants.yaml`, writes no lock and says what to fix: fix it in the rule
+file or the code, or comment out what cannot be pinned, then run `inv lock` (not `inv init` again: it
+never overwrites a rule file, and when it finds one without a lock it says to run `inv lock`). An
+error raised while importing one of your modules names that module; a module that calls
+`inv.load("invariants.yaml")` at import time reads that path from the current directory, so give it
+an absolute one: `inv.load(pathlib.Path(__file__).parent / "invariants.yaml")`. In a directory with
+no Python source, `inv init` exits 2 and writes nothing; run it in the project, or pass `--root DIR`.
 
 ## 2. Value laws: what the lock catches
 
@@ -81,13 +100,20 @@ An agent raises a limit so its failing test passes:
 ```text
 $ inv check
 inv check: invariants.yaml
-  ok    rules: 0 rule(s), 2 contract(s) load
+  ok    rules: 0 rule(s), 1 contract(s) load
   FAIL  lock
         stale: invariants.lock does not match invariants.yaml: 1 change(s), 1 WEAKENED
           schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (maximum raised: larger values pass; used by contract refund_request schema)
         review the changes, then run `inv lock --accept-weakening`
+  ok    guards: verify: pass (0 targeted rule(s) guarded; no guard module was imported, so no guard was checked; to check one, name a guarded function as a rule's target or pass --import MODULE)
+  skip  scan: no rule declares a sink or door
 fail
 ```
+
+Every step runs and reports, and the exit code is 1 when any one fails. With no rule naming a
+guarded function yet, the guards step has nothing to check, and with no door rule the scan is
+skipped. When `jsonschema` (the `schema` extra) is not installed, a passing check also prints
+`note  rules: jsonschema is not installed; schema check skipped (the loader checks still run)`.
 
 These changes count as a weakening, because the API now accepts something it refused:
 
@@ -125,13 +151,19 @@ no SQL anywhere:
 
 ```text
 $ inv init
-  ...
+wrote invariants.yaml
+  read 7 source file(s)
+  pinned 2 pydantic model(s) with 7 constraint(s)
+  suggested 2 rule(s) from function preconditions (commented out; see the file)
   door REFUND-GATEWAY-DOOR: quota.repo.RefundGateway through quota.service.ExpenseService.refund (1 caller(s))
     found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
   door EXPENSE-STORE-DOOR: quota.repo.ExpenseStore through quota.service.ExpenseService.approve (1 caller(s))
     found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
   door USAGE-REPO-DOOR: quota.repo.UsageRepo through quota.service.QuotaService.consume or quota.service.QuotaService.new_month (2 caller(s))
     found 1 back door(s) in quota/worker.py; frozen in allow, so check passes and a new one fails
+running `inv lock` to pin them ...
+wrote invariants.lock: 3 rule(s), 0 target(s), 0 provider(s), 2 contract(s), 2 schema(s)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
 ```
 
 Each rule is a few lines, plus the back doors it found:
@@ -153,9 +185,17 @@ passes, because the known back doors are frozen in `allow`. The next one fails:
 
 ```text
 $ inv check   # after an agent adds scripts/refund_tool.py, which calls the gateway directly
+inv check: invariants.yaml
+  ok    rules: 3 rule(s), 2 contract(s) load
+  ok    lock: invariants.lock matches
+  ok    guards: verify: pass (0 targeted rule(s) guarded; no guard module was imported, so no guard was checked; to check one, name a guarded function as a rule's target or pass --import MODULE)
   FAIL  scan
-        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:4:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:5:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
         REFUND-GATEWAY-DOOR: fail (1 bypass)
+        EXPENSE-STORE-DOOR: pass (no findings)
+        USAGE-REPO-DOOR: pass (no findings)
+        scanned 9 file(s), 22 function(s)
+fail
 ```
 
 The check fails when new code calls a sink without passing a door, whichever way it is written:
@@ -264,12 +304,22 @@ lock is reviewed in that pull request). A reviewer can accept a base lock that c
 base ref.
 
 ```text
-$ inv check --base main
+$ inv check --base main   # the branch raised the limit and re-pinned with `inv lock --accept-weakening`
+inv check: invariants.yaml
+  ok    rules: 0 rule(s), 1 contract(s) load
+  ok    lock: invariants.lock matches
   FAIL  since main
         1 change(s) since main weaken a rule:
-          schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (...)
-        a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer ...
+          schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (maximum raised: larger values pass; used by contract refund_request schema)
+        a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer (for example from a pull-request label), never by the change's author or agent
+  ok    guards: verify: pass (0 targeted rule(s) guarded; no guard module was imported, so no guard was checked; to check one, name a guarded function as a rule's target or pass --import MODULE)
+  skip  scan: no rule declares a sink or door
+fail
 ```
+
+With the reviewer's `INV_ALLOW_WEAKENING=1` (or `inv check --base main --accept-weakening`), the same
+step reads `ok    since main: 1 change(s) since main weaken a rule (allowed by a reviewer)` and the
+check passes.
 
 On GitHub, use the bundled action after installing your project:
 
@@ -282,7 +332,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e . invariants-first
+      - run: pip install -e . invariants-first   # not on PyPI yet: install the library from your copy instead
       - uses: jkuru/invariants-first@main    # action.yml at the repository root; pin a tag once released
         with:
           accept-label: accept-weakening     # a reviewer adds this label to accept a weakening
@@ -335,23 +385,32 @@ invariants.lock  @your-org/payments-owners
   a writing command with an expanded name (`$f`) is blocked when the command mentions the lock,
   `invariants`, `pyproject` or `toml`. In a directory that holds `invariants.lock` (or below one),
   a write-capable command (`cp`, `mv`, `tee`, `dd`, `rm`, `ln`, `install`, `rsync`, `sed -i` and
-  the like) or a redirect whose target file name the shell computes (`"$f"`, a backtick) is
-  blocked whatever the rest says; a read-only command with `$` stays allowed, and so does a target
-  whose file name is literal (`"$TMPDIR/out.txt"`). The hook also blocks an edit that changes the
-  `[tool.invariants]` tables of `pyproject.toml` (the scan roots and excludes) and any shell
-  command that writes `pyproject.toml`, by the same rules.
+  the like) or a redirect is blocked whatever the rest says when a target file name is one the
+  shell computes (`cp "$f" x`, `rm $f`, `> "$f"`, a backtick); with literal names (`mv a b`,
+  `cp a.txt b.txt`, `> "$TMPDIR/out.txt"`) it is allowed, and so is a read-only command with `$`.
+  The hook also blocks an edit that changes the `[tool.invariants]` tables of `pyproject.toml`
+  (the scan roots and excludes) and any shell command that writes `pyproject.toml`, by the same
+  rules.
+  It blocks commands that would rewrite the lock or `pyproject.toml` without naming either: running a
+  project script whose text names one of them, or that imports a project module whose text does
+  (`python scripts/fix.py`, `python -m tools.fix`); a pytest run when a `conftest.py` it loads, a
+  `-p` plugin or a module they import names one; `git apply` or `git am` of a patch that names one;
+  `git stash pop|apply` of an entry that changes one; and `git checkout REF -- PATHS` or
+  `git restore --source REF PATHS` whose pathspec may match one (`.`, a parent directory, `:/`).
+  It also blocks an edit of `.claude/settings.json` or `.claude/settings.local.json`, where the hooks
+  themselves are configured.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
   it sends the agent back with the failure, once per stop, so it can't loop.
 
 Both commands read Claude Code's hook JSON on stdin, and both block by exiting with code 2.
 
 The hooks are an early warning against an agent's shortcuts, not the gate. A text check of a shell
-command can always be talked past (a script file that writes the lock, a name read from a file),
-and an agent may run without hooks. Commands that overwrite the whole tree without naming a file
-are not caught at all: `git checkout <ref> -- .`, `git restore --source=<ref> :/`, `git stash`
-followed by `git stash pop`, `tar x` of an archive and `cp -r dir/. .` can each put back an old
-`invariants.lock` or `pyproject.toml`. CI is the gate for them. The gate is `inv check --base` in CI, with the rule files owned by a
-person: it compares with the lock on the base branch, whatever happened on the way.
+command can always be talked past (a name read from a file, an import the hook cannot follow: test
+modules and computed imports are not read), and an agent may run without hooks. Some commands that
+overwrite many files without naming one are not caught: `tar x` of an archive and `cp -r dir/. .`
+can each put back an old `invariants.lock` or `pyproject.toml`. The gate is `inv check --base` in
+CI, with the rule files owned by a person: it compares with the lock on the base branch, whatever
+happened on the way.
 
 For other agents, put this in `AGENTS.md`, and rely on pre-commit and CI to enforce it:
 
@@ -374,7 +433,9 @@ keeps the check even if a later edit deletes the `if`. To turn one on:
 
 1. Uncomment the rule.
 2. Put `@inv.guard("REFUND")` on the function, with `import invariants as inv`, and call
-   `inv.load("invariants.yaml")` once at startup.
+   `inv.load(pathlib.Path(__file__).parent / "invariants.yaml")` once at startup (give the path
+   relative to the module, not the current directory, so `inv check sub/invariants.yaml` and the
+   hooks find it from anywhere). In tests, a `conftest.py` can do the same, or pass `--inv-rules`.
 3. Write a test that calls the function with bad input and expects `inv.Rejected`. List it under `tests:`.
 4. Run `inv lock`.
 
@@ -402,6 +463,15 @@ Then prove the test depends on the guard. Run this in CI, from the directory tha
 pytest --inv-rules invariants.yaml --inv-ablate
 ```
 
+```text
+$ pytest --inv-rules invariants.yaml --inv-ablate
+..                                                                       [100%]
+----------------------------- invariants ablation ------------------------------
+  REFUND: load-bearing
+      caught         tests/test_payments.py::test_over_refund_is_rejected
+2 passed in 0.07s
+```
+
 It reruns each test listed under `tests:` with its rule switched off; the test must then fail.
 `--inv-rules` can be left out when `invariants.yaml` (or `.yml`, `.json`) is in pytest's rootdir,
 or when the pytest ini sets `inv_rules = invariants.yaml`. With no rules found at all, it stops
@@ -425,6 +495,38 @@ loop variable or anything else is not translated.
 A door rule and a guard rule combine: give a rule both `guard:` and `sink:`, and the
 guarded function is the door. The rule then checks the arguments at run time and the scan proves no
 path skips it.
+
+**Reading `inv status`.** It says, per rule, what the rule checks, whether a guard wraps it, what
+the scan found, whether ablation proved it, and what to do next. For the `REFUND` rule above:
+
+```text
+$ inv status
+REFUND (enforce: blocks a bad call)
+  checks:  py:billing.payments.refund refuses a call when: refund must be positive; refund exceeds what is left of the charge
+  guard:   yes
+  ablation proved it: not run
+  next:    prove its tests fail without it: pytest --inv-rules invariants.yaml --inv-ablate --inv-report-json build/inv-report.json, then inv status --ablation build/inv-report.json
+  next:    optional: add sink: (the function that writes what the guard protects), so `inv scan` proves no call path skips the guard
+verify: pass
+```
+
+Its standing (`inv status --json` gives `standing` and `reasons`) is `enforce(known-callers)`: the
+rule blocks bad calls from every caller the guard wraps, but nothing proves that no caller goes
+around it. It becomes `held` when:
+
+- its status and mode are `enforce` (a rule without a named test stays `detect`, and its standing
+  is `monitored`);
+- `mediation.chokepoint` says in words why every path passes the guard, naming one of the rule's
+  functions (`chokepoint: money leaves only through billing.payments.refund`);
+- `sink:` (or `mediation.sink`) names the effect the guard protects, so `inv scan` checks that no
+  path reaches it without passing the door, and the scan and `inv verify` pass;
+- no `mediation.residual_paths` is listed and every live `allow` back door is declared;
+- ablation proved it: `pytest --inv-ablate --inv-report-json build/inv-report.json`, then
+  `inv status --ablation build/inv-report.json`. Without `--ablation`, a rule that meets the rest is
+  shown as `held (unproven: no --ablation)`.
+
+The [README quickstart](../README.md#quickstart) takes one rule all the way to `held`;
+[concepts](concepts.md#standing) has the full table.
 
 ## 6. When to go further
 

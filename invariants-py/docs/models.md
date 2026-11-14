@@ -12,7 +12,8 @@ import invariants as inv
 from invariants.integrations.anthropic import AnthropicModel
 
 llm = AnthropicModel(system="You triage failed jobs. Answer with one JSON object {cause, summary}.")
-# AnthropicModel(model="claude-haiku-5-5", system=None, max_tokens=16000, client=None, tool=None, **params)
+# AnthropicModel(model="claude-haiku-5-5", *, system=None, max_tokens=16000, client=None,
+#                async_client=None, feedback_template=None, tool=None, tool_choice=None, **params)
 
 @inv.model_call("R-7", schema=CauseReply, returns=CheckedCause)
 def propose_cause(job_id: str, log: str, inv_feedback: str | None = None) -> str:
@@ -103,14 +104,15 @@ the replies came from: `recorded` (a `RecordingModel` wrote them) or `hand-writt
 them in the shape of a recording). A trace file says which it is, and a reader should believe it,
 not the directory it is in.
 
-- `ReplayModel(path, system=..., model=..., max_tokens=..., ignore=(), tool=None, tool_choice=None, **params)` answers each
+- `ReplayModel(path, *, system=None, model="claude-haiku-5-5", max_tokens=16000, ignore=(),
+  feedback_template=None, tool=None, tool_choice=None, **params)` answers each
   request with the reply of the first unused recorded call whose whole request matches: `messages`,
   `system` (a system prompt on one side and none on the other is a mismatch), `model`, `max_tokens`,
   `tools` and `tool_choice`, and every other param, as the `AnthropicModel` it stands in for would send them; so give it the
   same configuration (`model_for` does). `ignore=["model"]` leaves the named fields out of the
   comparison, for example to replay a trace under another model; nothing is ignored unless you
-  say so. A trace written before round 18 records only `system` and `messages` and now mismatches
-  on `model`: re-record it, or add the request's `model` and `max_tokens`. Identical
+  say so. A trace whose requests record only `system` and `messages` mismatches on `model`:
+  re-record it, or add the request's `model` and `max_tokens`. Identical
   requests (a resample) replay in order; requests from concurrent threads may come in any order. A
   request that no unused call matches raises `ReplayMismatch`, an `AssertionError` whose message is a
   unified diff against the next unused call, so a changed prompt fails loudly. `assert_done()` fails

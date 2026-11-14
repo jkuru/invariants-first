@@ -1,6 +1,6 @@
 # Cookbook
 
-Ten short recipes. Each one was run as written, and the output shown is what it printed. Every recipe is a directory of its own: save the files, then run the commands from that directory (`pip install 'invariants-first[fastapi]' pytest` covers them all: the `[fastapi]` extra brings pydantic, and httpx for `fastapi.testclient`).
+Ten short recipes. Each one was run as written, and the output shown is what it printed. Every recipe is a directory of its own: save the files, then run the commands from that directory (`pip install 'invariants-first[fastapi,schema]' pytest` covers them all: the `[fastapi]` extra brings pydantic, and httpx for `fastapi.testclient`; `[schema]` brings jsonschema, for the schema check in recipe 10's `inv validate`).
 
 1. [Roll a new rule out in detect mode](#1-roll-a-new-rule-out-in-detect-mode)
 2. [Guard a service method before it writes](#2-guard-a-service-method-before-it-writes)
@@ -15,7 +15,7 @@ Ten short recipes. Each one was run as written, and the output shown is what it 
 
 ## 1. Roll a new rule out in detect mode
 
-Start a rule at `status: detect`. It logs every violation and never blocks, so you can watch it on real traffic before you enforce it. `inv status` reports it as `monitored`.
+Start a rule at `status: detect`. It logs every violation and never blocks, so you can watch it on real traffic before you enforce it. `inv status` reports that it logs a bad call and does not block it (its standing, in `--json`, is `monitored`).
 
 `invariants.yaml`:
 
@@ -58,14 +58,17 @@ print(ship("o-1", 500))                  # a violation is logged; the call still
 
 ```text
 $ python run.py
-WARNING invariants: invariant {'rule': 'SHIP-1', 'rev': None, 'outcome': 'violation', 'mode': 'detect', 'point': 'decorator', 'timing': 'pre_effect', 'messages': ['one shipment is at most 100 units'], 'error': '', 'attempts': None, 'action': 'proceed'}
+WARNING invariants: invariant {'rule': 'SHIP-1', 'rev': None, 'outcome': 'violation', 'mode': 'detect', 'point': 'decorator', 'timing': 'pre_effect', 'messages': ['one shipment is at most 100 units'], 'error': '', 'attempts': None, 'action': 'proceed', 'start_ns': 1794632986723788000, 'end_ns': 1794632986723831000}
 shipped 500 for o-1
 ```
 
 ```text
 $ inv status --import shipping
-SHIP-1   detect     monitored
-         - no enforcer in effective mode enforce
+SHIP-1 (detect: logs a bad call, does not block it)
+  checks:  py:shipping.ship refuses a call when: one shipment is at most 100 units
+  guard:   yes
+  ablation proved it: not run
+  next:    write a test that makes it refuse (expects inv.Rejected) and list it under tests: (then the rule blocks instead of logging)
 verify: pass
 ```
 
@@ -385,8 +388,8 @@ def call_model(ticket: str, feedback: str | None) -> str:
     return REPLIES.pop(0)
 
 
-@inv.model_call("LLM-1", schema=Decision)
-def classify(ticket: str, order_cents: int, inv_feedback: str | None = None) -> CheckedDecision:
+@inv.model_call("LLM-1", schema=Decision, returns=CheckedDecision)
+def classify(ticket: str, order_cents: int, inv_feedback: str | None = None) -> str:
     return call_model(ticket, inv_feedback)             # raw text; the library parses and checks it
 
 
@@ -449,7 +452,7 @@ $ pytest -q --inv-rules invariants.yaml --inv-ablate
 
 ## 6. Guard a FastAPI route
 
-Rules bind to the parameters as FastAPI parsed them. `install(app)` turns guard exceptions into `application/problem+json`, and the body never echoes the request's values.
+Rules bind to the parameters as FastAPI parsed them. `install(app)` turns guard exceptions into `application/problem+json`, and the body never echoes the request's values. A `Response` the handler returns itself (`return JSONResponse({"detail": "no such region"}, status_code=404)`) is sent as it is, never validated into the response model.
 
 `invariants.yaml`:
 
@@ -743,7 +746,7 @@ $ pytest -q --inv-rules invariants.yaml --inv-ablate --inv-report
 
 ## 10. Run every check in CI
 
-One script, run from the quickstart project with `bash ci.sh` (or `chmod +x ci.sh` once, then `./ci.sh`). Every check exits non-zero on a failure (`inv status` only reports). In GitHub Actions, upload `scan.sarif` with `github/codeql-action/upload-sarif` to see bypasses inline.
+One script, run from the quickstart project (after its `inv lock --lock invariants.lock`) with `bash ci.sh` (or `chmod +x ci.sh` once, then `./ci.sh`). Every check exits non-zero on a failure (`inv status` only reports). In GitHub Actions, upload `scan.sarif` with `github/codeql-action/upload-sarif` to see bypasses inline.
 
 `ci.sh`:
 
@@ -754,21 +757,29 @@ inv validate invariants.yaml                 # schema and every load-time check
 inv lock --check --lock invariants.lock      # the lock matches: no silent weakening
 inv verify --import payments                 # every target carries its guard
 inv scan --format sarif --output scan.sarif  # no path reaches a sink around its door
-inv status --import payments                 # standing per rule
-python -m pytest -q --inv-rules invariants.yaml --inv-verify --inv-ablate
+python -m pytest -q --inv-rules invariants.yaml --inv-verify --inv-ablate --inv-report-json build/inv-report.json
+inv status --import payments --ablation build/inv-report.json   # standing per rule
 ```
 
 ```text
 $ bash ci.sh
 ok: invariants.yaml: 1 rule(s) PAY-1
 fresh: invariants.lock
-verify: pass (1 targeted rule(s) guarded, every guard names a rule)
-PAY-1    enforce    held
-verify: pass
+verify: pass (1 targeted rule(s) guarded; checked the guards in 1 imported module(s), each names a rule; a module nothing imports is not checked: add it with --import MODULE)
 ..                                                                       [100%]
 ---------------- invariants verify: 1 targeted rule(s) guarded -----------------
 ----------------------------- invariants ablation ------------------------------
   PAY-1: load-bearing
       caught         test_payments.py::test_over_refund_is_rejected
-2 passed in 0.05s
+invariants report written to build/inv-report.json
+2 passed in 0.08s
+PAY-1 (enforce: blocks a bad call; held)
+  checks:  py:payments.refund refuses a call when: refund must be positive; refund exceeds what is left of the charge; and every call to py:payments.send_to_gateway goes through py:payments.refund
+  guard:   yes
+  scan:    pass, no path skips it
+  ablation proved it: yes
+verify: pass
 ```
+
+`inv status` reports `held` only with the ablation report: without `--ablation` the same rule is
+`held (unproven: no --ablation)`. The ablation runs before `inv status` so that it can read the report.

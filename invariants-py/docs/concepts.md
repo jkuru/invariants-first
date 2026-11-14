@@ -102,11 +102,13 @@ hint.
 
 ## Standing
 
-Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` report one of:
+Standing is computed, never claimed. `inv status` and `inv.standing(rule_id)` report one of (the
+function cannot run the scan: it counts it only when called with `scan=True`, which says the scan
+passed, and otherwise gives the reason `inv scan not run`):
 
 | Standing | When |
 |---|---|
-| `held` | enforced (in effective mode: a spike demotion counts), `mediation.chokepoint` names one of the rule's functions, no live `mediation.allow` back door is left undeclared, `inv verify` and `inv scan` pass, and (when ablation results are given; `inv status` labels a `held` without them unproven) a falsifier was caught |
+| `held` | enforced (in effective mode: a spike demotion counts), not ablated, `mediation.chokepoint` names one of the rule's functions, no `mediation.residual_paths`, no live `mediation.allow` back door is left undeclared, `inv verify` passes, `inv scan` passes with no unresolved site accepted by `allow_unresolved`, and (when ablation results are given; `inv status` labels a `held` without them unproven) a falsifier was caught |
 | `enforce(known-callers)` | enforced, but one of the conditions for `held` is missing; the reasons are listed |
 | `monitored` | the rule runs, but no enforcer is in effective mode `enforce` |
 | `candidate` | status `candidate` or `contested`, or every enforcer is `off` |
@@ -131,7 +133,9 @@ it while `mediation.allow` names a back door that still resolves and is not decl
 `residual_paths`, while the chokepoint text names none of the rule's functions (its target, an edge
 target, the door or the sink) or a `py:` path that does not resolve, and, given the plugin's
 ablation results (`inv.standing(id, ablation=status_report.load_ablation("build/inv-report.json"))`),
-while no falsifier of the rule was caught. `inv status --ablation build/inv-report.json` checks that proof; without it a
+while no falsifier of the rule was caught. A scan that passes only because a person accepted an
+unresolved site in `mediation.allow_unresolved` is a reason too: the site is a person's judgment, not
+the scan's proof, and `inv status` names how many sites were accepted. `inv status --ablation build/inv-report.json` checks that proof; without it a
 `held` rule is labelled unproven (`held (unproven: no --ablation)`, `"ablation_proven": false` in
 `--json`, and a reason saying so). `inv.standing()` without `ablation` does not check it. `inv verify` also checks that a `py:`-keyed guard wraps
 the function its key names, and runs the route check of every FastAPI app given to

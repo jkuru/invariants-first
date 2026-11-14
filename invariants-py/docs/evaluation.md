@@ -25,7 +25,7 @@ The concept works for one kind of defect, and its recurring cost is now small.
   deliberate decision. Both failures name exactly what changed. A plain `inv lock`, the reflex
   re-pin, refuses both: a weakening needs `--accept-weakening`.
 - **One-time cost.** About 240 to 270 rule lines per app (239 and 271 non-blank, non-comment
-  lines) and about 180 explicit human decisions.
+  lines) and about 180 explicit human decisions across the two apps.
 
 So invariants is worth it for a few high-stakes properties (money, quotas, approvals, provenance)
 that new code might route around, where reviewers read rule and lock diffs. It is not a substitute
@@ -330,8 +330,8 @@ This method applies to both runs.
      on, because they are plain SQL. Tests that already fail on the pristine apps in this mode are
      dropped, because they assert library behaviour. That drops 31 of 72 pool tests and 43 of 86
      fact tests, which leaves 41 and 43. A change counts as caught when any remaining test fails.
-     (On the current apps B1 drops 36 of 73 and 48 of 90, since tests were added after the
-     published run, among them each app's two replayed-trace tests in `tests/test_replay.py`; see
+     (On the current apps B1 drops 36 of 73 and 49 of 92, since tests were added after the
+     published run, among them the replayed-trace tests in `tests/test_replay.py`; see
      [evaluation/README.md](../evaluation/README.md#what-has-changed-since-the-published-run).)
      This understates plain tests, because some of the dropped tests (for example
      `test_worked_flow_7_6`) check business outcomes as well as rule ids.
@@ -367,7 +367,7 @@ undoes the one catch that only the lockfile made (the rule-weakening edit).
 Against well-written ordinary checks and tests, the measured gain is 2 bypasses caught by
 `inv scan`, plus 2 catches that depend on a human (the lock diff) or exist only because the
 library exists (the binding check). The price is about 240 rule lines per app and about 160
-explicit human decisions. Whether that trade pays off depends on conditions, which are listed
+explicit human decisions across the two apps. Whether that trade pays off depends on conditions, which are listed
 under [Original verdict](#original-verdict).
 
 ### The 24 changes
@@ -520,7 +520,7 @@ In this experiment invariants added more human work than it saved, per change. I
 only under some conditions.
 
 - **The per-change cost.** The rule files are a one-time cost of about 25–40% of app size and
-  about 160 decisions. On top of that, every module edit costs a lock re-pin: 75% of benign
+  about 160 decisions across the two apps. On top of that, every module edit costs a lock re-pin: 75% of benign
   changes needed one.
 - **The per-change benefit.** Over plain checks plus tests, it caught 2 bypasses of 16 defects,
   plus 1 rule weakening that depends on review and 1 binding error. It caught none of the

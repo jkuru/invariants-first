@@ -27,14 +27,17 @@ Pick a backend with `INV_CEL_BACKEND=subset|cel-expr|auto`, or with
 `inv.load(..., backend=...)`. `auto` picks cel-expr if it is installed, else subset.
 
 Every backend uses the same front end, so a rule parses the same way everywhere. Rule text must
-stay within that grammar: `1e3`, `1u` and `b"..."` are parse errors. The loader checks every
+stay within that grammar: a bytes literal (`b"..."`) is a parse error. Exponents (`1e3`) and uint
+literals (`1u`) parse; a uint literal is `uint(n)`, so it loads on cel-expr only ([Number
+literals](#number-literals)). The loader checks every
 function a clause calls against the chosen backend: a name it does not have (a typo such as
 `sizee()`, `x.foo()`, or `type()` on the subset) is a `LoadError` naming the function and the
 backend, not a `rule_error` on every call. So is a known function called with the wrong number of
 arguments or in a form CEL does not have (`size(x, 1)`, `x.size(1)`, `'a'.startsWith()`,
-`matches('a')`, `x.has(y)`), checked against an arity table for the global and the receiver form
+`matches('a')`), checked against an arity table for the global and the receiver form
 (`invariants.cel.subset.ARITY`), and a macro written in global form (`exists(xs, x, p)`; write
-`xs.exists(x, p)`). The extensions `inv.sum`, `inv.zip` and `inv.unique_by` work on every backend.
+`xs.exists(x, p)`). `has()` has only the global form: `x.has(y)` does not parse ("has() has only the
+global form: has(a.b)"). The extensions `inv.sum`, `inv.zip` and `inv.unique_by` work on every backend.
 Every backend passes the conformance suite in `tests/conformance/cel/`.
 
 ## Cost limits
@@ -44,8 +47,12 @@ An integer outside int64 is a `rule_error` on every backend. Past a cost limit, 
 
 - **subset:** 10,000 units per evaluation. A spent budget is never absorbed: `false && x`,
   `true || x` and an `exists` or `all` that has already decided are still a `rule_error` when `x`
-  runs out of budget, as on cel-expr.
-- **cel-expr:** fixed, not settable: at most 9,999 comprehension iterations per clause evaluation,
+  runs out of budget (the subset evaluates both sides, for CEL's commutative `&&` and `||`).
+- **cel-expr** stops at what decides the clause, left to right: `false && x`, `true || x` and an
+  `exists` or `all` that has already decided never run `x`, so they are `false` or `true` where the
+  subset is a `rule_error`. A comprehension that does run past the limit is a `rule_error`, never
+  absorbed by the rest of the clause (`xs.all(x, x >= 0) && false` over 10,000 elements).
+- **cel-expr** budget, fixed, not settable: at most 9,999 comprehension iterations per clause evaluation,
   summed over every `all`, `exists`, `exists_one`, `map` and `filter` in the clause. Nested ones
   multiply: `xs.exists(x, ys.exists(y, ...))` costs |xs|·|ys|. In a clause that has a
   comprehension, each check the backend adds around arithmetic, `double()`, `int()`, `timestamp()`
@@ -100,6 +107,10 @@ Standard functions per backend (global `f(x)` or receiver `x.f()` form as CEL de
 | `timestamp`, `duration`, `getFullYear` and the other timestamp and duration getters | yes | yes |
 | `uint`, `bytes`, `type` | no (`LoadError`) | yes |
 | string extensions (`split`, `lowerAscii`, `substring`, ...), math and list extensions | no | no |
+
+`type()` is cel-expr's only, and the loader reads a bare type name in a clause as an undeclared
+name: `type(x) == int` and `type(x) == google.protobuf.Timestamp` are a `LoadError` ("reads undeclared
+name(s) ['int']") on every backend. Compare with the type of a literal instead: `type(x) == type(1)`.
 
 On bytes, on every backend: `size()` is the byte length, `<` `<=` `>` `>=` order lexicographically by
 byte, `+` concatenates, and `==`, `!=` and `in` compare bytes with bytes (never with a string).
@@ -183,8 +194,8 @@ reads an annotated datetime or timedelta is a `LoadError` saying so).
 `int` and `float` annotations are CEL `int` and `double`, and CEL never converts between
 them. `==`, `!=`, `<`, `<=`, `>`, `>=` compare across int and double (`args.qty < 2.5` is fine), but
 arithmetic does not: `args.price * args.qty` with `price: float` and `qty: int` (or
-`args.price + 1`) is a `LoadError` that says to write `args.price * double(args.qty)` (or
-`args.price + 1.0`, or `int(args.price) * args.qty`), and `%` takes ints only (`args.x % 2.0` is a
+`args.price + 1`) is a `LoadError` that says to convert one side (`double(args.qty)`, or
+`double(1)`; write `1.0`, or `int(args.price) * args.qty`), and `%` takes ints only (`args.x % 2.0` is a
 `LoadError`). Every backend refuses the mixed forms at run time too, as CEL does (conformance suite
 `numeric.yaml`). A parameter annotated `float` that the caller passes an int (`f(price=100)`) is
 an int to CEL: pass `100.0`, or convert in the rule.
@@ -198,7 +209,7 @@ past 2^53 (from the data the clause reads, a literal, an arithmetic, `int()` or 
 evaluated exactly. Each clause decides from what it reads: a big int in another argument never
 moves it. The engine still evaluates the clause first, so its comprehension budget decides as
 always (a clause past 9,999 iterations is the same `rule_error`); then the subset evaluates it
-exactly, with every function cel-expr has (`uint()`, `bytes()`, `type()` and the type names
+exactly, with every function cel-expr has (`uint()`, `bytes()` and `type()`
 included), `&&`, `||`, `all` and `exists` stopping where cel-cpp stops, and a budget that covers
 9,999 iterations of the clause. Slower, same verdict, exactly compared.
 
@@ -300,11 +311,9 @@ These are the cases where the backends still answer differently. None of them is
 |---|---|---|
 | `string(2.0)` | `rule_error` (refused) | `"2"` |
 | `uint`, `bytes`, `type` | `LoadError` | yes |
-| `type(x) == google.protobuf.Timestamp` (protobuf type names) | `LoadError` | yes |
 | Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 220 terms, about 100 with a comprehension in the clause) | yes | `LoadError` naming cel-cpp's limit |
-| An unannotated record, list or map that holds a refused value (a `Decimal` field), read whole (`args.items == []`; not `size()` or a comprehension that reads other fields) | result (the subset reads lazily) | `rule_error` |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
-| Cost limit | 10,000 units, never absorbed | 9,999 comprehension iterations, never absorbed |
+| Cost limit | 10,000 units, never absorbed: `false && x` is a `rule_error` when `x` runs out | 9,999 comprehension iterations; a part the clause does not need (`false && x`) never runs, so it gives the clause's value |
 | A string holding a NUL or a surrogate code point, a NaN or ±Infinity, or a list-like value that is not a list, that the clause references but does not need (`false && args.s == 'x'`, `true \|\| args.f > 1.0`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
 | A duration past about ±292 years (cel-cpp holds int64 nanoseconds; CEL allows ±10,000 years): in the data, from `duration(text)`, or made by arithmetic (`t - u` for timestamps more than 292 years apart) | result | `rule_error` (cel-cpp would read it saturated, so `d + duration('0s') != d`), a literal included |
 | Regex `\101` (octal), `\C` (any byte), `\p{Greek}` (scripts) | `rule_error` at run time | evaluated by RE2 |
