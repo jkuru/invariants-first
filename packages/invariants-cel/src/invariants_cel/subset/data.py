@@ -210,22 +210,22 @@ def has_enum_key(m: Mapping[Any, Any]) -> bool:
     return any(isinstance(k, enum.Enum) for k in m)
 
 
-def as_container(v: Any) -> Any:
+def as_container(v: Any, budget: list[int] | None = None) -> Any:
     """v as size(), in, [] and the macros read it: a list, tuple, string or Mapping as it is; a record
     (a dataclass, pydantic model or other object: values.py) as the map of its public fields, as
-    the engines read it; a sequence or iterable that is not a list or tuple a CelError
-    (values.LISTLIKE); anything else as it is (the caller's overload error)."""
+    the engines read it (charged to budget: cost.charge_whole); a sequence or iterable that is not a
+    list or tuple a CelError (values.LISTLIKE); anything else as it is (the caller's overload error)."""
     t = type(v)
     if t is list or t is dict or t is str or t is tuple or v is None or isinstance(v, _CONTAINERS):
         return v
     from .equality import whole     # (equality imports this module)
-    return whole(v)
+    return whole(v, budget)
 
 
 _CONTAINERS = (str, bytes, list, tuple, Mapping, int, float, *values.SCALARS)
 
 
-def _select(o: Any, f: str, test: bool = False) -> Any:
+def _select(o: Any, f: str, test: bool = False, budget: list[int] | None = None) -> Any:
     if test and (o is None or isinstance(o, _NO_FIELDS)):
         # CEL has() needs a map or message: on null, a number, a string or a list it is an error (cel-expr)
         raise CelError(f"has() on {_ty(o)}: field selection on a value that has no fields")
@@ -245,7 +245,7 @@ def _select(o: Any, f: str, test: bool = False) -> Any:
     if test:
         if ok:      # has(x.f) reads x.f whole, as the engines convert it: a value the library refuses
             from .equality import whole     # (NaN, a Decimal, a set, a generator; inside a map or list
-            whole(v)                        # too) is an error, as it is on cel-expr
+            whole(v, budget)                # too) is an error, as it is on cel-expr
         return ok                   # CEL has(): presence only, a null value is present
     if not ok:
         raise CelError(f"no such field {f!r} on {type(o).__name__}")

@@ -14,8 +14,9 @@ Reading a NaN or +-Infinity is an evaluation error unless non-finite numbers are
 
 Modules: lexer (tokens, literal ranges), catalog (function names and call shapes), parser (text to
 tree), tree (references, reads), data (reading values, field selection), equality (CEL ==, map
-lookup), operators (arithmetic, ordering, in), convert (the conversions), cost (the budget,
-matches()), functions (the built-ins), evaluator (the tree walk, the macros), program (the backend).
+lookup, map keys, inv.unique_by's hashing), operators (arithmetic, ordering, in), convert (the
+conversions), cost (the budget, matches()), functions (the built-ins), evaluator (the tree walk,
+the macros), program (the backend).
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from .catalog import _GETTERS, ARITY, CONVERSIONS, FUNCTIONS, arity_error
 from .convert import _convert
 from .cost import DEFAULT_BUDGET, CostExceeded
 from .data import CelType, TYPE_NAMES, Uint, check_int
-from .equality import _eq
+from .equality import _eq, unique
 from .evaluator import evaluate
 from .lexer import decode_string, tokenize
 from .parser import parse

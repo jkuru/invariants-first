@@ -55,6 +55,12 @@ An integer outside int64 is a `rule_error` on every backend. Past a cost limit, 
 - **subset:** 10,000 units per evaluation. A spent budget is never absorbed: `false && x`,
   `true || x` and an `exists` or `all` that has already decided are still a `rule_error` when `x`
   runs out of budget (the subset evaluates both sides, for CEL's commutative `&&` and `||`).
+  Besides one unit per node, the subset charges the work a node does on big values: a list, map
+  or record read whole (`==`, `!=`, `in`, `has()`, a record or an `Enum`-keyed map read as a map,
+  the keys of `inv.unique_by`, a map's keys under `size()`) costs one unit per 16 values it holds,
+  so `xs.all(x, x != ys)` over a 20,000-row `ys` runs out of budget in milliseconds instead of
+  running for a minute. `inv.unique_by` hashes its keys by their CEL value (linear in their size,
+  on both backends), so 4,000 keys cost what the `map()` before it costs.
 - **cel-expr** stops at what decides the clause, left to right: `false && x`, `true || x` and an
   `exists` or `all` that has already decided never run `x`, so they are `false` or `true` where the
   subset is a `rule_error`. A comprehension that does run past the limit is a `rule_error`, never
@@ -170,7 +176,7 @@ load-time type checker uses the same table, so a rule reads the same value every
 | `timedelta` | `duration` | up to ±10,000 years, as in CEL |
 | `list`, `tuple` / `dict`, `Mapping` | list / map | an `Enum` key is its value, as any `Enum` |
 | pydantic `RootModel` | its `.root` | `RootModel[list[Line]]` is the list the API received |
-| dataclass, pydantic model, other object | map of its public fields | `size()`, `in`, `[]` and the macros read it as that map, on every backend |
+| dataclass, pydantic model, other object | map of its public fields | `size()`, `in`, `[]`, `==` and the macros read it as that map, on every backend; a pydantic model's are its fields and its `@computed_field`s, as `model_dump()` has them (a computed field that raises is a `rule_error`) |
 | other sequence or iterable (`UserList`, `deque`, `range`, a generator, any class with `__iter__`, `__len__` or `__getitem__`) | refused | pass a `list`: never read as the map of its attributes, never iterated |
 | naive `datetime` (no `tzinfo`) | refused | the library never assumes a timezone: use `datetime.now(timezone.utc)` or attach a `tzinfo` |
 | `datetime.date` | refused | CEL has no date type: pass an aware `datetime` (midnight UTC, say) or an ISO string `"2024-01-31"` |
@@ -302,7 +308,11 @@ a `rule_error`. Neither passes a NaN through a comparison: a clause that evaluat
   is a CEL map on every backend: field selection, indexing, `size()`, `in`, `has()` and the macros
   read its keys. An `Enum` key is its value (`{Color.RED: 'x'}` with `RED = 1` answers `m[1]`); a
   map holding both an `Enum` key and its value is a `rule_error` "repeated map key". A record is the
-  map of its public fields here too (`size(r)`, `'x' in r`, `r['x']`, `r.exists(k, ...)`).
+  map of its public fields here too (`size(r)`, `'x' in r`, `r['x']`, `r.exists(k, ...)`). The
+  macros and `size()` read a map's keys as CEL keys, and not its values: a map from the data with a
+  key CEL cannot hold (a float, `None`, a tuple, bytes, an int past int64) is a `rule_error`
+  "unsupported map key type" under `all`, `exists`, `exists_one`, `map`, `filter`, `inv.unique_by`
+  and `size()` on every backend.
 
 ## Number literals
 
@@ -350,7 +360,8 @@ These are the cases where the backends still answer differently. None of them is
 | `uint`, `bytes`, `type` | `LoadError` | yes |
 | Nesting past 32 levels (about 30 nested parentheses or calls, or a sum of more than about 220 terms, about 100 with a comprehension in the clause) | yes, up to its own limit (64 nested levels, a tree 256 deep), past which it is a `LoadError` too | `LoadError` naming cel-cpp's limit |
 | `matches()` on a very long input | `rule_error` past the step budget | result |
-| Cost limit | 10,000 units, never absorbed: `false && x` is a `rule_error` when `x` runs out | 9,999 comprehension iterations; a part the clause does not need (`false && x`) never runs, so it gives the clause's value |
+| Cost limit | 10,000 units (nodes, and the work on big values: string scans, regex steps, values read whole), never absorbed: `false && x` is a `rule_error` when `x` runs out | 9,999 comprehension iterations; a part the clause does not need (`false && x`) never runs, so it gives the clause's value |
+| A field read or index (`m.b`, `m["b"]`) on a map from the data that also holds a key CEL cannot hold (`{"b": 2, 1.5: 1}`) | result (the subset reads the one key) | `rule_error` "unsupported map key type" for `m["b"]` (the engine converts the map whole); `m.b` gives the result on both |
 | A string holding a NUL or a surrogate code point, a NaN or ±Infinity, or a list-like value that is not a list, that the clause references but does not need (`false && args.s == 'x'`, `true \|\| args.f > 1.0`, or an `\|\|` the other side decides) | result (the subset reads lazily, and CEL absorbs the error) | `rule_error` (refused on its way to the engine) |
 | A duration past about ±292 years (cel-cpp holds int64 nanoseconds; CEL allows ±10,000 years): in the data, from `duration(text)`, or made by arithmetic (`t - u` for timestamps more than 292 years apart) | result | `rule_error` (cel-cpp would read it saturated, so `d + duration('0s') != d`), a literal included |
 | Regex `\C` (any byte), `\p{Greek}` (scripts) | `rule_error` at run time | evaluated by RE2 |

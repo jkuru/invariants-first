@@ -7,11 +7,12 @@ All notable changes to this project are recorded here. The format follows
 ## [Unreleased]
 
 Planned as 0.1.0, the first release. Publishing metadata (the final package name, `project.urls`,
-authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
+PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
-The publishing metadata holds dummy values on `example.com` (authors, `[project.urls]`, the SARIF
-`informationUri`); the release workflow refuses to upload while any remains.
+The publishing metadata holds dummy values on `example.com` (`[project.urls]`, the SARIF
+`informationUri`); the release workflow refuses to upload while any remains. The authors are
+settled: Claude, Gemini and Jerry, by name only, in all four `pyproject.toml`.
 
 What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML and the three libraries
 below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-expr engine, now
@@ -256,6 +257,21 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
   to `\7` is still refused, as in RE2.
 - cel-expr's cost message names the backend once: `cost limit exceeded (cel-expr: at most 9,999
   ...)`, not `cel-expr: cost limit exceeded (cel-expr: ...)`.
+- `inv.unique_by` hashes its keys by their CEL value (numbers across int, uint and double, a bool
+  never a number, lists in order, maps by their entries) instead of comparing every pair, on both
+  backends: 4,000 distinct keys took 2.4 s, inside the subset's budget; the answer is unchanged.
+- The subset charges a list, map or record read whole (`==`, `!=`, `in`, `has()`, a record or an
+  `Enum`-keyed map read as a map, `inv.unique_by`'s keys, a map's keys under `size()`) one budget
+  unit per 16 values it holds: `xs.all(x, x != ys)` over 3,000 `x` and a 20,000-row `ys` ran for
+  86 s inside the budget and is now a `rule_error` "cost limit exceeded" in milliseconds.
+- The macros and `size()` read a map's keys as CEL keys on the subset, as cel-expr does: a map from
+  the data with a key CEL cannot hold (a float, `None`, a tuple, bytes, an int past int64) is a
+  `rule_error` "unsupported map key type" there too, where the subset iterated it
+  (`m.exists(k, true)` was `true`). They never read the map's values: an `Enum`-keyed map holding a
+  NaN is no longer an error under `exists` on the subset, as on cel-expr.
+- A pydantic model read whole (`size()`, `==`, `in`, `[]`, the macros) has its `@computed_field`s
+  as fields, as `model_dump()` does, on both backends: `o.total` was readable while `size(o)` and
+  `o.exists(k, k == "total")` left it out.
 
 ### The lock
 

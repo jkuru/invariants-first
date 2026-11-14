@@ -10,20 +10,22 @@ from .. import values
 from ..errors import CelError, check_result
 from .catalog import _GETTERS, CONVERSIONS
 from .convert import _convert
-from .cost import _matches, charge
-from .data import _int_range, _num, _on_map, as_container, has_enum_key
-from .equality import whole
+from .cost import _matches, charge, charge_whole
+from .data import _int_range, _num, _on_map, as_container
+from .equality import cel_keys
 
 # name -> fn(name, has_receiver, vals, budget); vals holds the receiver first, if there is one
 _Builtin = Callable[[str, bool, list[Any], list[int]], Any]
 
 
 def _size(name: str, recv: bool, vals: list[Any], budget: list[int]) -> Any:
-    sized = as_container(vals[0]) if len(vals) == 1 else None
+    sized = as_container(vals[0], budget) if len(vals) == 1 else None
     if not isinstance(sized, (str, bytes, list, tuple, Mapping)):
         raise CelError("size() needs one string, bytes, list or map")
-    if isinstance(sized, Mapping):
-        return _on_map(sized, "size()", lambda: len(whole(sized)) if has_enum_key(sized) else len(sized))
+    if isinstance(sized, Mapping):      # its keys read as CEL keys (as the macros read them), and charged
+        keys = _on_map(sized, "size()", lambda: cel_keys(sized))
+        charge_whole(budget, keys)
+        return len(keys)
     return len(sized)                   # bytes: the byte length, as in CEL
 
 

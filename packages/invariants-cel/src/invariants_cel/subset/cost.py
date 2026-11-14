@@ -1,5 +1,6 @@
-"""The cost budget: one unit per evaluated node, plus the work of matches() (its regex steps) and of
-contains(), startsWith() and endsWith() (the characters they scan).
+"""The cost budget: one unit per evaluated node, plus the work of matches() (its regex steps), of
+contains(), startsWith() and endsWith() (the characters they scan) and of reading a list, map or
+record whole (the values it holds).
 
 A budget is a one-item list [units left], shared by every node of one evaluation.
 """
@@ -25,6 +26,34 @@ def charge(budget: list[int] | None, chars: int) -> None:
     CHARS_PER_COST, on top of its node's own unit); CostExceeded once it is spent."""
     if budget is not None and chars >= CHARS_PER_COST:
         budget[0] -= chars // CHARS_PER_COST
+        if budget[0] < 0:
+            raise CostExceeded("cost limit exceeded")
+
+
+VALUES_PER_COST = 16        # values (list elements, map keys and values) read whole per unit of the budget
+
+
+def charge_whole(budget: list[int] | None, plain: object) -> None:
+    """Charge the reading of a value whole (==, !=, in, a record or an Enum-keyed map read as a map,
+    inv.unique_by's keys) to the budget: one unit per VALUES_PER_COST values in plain, its plain
+    form (to_plain), on top of the node's own unit; CostExceeded once it is spent. A scalar is free.
+    The count stops where the budget would run out, so it never walks more than the budget pays for."""
+    if budget is None or (type(plain) is not list and type(plain) is not dict):
+        return
+    cap = (max(budget[0], 0) + 1) * VALUES_PER_COST
+    n, work = 0, [plain]
+    while work:
+        v = work.pop()
+        n += 1
+        if type(v) is list:
+            work.extend(v)
+        elif type(v) is dict:
+            n += len(v)
+            work.extend(v.values())
+        if n >= cap:
+            break
+    if n >= VALUES_PER_COST:
+        budget[0] -= n // VALUES_PER_COST
         if budget[0] < 0:
             raise CostExceeded("cost limit exceeded")
 
