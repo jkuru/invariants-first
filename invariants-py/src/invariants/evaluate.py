@@ -150,17 +150,22 @@ def evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = "rule", reg: Reg
 
 
 def report(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome, action: str,
-           attempts: list[dict[str, Any]] | None = None, started: int | None = None) -> dict[str, Any]:
+           attempts: list[dict[str, Any]] | None = None, started: int | None = None,
+           refused: bool = False) -> dict[str, Any]:
     """Count the evaluation and emit its event.
 
     started: time.time_ns() when the check began (the guarded call's check phase, the model call,
     the edge call); the event then carries start_ns and end_ns (now), for spans and latency.
+    refused: the outcome is an edge's refusal of a received non-ok verdict, acted on by on_violation;
+    the event then carries refused: True (only then).
     """
     ev = {"rule": rule.id, "rev": rule.raw.get("rev"), "outcome": out.kind, "mode": reg.mode(rule, enf),
           "point": enf.get("point"), "timing": enf.get("timing"), "messages": out.messages,
           "error": out.error, "attempts": len(attempts or []) or None, "action": action}
     if started is not None:
         ev["start_ns"], ev["end_ns"] = started, time.time_ns()
+    if refused:
+        ev["refused"] = True
     reg.record(rule.id, out.kind, ev)
     level = (logging.DEBUG if out.kind == "ok" else logging.ERROR if action == "page"
              else reg.violation_log_level)
@@ -216,7 +221,7 @@ def act(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
     action = _decide(reg, rule, enf, out, refusal)
     if action is None:
         return "proceed"
-    ev = report(reg, rule, enf, out, action, attempts, started)
+    ev = report(reg, rule, enf, out, action, attempts, started, refused=refusal and action != "proceed")
     if action == "page":
         reg.page(_handoff(rule, "page", out, attempts, ev, out.error))
     if action in RAISE:
@@ -234,7 +239,7 @@ async def aact(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome,
     action = _decide(reg, rule, enf, out, refusal)
     if action is None:
         return "proceed"
-    ev = report(reg, rule, enf, out, action, attempts, started)
+    ev = report(reg, rule, enf, out, action, attempts, started, refused=refusal and action != "proceed")
     if action == "page":
         reg.page(_handoff(rule, "page", out, attempts, ev, out.error))
     if action in RAISE:

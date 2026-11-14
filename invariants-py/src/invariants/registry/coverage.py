@@ -3,6 +3,8 @@ whether a guard wraps a target, the targets and mediation of a rule, and WRAPPED
 callable in the process, which verify reads)."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 import weakref
@@ -82,16 +84,41 @@ def _chokepoint_problems(rule: Rule, text: str) -> list[str]:
     return out
 
 
+_PROSE = frozenset({"id", "rev", "status", "evidence", "statement", "why", "owner", "class"})
+
+
+def rule_digest(rule: Rule) -> str:
+    """The digest of what an ablation result is about: every field of the rule as loaded but its
+    prose, id, rev, status and evidence (so its bad, enforcers, model_policy, subject, mediation and
+    falsified_by). The pytest plugin writes it per rule into --inv-report-json; a report whose digest
+    differs judged another version of the rule."""
+    sem = {k: v for k, v in rule.raw.items() if k not in _PROSE}
+    data = json.dumps(sem, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return "sha256:" + hashlib.sha256(data.encode()).hexdigest()
+
+
 def _ablation_problems(rule: Rule, data: Mapping[str, Any]) -> list[str]:
-    """Why ablation does not back the rule, from the pytest plugin's report (--inv-report-json)."""
+    """Why ablation does not back the rule, from the pytest plugin's report (--inv-report-json).
+
+    The report must be for this version of the rule: its digest for the rule (ablation.digests)
+    must be rule_digest(rule). A report for another version (bad, an enforcer or falsified_by
+    changed since it ran), or one that names no digest, proves nothing about this one."""
     abl = data.get("ablation", data)
     if not isinstance(abl, Mapping):
         return ["ablation: the report holds no ablation results"]
+    digests = abl.get("digests")
+    digest = digests.get(rule.id) if isinstance(digests, Mapping) else None
+    if digest is not None and digest != rule_digest(rule):
+        return ["ablation: the report is for another version of the rule (its bad, enforcers or falsified_by "
+                "changed since pytest --inv-ablate ran); run it again"]
     if rule.id in (abl.get("not_load_bearing") or []):
         return ["ablation: guard not load-bearing (a falsifier still passes with the rule off)"]
     rows = (abl.get("rules") or {}).get(rule.id)
     if not rows:
         return ["ablation: no falsifier of this rule ran under pytest --inv-ablate"]
+    if digest is None:
+        return ["ablation: the report does not say which version of the rule it ablated (no digest); run "
+                "pytest --inv-ablate --inv-report-json again"]
     if not any(isinstance(r, Mapping) and r.get("result") == "caught" for r in rows):
         return ["ablation: no falsifier caught the ablation ("
                 + ", ".join(str(r.get("result")) for r in rows if isinstance(r, Mapping)) + ")"]

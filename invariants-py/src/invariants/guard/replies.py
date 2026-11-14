@@ -10,6 +10,7 @@ import copy
 import dataclasses
 import datetime
 import enum
+import functools
 import json
 import math
 import re
@@ -363,11 +364,14 @@ def check_checked_fields(schema: Any, refined: type, who: str) -> None:
     are forwarded to its value only for names the Checked class does not have, so a dataclass or
     pydantic field named value, attempts, rule or verdict (the Checked's own metadata), _inv_*, or an
     attribute of the Checked subclass would read the metadata instead of the reply (a judge's
-    verdict='deny' read as the Checked's verdict 'ok'). A {field: type} reply is a dict, read by key
-    (checked.value['verdict']), never by attribute forwarding: it is not checked."""
-    if instance_class(schema) is None:
+    verdict='deny' read as the Checked's verdict 'ok'). The reply class's pydantic computed fields and
+    properties (functools.cached_property too) are read through forwarding as well, so they are
+    checked alike. A {field: type} reply is a dict, read by key (checked.value['verdict']), never by
+    attribute forwarding: it is not checked."""
+    cls = instance_class(schema)
+    if cls is None:
         return
-    for k in schema_fields(schema):
+    for k in [*schema_fields(schema), *_computed_names(cls)]:
         if isinstance(k, str) and (k.startswith("_inv_") or hasattr(refined, k)):
             what = (f"the {refined.__name__} attribute {k!r}" if k not in ("value", "attempts", "rule", "verdict")
                     else f"the inv.Checked metadata {k!r}")
@@ -375,6 +379,19 @@ def check_checked_fields(schema: Any, refined: type, who: str) -> None:
                             f"not the reply. Rename the field in the schema (for example reply_{k}, and ask "
                             f"the model for that key), or use a {{field: type}} schema, whose reply is read by "
                             f"key: checked.value[{k!r}]")
+
+
+def _computed_names(cls: type) -> list[str]:
+    """The reply class's properties (property, cached_property; a pydantic @computed_field is one):
+    attributes checked.<name> would forward to, other than the schema's fields."""
+    names: list[str] = []
+    for klass in cls.__mro__:
+        if klass is object:
+            continue
+        for k, v in vars(klass).items():
+            if isinstance(v, (property, functools.cached_property)) and k not in names:
+                names.append(k)
+    return names
 
 
 def recheck(reply: Any, schema: Any) -> Any:

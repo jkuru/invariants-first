@@ -37,6 +37,7 @@ class _SessionState:
         self.totals: dict[str, dict[str, int]] = {}
         self._unobserve: Callable[[], None] | None = None
         self.statuses: dict[str, str] = {}          # every loaded rule's status, in rule-file order
+        self.digests: dict[str, str] = {}           # every loaded rule's digest (registry.coverage.rule_digest)
         # the ablation plan, made after collection: per rule, its falsifier items (falsifier index,
         # item index, node id) and the falsified_by entries that match no collected test
         self._expect: dict[str, list[tuple[int, int, str]]] = {}

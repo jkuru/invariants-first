@@ -8,7 +8,7 @@ from typing import Any, Callable, Sequence, cast
 
 import pytest
 
-from ..registry import Registry, ablated_everywhere, capture
+from ..registry import Registry, ablated_everywhere, capture, is_decision
 from .rerun import _carried, _decided, _env_ablated, _env_decisions, _matches, _outcome, _reached
 from .state import NO_RULES, _SessionState
 
@@ -125,9 +125,14 @@ class _Ablation(_SessionState):
                     self._note([rid], item, f"inconclusive ({control} on a control re-run without ablation; "
                                             f"{_carried(item)})")
                     continue
-                kinds = {e.get("outcome") for e in events if e.get("rule") == rid}
+                mine = [e for e in events if e.get("rule") == rid]
+                kinds = {e.get("outcome") for e in mine}
+                # an edge's refusal of a received verdict (even of a rule_error one), and an escalated
+                # abstain, are decisions of the rule: never "errored, not violated"
+                decisive = bool(kinds & {"violation", "parse_error"}) or any(
+                    is_decision(str(e.get("outcome")), e) for e in mine)
                 out, reached = self._ablated_run(item, keep, rid, rerun)
-                if out == "failed" and "rule_error" in kinds and not kinds & {"violation", "parse_error"}:
+                if out == "failed" and "rule_error" in kinds and not decisive:
                     # with the guard on, the test passed because the rule errored (a typo, a missing
                     # key), not because it found the violation: a fail_closed error rejects too
                     result = "inconclusive (rule_error, not violation)"

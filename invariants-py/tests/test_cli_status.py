@@ -17,9 +17,22 @@ CAUGHT = {"ablation": {"rules": {"L-1": [{"test": "t", "result": "caught"}],
                                    "R-1": [{"test": "t", "result": "caught"}]}}}
 
 
+def _caught(reg) -> dict:
+    """CAUGHT, with the digests of the rules as reg holds them (the report is for this version)."""
+    from invariants.registry.coverage import rule_digest
+    return {"ablation": {**CAUGHT["ablation"],
+                         "digests": {rid: rule_digest(r) for rid, r in reg.rules.items()}}}
+
+
 def test_clean_app_standing(tmp_path):
+    import sys
+    import invariants as inv
     abl = tmp_path / "inv-report.json"
-    abl.write_text(json.dumps(CAUGHT))
+    sys.path.insert(0, str(CLEAN))
+    try:
+        abl.write_text(json.dumps(_caught(inv.load(CLEAN / "invariants.yaml", install=False))))
+    finally:
+        sys.path.remove(str(CLEAN))
     rows = _rows(run_inv("status", CLEAN / "invariants.yaml", "--json", "--ablation", abl))
     assert rows["L-1"]["standing"] == "held" and rows["L-1"]["reasons"] == [] and rows["L-1"]["scan"] == "pass"
     assert rows["L-1"]["ablation_proven"] is True
@@ -63,4 +76,4 @@ def test_unscanned_rule_is_not_held(reg):
     assert row["standing"] == "enforce(known-callers)" and row["scan"] == "not_scanned"
     assert any("add mediation.sink" in w for w in row["reasons"])
     # R-1's target is effects: none, so there is no sink to scan for (fix round 1)
-    assert status_report.rule_status(reg, report, "R-1", CAUGHT)["standing"] == "held"
+    assert status_report.rule_status(reg, report, "R-1", _caught(reg))["standing"] == "held"

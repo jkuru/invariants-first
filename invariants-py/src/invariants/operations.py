@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.resources
 import pathlib
+import time
 from typing import Any, Iterable
 
 from .errors import LoadError
@@ -27,8 +28,9 @@ def monitor(rule_id: str, rows: Iterable[tuple[Any, dict[str, Any]]],
     key_i = i if i in rule.names_for else "rule"
     out = []
     for key, base in rows:
+        started = time.time_ns()
         o = evaluate(rule, base, key_i, reg)
-        ev = report(reg, rule, {**enf, "mode": "detect"}, o, "report")
+        ev = report(reg, rule, {**enf, "mode": "detect"}, o, "report", started=started)
         ev["key"] = key
         out.append((key, o))
     return out

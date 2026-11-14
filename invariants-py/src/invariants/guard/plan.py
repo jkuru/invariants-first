@@ -161,7 +161,8 @@ class _ModelRun:
     """
 
     __slots__ = ("started", "reg", "providers", "rule", "i", "enf", "passive", "sig", "bound", "schema",
-                 "refined", "base", "fb", "prov", "fmt_left", "sem_left", "ab", "record", "feedback", "fed_back")
+                 "refined", "base", "fb", "prov", "fmt_left", "sem_left", "ab", "record", "feedback", "fed_back",
+                 "attempt_started")
 
     def __init__(self, rule_id: str, schema: Any, refined: Any, sig: inspect.Signature,
                  a: tuple[Any, ...], kw: dict[str, Any]) -> None:
@@ -192,11 +193,13 @@ class _ModelRun:
         self.record: list[dict[str, Any]] = []
         self.feedback: str | None = None               # the full text sent to the model as inv_feedback
         self.fed_back: str | None = None               # what the attempt record says was sent (value-free)
+        self.attempt_started = self.started            # when the current attempt's model call began
 
     def call_args(self) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """(args, kwargs) for the next model call, with inv_feedback set when declared."""
         if "inv_feedback" in self.sig.parameters:
             self.bound.arguments["inv_feedback"] = self.feedback
+        self.attempt_started = time.time_ns()
         return self.bound.args, self.bound.kwargs
 
     def passive_result(self, raw: Any) -> Any:
@@ -234,7 +237,7 @@ class _ModelRun:
                 send = self.fb.get("format", "parser_error") == "parser_error"
                 self.feedback = e.feedback if send else None      # the model sees the full text
                 self.fed_back = told if send else None
-                report(reg, rule, self.enf, out, "retry", self.record)
+                report(reg, rule, self.enf, out, "retry", self.record, started=self.attempt_started)
                 return "retry", None
             return "finish", (out, raw)
         ab = self.ab
@@ -292,7 +295,7 @@ class _ModelRun:
         if out.kind == "violation" and self.sem_left and reg.mode(rule, self.enf) == "enforce":
             self.sem_left -= 1
             self.feedback = self.fed_back = None     # fresh resample: never the rule text or expected value
-            report(reg, rule, self.enf, out, "resample", self.record)
+            report(reg, rule, self.enf, out, "resample", self.record, started=self.attempt_started)
             return "retry", None
         return "finish", (out, reply)              # rule_error never resamples: on_error applies
 

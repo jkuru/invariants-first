@@ -17,6 +17,7 @@ class _Report(_Ablation):
     def worker_payload(self) -> dict[str, Any]:
         """What a worker sends the controller (plain lists and dicts: execnet carries them)."""
         return {"statuses": [[rid, st] for rid, st in self.statuses.items()],
+                "digests": [[rid, d] for rid, d in self.digests.items()],
                 "expect": [[rid, [list(e) for e in rows]] for rid, rows in self._expect.items()],
                 "uncollected": [[rid, [list(u) for u in rows]] for rid, rows in self._uncollected.items()],
                 "results": [[rid, nodeid, res] for (rid, nodeid), res in self._results.items()],
@@ -32,6 +33,8 @@ class _Report(_Ablation):
         self.workers_reported += 1
         for rid, st in data["statuses"]:
             self.statuses.setdefault(rid, st)
+        for rid, d in data.get("digests") or []:
+            self.digests.setdefault(rid, d)
         for rid, rows in data["expect"]:                # every worker collects the same items
             self._expect.setdefault(rid, [(int(a), int(b), str(c)) for a, b, c in rows])
         for rid, rows in data["uncollected"]:
@@ -61,8 +64,10 @@ class _Report(_Ablation):
         if self.verify_on:
             data["verify"] = {"ok": not self.verify_problems, "problems": self.verify_problems}
         if self.ablate_on:
+            # digests: which version of each rule the results are for (inv status checks it)
             data["ablation"] = {"not_load_bearing": self.not_load_bearing, "unverified": self.unverified,
-                                "rules": self.ablation, "notes": self.ablation_notes}
+                                "rules": self.ablation, "notes": self.ablation_notes,
+                                "digests": dict(self.digests)}
         return data
 
     def _write_report(self, tr: Any) -> None:

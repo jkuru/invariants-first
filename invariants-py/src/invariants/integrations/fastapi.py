@@ -24,10 +24,11 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 
 from ..errors import CoverageError, InvariantError
-from ..guard import guard as _core_guard
+from ..guard.decorators import _guard as _core_guard
 from ..loader import read_document
 from ..registry import Registry, current
 from ..model import Rule
+from ..providers import ProviderFailed
 from .asgi import PROBLEM_JSON, StatusMap, problem
 
 HTTP_METHODS = frozenset({"GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"})
@@ -63,15 +64,26 @@ def guard(*keys: str, response_model: type | None = None) -> Callable[[Callable[
 
     When the handler returns a dict and its return annotation (or response_model) is a pydantic
     model, the dict is validated into that model first, so post_effect rules read the response model.
-    A Response the handler returns (JSONResponse(..., status_code=404)) passes through as it is: a
-    post_effect clause that reads a field of result then finds no such field on it, a rule_error
-    that the enforcer's on_error decides (fail_closed rejects), never a 500 from validating it.
-    It evaluates both decorator and middleware enforcers.
+    A Response the handler returns (JSONResponse(..., status_code=404)) passes through as it is,
+    and is opaque to post_effect rules: a clause that reads result is a rule_error ("the handler
+    returned a Response") that the enforcer's on_error decides (fail_closed rejects), never the
+    Response's own attributes (status_code, body, headers, ...) read as response-model fields, and
+    never a 500 from validating it. It evaluates both decorator and middleware enforcers.
     """
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
         model = response_model or _return_model(fn)
-        return _core_guard(*keys, points=("decorator", "middleware"))(fn if model is None else _coerce(fn, model))
+        return _core_guard(keys, ("decorator", "middleware"), _opaque_response)(
+            fn if model is None else _coerce(fn, model))
     return deco
+
+
+def _opaque_response(result: Any) -> Any:
+    """What post_effect rules read as result: a returned Response is opaque (reading it is a
+    rule_error), so result.status_code never reads the Response's own status_code."""
+    if isinstance(result, Response):
+        return ProviderFailed(f"the handler returned a Response ({type(result).__name__}), not its response "
+                              f"model: post_effect rules cannot read result from it")
+    return result
 
 
 def install(app: _fastapi.FastAPI, *, reject_status: int = 422, statuses: StatusMap | None = None,
