@@ -74,6 +74,14 @@ def test_a_root_model_body_is_its_list(backend):
     assert outcome(backend, "bulk", "size(args.lines) > 1000", lines)[0] == "ok"
 
 
+def test_a_root_model_is_its_root_wherever_it_is_read(backend):
+    from pydantic import RootModel
+    n, tags = RootModel[int](7), RootModel[list[str]](["a", "b"])
+    assert kind(backend, "args.n > 5 && args.n == 7", n=n) == ("value", True)
+    assert kind(backend, "args.r.n + 1 == 8", r={"n": n}) == ("value", True)
+    assert kind(backend, "args.t[1] == 'b' && 'a' in args.t", t=tags) == ("value", True)
+
+
 @pytest.mark.parametrize("make", [r24.Batch, collections.UserList, collections.deque, lambda xs: iter(xs),
                                   lambda xs: range(-1, 500)])
 @pytest.mark.parametrize("bad", ["size(args.xs) > 100", "args.xs.exists(x, x < 0)", "args.xs.source == 'api'"])
