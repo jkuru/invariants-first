@@ -4,7 +4,7 @@ Thank you for helping. This project is small and young, so issues and pull reque
 
 ## Ground rules
 
-- Use decorators only. The library never rewrites user code (no AST rewriting) and never calls `eval` or `exec` on rule text or source code. A test checks this.
+- Use decorators only. The library never rewrites user code (no AST rewriting) and never calls `eval` or `exec` on rule text or source code. A test checks that no library module calls `eval(` or `exec(`.
 - Every behaviour you add needs a pytest test.
 - Keep docstrings plain and short, and add type hints to the public API.
 - Test fixture apps live in `tests/fixtures/`: the rule-file apps `jobs`, `triage` and `pool`, the

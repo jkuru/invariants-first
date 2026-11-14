@@ -77,14 +77,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `inv.using()`, `inv.capture()` and `inv.observe()` cover tests, and `inv.configure()` the
   production wiring (the event sink's size, the review store, a pager, an exporter, an error-spike alarm). Hand-offs go to a review store (`MemoryReviews`,
   `JsonlReviews`, or your own `ReviewStore`).
-- Standing is computed, not claimed: `inv.standing()` gives `held` only when the rule is enforced,
-  its chokepoint is named, no residual path is listed, and verify and the scan pass; otherwise
-  `enforce(known-callers)`, `monitored` or `candidate`, with the reasons.
+- Standing is computed, not claimed: `inv.standing()` gives `held` only when the rule is enforced
+  (in effective mode) and not ablated, its chokepoint names one of the rule's functions, no residual
+  path is listed, no live `allow` back door is left undeclared, verify passes, and the scan passes
+  with no site accepted by `allow_unresolved`; with ablation results, a falsifier must also have
+  been caught. Otherwise `enforce(known-callers)`, `monitored` or `candidate`, with the reasons.
 
 ### CEL
-
-- On the subset, looking up a value that can never be a map key (bytes, `null`, a list, a map, a
-  timestamp: `null in args.m`) is a `rule_error`, as on cel-expr, not a quiet `false`.
 
 - Two backends behind one front end, so a rule parses the same everywhere: `subset` (the default,
   standard library only, with a cost budget) and `cel-expr` (Google's C++ runtime, from the `cel`
@@ -105,6 +104,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - A `str`, `int`, `float` or `bytes` subclass is read as its plain value on every backend (the
   subset compared `class Role(str)` unequal to every string literal, and refused arithmetic on
   `numpy.float64`); the subset does `size()`, ordering and `+` on bytes, as cel-expr.
+- On the subset, looking up a value that can never be a map key (bytes, `null`, a list, a map, a
+  timestamp: `null in args.m`) is a `rule_error`, as on cel-expr, not a quiet `false`.
 
 ### The lock
 
@@ -130,7 +131,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   one still fails. Output is text, JSON or SARIF 2.1.0.
 - The scan's file handling fails closed. Symlinked directories inside a root are followed, as
   Python imports them (cycles cut; a target outside the roots is scanned and noted). An import of
-  a module a scanned package does not hold is `unresolved/unknown-module`, never third-party. A
+  a module a scanned package does not hold is `unresolved/unknown-module`, never third-party (an
+  installed portion of a namespace package is the one exception, below). A
   file in an always-skipped directory (`build/`, a dot-directory, a hand-made `site-packages/`) that
   imports any scanned module, or imports code it names at run time, is
   `unresolved/skipped-importer`; only a recognised virtualenv or node package and exact copies of
@@ -154,7 +156,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   header), and for an `unresolved/inferred-path` finding also the entrypoints and name-matched calls
   that reach its site (listed as `reached_by`), so a new untyped caller of an accepted helper is a
   new, unaccepted finding. An accepted finding is shown (`accepted` in text, JSON, a SARIF
-  suppression with the `why`, `inv status`, MCP `explain`) and never fails the rule; an edit above
+  suppression with the `why`, `inv status`, MCP `explain`) and never fails the rule, but a rule with
+  one is not reported `held` (a person's judgment, not the scan's proof); an edit above
   the site keeps the entry (reported as moved), an edit of any line of the statement does not; an
   entry that matches nothing is `missing/allow-unresolved-unused`; entries at their own line are
   matched before moved ones. `bypass` and `forbidden/*` findings can never be accepted. The lock
@@ -174,7 +177,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   unresolved findings to 17 unresolved (4 on tornado and traitlets bases); on google-adk's credential
   door 2 forbidden and 76 unresolved to 77 unresolved (8 on `logging`, `litellm` and
   `google.genai`; besides 258 imports of `google.*` packages the roots lack).
-- Values the scan did not see as values (fix round 26). A class-body alias of a method (`post =
+- A function used as a value is an entrypoint: one that can reach a sink without passing a door (a
+  door's own helper included) and is taken as a value outside the doors and allowed functions (a
+  thread target, a callback, a dict entry, an alias, a bound method) is reported where it escapes; an
+  allowed back door taken as a value is a new caller, a `bypass`. A name bound to several functions
+  (a conditional import, a star import re-exporting another one) calls each of them.
+- Values the scan did not see as values. A class-body alias of a method (`post =
   record`) is that method under another name, a name used in a class body is looked up in the class
   first, and any other class-body use of a method (`{"post": record}`, `property(record)`) is a value.
   A dunder method or alias (other than `__init__`, `__new__`, `__post_init__`) is called by Python from
@@ -202,12 +210,6 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `unresolved/reflection`: its submodules may come from any directory. `sys.path` changed through a
   name bound to it (`p = sys.path; p.insert(0, d)`) is reported too. Name-matched alternatives are
   followed in sorted order, so a scan gives the same paths on every run.
-
-- A function used as a value is an entrypoint: one that can reach a sink without passing a door (a
-  door's own helper included) and is taken as a value outside the doors and allowed functions (a
-  thread target, a callback, a dict entry, an alias, a bound method) is reported where it escapes; an
-  allowed back door taken as a value is a new caller, a `bypass`. A name bound to several functions
-  (a conditional import, a star import re-exporting another one) calls each of them.
 - A class's inferred type is trusted only when its identity cannot be altered: known
   identity-preserving decorators (`@dataclass`, `@functools.total_ordering`, ...) and scanned ones that
   hand back their parameter unchanged, a `__new__` that passes on its own first parameter, no
@@ -229,9 +231,11 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   models as contracts, service-to-repository door rules with today's back doors frozen in `allow`,
   and function preconditions translated to CEL, written commented out), then locks it. It never
   overwrites a rule file, and reads a Graphify `graph.json` for door hints (`--graph`); every
-  proposed door is checked by the scan. It tries the lock's pin on each drafted contract first, and
-  writes a model pydantic cannot give a JSON Schema for (or whose module does not import) commented
-  out with the reason, so the lock step does not fail on it. It skips private functions and
+  proposed door is checked by the scan. It writes at most `--max-doors` door rules (default 5), the
+  most important first, and lists the rest. With no Python source to read it exits 2 and writes
+  nothing. It tries the lock's pin on each drafted contract first, and writes a model pydantic
+  cannot give a JSON Schema for (or whose module does not import) commented out with the reason, so
+  the lock step does not fail on it. It skips private functions and
   `assert self.x is not None` checks, reads `if ...: raise` preconditions after a docstring, logging
   call or plain assignment, does not count `dict.update`, `set.add`, logging or callback
   registration as writes, and never proposes a read-only function (`get_*`, `list_*`, ...) as a door.
@@ -265,7 +269,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   package's `__path__` leads to, one the project's code imports) that resolves outside the root;
   and the scan the server runs does not follow a symlink under the source roots that resolves
   outside it, reporting it as `unresolved/outside-root` with the link's path only.
-- `inv validate`, `inv lock`, `inv verify`, `inv scan`, `inv status`, and `inv --version`.
+- `inv --version` (`-V`) prints `inv (invariants) 0.1.0`; a bare `inv` lists the commands (`validate`,
+  `lock`, `verify`, `scan`, `init`, `check`, `hook`, `status`, `mcp`).
 - Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls, 4 the scan
   skipped an ablated `enforce` rule (3 and 4 are not passes).
 - A GitHub Action (`action.yml`) and a pre-commit hook (`.pre-commit-hooks.yaml`) at the repository
@@ -273,14 +278,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 ### pytest plugin
 
-- `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain below
-  `enforce`) next to the other four.
-
 - Installed with the package (entry point `pytest11`). Options: `--inv-rules`, `--inv-verify`,
   `--inv-ablate` (with `--inv-ablate-lenient`), `--inv-report` and `--inv-report-json`; fixtures
   `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`. With `--inv-ablate` or `--inv-verify`
   and no `--inv-rules` or `inv_rules`, it loads `invariants.yaml` (`.yml`, `.json`) from the rootdir;
   `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run.
+- `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain below
+  `enforce`) next to the other four.
 - Ablation re-runs each rule's `falsified_by` tests with the rule off: a falsifier is caught only when
   its rule decided something on a control run and the ablated run fails; everything else is
   reported as inconclusive with the reason. It works under pytest-xdist and reaches subprocesses

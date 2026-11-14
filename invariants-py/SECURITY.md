@@ -45,6 +45,9 @@ These are security issues:
   model, through `ParseError.feedback` and `inv_feedback`.)
 - An exception message from user code (a property, a mapping lookup, a provider) appearing in
   outcome errors, events or logs while debug is off (`INV_DEBUG` unset, `inv.configure(debug=False)`).
+- A way for `inv mcp` (or `inv-mcp`) to read a file or import a module outside its `--root`,
+  through a symlink included, to write the rule file, the lock or `allow`, or to put an object's repr
+  in its output.
 - A route or escalate whose review is silently dropped: a store failure must raise `ReviewNotOpened`
   carrying the hand-off, or reach the configured `review_fallback`.
 

@@ -81,4 +81,6 @@ render, not that they are final), so a green build is not a sign that this list 
    environments. In each, check that `import invariants` works with only the core dependency
    (PyYAML), from a directory outside the checkout, and that `inv --help` and `inv-mcp --help` run;
    with the wheel, check that the README Quickstart runs as shown.
-5. Tag the release; the release workflow publishes it through trusted publishing.
+5. Tag the release and push the tag. The release workflow does not run on a tag: start it by hand
+   (Actions > release > Run workflow), first with target `testpypi`, then with `pypi`. It uploads
+   through trusted publishing.

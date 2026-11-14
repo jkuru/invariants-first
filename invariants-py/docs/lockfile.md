@@ -38,15 +38,15 @@ rewrite is itself a possible weakening).
 
 | Section | Pinned |
 |---|---|
-| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`) and of `mediation.chokepoint` (not prose: it decides `held`). |
+| `rules` | `rev`, `status`, the expanded targets, the rule's semantic content (`bad`, `enforcers` with `mode`, `timing`, `on_violation`, `on_error`, `view` and `artifact`, `bind`, `scope`, `subject`, `mediation` sink, door, allow, allow_unresolved and residual paths, `model_policy` with its defaults filled in, `compares_to`, `falsified_by`) and a digest per prose field (`statement`, `why`, `owner`, `class`) and of `mediation.chokepoint` (not prose: it decides `held`). |
 | `targets` | The signature as text (unwrapped through decorators) and as resolved `types`, the JSON Schema of each parameter with an `Annotated` constraint (`param_schemas`), `effects`, and a model-call target's reply schema. |
 | `providers` | `type`, `from`, `args`, `concurrent` (when set), and the function's signature, resolved types and `param_schemas`. |
 | `contracts` | A pydantic model's JSON Schema; a dataclass or TypedDict as a JSON Schema too; a `{field: type}` schema; an Enum's values; an `openapi` file, or a live app's generated document (`app: module:app`), as the parameters, request body and response schemas of its operations (a file no rule names an operation of: its digest and every operation); a `python` module by reference only (its targets carry the pins); any other file by digest. |
 | `schemas` | Every schema the entries above use, keyed by the sha256 of its canonical JSON. A model used by a target and a contract, or a shared OpenAPI component (a 422 error body), is stored once. |
-| `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults (src/, setuptools `packages.find.where`) and any `--root`/`--exclude`, and the directories the scan always `skip`s (`build`, `dist`, `venv`, dot-directories, ...). |
+| `scan` | When a rule has a sink: the source `roots` (relative to the rule file) and `exclude` globs `inv check` scans with, from `[tool.invariants.scan]`, the defaults (src/, setuptools `packages.find.where`) and any `--root`/`--exclude`, and the directories the scan always `skip`s (`build`, `dist`, `venv`, dot-directories, ...). With no `exclude` set, the pinned excludes are the 16 default globs: `tests`, `test`, `testing`, `test_*.py`, `*_test.py`, `conftest.py`, `migrations` and `alembic`, each also as `*/<name>`. |
+| `spec`, `lock_version` | The rule file's `spec` (`invariant/v0.1`) and the lock version (3). |
 
 In detail:
-
 
 `inv lock` writes `invariants.lock` beside the rule file: JSON with sorted keys, two-space indent,
 any value that fits in 128 columns on one line, and a `lock_version` field (currently 3). It pins
@@ -110,7 +110,8 @@ Aliases (`Caps = list[int]`, `type Caps = ...`), `Literal`, unions, `Annotated` 
 expanded. A dataclass, TypedDict or pydantic model is pinned by its fields in the schema table,
 recursively: nested classes go into the entry's `$defs`, cycles are cut by name, and nesting stops
 at 64 nested classes or 24 levels (marked `truncated`). Pinned schemas have no prose: `title`,
-`description`, `summary`, `tags`, `examples` and `$comment` are stripped at every level. A property
+`description`, `summary`, `tags`, `examples`, `example`, `externalDocs` and `$comment` are stripped
+at every level. A property
 named `title` is kept, because it is a name, not a keyword.
 
 `types` drop `Annotated` metadata, so a parameter whose annotation carries a constraint
@@ -187,7 +188,7 @@ These changes are marked **WEAKENED**:
 **Constraints the code already has.** A `pydantic` contract (or a pydantic model in a target's
 signature) is pinned as its JSON Schema, so its constraints are pinned too; so is a dataclass or
 TypedDict contract, and the schemas of an OpenAPI contract's operations.
-`lockfile.constraint_weakening` marks a change **WEAKENED** when the schema may now accept more
+`invariants.lock.constraint_weakening` (in `invariants.lock.schema_diff`) marks a change **WEAKENED** when the schema may now accept more
 input. That covers:
 
 - `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems` or `maxProperties` raised or removed;
@@ -261,12 +262,12 @@ Any change to a field that changes what `bad` reads, or how a check runs, is a p
 weakening: `bind`, an enforcer's `view`, `artifact`, `conformance_test` or `generated`, a
 provider's `args`, `from` or `type`, `subject` (contract, operation, target), `scope`, and `model_policy`'s `schema`, `feedback` and `abstain`. That includes an
 `artifact` digest rewritten by `inv lock --update-artifacts`. Every field of the rule-file schema
-is classified in `lockfile.FIELD_POLICY`, and a field that is not classified is a possible
+is classified in `invariants.lock.FIELD_POLICY`, and a field that is not classified is a possible
 weakening. A test walks the schema, so a new field cannot ship unclassified.
 
 ## How each field is judged
 
-`lockfile.FIELD_POLICY` classifies every field of the rule-file schema, and a test
+`invariants.lock.FIELD_POLICY` (defined in `invariants.lock.contracts`) classifies every field of the rule-file schema, and a test
 (`tests/test_fix_round13.py`) walks `schema/invariants.schema.json` and fails on a field it does not
 list. A field that is not listed is a possible weakening. `inv lock` refuses to write a weakened
 change unless `--accept-weakening` is given.
@@ -347,7 +348,8 @@ imported from outside the project (it is not under any of those roots), `inv loc
 `inv verify` print a warning naming the file it came from; pass `--path` to point at the source.
 
 The full synopsis is `inv lock [file] [--check] [--accept-weakening] [--lock FILE]
-[--update-artifacts] [--path DIR]...`.
+[--update-artifacts] [--root DIR]... [--exclude GLOB]... [--path DIR]...`. `--allow-weakening` is
+another spelling of `--accept-weakening`.
 
 ## Limitations
 

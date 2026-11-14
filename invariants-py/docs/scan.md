@@ -37,7 +37,7 @@ the scan reports it as "not scanned (mediation declares no sink)".
 $ inv scan
 bypass     PAY-1    ops.py:5:5  ops.goodwill_credit -> payments.send_to_gateway reaches the sink without passing payments.refund
 PAY-1: fail (1 bypass)
-scanned 3 file(s), 5 function(s)
+scanned 2 file(s), 3 function(s)
 ```
 
 ### Functions used as values
@@ -57,7 +57,7 @@ door or an unrelated function taken as a value. An allowed back door taken as a 
 `allow` is a new caller, so a `bypass` ([Allowed back doors](#allowed-back-doors)). The sink itself
 taken as a value is `unresolved/sink-escapes` at that site, as before.
 
-Some values are not written as a name being read (fix round 26):
+Some values are not written as a name being read:
 
 - **A decorator is handed the function.** `@app.post("/x")`, `@atexit.register`, `@hooks.register`
   (which appends it to a list someone later iterates) and any decorator the scan does not know may keep
@@ -125,8 +125,8 @@ Findings have four kinds:
 | Kind | Meaning | Codes |
 |---|---|---|
 | `bypass` | a path of extracted call edges from an entrypoint to the sink that avoids every door | `bypass` |
-| `forbidden` | a bypass idiom | `forbidden/getattr-sink` (and `getattr` on a door), `forbidden/unwrap` (`.__wrapped__` of a guarded door), `forbidden/monkeypatch` |
-| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/unwrap`, `unresolved/excluded-callee`, `unresolved/parse-error` |
+| `forbidden` | a bypass idiom | `forbidden/getattr-sink`, `forbidden/getattr-door` (a `getattr`-style lookup of the sink's or a door's name), `forbidden/unwrap` (`.__wrapped__` of a guarded door), `forbidden/monkeypatch` |
+| `unresolved` | something the scan cannot follow; never counted as passed | `unresolved/unknown-receiver`, `unresolved/reflection`, `unresolved/computed-attribute`, `unresolved/inferred-path`, `unresolved/sink-escapes`, `unresolved/unwrap`, `unresolved/excluded-callee`, `unresolved/parse-error`; for files and modules (see "Files and roots"): `unresolved/unknown-module`, `unresolved/relative-import`, `unresolved/shadowed-module`, `unresolved/no-source`, `unresolved/skipped-importer`, `unresolved/outside-root` |
 | `missing` | a declared sink, door or `allow` entry that does not exist in the scanned code, an `allow` entry that no longer reaches a sink without a door, or an `allow_unresolved` entry that matches no finding | `missing/sink`, `missing/door`, `missing/allow`, `missing/allow-unused`, `missing/allow-unresolved-unused` |
 
 An unresolved finding a person has reviewed can be accepted, one site at a time, in
@@ -217,7 +217,7 @@ included) typed; the same write on another object (`obj.__dict__.update(m)`) is
 `unresolved/computed-attribute`, like `setattr(obj, name, v)`. A data
 attribute of a scanned module or class (`other.repo.save()` where `other.repo = Repo()`, or
 `Holder.r.save()`) is a value whose type the scan does not follow: its calls are name-matched. The
-one exception (fix round 26) is a module-level name bound exactly once, to a call of a scanned class
+one exception is a module-level name bound exactly once, to a call of a scanned class
 (`settings = Settings()`), in a module whose every name the scan can list (no star import, no
 `globals()`, `vars()`, `setattr` or `exec`, no module `__getattr__`), and that no code anywhere sets
 as an attribute (`ops.settings = x` on any object): it is exactly that class, read in its module or
@@ -291,8 +291,9 @@ function's `__dict__` is its metadata, except for `__wrapped__`: `door.__dict__[
 `door.__dict__.get("__wrapped__")`, or any other use of a scanned function's `__dict__` (a computed
 key, `.values()`, the dict itself) is `forbidden/unwrap`, as are `inspect.unwrap(door)` and
 `door.__closure__` (its cells hold the function the guard wraps); `obj.__dict__["__wrapped__"]` on an
-object the scan cannot name is an unwrap too. Reading another object's instance `__dict__` stays
-harmless (writes through it are described above); a literal key in it that names a sink or door is
+object the scan cannot name is an unwrap too. Reading another object's instance `__dict__`, even with a computed
+key, is not reported: it holds what was stored there, and a function or module stored or passed in
+was reported where it was taken as a value (writes through it are described above); a literal key in it that names a sink or door is
 `forbidden/getattr-sink` (`-door`), as `getattr(o, "save")` is.
 
 Names looked up from strings are lookups too. `pydoc.locate("pkg.mod.f")` and
@@ -335,14 +336,15 @@ sink or door from outside (`pkg.repo.Repo = Fake`, `pkg.repo = fake`, `setattr(p
 Fake)`) is `forbidden/monkeypatch`, like assigning over the sink itself (`Repo.save = other`). When a method call cannot be resolved, the scan reports it as unresolved, never as a bypass.
 The exit code is 1 on any bypass, forbidden or missing finding, and 3 when nothing failed but some
 calls are unresolved (not a pass). It is 4 when the scan skipped an `enforce` rule because it is
-ablated (`INV_ABLATE`), which is not a pass either, and not a fail: a falsifier that runs the scan
+ablated (`INV_ABLATE`, honoured only with `INV_ABLATE_TESTING=1`;
+the pytest plugin's ablation run sets both), which is not a pass either, and not a fail: a falsifier that runs the scan
 asserts the rule's findings (or exit code 1 exactly), never `returncode != 0`. The pytest plugin's
 `inv_scan` fixture reads it that way ([concepts.md](concepts.md#ablation)).
 
 ### Computed getattr on a known receiver
 
 `getattr(x, name)` with a name the scan cannot read is `unresolved/computed-attribute`, except where the
-scan can prove it cannot reach the rule's sink (fix round 25). It trusts nothing a literal attribute
+scan can prove it cannot reach the rule's sink. It trusts nothing a literal attribute
 read (`x.get`, `logging.INFO`) is not already trusted with: each case below gives what such a getattr
 can return and why none of it reaches the sink around a door.
 
@@ -352,7 +354,7 @@ can return and why none of it reaches the sink around a door.
   is C or (unless x was built here as `C(...)`, or is the class itself) any scanned subclass of C. It is
   not reported when that whole family is seen and harmless:
   - every class in it, and every base of theirs, is a scanned class or one of the plain classes
-    outside the scan (fix round 26): the builtin types and exceptions, `abc.ABC`, `enum.Enum` and its
+    outside the scan: the builtin types and exceptions, `abc.ABC`, `enum.Enum` and its
     family, `typing.NamedTuple`, `typing.Generic`, `typing.Protocol` (not trusted anyway) and
     pydantic's `BaseModel`, with a metaclass of `type`, `ABCMeta` or `EnumType` only. Any other base
     outside the scan may forward a name it lacks to another object (`tempfile._TemporaryFileWrapper`
@@ -381,7 +383,7 @@ can return and why none of it reaches the sink around a door.
   A third-party base (traitlets, tornado, pydantic) may call back into methods of the family: those
   are the methods checked above.
 - **x is an object outside the scanned code** (`getattr(logging, level)`, `getattr(litellm, name)`):
-  reported (fix round 26; round 25 narrowed it). A module's attributes include every module it imports
+  reported. A module's attributes include every module it imports
   (`logging.sys`, `logging.os`, `logging.atexit`), every submodule anything has imported
   (`logging.config` once any code imports it, whose `dictConfig` calls the names its strings give),
   its `__builtins__` (the builtins namespace: `eval`, `getattr`) and its `__loader__`; a third-party
@@ -458,8 +460,22 @@ finding left with its sha. So:
 
 An accepted finding is `accepted` in the text output, under `accepted` in `--format json`, a SARIF
 result with an accepted external suppression (its justification is the entry's `why`), and counted in
-the rule's summary (`pass (13 accepted)`). It never fails `inv scan` or `inv check`. `inv status` says
-the rule passes with accepted sites and does not call it `held`. The lock compares the entries as a
+the rule's summary (`pass (13 accepted)`). It never fails `inv scan` or `inv check`, and `inv check`
+lists each accepted site under its `ok scan` line:
+
+```text
+$ inv check
+inv check: invariants.yaml
+  ok    rules: 1 rule(s), 0 contract(s) load
+  ok    lock: invariants.lock matches
+  skip  guards: nothing to import (no target, edge target or python contract; a guard on a targetless rule is checked with --import MODULE)
+  ok    scan: no path skips a door or guard; 1 reviewed unresolved site(s) accepted by allow_unresolved
+        accepted   R        pkg/svc.py:9:5  getattr with a computed name on ?: the scan cannot tell whether it reaches the sink (allow_unresolved: d is only called with a fixed table of field names)
+pass
+```
+
+`inv status` says the rule passes with accepted sites (`scan: pass, no path skips it (1 accepted)`)
+and does not call it `held`. The lock compares the entries as a
 multiset of sites (file, code, sha): a site named by more entries than before is a weakening (a new
 site, or a second entry for a sha one entry named, which accepts one more copy of that statement), as
 is a site named by more entries without a column than before (such an entry matches any column of
@@ -539,12 +555,13 @@ root is a weakening that a person accepts, like any other. The agent hook `inv h
 blocks an agent's edit of `[tool.invariants]`.
 
 `--format json` gives one record per rule (its result, sinks, doors, `allow` and counts), and
-`--format sarif` gives SARIF 2.1.0 for code-scanning tools. A rule ablated through `INV_ABLATE` is
-not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still needs a `bad` and a
-`structure` enforcer.
+`--format sarif` gives SARIF 2.1.0 for code-scanning tools. A rule ablated through `INV_ABLATE` (with
+`INV_ABLATE_TESTING=1`; `INV_ABLATE` alone is ignored) is not scanned, so a scan inside a falsifier is
+ablated too. A scan-only rule in the long form still needs a `bad` and a `structure` enforcer; the
+`door:` / `sink:` short form supplies both.
 
-A scan that runs past 5 seconds prints a progress line on stderr now and then (`inv scan: following
-calls in module 812/2169 (10 s)`); stdout, the report, is unchanged, and `INV_PROGRESS=0` turns it off.
+A scan that runs past 5 seconds prints a progress line on stderr, at most one every 5 seconds
+(`inv scan: following calls in module 812/2169 (10 s)`; also `reading files` and `checking rule`); stdout, the report, is unchanged, and `INV_PROGRESS=0` turns it off.
 The cost grows with the code, not with the number of entrypoints: each rule runs one path search
 (from the first entrypoint that reaches each call into a sink), and a call on an unknown receiver is
 kept as one record for every method of that name, however many there are.
@@ -596,7 +613,9 @@ kept as one record for every method of that name, however many there are.
   `pkg.admin.tasks`. A link back into its own ancestry is not followed again, each target is entered
   through a link once per root, and a link inside an always-skipped directory is not followed. A
   target outside every root is still scanned under the package that holds the link, and `inv scan`
-  prints a note naming the link.
+  prints a note naming the link. The scan `inv mcp` runs is confined to its `--root`: a symlink
+  there that resolves outside it is not followed, and is `unresolved/outside-root` under every rule,
+  with the link's path only.
 - **An unknown submodule of a scanned package is not third-party.** An import of a module under a
   package the roots hold that no file under the roots is (`import pkg.admin.tasks` with no
   `pkg/admin`, a dangling symlink, `from pkg import admin` where `pkg/__init__.py` binds no `admin`,

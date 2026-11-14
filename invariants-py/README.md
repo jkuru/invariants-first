@@ -37,9 +37,20 @@ inv init                            # drafts invariants.yaml from your code and 
 ```
 
 ```text
+$ inv init
+wrote invariants.yaml
+  read 7 source file(s)
   pinned 2 pydantic model(s) with 7 constraint(s)
+  suggested 2 rule(s) from function preconditions (commented out; see the file)
   door REFUND-GATEWAY-DOOR: quota.repo.RefundGateway through quota.service.ExpenseService.refund (1 caller(s))
     found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
+  door EXPENSE-STORE-DOOR: quota.repo.ExpenseStore through quota.service.ExpenseService.approve (1 caller(s))
+    found 1 back door(s) in scripts/admin.py; frozen in allow, so check passes and a new one fails
+  door USAGE-REPO-DOOR: quota.repo.UsageRepo through quota.service.QuotaService.consume or quota.service.QuotaService.new_month (2 caller(s))
+    found 1 back door(s) in quota/worker.py; frozen in allow, so check passes and a new one fails
+running `inv lock` to pin them ...
+wrote invariants.lock: 3 rule(s), 0 target(s), 0 provider(s), 2 contract(s), 2 schema(s)
+next: commit invariants.yaml and invariants.lock, and run `inv check` in CI and pre-commit (see docs/start.md)
 ```
 
 An agent raises a limit to make its test pass, then re-pins the lock itself to hide the change.
@@ -48,12 +59,14 @@ CI compares against `main` and still catches it. This is real output:
 ```text
 $ inv check --base main
 inv check: invariants.yaml
-  ok    rules: 0 rule(s), 2 contract(s) load
+  ok    rules: 3 rule(s), 2 contract(s) load
   ok    lock: invariants.lock matches
   FAIL  since main
         1 change(s) since main weaken a rule:
-          schema billing.models.RefundRequest: pydantic.properties.amount.maximum: 10000 -> 100000  WEAKENED (maximum raised: larger values pass; used by contract refund_request schema)
+          schema quota.models.UsageEvent: pydantic.properties.units.maximum: 10000 -> 100000  WEAKENED (maximum raised: larger values pass; used by contract usage_event schema)
         a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1, set by a reviewer (for example from a pull-request label), never by the change's author or agent
+  ok    guards: verify: pass (0 targeted rule(s) guarded; no guard module was imported, so no guard was checked; to check one, name a guarded function as a rule's target or pass --import MODULE)
+  ok    scan: no path skips a door or guard
 fail
 ```
 
@@ -61,7 +74,12 @@ An agent's new script that calls the gateway directly fails the same check:
 
 ```text
   FAIL  scan
-        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:4:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+        bypass     REFUND-GATEWAY-DOOR scripts/refund_tool.py:5:5  scripts.refund_tool.refund_customer -> quota.repo.RefundGateway.refund reaches the sink without passing quota.service.ExpenseService.refund
+        REFUND-GATEWAY-DOOR: fail (1 bypass)
+        EXPENSE-STORE-DOOR: pass (no findings)
+        USAGE-REPO-DOOR: pass (no findings)
+        scanned 9 file(s), 22 function(s)
+fail
 ```
 
 To make the check hard to skip, copy one snippet per layer: a pre-commit hook (`inv check --relock --fail-on-repin`),
@@ -115,7 +133,11 @@ One rule, written once, next to the code it protects:
       - {when: 'args.amount <= 0', message: refund must be positive}
       - {when: 'args.refunded + args.amount > args.charged', message: refund exceeds what is left of the charge}
     enforcers: [{point: decorator, timing: pre_effect, mode: enforce, on_violation: reject}]
+    falsified_by: [test_payments.py::test_over_refund_is_rejected]
 ```
+
+`status: enforce` needs the test that proves the rule: without `falsified_by`, `inv validate`
+refuses it ("highest allowed: detect").
 
 The money never leaves:
 
@@ -170,16 +192,20 @@ both the changes and the rules, so read the method and the verdict in
   written as plain checks and tests: 2 door bypasses (scan), 1 rule weakening (lock, if someone
   reads the diff) and 1 broken binding (a load check, for a defect the library itself makes possible).
 - **Not caught:** 0 of the 8 defects no rule covered (ordinary tests caught 3). It does not replace tests.
-- **Cost:** about 240 rule lines and 160 human decisions per app. After the contract-level lock,
+- **Cost:** about 240 to 270 rule lines per app and about 180 human decisions in all. After the contract-level lock,
   only 2 of the 24 changes failed `inv lock --check` (down from 18), and 1 of 8 benign changes
   needed a re-pin.
 
 **The 10-minute path costs almost nothing.** Run against a copy of the pool-service example app,
-`inv init` pinned its 7 pydantic models (13 constraints) and wrote one door rule for its store: every
-write goes through 7 service functions. It found and froze the 4 bypasses planted in the app's
+`inv init` pinned its 7 pydantic models (13 constraints) and proposed one door rule for its store:
+every write goes through 7 service functions. It listed 11 back doors: 7 real calls (a benchmark and
+two endpoints that write the store directly) and the 4 bypasses planted in the app's
 `bypass/pool_service/rogue.py` (2 direct sink calls, a door called without its guard, and a sink
-reached through `getattr`; raw SQL is below the API and is not planted there) and 3 real back doors: a benchmark and two endpoints that write the store directly. `inv check` passed
-straight away, and a new direct write failed it. On an app built on SQLAlchemy, a Django-style
+reached through `getattr`; raw SQL is below the API and is not planted there). `allow` cannot freeze
+the last two, so it wrote the door rule commented out, with the findings to review; `inv check`
+passed with its scan step skipped, and a new direct write is caught only once the rule is turned
+on. With the planted `bypass/` directory removed, it wrote the rule with the 7 real back doors
+frozen in `allow`, `inv check` passed straight away, and a new direct write failed it. On an app built on SQLAlchemy, a Django-style
 manager and Stripe, with no SQL, it found the three repositories, their service doors and the 3 back
 doors in a worker and an admin script. On the tool-calling [support agent](../apps/support-agent),
 it found the 4 tool and plan schemas, both repository door rules with the 3 tools as callers, and the
@@ -224,7 +250,8 @@ pip install 'invariants-first[schema]' pytest   # not on PyPI yet: pip install -
 
 Python 3.11+; the core depends only on PyYAML. Extras: `[schema]` (the JSON Schema check in
 `inv validate`), `[cel]` (the cel-expr CEL engine, Google's C++ runtime), `[pydantic]`, `[fastapi]` (with httpx, for
-`fastapi.testclient`), `[otel]` and `[anthropic]`. The distribution name is a placeholder ([RELEASING.md](RELEASING.md#before-publishing));
+`fastapi.testclient`), `[otel]`, `[anthropic]` (`integrations.anthropic`) and `[dev]` (the test and
+type-check tools, for contributors). The distribution name is a placeholder ([RELEASING.md](RELEASING.md#before-publishing));
 you always `import invariants`.
 
 **1. The rule file**, `invariants.yaml`:
@@ -250,7 +277,9 @@ rules:
     falsified_by: [test_payments.py::test_over_refund_is_rejected]
 ```
 
-**2. The code**, `payments.py` (call `inv.load("invariants.yaml")` once at startup):
+**2. The code**, `payments.py` (in the app, call
+`inv.load(pathlib.Path(__file__).parent / "invariants.yaml")` once at startup; in tests,
+`--inv-rules` loads it):
 
 ```python
 import invariants as inv
@@ -291,7 +320,7 @@ $ inv lock --lock invariants.lock
 wrote invariants.lock: 1 rule(s), 1 target(s), 0 provider(s), 0 contract(s), 0 schema(s)
 $ inv scan
 PAY-1: pass (no findings)
-scanned 2 file(s), 4 function(s)
+scanned 1 file(s), 2 function(s)
 $ inv status --import payments
 PAY-1 (enforce: blocks a bad call; held (unproven: no --ablation))
   checks:  py:payments.refund refuses a call when: refund must be positive; refund exceeds what is left of the charge; and every call to py:payments.send_to_gateway goes through py:payments.refund
@@ -300,13 +329,25 @@ PAY-1 (enforce: blocks a bad call; held (unproven: no --ablation))
   ablation proved it: not run
   next:    prove its tests fail without it: pytest --inv-rules invariants.yaml --inv-ablate --inv-report-json build/inv-report.json, then inv status --ablation build/inv-report.json
 verify: pass
-$ pytest --inv-rules invariants.yaml --inv-ablate -q
+$ pytest --inv-rules invariants.yaml --inv-ablate --inv-report-json build/inv-report.json -q
 ..                                                                       [100%]
 ----------------------------- invariants ablation ------------------------------
   PAY-1: load-bearing
       caught         test_payments.py::test_over_refund_is_rejected
-2 passed in 0.06s
+invariants report written to build/inv-report.json
+2 passed in 0.24s
+$ inv status --import payments --ablation build/inv-report.json
+PAY-1 (enforce: blocks a bad call; held)
+  checks:  py:payments.refund refuses a call when: refund must be positive; refund exceeds what is left of the charge; and every call to py:payments.send_to_gateway goes through py:payments.refund
+  guard:   yes
+  scan:    pass, no path skips it
+  ablation proved it: yes
+verify: pass
 ```
+
+The scan counts `payments.py` only: test files (`test_*.py`, `tests/`, `conftest.py`) are skipped
+by default. `inv status` drops "unproven" from `held` once the ablation report shows the rule's
+test failing with the rule switched off.
 
 **5. Now break it.** Add `ops.py`, a "quick fix" that pays out around the guard:
 
@@ -322,7 +363,7 @@ def goodwill_credit(charge_id: str) -> None:      # an agent's "quick fix"
 $ inv scan
 bypass     PAY-1    ops.py:5:5  ops.goodwill_credit -> payments.send_to_gateway reaches the sink without passing payments.refund
 PAY-1: fail (1 bypass)
-scanned 3 file(s), 5 function(s)
+scanned 2 file(s), 3 function(s)
 ```
 
 Or quietly relax the rule, `args.amount <= 0` to `args.amount < 0`, and re-pin:
@@ -351,8 +392,10 @@ Both exit 1, so CI goes red. More patterns are in the [cookbook](docs/cookbook.m
 - **Providers.** Typed, read-only functions that give a rule data the call does not carry (an
   order, an approval), read at the enforcer's timing. A check on an API's arguments is not a lock:
   two concurrent callers can both pass, and what the store does about that is its own business.
-- **Standing.** Computed, not claimed: `held` only when the rule is enforced, its chokepoint is
-  named, no residual path is listed, and `inv verify` and `inv scan` pass.
+- **Standing.** Computed, not claimed: `held` only when the rule is enforced, its chokepoint names
+  one of the rule's functions, no residual path is listed and no live `allow` back door is left
+  undeclared, `inv verify` and `inv scan` pass, and a falsifier was caught under ablation (without
+  `--ablation`, `inv status` says `held (unproven: no --ablation)`).
 - **Nothing below the API.** Rules name APIs only. What happens below the lowest API (SQL,
   triggers, transactions, isolation levels) is the implementation's business.
 
@@ -362,11 +405,14 @@ All of it, including `old_self` transition rules, model calls and edges, is expl
 ## Integrations
 
 - **pytest.** The plugin is installed with the package. `--inv-rules`, `--inv-verify`,
-  `--inv-ablate`, `--inv-report`, and the fixtures `inv_registry`, `inv_ablated` and `inv_events`.
+  `--inv-ablate` (with `--inv-ablate-lenient`), `--inv-report` and `--inv-report-json` (both count
+  `abstain` beside the other four outcomes), and the fixtures `inv_registry`, `inv_ablated`,
+  `inv_events` and `inv_scan`.
 - **FastAPI.** `@inv_fastapi.guard` under the route decorator binds rules to the parsed parameters,
   and `inv_fastapi.install(app)` maps outcomes to `application/problem+json`: 422 reject, 202
   route or escalate, 500 halt, 503 fail-closed rule error. Bodies never echo
-  values. `InvariantMiddleware` does the same for any ASGI app.
+  values. A `Response` the handler returns itself (`JSONResponse(..., status_code=404)`) is sent as
+  it is. `InvariantMiddleware` does the same for any ASGI app.
 - **Pydantic.** A model with `extra="forbid"` is a closed reply schema, validated strictly, and a
   contract type that `inv lock` pins by its JSON schema.
 - **OpenTelemetry.** `inv.configure(exporter=otel.exporter())` emits one span per evaluation.
@@ -378,19 +424,19 @@ Details: [docs/api.md](docs/api.md#integrations).
 | Command | What it does |
 |---|---|
 | `inv init [--graph GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
-| `inv check [--relock [--fail-on-repin]] [--base REF]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base` also fails on a weakening since REF, and fails closed when REF or its lock cannot be compared. |
-| `inv hook pretool\|stop` | Claude Code hooks: block accepting a weakening, any direct edit of `invariants.lock` and an edit of `[tool.invariants]`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
+| `inv check [--relock [--fail-on-repin]] [--base REF [--accept-weakening]]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base` also fails on a weakening since REF unless a reviewer passes `--accept-weakening` (or sets `INV_ALLOW_WEAKENING=1`), and fails closed when REF or its lock cannot be compared. Accepted `allow_unresolved` sites are listed under the scan line. |
+| `inv hook [rulefile] pretool\|stop` | Claude Code hooks: block accepting a weakening, a direct edit of `invariants.lock` or of `[tool.invariants]`, a command that rewrites either without naming it (a script or pytest conftest whose text names it, `git apply`, `git checkout REF -- .`) and an edit of `.claude/settings.json`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
 | `inv lock [--check] [--accept-weakening]` | Pins what each rule's meaning depends on; refuses a weakening unless accepted. [More](docs/lockfile.md) |
 | `inv verify --import MOD` | Every target carries its guard, and every guard names a rule. |
 | `inv scan [--format text\|json\|sarif]` | No call path reaches a sink around its door (an allowed back door is not a door: a new caller of one fails); flags `getattr`, `__wrapped__` and monkeypatching. [More](docs/scan.md) |
-| `inv status --import MOD` | The standing of each rule, with the reasons it is not `held`. |
-| `inv-mcp --root DIR` | A read-only MCP server (stdio) for coding agents: `scan`, `check`, `status`, `explain` and `propose_rules`. It never writes the rule file, the lock or `allow`. [More](docs/agents.md) |
+| `inv status --import MOD [--ablation JSON]` | Per rule, in plain words: what it checks, whether a guard wraps it, the scan result, whether ablation proved it, and what to do next. `--ablation` reads the pytest `--inv-report-json` file; without it a `held` rule is labelled unproven. `--json` keeps the `standing` and `reasons` fields. |
+| `inv mcp`, `inv-mcp [--root DIR]` | A read-only MCP server (stdio) for coding agents: `scan`, `check`, `status`, `explain` and `propose_rules`. It never writes the rule file, the lock or `allow`. [More](docs/agents.md) |
 
-`validate`, `lock`, `verify` and `status` take `--path DIR` (repeatable) to import the app from DIR
-first; by default they import this checkout's `src/`, setuptools `where` directories and scan
-roots, the rule file's directory and the project root, ahead of site-packages
-([more](docs/lockfile.md)).
+Every command but `scan` and `mcp` takes `--path DIR` (repeatable) to import your app from DIR too;
+your project's `src/`, its setuptools `where` directories and scan roots, the rule file's directory
+and the project root are on the import path already, ahead of site-packages
+([more](docs/lockfile.md)). `inv --version` prints the version.
 
 Exit codes: 0 ok, 1 a check failed, 2 usage error, 3 the scan has unresolved calls (not a pass),
 4 the scan skipped an ablated `enforce` rule (not a pass).
@@ -422,8 +468,8 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
   [docs/start.md](docs/start.md#limits) has the details.
 - **`inv.Checked` is forgeable** (Python cannot prevent it), so every `@inv.edge` re-validates the
   schema and re-checks `bad` on what it receives.
-- **CEL subset.** Rule text must stay within the common grammar (`1e3`, `1u` and `b"..."` are parse
-  errors). Some functions exist only on some backends, and a few cases differ between engines.
+- **CEL subset.** Rule text must stay within the common grammar (`b"..."` is a parse error, and an
+  unsigned literal such as `1u` loads only on cel-expr). Some functions exist only on some backends, and a few cases differ between engines.
   The load-time type checker is conservative. NaN and Infinity are `rule_error`s by default.
   [docs/cel.md](docs/cel.md)
 - **The lockfile's weakening analysis is syntactic.** Anything it cannot decide counts as a possible
@@ -472,6 +518,7 @@ trace (the committed traces are hand-written), Claude, or a recording
 
 `pip install -e '.[dev,cel]'`, then run the suite on each CEL backend
 (`INV_CEL_BACKEND=subset|cel-expr python -m pytest tests -q`) and `python -m mypy`. The library
-never rewrites your code's AST and never calls `eval` or `exec` on rule text, and a test checks both.
+never rewrites your code's AST and never calls `eval` or `exec` (a test checks its source for
+`eval(` and `exec(`).
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [RELEASING.md](RELEASING.md).
 Licensed under [Apache-2.0](LICENSE).

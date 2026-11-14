@@ -31,16 +31,99 @@ activate a venv.
 
 ## Use
 
+Two entities share the alias "Beta Ltd", so a mention of it waits for a person:
+
 ```
-fact-pipeline --db f.db add-entity "Beta Ltd (UK)" --alias "Beta Ltd" --xref companies-house:0123
-fact-pipeline --db f.db --inject drop_qualifier ingest examples/s1.txt --publisher newswire-a
-fact-pipeline --db f.db reviews                         # an ambiguous mention waits for a person
-fact-pipeline --db f.db resolve-review 1 ent_...
-fact-pipeline --db f.db ingest examples/s2.txt --publisher wire-b --async
-fact-pipeline --db f.db promote
-fact-pipeline --db f.db ask "What was the price of the acquisition of Beta Ltd?"
-fact-pipeline --db f.db delete-source src_...
-fact-pipeline --db f.db monitor                         # exit 1 on any finding
+$ fact-pipeline --db f.db add-entity "Beta Ltd (UK)" --alias "Beta Ltd" --xref companies-house:0123
+ent_0ee82d6c0261
+$ fact-pipeline --db f.db add-entity "Beta Ltd (Cayman)" --alias "Beta Ltd"
+ent_405974b4095d
+$ fact-pipeline --db f.db --inject drop_qualifier ingest examples/s1.txt --publisher newswire-a
+{
+  "claims": 1,
+  "conflicts": [],
+  "extracted": 3,
+  "file": "examples/s1.txt",
+  "rejected": [],
+  "reviews": [
+    1,
+    2
+  ],
+  "source_id": "src_e30606b934a3",
+  "stored": []
+}
+$ fact-pipeline --db f.db reviews        # each open review: its candidates, the mention and the fact
+$ fact-pipeline --db f.db resolve-review 1 ent_0ee82d6c0261
+{
+  "claims": 0,
+  "conflicts": [],
+  "extracted": 2,
+  "rejected": [],
+  "reviews": [],
+  "source_id": null,
+  "stored": [
+    "fact_9765c67dff9879bf",
+    "fact_4841f266901a47c5"
+  ]
+}
+```
+
+Resolving review 1 settles the mention, so review 2 (the same mention in the same source) is closed
+with it; `resolve-review 2 ...` now exits 2 with ``no open entity review 2; none is open (a mention
+opens one only when it matches two or more entities); `reviews` lists them``. Then:
+
+```
+$ fact-pipeline --db f.db ingest examples/s2.txt --publisher wire-b --async
+{
+  "claims": 0,
+  "conflicts": [
+    1
+  ],
+  "extracted": 2,
+  "file": "examples/s2.txt",
+  "rejected": [],
+  "reviews": [],
+  "source_id": "src_dfa0e44486f9",
+  "stored": [
+    "fact_9765c67dff9879bf",
+    "fact_10b099cffd1da672"
+  ]
+}
+$ fact-pipeline --db f.db promote
+{
+  "audit_sample": [
+    "fact_4841f266901a47c5"
+  ],
+  "promoted": [
+    "fact_9765c67dff9879bf"
+  ]
+}
+$ fact-pipeline --db f.db ask "What was the price of the acquisition of Beta Ltd?"
+{
+  "citations": [
+    "src_dfa0e44486f9:8c27c940:0"
+  ],
+  "retrieved": [
+    "src_dfa0e44486f9:8c27c940:0",
+    "src_e30606b934a3:67c1d9f1:0",
+    "src_e30606b934a3:67c1d9f1:1"
+  ],
+  "status": "ANSWERED",
+  "text": "Acme Corp completed its acquisition of Beta Ltd for $2.0 billion."
+}
+$ fact-pipeline --db f.db delete-source src_e30606b934a3
+{
+  "demoted": [
+    "fact_9765c67dff9879bf"
+  ],
+  "live_orphans": 0,
+  "retracted": [
+    "fact_4841f266901a47c5"
+  ],
+  "source_id": "src_e30606b934a3"
+}
+$ fact-pipeline --db f.db monitor        # exit 1 on any finding
+[]
 ```
 
 ## Rules (`invariants.yaml`) and where each one runs
@@ -119,7 +202,7 @@ writing anything.
 2. `inv lock --check`
 3. `inv verify`
 4. `inv scan` over the clean roots from `[tool.invariants.scan]`
-5. `pytest --inv-verify --inv-ablate --inv-report`
+5. `pytest --inv-verify --inv-ablate --inv-report --inv-report-json build/inv-report.json`
 
 After changing the rules or the code they pin, run `inv lock invariants.yaml` and review the diff.
 
