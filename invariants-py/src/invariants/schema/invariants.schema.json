@@ -14,6 +14,13 @@
   },
   "$defs": {
     "pyRefs": {"oneOf": [{"type": "string", "pattern": "^py:"}, {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^py:"}}]},
+    "allowUnresolved": {"oneOf": [{"type": "null"}, {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["at", "code", "sha", "why"],
+      "properties": {
+        "at": {"type": "string", "pattern": "^[^:]+:[1-9][0-9]*(:[1-9][0-9]*)?$", "description": "path:line or path:line:col, the file relative to its source root as the scan reports it"},
+        "code": {"type": "string", "pattern": "^unresolved/", "description": "the finding's code; only unresolved findings can be accepted"},
+        "sha": {"type": "string", "pattern": "^[0-9a-f]{10}$", "description": "the sha the scan gives the finding (inv scan --format json)"},
+        "why": {"type": "string", "minLength": 1, "description": "why the reviewed site cannot reach the sink"}}}}]},
     "path": {"type": "string", "pattern": "^(args|result|reply|self|old_self|provider)(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
     "nameMap": {"type": "object", "additionalProperties": {"$ref": "#/$defs/path"}},
     "target": {
@@ -108,6 +115,8 @@
         "sink": {"$ref": "#/$defs/pyRefs", "description": "Door rule: the function(s) that write. Expands to mediation.sink."},
         "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"type": "null"}, {"type": "array", "maxItems": 0}],
                   "description": "Door rule: known back doors, frozen (empty or null: none left). Each may keep its own path to the sink; a new caller that reaches the sink through one is still a back door. Adding one is a weakening."},
+        "allow_unresolved": {"$ref": "#/$defs/allowUnresolved",
+                             "description": "Door rule: unresolved findings a person reviewed and accepts, one site each. Expands to mediation.allow_unresolved. Adding or widening one is a weakening."},
         "rev": {"type": "integer"},
         "status": {"enum": ["candidate", "contested", "detect", "enforce", "retired"]},
         "class": {"enum": ["law", "policy"]},
@@ -132,7 +141,8 @@
             "residual_paths": {"type": "array", "items": {"type": "string"}},
             "sink": {"$ref": "#/$defs/pyRefs"},
             "door": {"$ref": "#/$defs/pyRefs"},
-            "allow": {"$ref": "#/$defs/pyRefs"}
+            "allow": {"$ref": "#/$defs/pyRefs"},
+            "allow_unresolved": {"$ref": "#/$defs/allowUnresolved"}
           }
         },
         "model_policy": {"$ref": "#/$defs/modelPolicy"},

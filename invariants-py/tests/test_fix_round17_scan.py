@@ -204,7 +204,7 @@ def test_an_unwrap_of_a_helper_that_reaches_a_sink_goes_to_that_rule(tmp_path):
             helper.__wrapped__(x)
         """, {"app/two.py": TWO}, _two_doc())
     assert sorted({(f.rule, f.code) for f in rep.findings if f.owner == "app.ops.f"}) == \
-        [("B", "forbidden/unwrap")]
+        [("B", "unresolved/unwrap")]           # fix round 25: helper is no guarded door, so not forbidden
 
 
 def test_an_unwrap_of_an_unknown_object_still_goes_to_every_rule(tmp_path):
@@ -212,4 +212,5 @@ def test_an_unwrap_of_an_unknown_object_still_goes_to_every_rule(tmp_path):
         def f(fn, x):
             fn.__wrapped__(x)
         """, {"app/two.py": TWO}, _two_doc())
-    assert sorted((f.rule, f.code) for f in rep.findings) == [("A", "forbidden/unwrap"), ("B", "forbidden/unwrap")]
+    # fix round 25: neither door has a decorator, so fn.__wrapped__ cannot lift one's guard: unresolved
+    assert sorted((f.rule, f.code) for f in rep.findings) == [("A", "unresolved/unwrap"), ("B", "unresolved/unwrap")]

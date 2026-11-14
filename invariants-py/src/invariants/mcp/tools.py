@@ -35,7 +35,7 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
     except (LoadError, scanner.ScanConfigError, cli.Usage) as e:
         raise ToolError(str(e)) from e
     data = report.as_dict()
-    for f in data["findings"]:
+    for f in [*data["findings"], *data.get("accepted", [])]:
         f["root"] = _rel(f.get("root"), root)
         f["id"] = finding_id(f)
     kinds = {f["kind"] for f in data["findings"]}
@@ -123,11 +123,15 @@ FIXES = {
                   "variant of it to allow."],
     "unresolved": ["Make the call statically resolvable: a direct call, a constructor call, or a receiver "
                    "annotated with its class (see docs/scan.md, Method calls).",
-                   "An unresolved call is never counted as passed: `inv check` keeps failing until it resolves."],
+                   "An unresolved call is never counted as passed: `inv check` keeps failing until it resolves.",
+                   "If a person reads the site and finds it cannot reach the sink, only they may accept it in "
+                   "mediation.allow_unresolved ({accept}, with a why). That is a weakening, which `inv lock` "
+                   "refuses without --accept-weakening."],
     "missing": ["A sink, door or allow entry the rule names does not exist in the scanned code, or an allow "
                 "entry no longer reaches a sink. If the code was renamed, a person updates the rule.",
                 "Check the scan roots: the module may be outside them ([tool.invariants.scan] roots).",
-                "A stale allow entry (missing/allow-unused) is deleted, which is a tightening."],
+                "A stale allow entry (missing/allow-unused) or allow_unresolved entry "
+                "(missing/allow-unresolved-unused) is deleted, which is a tightening."],
 }
 MEANING = {
     "bypass": "a path of call edges from an entrypoint reaches the sink without passing any door",
@@ -135,6 +139,13 @@ MEANING = {
     "unresolved": "the scan cannot follow a call here, so it cannot prove the path passes a door",
     "missing": "something the rule names is not in the scanned code",
 }
+
+
+def _accept_entry(f: dict[str, Any]) -> str:
+    """The allow_unresolved entry that would accept an unresolved finding, less the why a person writes."""
+    if f.get("kind") != "unresolved" or not f.get("sha"):
+        return "an entry naming the site"
+    return f'{{at: "{f.get("file")}:{f.get("line")}:{f.get("col")}", code: {f.get("code")}, sha: {f.get("sha")}}}'
 
 
 def _rule_doc(rule_file: pathlib.Path, rule_id: str) -> dict[str, Any] | None:
@@ -150,6 +161,7 @@ def _rule_summary(raw: dict[str, Any]) -> dict[str, Any]:
     return {"id": raw.get("id"), "status": raw.get("status"), "statement": raw.get("statement"),
             "subject": raw.get("subject"), "bad": raw.get("bad"), "sinks": as_list(med.get("sink")),
             "doors": as_list(door), "allow": as_list(med.get("allow")),
+            "allow_unresolved": list(med.get("allow_unresolved") or raw.get("allow_unresolved") or []),
             "falsified_by": raw.get("falsified_by") or [], "kind": "path law" if med.get("sink") else "value law"}
 
 
@@ -179,21 +191,27 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
         return out
     scan = run_scan(root, rule_file, _source_roots(server_root, root, args), _strs(args, "exclude"))
     findings = [f for f in scan["findings"] if f["rule"] == rule_id]
+    accepted = [f for f in scan.get("accepted", []) if f["rule"] == rule_id]
+    if accepted:
+        out["accepted"] = accepted                     # reviewed unresolved sites: shown, not failing
     out["scan_result"] = scan["rules"].get(rule_id, {}).get("result", "not_scanned")
     out["not_scanned"] = scan["not_scanned"].get(rule_id)
     if ":" in ident:
-        hit = next((f for f in findings if f["id"] == ident), None)
+        hit = next((f for f in [*findings, *accepted] if f["id"] == ident), None)
         if hit is None:
             raise ToolError(f"no finding {ident!r} in a fresh scan (fixed already, or the code moved: run scan)")
         out["finding"] = hit
         out["path"] = hit.get("path") or []
         fill = {"doors": ", ".join(rule["doors"]) or "none declared", "owner": hit.get("owner") or "this function",
-                "code": hit.get("code")}
+                "code": hit.get("code"), "accept": _accept_entry(hit)}
         where = f"{hit.get('file')}:{hit.get('line')}" if hit.get("file") else "the scanned code"
         chain = " -> ".join(out["path"]) if out["path"] else None
         said = str(rule["statement"] or "every call to its sinks passes a door").strip().rstrip(".")
         detail = f": {chain}." if chain else f". {str(hit.get('message') or '').rstrip('.')}."
         out["explanation"] = f"{rule_id} says: {said}. At {where}, {MEANING.get(hit['kind'], hit['kind'])}{detail}"
+        if hit.get("why") is not None:
+            out["explanation"] += (f" A person accepted this site after review (mediation.allow_unresolved): "
+                                   f"{hit['why']}. It is shown, and does not fail the rule.")
         out["fix_options"] = [s.format(**fill) for s in FIXES.get(hit["kind"], [])]
     else:
         out["findings"] = findings
@@ -202,6 +220,10 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
                               + (f"; frozen back doors: {', '.join(rule['allow'])}" if rule["allow"] else "")
                               + f". The scan says: {out['scan_result']}"
                               + (f" with {len(findings)} finding(s); explain each by its id." if findings else "."))
+        if accepted:
+            out["explanation"] += (f" {len(accepted)} unresolved site(s) are accepted after review in "
+                                   f"mediation.allow_unresolved (shown in accepted, not failing).")
         out["fix_options"] = sorted({s.format(doors=", ".join(rule["doors"]), owner=f.get("owner") or "the caller",
-                                              code=f.get("code")) for f in findings for s in FIXES.get(f["kind"], [])})
+                                              code=f.get("code"), accept=_accept_entry(f))
+                                     for f in findings for s in FIXES.get(f["kind"], [])})
     return out

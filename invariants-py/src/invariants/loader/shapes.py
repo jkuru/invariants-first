@@ -59,3 +59,6 @@ def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     for k in ("sink", "door", "allow"):
         if k in med and not _strings(med[k], "py:"):
             raise LoadError(f"{rid}: mediation.{k} must be a 'py:' path or a non-empty list of them")
+    au = med.get("allow_unresolved")                   # reviewed unresolved sites; `inv scan` checks each entry
+    if au is not None and not (isinstance(au, list) and all(isinstance(e, dict) for e in au)):
+        raise LoadError(f"{rid}: mediation.allow_unresolved must be a list of entries {{at, code, sha, why}}")

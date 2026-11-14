@@ -7,14 +7,19 @@ import dataclasses
 import weakref
 
 from .astutil import (
+    BINDERS,
+    WRITES,
     _attr_writes,
     _computed_dict_writes,
+    _own_under,
+    _under,
     _dotted,
     _own_nodes,
     _pairs,
     _scope_binds,
     _scope_nodes,
     _single_types,
+    _walk_of,
 )
 from .contracts import _Module
 from .indexer import _BUILTINS, _Index
@@ -378,7 +383,7 @@ class _Inference:
                 continue
             me_name = fn.args.args[0].arg
             params = self._types_in(fn, set(), (me_name, cls), fid)
-            for node in ast.walk(fn):
+            for node in _under(fn):
                 pairs = _pairs(node) if isinstance(node, ast.Assign) else \
                     [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
                 for t, v in pairs:
@@ -541,7 +546,7 @@ class _Inference:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return []
         fq = self._resolve(node, local, me) if _dotted(node) else None
-        alts = [a for a in self._alternatives(node, local, me) if a != fq and a in self.idx.funcs]
+        alts = [a for a in sorted(self._alternatives(node, local, me)) if a != fq and a in self.idx.funcs]
         if fq and fq in self.idx.funcs:
             return [fq, *alts]
         if isinstance(node, ast.Attribute) and (fq is None or self._via_function(node, local, me)):
@@ -557,8 +562,11 @@ class _Inference:
 
     def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
         out = []
-        for c, info in self.idx.classes.items():
-            if c != cls and name in info["methods"] and self._inherits(c, cls, set()):
+        # only the classes that define a method of that name (the index by name), not every class
+        for c in {self.idx.funcs[m].cls for m in self.idx.methods_by_name.get(name, ())}:
+            info = self.idx.classes.get(c) if c is not None else None
+            if c is not None and info is not None and c != cls and name in info["methods"] \
+                    and self._inherits(c, cls, set()):
                 out.append(info["methods"][name])
         return sorted(out)
 
@@ -641,6 +649,7 @@ class _Inference:
         return fq if fq and (fq in self.idx.modules or fq in self.idx.classes) else None
 
 
+_WRITE_TYPES = frozenset(WRITES)
 _DICT_WRITTEN: weakref.WeakKeyDictionary[_Index, frozenset[str]] = weakref.WeakKeyDictionary()
 
 
@@ -658,6 +667,14 @@ def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
     """Any other binding in fn is unknown: for, walrus, unpacking, a nested def or class, an import,
     `except E as x`, a match capture, global and nonlocal."""
     for node in _scope_nodes(fn):
+        t = type(node)
+        if t in _WRITE_TYPES:                                  # never a binder: only its attribute writes
+            for obj, name, _ in _attr_writes(node):
+                if isinstance(obj, ast.Name) and name in ("__class__", None):
+                    b.seen[obj.id].add(None)                   # x.__class__ = Other: x is no longer typed
+            continue
+        if t not in BINDERS:
+            continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in b.handled:
             b.seen[node.id].add(None)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
@@ -672,30 +689,26 @@ def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             for n in node.names:
                 b.seen[n].add(None)
-        for obj, name, _ in _attr_writes(node):
-            if isinstance(obj, ast.Name) and name in ("__class__", None):
-                b.seen[obj.id].add(None)                       # x.__class__ = Other: x is no longer typed
 
 
 def _set_from_outside(idx: _Index, mod: _Module) -> set[str]:
     """The attribute names code in one module sets on an object other than a method's own self, and
     "<class>:*" for a class whose method writes names the scan cannot read into self.__dict__."""
     tree = mod.tree
-    methods = {id(m) for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for m in c.body
+    methods = {id(m) for c in _walk_of(tree, ast.ClassDef) for m in getattr(c, "body", ())
                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
     owners = {id(idx.funcs[m].node): cid for cid, info in idx.classes.items() if info["module"] == mod.name
               for m in info["methods"].values()}
     out: set[str] = set()
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
-            continue
+    for fn in _walk_of(tree, ast.FunctionDef, ast.AsyncFunctionDef, ast.Module):
         # only a method's first parameter is the object itself (self); in a plain function,
         # `ctx.repo = other` sets another object's attribute
-        first = (fn.args.args[0].arg if not isinstance(fn, ast.Module) and id(fn) in methods
+        first = (fn.args.args[0].arg if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and id(fn) in methods
                  and fn.args.args else None)
-        for node in _own_nodes(fn):
-            out |= _attrs_set(node, first)
-        for _, obj in _computed_dict_writes(fn):
+        for node in _own_under(fn):
+            if isinstance(node, WRITES):
+                out |= _attrs_set(node, first)
+        for _, obj in _computed_dict_writes(fn, tree=tree):
             if isinstance(obj, ast.Name) and obj.id == first and id(fn) in owners:
                 out.add(f"{owners[id(fn)]}:*")              # self.__dict__.update(kw): any attribute
     return out
@@ -805,12 +818,12 @@ class _Subversions:
             # it is annotated: its own methods say nothing about what runs
             if info["module"] == self.mod.name and set(self.idx.bases(cid)) & _PROTOCOL:
                 self.found.add(cid)
-        for node in ast.walk(self.mod.tree):                   # Safe.register(Repo): a virtual subclass
+        for node in _walk_of(self.mod.tree, ast.Call):         # Safe.register(Repo): a virtual subclass
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "register" \
                     and node.args and (fq := self._fq(node.func.value)) in self.idx.classes \
                     and self.idx.method(fq, "register") is None:     # ABCMeta's register, not its own
                 self.found.add(fq)
-        self._writes(self.mod.tree, {})
+        self._writes_all(self.mod.tree)
         return self.everything
 
     def _altered(self, node: ast.ClassDef) -> bool:
@@ -866,6 +879,38 @@ class _Subversions:
             return _factory_of_identity(fn) if isinstance(d, ast.Call) else _returns_param(fn)
         return fq in (_KEEPS_CLASS_CALLED if isinstance(d, ast.Call) else _KEEPS_CLASS)
 
+    def _writes_all(self, tree: ast.AST) -> None:
+        """_writes(tree, {}), read from the numbered tree: each node in depth-first order, with the first
+        parameters of the methods around it (each write is judged alone, so the order does not matter)."""
+        span = tree.__dict__.get("_inv_span")
+        if span is None:
+            self._writes(tree, {})
+            return
+        order, i, end = span
+        me: dict[str, str] = {}
+        around: list[tuple[int, dict[str, str]]] = []     # (where a method's span ends, me inside it)
+        for k in range(i + 1, end):
+            while around and k >= around[-1][0]:
+                around.pop()
+                me = around[-1][1] if around else {}
+            child = order[k]
+            inner = me
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cls = self.methods.get(id(child))
+                inner = {**me, child.args.args[0].arg: cls} if cls and child.args.args else me
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
+                for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
+                    self.values[id(t)] = child.value
+            if isinstance(child, WRITES):
+                value = self.values.get(id(child)) if isinstance(child, ast.Attribute) else \
+                    child.args[2] if isinstance(child, ast.Call) and len(child.args) > 2 \
+                    and _dotted(child.func) in ("setattr", "builtins.setattr") else None
+                for obj, name, _ in _attr_writes(child):
+                    self._write(obj, name, me, value)
+            if inner is not me:
+                around.append((child.__dict__["_inv_span"][2], inner))
+                me = inner
+
     def _writes(self, node: ast.AST, me: dict[str, str]) -> None:
         """Writes that alter a class, walked with the enclosing methods' first parameters (me: name -> class)."""
         for child in ast.iter_child_nodes(node):
@@ -879,7 +924,7 @@ class _Subversions:
             value = self.values.get(id(child)) if isinstance(child, ast.Attribute) else \
                 child.args[2] if isinstance(child, ast.Call) and len(child.args) > 2 \
                 and _dotted(child.func) in ("setattr", "builtins.setattr") else None
-            for obj, name, _ in _attr_writes(child):
+            for obj, name, _ in (_attr_writes(child) if isinstance(child, WRITES) else ()):
                 self._write(obj, name, me, value)
             self._writes(child, inner)
 
@@ -928,7 +973,7 @@ def alternatives(idx: _Index, mod: _Module) -> dict[str, frozenset[str]]:
     if mod.name in per:
         return per[mod.name]
     cands: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
-    for node in ast.walk(mod.tree):
+    for node in _walk_of(mod.tree, ast.Import, ast.ImportFrom):
         if isinstance(node, ast.Import):
             for a in node.names:
                 if a.asname:
@@ -989,7 +1034,7 @@ def _module_binds(tree: ast.Module) -> collections.Counter[str]:
             binds.update((a.asname or a.name).split(".")[0] for a in n.names if a.name != "*")
         elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and n.name:
             binds[n.name] += 1
-    for n in ast.walk(tree):
+    for n in _walk_of(tree, ast.Global):
         if isinstance(n, ast.Global):
             binds.update({x: 2 for x in n.names})
     return binds

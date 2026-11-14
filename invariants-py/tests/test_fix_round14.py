@@ -264,9 +264,9 @@ def _scan(tmp_path, body):
     ("store.only_door.__func__", None),                       # the door's own helper reaches no sink: fine
     ("getattr(store.only_door, '__get__')(1)(c)", None),                       # the door's own helper reaches no sink: fine
     ("operator.methodcaller('__call__', c)(store.sink)", ("unresolved/sink-escapes", "app/bypass.py")),
-    ("store.sink.__wrapped__(c)", ("forbidden/unwrap", "app/bypass.py")),
-    ("getattr(store.sink, '__wrapped__')(c)", ("forbidden/unwrap", "app/bypass.py")),
-    ("operator.methodcaller('__wrapped__')", ("forbidden/unwrap", "app/bypass.py")),
+    ("store.sink.__wrapped__(c)", ("unresolved/unwrap", "app/bypass.py")),
+    ("getattr(store.sink, '__wrapped__')(c)", ("unresolved/unwrap", "app/bypass.py")),
+    ("operator.methodcaller('__wrapped__')", ("unresolved/unwrap", "app/bypass.py")),
 ])
 def test_dunder_spellings_of_a_call_are_seen(tmp_path, body, want):
     got = _scan(tmp_path, body)

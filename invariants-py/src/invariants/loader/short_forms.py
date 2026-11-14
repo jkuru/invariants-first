@@ -5,9 +5,9 @@ from typing import Any
 
 from ..errors import LoadError
 
-SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "allow"})
+SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "allow", "allow_unresolved"})
 SHORT_ENFORCER = {"point": "decorator", "timing": "pre_effect", "mode": "enforce"}
-DOOR_FIELDS = ("door", "sink", "allow")
+DOOR_FIELDS = ("door", "sink", "allow", "allow_unresolved")
 STRUCTURE_ENFORCER = {"point": "structure", "timing": "pre_effect", "mode": "enforce"}
 
 
@@ -26,7 +26,7 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
     med = raw.get("mediation")
     if med is not None and not isinstance(med, dict):
         raise LoadError(f"{rid}: mediation must be a mapping")
-    clash = sorted({"sink", "door", "allow"} & set(med or {}))
+    clash = sorted({"sink", "door", "allow", "allow_unresolved"} & set(med or {}))
     if clash:
         raise LoadError(f"{rid}: give {', '.join(clash)} at the top of the rule or under mediation, not both")
     sinks = _py_list(rid, "sink", raw.pop("sink"))
@@ -38,6 +38,8 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
         new["door"] = doors if len(doors) > 1 else doors[0]
     if allow:
         new["allow"] = allow
+    if "allow_unresolved" in raw:                      # reviewed unresolved sites, as written
+        new["allow_unresolved"] = raw.pop("allow_unresolved")
     if not doors and "guard" not in raw:
         raise LoadError(f"{rid}: a door rule names its door: add door: py:module.function (the function every "
                         f"write must go through), or guard: to make the guarded function the door")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import bisect
 from typing import Iterator
 
 
@@ -24,11 +25,109 @@ def _dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
+def _walk(tree: ast.AST) -> list[ast.AST]:
+    """ast.walk(tree) as a list, in the same order, made once per tree: a module's tree is walked by many
+    passes (the index, imports, subversions, aliases, ...), and the list is shared by all of them."""
+    got: list[ast.AST] | None = tree.__dict__.get("_inv_walk")
+    if got is None:
+        got = list(ast.walk(tree))
+        tree.__dict__["_inv_walk"] = got
+    return got
+
+
+def _walk_of(tree: ast.AST, *types: type) -> list[ast.AST]:
+    """The nodes of _walk(tree) of these exact types, in that order (each kind of pass reads only the
+    nodes it looks at; made once per tree and set of types)."""
+    kinds: dict[tuple[type, ...], list[ast.AST]] = tree.__dict__.setdefault("_inv_kinds", {})
+    got = kinds.get(types)
+    if got is None:
+        want = frozenset(types)
+        got = kinds[types] = [n for n in _walk(tree) if type(n) in want]
+    return got
+
+
+IMPORTS = (ast.Import, ast.ImportFrom)
+DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _breadth_first(order: list[ast.AST], depth: list[int]) -> list[ast.AST]:
+    """ast.walk's order (breadth first) from a depth-first one: in a tree, the nodes at one depth come in
+    the same order either way (by their parents', then as children), so a stable sort by depth gives it."""
+    return [order[i] for i in sorted(range(len(order)), key=depth.__getitem__)]
+
+
+_SPANNED = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _number(tree: ast.AST) -> None:
+    """Put tree's nodes in one depth-first list, and give each scope node (module, def, class, lambda)
+    its span in it: the nodes under a scope are then a slice, so the passes that only collect from them
+    (names, writes) read a list instead of walking the tree again. Done once per module tree."""
+    if "_inv_span" in tree.__dict__:
+        return
+    order: list[ast.AST] = [tree]
+    depth: list[int] = [0]
+    stack: list[tuple[ast.AST, Iterator[ast.AST], int]] = [(tree, ast.iter_child_nodes(tree), 0)]
+    while stack:
+        node, kids, start = stack[-1]
+        child = next(kids, None)
+        if child is None:
+            stack.pop()
+            if isinstance(node, _SPANNED):
+                node.__dict__["_inv_span"] = (order, start, len(order))
+        else:
+            depth.append(len(stack))
+            stack.append((child, ast.iter_child_nodes(child), len(order)))
+            order.append(child)
+    tree.__dict__.setdefault("_inv_walk", _breadth_first(order, depth))
+
+
+def _under(fn: ast.AST) -> list[ast.AST] | Iterator[ast.AST]:
+    """fn and every node under it, in some order (ast.walk(fn) as a set)."""
+    span = fn.__dict__.get("_inv_span")
+    if span is None:
+        return ast.walk(fn)
+    order, start, end = span
+    got: list[ast.AST] = order[start:end]
+    return got
+
+
+def _own_under(fn: ast.AST) -> list[ast.AST] | Iterator[ast.AST]:
+    """_own_nodes(fn), in some order (as a set): the nodes under fn, not those under a nested def, class or
+    lambda (which is itself included)."""
+    span = fn.__dict__.get("_inv_span")
+    if span is None:
+        return _own_nodes(fn)
+    order, i, end = span
+    out: list[ast.AST] = []
+    i += 1
+    while i < end:
+        n = order[i]
+        out.append(n)
+        i = n.__dict__["_inv_span"][2] if isinstance(n, _SCOPES) else i + 1
+    return out
+
+
 def _locals(fn: ast.AST) -> set[str]:
-    """Parameters and assigned names in a function, including nested scopes (an over-approximation)."""
+    """Parameters and assigned names in a function, including nested scopes (an over-approximation);
+    made once per function (the set is shared: callers never change it)."""
+    got: set[str] | None = fn.__dict__.get("_inv_locals")
+    if got is None:
+        got = fn.__dict__["_inv_locals"] = _locals_of(fn)
+    return got
+
+
+# the node types that bind a name (the passes below skip every other node by its type alone)
+BINDERS = frozenset({ast.arguments, ast.Name, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler,
+                     ast.MatchAs, ast.MatchStar, ast.MatchMapping, ast.Import, ast.ImportFrom, ast.Global, ast.Nonlocal})
+
+
+def _locals_of(fn: ast.AST) -> set[str]:
     names: set[str] = set()
     glob: set[str] = set()
-    for node in ast.walk(fn):
+    for node in _under(fn):
+        if type(node) not in BINDERS:
+            continue
         if isinstance(node, ast.arguments):
             for a in [*node.posonlyargs, *node.args, *node.kwonlyargs, node.vararg, node.kwarg]:
                 if a is not None:
@@ -65,8 +164,27 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 def _scope_nodes(fn: ast.AST, nested_effects: bool = True) -> list[ast.AST]:
     """The nodes of one scope (a function, lambda, class or module body), not the bodies of the scopes
     nested in it. nested_effects: also what nested code binds in this scope, a walrus inside a nested
-    lambda (with its target) and a nested function's `nonlocal` declarations (they rebind names here)."""
-    out: list[ast.AST] = []
+    lambda (with its target) and a nested function's `nonlocal` declarations (they rebind names here).
+    Made once per scope and kind (the list is shared: callers only read it)."""
+    key = "_inv_scope_nested" if nested_effects else "_inv_scope"
+    got: list[ast.AST] | None = fn.__dict__.get(key)
+    if got is None:
+        got = fn.__dict__[key] = _scope_nodes_of(fn, nested_effects)
+    return got
+
+
+def _scope_nodes_of(fn: ast.AST, nested_effects: bool) -> list[ast.AST]:
+    if "_inv_span" in fn.__dict__:                     # the same nodes, read from the numbered tree
+        out = list(_own_under(fn))
+        if nested_effects:
+            for scope in [n for n in out if isinstance(n, _SCOPES)]:
+                for inner in _under(scope):
+                    if isinstance(inner, ast.Nonlocal):
+                        out.append(inner)
+                    elif isinstance(inner, ast.NamedExpr) and isinstance(scope, ast.Lambda):
+                        out.extend([inner, *ast.walk(inner.target)])
+        return out
+    out = []
     stack = list(ast.iter_child_nodes(fn))
     while stack:
         node = stack.pop()
@@ -84,11 +202,21 @@ def _scope_nodes(fn: ast.AST, nested_effects: bool = True) -> list[ast.AST]:
 
 def _scope_binds(fn: ast.AST) -> set[str]:
     """The names one scope binds (parameters, assignments and other targets, defs, imports), less those it
-    declares global or nonlocal: where a name used in it, or in a scope nested in it, is looked up."""
+    declares global or nonlocal: where a name used in it, or in a scope nested in it, is looked up. Made
+    once per scope (the set is shared: callers only read it)."""
+    got: set[str] | None = fn.__dict__.get("_inv_binds")
+    if got is None:
+        got = fn.__dict__["_inv_binds"] = _scope_binds_of(fn)
+    return got
+
+
+def _scope_binds_of(fn: ast.AST) -> set[str]:
     args = getattr(fn, "args", None)
     names: set[str] = set(_params(args)) if isinstance(args, ast.arguments) else set()
     declared: set[str] = set()
     for node in _scope_nodes(fn, nested_effects=False):
+        if type(node) not in BINDERS:
+            continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -134,6 +262,10 @@ def _single_types(seen: dict[str, set[str | None]]) -> dict[str, str]:
 def _lit(node: ast.AST | None) -> str | None:
     """The text of a string literal, else None."""
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+# the only nodes that write an attribute (_attr_writes is empty for every other node)
+WRITES = (ast.Attribute, ast.Subscript, ast.Call)
 
 
 def _attr_writes(node: ast.AST) -> list[tuple[ast.expr, str | None, bool]]:
@@ -211,9 +343,33 @@ def _dict_aliases(fn: ast.AST, nested: bool = False) -> list[tuple[ast.AST, ast.
     return [pair for name, pairs in bound.items() if name in written for pair in pairs]
 
 
-def _computed_dict_writes(fn: ast.AST, nested: bool = False) -> list[tuple[ast.AST, ast.expr]]:
+def _names_dicts(tree: ast.AST, fn: ast.AST) -> bool:
+    """An `x.__dict__` or a `vars` name may be in fn (in module tree): its lines hold one. Without one, no
+    code in fn writes through an object's __dict__ (what _computed_dict_writes looks for), so that search
+    is skipped. Every node under a def lies between its first decorator's line and its end line."""
+    lines: list[int] | None = tree.__dict__.get("_inv_dict_lines")
+    if lines is None:
+        lines = tree.__dict__["_inv_dict_lines"] = sorted(
+            n.lineno for n in _walk_of(tree, ast.Attribute, ast.Name)
+            if (isinstance(n, ast.Attribute) and n.attr in ("__dict__", "vars"))
+            or (isinstance(n, ast.Name) and n.id == "vars"))
+    if not lines:
+        return False
+    end = getattr(fn, "end_lineno", None)
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or end is None:
+        return True
+    start = min(n.lineno for n in [fn, *fn.decorator_list])
+    i = bisect.bisect_left(lines, start)
+    return i < len(lines) and lines[i] <= end
+
+
+def _computed_dict_writes(fn: ast.AST, nested: bool = False, tree: ast.AST | None = None
+                          ) -> list[tuple[ast.AST, ast.expr]]:
     """(node, o) for each write through `o.__dict__` whose names the scan cannot read: `o.__dict__[k] = v`,
-    `o.__dict__.update(mapping)`, `o.__dict__ |= m`, and a written alias of `o.__dict__` or `vars(o)`."""
+    `o.__dict__.update(mapping)`, `o.__dict__ |= m`, and a written alias of `o.__dict__` or `vars(o)`.
+    tree: the module fn is in (a module with no __dict__ or vars name has none)."""
+    if tree is not None and not _names_dicts(tree, fn):
+        return []
     out: list[tuple[ast.AST, ast.expr]] = list(_dict_aliases(fn, nested))
     for node in (ast.walk(fn) if nested else _own_nodes(fn)):
         dict_form = (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
