@@ -400,7 +400,11 @@ invariants.lock  @your-org/payments-owners
   It also blocks an edit of `.claude/settings.json` or `.claude/settings.local.json`, where the hooks
   themselves are configured.
 - **`inv hook stop`** runs `inv check --relock` when the agent tries to finish. If the check fails,
-  it sends the agent back with the failure, once per stop, so it can't loop.
+  it sends the agent back with the failure, once per stop, so it can't loop. The relock re-pins
+  only a change that weakens nothing (a tightened bound); a weakening fails the check and the lock
+  is left as it was. The rule file is the one in the event's `cwd` or the nearest directory above
+  it (up to the repository root); a lock found there with no rule file beside it sends the agent
+  back too, and with neither there is nothing to check.
 
 Both commands read Claude Code's hook JSON on stdin, and both block by exiting with code 2. The JSON
 carries the tool and its input; to try a hook by hand:

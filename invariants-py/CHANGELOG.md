@@ -56,13 +56,19 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   a pydantic model with `extra="forbid"`), retries a format failure with the parser's message,
   resamples a reply that breaks a rule without showing the model the rule (never when the rule
   compares the reply with held data: `compares_to: held_data`), and turns an abstention into a
-  review. It returns an `inv.Checked` value. Below effective `enforce` (detect, a candidate rule) an
+  review. It returns an `inv.Checked` value. At effective `enforce` an abstain records its event
+  (outcome `abstain`, action `escalate`, counted, observed and exported like any outcome, and a
+  decision for `--inv-ablate`) before it opens the review and raises `Escalation` (whose `outcome`
+  is that abstain). Below effective `enforce` (detect, a candidate rule) an
   abstain never blocks: it is recorded (outcome `abstain`, action `proceed`) and the call returns
   verdict `abstain`, sync and async alike. A dataclass or pydantic reply field that a `Checked`
   attribute would shadow (`value`, `attempts`, `rule`, `verdict`, `_inv_*`, an attribute of the
   subclass) is a `TypeError` at decoration.
 - `@inv.edge` on the consumer of a reply re-validates the schema and re-checks `bad` against state as
-  it is now (`inv.Checked` is forgeable, so the edge never trusts it).
+  it is now (`inv.Checked` is forgeable, so the edge never trusts it). A received verdict that is
+  not ok is refused by `on_violation` as that outcome: a verdict `abstain` is outcome `abstain`
+  (HTTP 422 `urn:invariants:abstained` for reject, 202 for route or escalate), never a
+  `rule_error` (it was a 503 and counted toward an error spike).
 - An edge hands its consumer exactly the value it re-checked: the received `Checked` must be exactly
   the annotated class, and a state is copied as a plain `dict` or as exactly the annotated dataclass
   or pydantic model (a subclass never answers the consumer's reads).
@@ -288,7 +294,11 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   imports or, for pytest, a conftest.py, a `-p` plugin or a module they import whose text names
   it; `git apply`, `git stash pop`, `git checkout REF -- .`, `git restore --source`), an edit of
   `.claude/settings.json` or `.claude/settings.local.json` (the hooks' own configuration), and
-  finishing while `inv check` fails. They are an early warning (test modules and computed imports
+  finishing while `inv check --relock` fails (the relock re-pins only a change that weakens
+  nothing; the rule file is found in the event's cwd or the nearest directory above it, and a lock
+  with no rule file beside it sends the agent back too). `python -m MOD` reads MOD itself with the
+  script rule (pyproject alone counts), found under cwd, `src/` or the lock's tree, as
+  `python tools/x.py` is. They are an early warning (test modules and computed imports
   are not read); `inv check --base` in CI is the gate.
 - `inv mcp` and `inv-mcp`: a read-only MCP server over stdio (`scan`, `check`, `status`, `explain`,
   `propose_rules`); it never writes the rule file, the lock or `allow`, and never reads a file or
@@ -315,12 +325,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`. With `--inv-ablate` or `--inv-verify`
   and no `--inv-rules` or `inv_rules`, it loads `invariants.yaml` (`.yml`, `.json`) from the rootdir;
   `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run.
-- `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain below
-  `enforce`) next to the other four.
+- `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain, below
+  `enforce` or escalated at it, and an edge given a verdict `abstain`) next to the other four.
 - Ablation re-runs each rule's `falsified_by` tests with the rule off: a falsifier is caught only when
   its rule decided something on a control run and the ablated run fails; everything else is
   reported as inconclusive with the reason. It works under pytest-xdist and reaches subprocesses
-  through `INV_ABLATE`.
+  through `INV_ABLATE`. `INV_ABLATE` is read when a guard asks, not when a registry is built, so the
+  default registry (built at import) honours it as the loader's log says.
 
 ### Integrations
 
@@ -332,7 +343,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   (`JSONResponse(..., status_code=404)`) is sent as it is, never validated into the response model
   (it was a 500); a `post_effect` clause on `result` then is a `rule_error` its `on_error` decides.
 - `integrations.otel`: one span per evaluation. `integrations.exporters.BufferedExporter`: a
-  bounded, background exporter.
+  bounded, background exporter; a start() racing the flusher's exit after a timed-out close()
+  starts a new flusher instead of leaving the events queued next with none.
 - `integrations.anthropic`: Claude in a model-call body, with trace replay and recording for tests.
 
 ### Guarantees

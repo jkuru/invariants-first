@@ -205,7 +205,8 @@ def test_abstain_escalates_for_every_schema_kind(iso, kind):
     c, e = call(kind, json.dumps(good(kind, cause="CANNOT_COMPLY")))
     assert c is None and isinstance(e, inv.Escalation), c          # dict was: verdict ok
     assert e.attempts[0]["outcome"] == "abstain" and e.review_id and e.rule == rid
-    assert iso.counts(rid).get("runs", 0) == runs                   # bad never ran
+    counts = iso.counts(rid)                                          # bad never ran: the one outcome is the abstain
+    assert counts.get("runs", 0) == runs + 1 and counts.get("abstain") == 1 and not counts.get("ok")
 
 
 # --- 3. MAJOR: the edge re-validates the closed schema ---------------------------------------------

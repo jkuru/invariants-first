@@ -335,7 +335,8 @@ def _is_python(word: str) -> bool:
 
 
 def _python_scripts(words: list[str], redirects: list[tuple[str, str]], cwd: str) -> list[pathlib.Path]:
-    """The files a simple command runs as Python: `python[3] FILE`, `python -m MOD` (FILE under cwd),
+    """The files a simple command runs as Python: `python[3] FILE`, `python -m MOD` (MOD.py or MOD/__main__.py
+    under cwd, cwd/src, the lock tree or its src/),
     `python - < FILE`, `uv run [python] FILE`, or `./FILE.py` run directly."""
     return _python_run(words, redirects, cwd)[0]
 
@@ -371,8 +372,12 @@ def _python_run(words: list[str], redirects: list[tuple[str, str]],
         if a == "-m" and args:
             if args[0] == "pytest":
                 return [], None, args[1:]
-            mod = pathlib.Path(cwd, *args[0].split("."))
-            return [mod.with_suffix(".py"), mod / "__main__.py"], args[0], None
+            # MOD runs as a script, so its own text gets the script rule (as `python tools/x.py`),
+            # wherever it is found: under cwd, cwd/src, or the lock's tree and its src/
+            here = pathlib.Path(cwd)
+            tree = _lock_tree(pathlib.Path(os.path.realpath(cwd)))
+            bases = [here, here / "src", *([tree, tree / "src"] if tree is not None else [])]
+            return _main_files(args[0], bases), args[0], None
         if a in ("-W", "-X"):
             args = args[1:]
         elif a == "-":
@@ -462,6 +467,19 @@ def _module_files(name: str, bases: list[pathlib.Path]) -> list[pathlib.Path]:
     return []
 
 
+def _main_files(name: str, bases: list[pathlib.Path]) -> list[pathlib.Path]:
+    """The file `python -m name` runs as its script, from the first base holding its top-level package:
+    name.py, or name/__main__.py for a package."""
+    parts = [x for x in name.split(".") if x]
+    if not parts or not all(x.isidentifier() for x in parts):
+        return []
+    for base in bases:
+        if (base / parts[0]).is_dir() or (base / f"{parts[0]}.py").is_file():
+            mod = base.joinpath(*parts)
+            return [f for f in (mod.with_suffix(".py"), mod / "__main__.py") if f.is_file()]
+    return []
+
+
 def _conftests(cwd: pathlib.Path, tree: pathlib.Path, args: list[str]) -> list[pathlib.Path]:
     """The conftest.py files a pytest run under tree may load: in cwd and each directory above it up to
     tree, and under cwd and the directories the arguments name (hidden and always-skipped directories
@@ -511,7 +529,7 @@ def _run_rewrites(words: list[str], redirects: list[tuple[str, str]], cwd: str) 
             names.append(module)                      # its packages' __init__.py run first
     bases = list(dict.fromkeys([*(pathlib.Path(os.path.realpath(f.parent)) for f in files), here, tree,
                                 tree / "src"]))
-    queue += [(f, False) for n in names for f in _module_files(n, bases)]
+    queue +=[(f, False) for n in names for f in _module_files(n, bases)]
     seen: set[pathlib.Path] = set()
     while queue and len(seen) < _IMPORT_MAX:
         at, script = queue.pop(0)
@@ -809,7 +827,10 @@ def cmd_hook(a: argparse.Namespace) -> int:
              `git restore --source REF PATHS` whose pathspec may match one ('.', a directory
              holding it, a glob); and any edit of .claude/settings.json or
              .claude/settings.local.json, where the hooks themselves are configured.
-    stop:    refuse to finish while `inv check` fails, once per stop (stop_hook_active ends the loop).
+    stop:    refuse to finish while `inv check --relock` fails, once per stop (stop_hook_active ends the
+             loop): the relock re-pins only a change that weakens nothing. The rule file is the one in
+             the event's cwd or the nearest directory above it; a lock found with no rule file beside
+             it refuses too.
 
     The hooks are an early warning against an agent's shortcuts, not the gate: a determined command
     can always get past a text check. `inv check --base` in CI is the gate."""
@@ -829,16 +850,41 @@ def _event() -> dict[str, Any]:
     return event if isinstance(event, dict) else {}
 
 
+def _project(base: pathlib.Path) -> tuple[pathlib.Path | None, pathlib.Path | None]:
+    """(rule file, its directory) of the nearest directory at or above base that holds a rule file or
+    an invariants.lock, up to the repository root (a directory with .git); (None, dir) when that
+    directory holds a lock but no rule file; (None, None) when there is neither."""
+    for d in (base, *base.parents):
+        rule = next((d / n for n in DEFAULT_FILES if (d / n).is_file()), None)
+        if rule is not None or (d / lock.LOCK_NAME).exists():
+            return rule, d
+        if (d / ".git").exists():
+            break
+    return None, None
+
+
 def _stop(a: argparse.Namespace, event: dict[str, Any]) -> int:
-    """The stop hook: exit 2 with `inv check`'s report while it fails, once per stop."""
+    """The stop hook: exit 2 with `inv check --relock`'s report while it fails, once per stop.
+
+    The rule file is the one in the event's cwd or the nearest directory above it (up to the
+    repository root). --relock re-pins only a change that weakens nothing; a weakening fails the check
+    and the agent is sent back. A lock with no rule file next to it (the rule file deleted or moved)
+    sends the agent back too; with neither, there is nothing to check."""
     if event.get("stop_hook_active"):
         return OK                                   # already sent back once: do not loop
-    base = pathlib.Path(str(event.get("cwd") or "."))
-    rule = next((base / n for n in DEFAULT_FILES if (base / n).is_file()), None)
+    base = pathlib.Path(str(event.get("cwd") or ".")).absolute()
+    rule, where = _project(base)
     if a.rulefile:
         rule = pathlib.Path(a.rulefile)
     if rule is None:
-        return OK
+        if where is None:
+            return OK                               # not a project with laws: nothing to check
+        _err(f"invariants: {where / lock.LOCK_NAME} pins laws, but there is no rule file "
+             f"({', '.join(DEFAULT_FILES)}) next to it, so `inv check` cannot run and this change is not done.")
+        _err("Restore the rule file (a rule file with another name is given to the hook: "
+             "`inv hook FILE stop`). Removing or moving it drops every law; if that is intended, say so to "
+             "the user: it is a person's decision.")
+        return 2
     code, text = _captured(cmd_check, argparse.Namespace(rulefile=str(rule), path=a.path, relock=True,
                                                          fail_on_repin=False, base=None, root=[], exclude=[],
                                                          allow_weakening=False, imports=[]))

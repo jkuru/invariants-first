@@ -126,4 +126,4 @@ def note_decision(rule_id: str) -> None:
 
 def is_decision(kind: str, event: dict[str, Any]) -> bool:
     """True for an event that is a decision of its rule (see note_decision)."""
-    return kind == "violation" or (kind == "parse_error" and event.get("action") not in (None, "proceed"))
+    return kind == "violation" or (kind in ("parse_error", "abstain") and event.get("action") not in (None, "proceed"))

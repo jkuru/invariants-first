@@ -128,6 +128,11 @@ class BufferedExporter:
 
         However it ends (stopped, or a BaseException from the target), it clears itself, so a close()
         that timed out still leaves an exporter that start() can restart and drain() can empty.
+
+        The decision to stop and the clearing happen under one hold of the lock: running -> stopped
+        is a single step, so a start() either comes first (and cancels the stop: this flusher goes
+        on) or after (and starts a new flusher). Never between, where it would see this thread still
+        set, take it as running and leave the events it queues with no flusher.
         """
         try:
             while True:
@@ -135,14 +140,19 @@ class BufferedExporter:
                     while not self._queue and not self._stopping:
                         self._changed.wait()
                     if not self._queue:
+                        self._retire()
                         return
                     batch = self._take()
                 self._export(batch)
         finally:
             with self._lock:
-                if self._thread is threading.current_thread():
-                    self._thread, self._stopping = None, False
-                self._changed.notify_all()
+                self._retire()
+
+    def _retire(self) -> None:
+        """With the lock held, on the flusher's thread: it is no longer the flusher (if it still was)."""
+        if self._thread is threading.current_thread():
+            self._thread, self._stopping = None, False
+        self._changed.notify_all()
 
     def _take(self) -> list[tuple[str, str, dict[str, Any]]]:
         """With the lock held: move the queue into a batch the caller exports."""
