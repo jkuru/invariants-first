@@ -10,6 +10,7 @@ import dataclasses
 import io
 import json
 import pathlib
+import re
 from typing import Any, Iterator
 
 from ..errors import LoadError
@@ -26,6 +27,9 @@ class Where:
     rules: dict[int, int] = dataclasses.field(default_factory=dict)
     providers: dict[str, int] = dataclasses.field(default_factory=dict)
     targets: dict[str, int] = dataclasses.field(default_factory=dict)
+    # the top-level allow_unresolved: the line of its key, and of each entry (by index)
+    accepts_key: int | None = None
+    accepts: dict[int, int] = dataclasses.field(default_factory=dict)
     # the ids of the rules written in the door:/sink: short form (their allow_unresolved is top-level)
     short_doors: set[str] = dataclasses.field(default_factory=set)
 
@@ -83,7 +87,12 @@ def read_located(source: str | pathlib.Path) -> tuple[dict[str, Any], Where]:
             where.short_doors.add(raw["id"])
         with where.located(where.rules.get(i)):
             expand_short_forms({"rules": [raw]})
-    expand_shared_accepts(doc)                         # the top-level allow_unresolved, rule by rule
+    try:
+        expand_shared_accepts(doc)                     # the top-level allow_unresolved, rule by rule
+    except LoadError as e:
+        m = re.match(r"allow_unresolved\[(\d+)\]", str(e))
+        with where.located(where.accepts.get(int(m[1])) if m else where.accepts_key):
+            raise
     return doc, where
 
 
@@ -104,7 +113,6 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _json_repeat(text: str, key: str) -> str:
     """The message for a JSON key repeated in one object, with the lines that key appears on."""
-    import re
     pat = re.compile(r'"' + re.escape(json.dumps(key)[1:-1]) + r'"\s*:')
     lines = sorted({text.count("\n", 0, m.start()) + 1 for m in pat.finditer(text)})
     on = f" (lines {', '.join(map(str, lines))})" if len(lines) > 1 else ""
@@ -112,24 +120,40 @@ def _json_repeat(text: str, key: str) -> str:
             f"key once")
 
 
+def _key_ident(k: Any, loader: Any) -> Any:
+    """What a scalar key is once read: the value PyYAML builds for it (`1` and `01`, `true` and `yes`,
+    `null` and `~`, `1.0` and `1.00` are one key, as they are in the dict it builds), or its tag and
+    text when that value cannot key a dict."""
+    try:
+        v = loader.construct_object(k)
+        hash(v)
+        return v
+    except Exception:
+        return (k.tag, k.value)
+
+
 def refuse_duplicate_keys(root: Any, name: str) -> None:
     """LoadError at a key repeated in one YAML mapping (PyYAML keeps the last value silently, so a
-    second `sink:` or `door:` entry with the same key would replace the first unseen), naming both lines."""
+    second `sink:` or `door:` entry with the same key would replace the first unseen), naming both lines.
+    Keys are compared as read, not as written: `1` and `01` are the same key."""
     import yaml
+    loader = yaml.SafeLoader("")
     work = [root]
     while work:
         node = work.pop()
         if isinstance(node, yaml.MappingNode):
-            seen: dict[tuple[str, str], int] = {}
+            seen: dict[Any, tuple[int, str]] = {}
             for k, v in node.value:
                 if isinstance(k, yaml.ScalarNode):
-                    ident = (k.tag, k.value)
+                    ident = _key_ident(k, loader)
                     line = k.start_mark.line + 1
                     if ident in seen:
+                        first, text = seen[ident]
+                        same = "" if text == k.value else f", written {text!r} there, which YAML reads as the same key"
                         raise LoadError(f"{name}:{line}: the key {k.value!r} appears twice in one mapping (lines "
-                                        f"{seen[ident]} and {line}); YAML keeps only the last one, so write each "
+                                        f"{first} and {line}{same}); YAML keeps only the last one, so write each "
                                         f"key once")
-                    seen[ident] = line
+                    seen[ident] = (line, k.value)
                 work.append(k)
                 work.append(v)
         elif isinstance(node, yaml.SequenceNode):
@@ -189,6 +213,10 @@ def _yaml_lines(root: Any, where: Where) -> None:
         elif section in ("providers", "targets") and isinstance(value, yaml.MappingNode):
             setattr(where, section, {str(k.value): k.start_mark.line + 1 for k, _ in value.value
                                      if isinstance(k, yaml.ScalarNode)})
+        elif section == "allow_unresolved":
+            where.accepts_key = key.start_mark.line + 1
+            if isinstance(value, yaml.SequenceNode):
+                where.accepts = {i: n.start_mark.line + 1 for i, n in enumerate(value.value)}
 
 
 def schema_path() -> pathlib.Path:

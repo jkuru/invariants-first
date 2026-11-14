@@ -4,7 +4,9 @@ A rule file is JSON or YAML. `inv validate` checks it against the bundled JSON S
 (`inv.schema_path()`) and runs every load-time check. Unknown fields are load errors everywhere.
 YAML anchors and aliases (`&name`, `*name`, `<<: *name`) are refused, with the line they are on: a
 few nested aliases stand for billions of values, and a rule file is written out in full. `inv lock`
-pins only a file `inv validate` accepts.
+pins only a file `inv validate` accepts. A key repeated in one YAML mapping is refused with both
+lines, compared as YAML reads it: `1` and `01`, `true` and `yes`, `null` and `~`, `1.0` and `1.00`
+are one key (YAML would keep only the last).
 How the fields fit together is in [Invariant-first](design-guide.md).
 
 ## The short form
@@ -117,7 +119,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 | `targets` | `"py:pkg.mod.fn": {effects: none \| external}`. Effects belong to the target, once. An unlisted target is `external`. |
 | `providers` | `name: {type, from, args}`. See below. |
 | `rules` | The list of rules. |
-| `allow_unresolved` | Reviewed unresolved sites shared by several path laws: `[{at, code, sha, why, rules: [ID, ...]}]`. An entry is checked as a rule's own entry is, and `rules` names one or more path laws (rules with a sink) of this file, each once. The loader gives each listed rule the entry, at the end of its `mediation.allow_unresolved` (with `rules`, so the scan's text, JSON and SARIF say which shared entry accepted a finding); it then accepts its site once under each rule, and is `missing/allow-unresolved-unused` under a rule where it matches nothing. The lock pins it in each rule. Errors name it `allow_unresolved[0]`. |
+| `allow_unresolved` | Reviewed unresolved sites shared by several path laws: `[{at, code, sha, why, rules: [ID, ...]}]`. An entry is checked as a rule's own entry is, and `rules` names one or more path laws (rules with a sink) of this file, each once. The loader gives each listed rule the entry, at the end of its `mediation.allow_unresolved` (with `rules`, so the scan's text, JSON and SARIF say which shared entry accepted a finding); it then accepts its site once under each rule, and is `missing/allow-unresolved-unused` under a rule where it matches nothing. The lock pins it in each rule. Errors name it `allow_unresolved[0]`, after the file and the entry's line (`invariants.yaml:31: allow_unresolved[0]: ...`). |
 
 ## Providers
 
@@ -125,7 +127,7 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
 |---|---|
 | `type` | `int`, `str`, `bool`, `float`, `list`, `dict` or `py:mod.Class`, optionally `\| null`. The function's return annotation must match, read through aliases (`type UserId = int`), `NewType` and `Annotated`: `-> Optional[UserId]` matches `int \| null`. |
 | `from` | `py:` path of a function marked `@inv.provider("name")` (sync or `async def`). Its parameters must be exactly the keys of `args`. |
-| `args` | Parameter -> binding path (`args.x`, `self`, `reply.y`, or a bound name). |
+| `args` | Parameter -> binding path (`args.x`, `self`, `reply.y`, or a bound name): dotted names. |
 | `concurrent` | Optional, `true` or `false`. `true` lets this async provider be awaited together with other async providers that opted in (`asyncio.gather`). By default async providers run one at a time, in the order they are declared here, which is what providers sharing one `AsyncSession` or connection need. When the record says nothing, `@inv.provider("name", concurrent=True)` on the function opts in. A change is recorded by `inv lock`, never as a weakening. |
 
 **When providers are read.** A provider is a plain typed read at its enforcer's timing: a
@@ -142,14 +144,14 @@ not a lock: two concurrent callers can both pass it.
 | `id`, `rev` | Identity and revision. An `id` is letters, digits, `-`, `_` and `.`, starting with a letter or digit (`^[A-Za-z0-9][A-Za-z0-9_.-]*$`: no spaces, no `:`); it is unique in the file. |
 | `status` | Set by human review: `candidate`, `contested`, `detect`, `enforce`, `retired`. The loader computes the highest status the evidence allows (`Rule.max_status`) and refuses a higher one. `enforce` needs an enforcer with mode `enforce`, `falsified_by`, and a passing timing check. |
 | `class`, `owner`, `statement`, `why` | Documentation. `statement` is the default clause message. |
-| `subject` | `{target: "py:...", contract: name, operation: ...}`. |
+| `subject` | `{target: "py:...", contract: name, operation: ...}`; the JSON Schema refuses any other key (`targets:` is a typo). |
 | `scope` | `call`, `transition`, `aggregate(key: ...)`: the scope of the property. |
-| `bind` | Name -> path, for names `bad` reads. A name that matches a provider is bound to it automatically. |
-| `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
+| `bind` | Name -> path, for names `bad` reads: a root (`args`, `result`, `reply`, `self`, `old_self`) and a field path, or `provider.<name>` (nothing after it). A name that matches a provider is bound to it automatically. |
+| `bad` | A CEL string, or a list of `{when, message}` clauses. Any clause true is a violation; else any clause error is a rule_error; else ok. `old_self.<path>` makes a transition rule: the loader snapshots only those paths, which must be plain data. Each clause is type-checked at load against the target annotations, the provider types and the model-call schema (see [cel.md](cel.md#the-load-time-type-check) for its scope), once per enforcer that evaluates it, with that enforcer's point and target (a `monitor`'s rows are whatever the caller passes, so they are not typed from `subject.target`); an operation with no overload for the declared types is a load error, and so is a call to a function the chosen CEL backend does not have ([cel.md](cel.md#functions-per-backend) lists them per backend). So is a known function called with the wrong number of arguments, or a macro in global form (`exists(xs, x, p)`). A clause that reads a NaN or ±Infinity, or makes one (`0.0 / 0.0`, an overflow, `double("NaN")`), is a rule_error on every backend unless `inv.configure(allow_non_finite=True)`. Values are read by the mapping in "Python to CEL types" below. On `cel-expr` a clause nested more than 32 levels deep (cel-cpp's fixed limit) is a load error that says so. |
 | `compensable` | Optional, `true` or `false`: a violation can be undone after the fact. Nothing at run time reads it; the lock pins it, and setting it to `true` is a weakening. |
 | `enforcers` | See below. |
 | `mediation` | `{chokepoint, residual_paths, sink, door, allow, allow_unresolved}`. `allow` lists known back doors the scan lets through (see "The door form" above). `allow_unresolved` lists unresolved findings a person reviewed and accepts, one site each: `{at: "path:line[:col]", code: "unresolved/...", sha, why}` ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`; `sink` may map each sink to the doors that may reach it (see "The door form" above). |
-| `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. |
+| `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. When the abstain field is a closed enum (a `Literal[...]`, also under `Annotated` or a `type X = ...` alias), its value must be a member, compared by value and type (`true` is not `1`; an `Enum` member stands for its value). A clause `!(reply.F in [...])` listing every member of F's enum (the abstain value aside, when one is configured) gets a note: the schema already holds it. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
 | `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |
 | `applies_to` | fnmatch pattern(s) over `targets:` keys; `inv lock` expands them. |

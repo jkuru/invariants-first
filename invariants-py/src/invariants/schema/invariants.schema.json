@@ -35,7 +35,8 @@
     "sinkPairs": {"type": "object", "minProperties": 1, "propertyNames": {"pattern": "^py:"}, "additionalProperties": {"$ref": "#/$defs/pyRefs"},
                   "description": "Each sink mapped to the door or doors that may reach it: a door listed for one sink is no door for another."},
     "sinks": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"$ref": "#/$defs/sinkPairs"}]},
-    "path": {"type": "string", "pattern": "^(args|result|reply|self|old_self|provider)(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
+    "path": {"type": "string", "pattern": "^((args|result|reply|self|old_self)(\\.[A-Za-z_][A-Za-z0-9_]*)*|provider\\.[A-Za-z_][A-Za-z0-9_]*)$",
+             "description": "A root (args, result, reply, self, old_self) and a field path, or provider.<name> (a declared provider, nothing after it)."},
     "nameMap": {"type": "object", "additionalProperties": {"$ref": "#/$defs/path"}},
     "target": {
       "type": "object",
@@ -52,7 +53,8 @@
       "properties": {
         "type": {"type": "string"},
         "from": {"type": "string", "pattern": "^py:"},
-        "args": {"type": "object", "additionalProperties": {"type": "string"}},
+        "args": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                                                             "description": "A path from a root (args, result, reply, self, old_self) or a name the rule binds, e.g. args.account."}},
         "concurrent": {"type": "boolean", "description": "an async provider that may be awaited alongside other opted-in ones (default false: one at a time, in order)"}
       }
     },
@@ -139,6 +141,7 @@
         "why": {"type": "string"},
         "subject": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {"contract": {"type": "string"}, "target": {"type": "string", "pattern": "^py:"},
                          "operation": {"type": "string", "description": "The OpenAPI operation the rule binds to (an operationId, or METHOD /path); overrides the contract's operation."}}
         },

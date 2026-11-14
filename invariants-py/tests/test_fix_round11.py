@@ -243,7 +243,8 @@ def test_no_field_error_lists_only_the_real_fields(backend):
         inv.load(r11.model_doc("R-M", "reply.nope == 1"), install=False, backend=backend)
     msg = str(ei.value)
     assert "(fields: at, cause, first, legs, note)" in msg
-    assert "model_" not in msg and "copy" not in msg
+    fields = msg.partition("no field")[2]       # the message names the enforcer (point model_call) too
+    assert "model_" not in fields and "copy" not in fields
     with pytest.raises(inv.LoadError) as ei:
         inv.load(r11.model_doc("R-M", "reply.legs[0].nope == 1"), install=False, backend=backend)
     assert "(fields: at, score)" in str(ei.value)
