@@ -23,7 +23,7 @@ def to_sarif(report: Report, version: str = "0") -> dict[str, Any]:
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [{"tool": {"driver": {"name": "inv scan", "version": version,
-                                      "informationUri": "https://example.invalid/invariants", "rules": rules}},
+                                      "informationUri": "https://example.com/invariants-first", "rules": rules}},
                   "results": results}],
     }
 

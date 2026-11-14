@@ -10,6 +10,9 @@ Planned as 0.1.0, the first release. Publishing metadata (the final package name
 authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 [RELEASING.md](RELEASING.md). Contributors add their entries here.
 
+The publishing metadata holds dummy values on `example.com` (authors, `[project.urls]`, the SARIF
+`informationUri`); the release workflow refuses to upload while any remains.
+
 What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the extras are
 `schema` (jsonschema, for `inv validate`), `cel` (the cel-expr engine), `pydantic`, `fastapi`,
 `otel` and `anthropic`. The package is imported as `invariants`.

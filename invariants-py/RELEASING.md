@@ -2,28 +2,27 @@
 
 ## Before publishing
 
-The project has not been published yet. Some metadata is deliberately left open, because none of
-it is known yet and none of it should be invented. **Every unticked item below is a release
-blocker**: do not upload to PyPI (or TestPyPI) until each one is settled by the project owner, then
-delete this section. Three of them are placeholders in `pyproject.toml` today and must not ship as
-they are:
+The project has not been published yet. Its publishing metadata holds **dummy values** on
+`example.com`, a domain reserved for examples, so nothing real is invented. **Every unticked item
+below is a release blocker**: do not upload to PyPI (or TestPyPI) until each one is settled by the
+project owner, then delete this section. The dummies must not ship:
 
-| Field in `pyproject.toml` | Today                                   | Owner must supply                  |
-|---------------------------|-----------------------------------------|------------------------------------|
-| `[project] name`          | `invariants-first` (placeholder)        | the final distribution name        |
-| `[project] authors`       | "The invariants-first authors"          | the names and contacts to publish  |
-| `[project.urls]`          | absent (no URL is invented)             | Homepage, Source, Issues, Changelog |
+| Field                                      | Today (dummy)                                       | Owner must supply                   |
+|--------------------------------------------|-----------------------------------------------------|-------------------------------------|
+| `[project] name`                           | `invariants-first`                                  | the final distribution name         |
+| `[project] authors`                        | Example Maintainer, `maintainer@example.com`        | the names and contacts to publish   |
+| `[project.urls]`                           | Homepage, Source, Issues, Changelog on `example.com` | the repository's public URLs        |
+| SARIF `informationUri` (`scan/sarif.py`)   | `https://example.com/invariants-first`              | the project URL                     |
 
 CI's `twine check --strict` passes with these placeholders (it checks that the metadata and README
 render, not that they are final), so a green build is not a sign that this list is done.
 
-This section and the placeholders go together, and `tests/test_fix_round6.py`
+This section and the dummy values go together, and `tests/test_fix_round6.py`
 (`test_publishing_checklist_and_placeholders_go_together`) flips with them: while this section
-exists it checks that no URL is invented (`[project.urls]` absent, the SARIF `informationUri` the
-placeholder); once it is deleted it checks that `[project.urls]` is set and the SARIF URL is no
-longer the placeholder. Settle `[project.urls]` and the SARIF URL and delete this section in the
-same change, and the suite stays green; do one without the other and it fails. The release
-workflow refuses to run while this section exists or the SARIF URL is the placeholder.
+exists, `pyproject.toml` and the SARIF URL hold the `example.com` dummies; once it is deleted, no
+`example.com` value may remain. Replace the dummies and delete this section in the same change, and
+the suite stays green; do one without the other and it fails. The release workflow refuses to run
+while this section exists or any `example.com` value remains in `pyproject.toml` or the SARIF URL.
 
 - [ ] **Final package name.** `invariants-first` in `pyproject.toml` (`[project] name`) is a
       placeholder. Pick the distribution name, check that it is free on PyPI (and on TestPyPI), and
@@ -37,17 +36,17 @@ workflow refuses to run while this section exists or the SARIF URL is the placeh
       `pyproject.toml`, their dependency on the library, and each `README.md`); and
       `tests/test_package.py` and `tests/test_integrations_anthropic.py`. The import name stays
       `invariants`.
-- [ ] **`[project.urls]`.** Add `Homepage`, `Source`, `Issues` and `Changelog` once the repository
-      has its public URL.
+- [ ] **`[project.urls]`.** Replace the dummy `Homepage`, `Source`, `Issues` and `Changelog`
+      (`example.com`) with the repository's public URLs.
 - [ ] **README badges.** The badges are static shields that link to files in this repository; the
       CI badge says "GitHub Actions" whatever the last run did, so it must be swapped for a live one.
       Once the repository has its public URL, point the CI badge at the workflow's status badge
       (`.../actions/workflows/ci.yml/badge.svg`) and add a PyPI version badge.
-- [ ] **SARIF tool URL.** `inv scan --format sarif` reports `informationUri` as a placeholder
-      (`https://example.invalid/invariants`, in `src/invariants/scan/sarif.py`); set it to the project
-      URL.
-- [ ] **Authors and maintainers.** `authors` in `[project]` is the placeholder "The
-      invariants-first authors". Replace it (and add `maintainers` if they differ) with the names
+- [ ] **SARIF tool URL.** `inv scan --format sarif` reports `informationUri` as the dummy
+      `https://example.com/invariants-first` (in `src/invariants/scan/sarif.py`); set it to the
+      project URL.
+- [ ] **Authors and maintainers.** `authors` in `[project]` is the dummy "Example Maintainer
+      <maintainer@example.com>". Replace it (and add `maintainers` if they differ) with the names
       and contact addresses the maintainers choose to publish. The `LICENSE` appendix's copyright line is
       the Apache template and needs no change, but a `NOTICE` file may name the copyright holder.
 - [ ] **PyPI trusted publishing.** Create the project on PyPI (and TestPyPI), register this
@@ -55,8 +54,8 @@ workflow refuses to run while this section exists or the SARIF URL is the placeh
       `pypi`) as a trusted publisher, and create those two GitHub environments (required reviewers
       on `pypi`). The workflow is a draft that runs only by hand; it builds the sdist and wheel and
       uploads them with `pypa/gh-action-pypi-publish` using OpenID Connect (no API token stored in
-      the repository), and refuses to run while this section exists or the SARIF URL is the
-      placeholder. Rehearse with target `testpypi` first.
+      the repository), and refuses to run while this section exists or any `example.com` dummy
+      remains. Rehearse with target `testpypi` first.
 - [ ] **Security contact.** Make sure private vulnerability reporting is turned on for the
       repository, since `SECURITY.md` points reporters to it. If the maintainers also want an email
       contact, add it to `SECURITY.md` and `CODE_OF_CONDUCT.md` (which today point to GitHub's

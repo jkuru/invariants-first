@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{name = "The invariants-first authors"}]   # placeholder: see RELEASING.md
+authors = [{name = "Example Maintainer", email = "maintainer@example.com"}]   # dummy: see RELEASING.md
 dependencies = ["pyyaml>=6"]
 keywords = ["invariants", "contracts", "cel", "guards", "llm", "pytest"]
 classifiers = [
@@ -28,6 +28,13 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
+
+# Dummy URLs on example.com (reserved for examples): replace them before a release (RELEASING.md).
+[project.urls]
+Homepage = "https://example.com/invariants-first"
+Source = "https://example.com/invariants-first/source"
+Issues = "https://example.com/invariants-first/issues"
+Changelog = "https://example.com/invariants-first/changelog"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2"]

@@ -482,15 +482,15 @@ def test_publishing_checklist_and_placeholders_go_together():
     releasing = (ROOT / "RELEASING.md").read_text()
     pyproject = (ROOT / "pyproject.toml").read_text()
     sarif = (ROOT / "src" / "invariants" / "scan" / "sarif.py").read_text()
-    placeholder_uri = "https://example.invalid/invariants"
     assert "RELEASING.md" in (ROOT / "CHANGELOG.md").read_text()
-    if "\n## Before publishing\n" in releasing:
-        assert "project.urls" in releasing and placeholder_uri in releasing
-        assert "[project.urls]" not in pyproject, "a URL in pyproject.toml: settle the Before-publishing list"
-        assert placeholder_uri in sarif, "the SARIF URL is set: settle the Before-publishing list"
+    assert "[project.urls]" in pyproject and "informationUri" in sarif
+    dummy = "example.com"                       # reserved for examples: never a real project's address
+    if "\n## Before publishing\n" in releasing:   # the dummy values stand until the owner replaces them
+        assert dummy in releasing
+        assert dummy in pyproject and dummy in sarif, "real values are set: delete the Before-publishing section"
     else:
-        assert "[project.urls]" in pyproject, "the Before-publishing section is gone but [project.urls] is not set"
-        assert "example.invalid" not in sarif, "the Before-publishing section is gone but the SARIF URL is a placeholder"
+        assert dummy not in pyproject, "the Before-publishing section is gone but pyproject.toml has dummy values"
+        assert dummy not in sarif, "the Before-publishing section is gone but the SARIF URL is a dummy"
 
 
 def test_report_rules_file_is_relative_to_the_rootdir() -> None:

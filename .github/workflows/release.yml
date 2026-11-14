@@ -40,8 +40,8 @@ jobs:
             echo "RELEASING.md still lists release blockers under 'Before publishing'; settle them first" >&2
             exit 1
           fi
-          if grep -q 'example.invalid' src/invariants/scan/sarif.py; then
-            echo "the SARIF informationUri is still the placeholder" >&2
+          if grep -q 'example\.com' pyproject.toml src/invariants/scan/sarif.py; then
+            echo "pyproject.toml or the SARIF informationUri still holds the dummy example.com values" >&2
             exit 1
           fi
 
