@@ -1,4 +1,5 @@
-"""The second pass: calls and sites in one module, attributing nested code to its owner."""
+"""The second pass: calls and sites in one module, attributing nested code to its owner (or, when it may run
+from elsewhere, to a caller of its own: _own_caller)."""
 from __future__ import annotations
 
 import ast
@@ -17,10 +18,11 @@ from .astutil import (
     _lit,
     _locals,
     _params,
+    _under,
 )
-from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Fan, _Module, _Site
+from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Fan, _Func, _Module, _Site
 from .indexer import _class_scope_nodes, _Index
-from .inference import _Inference, _plain_named_sets, _rebinds
+from .inference import _class_of, _Inference, _plain_named_sets, _positional, _rebinds, replaced_members
 
 # fix round 26: the methods that run where their class is called (an edge from each call of the class)
 _CONSTRUCTORS = frozenset({"__init__", "__new__", "__post_init__"})
@@ -85,7 +87,8 @@ _REFLECTIVE = frozenset({*(f"builtins.{n}" for n in ("getattr", "setattr", "dela
 
 
 class _Walker(_Inference):
-    """Resolves calls and records sites in one module, attributing nested code to its owner."""
+    """Resolves calls and records sites in one module, attributing nested code to its owner, or to its own
+    caller id when it may run from elsewhere."""
 
     def __init__(self, idx: _Index, mod: _Module) -> None:
         super().__init__(idx, mod)
@@ -93,9 +96,14 @@ class _Walker(_Inference):
         self.sites: list[_Site] = []
         self._called: set[int] = set()                        # ids of call targets: a call, not a value
         self._type_uses: set[int] = set()                     # ids of names only tested or inherited (_type_use)
+        self._values: dict[int, set[str]] = {}               # _values_in, per scope
 
     def run(self) -> None:
         self._body(self.mod.tree.body, f"{self.mod.name}.<module>", set(), None, self.mod.name)
+        for m, fakes in sorted(replaced_members(self.idx).items()):
+            f = self.idx.funcs[m]
+            if f.module == self.mod.name:              # fix round 33: a call of m may run what replaced it
+                self.edges += [_Edge(m, x, f.line, f.col, True) for x in sorted(fakes)]
         self._dict_writes(self.mod.tree, f"{self.mod.name}.<module>", None, nested=False)
 
     def _dict_writes(self, fn: ast.AST, owner: str, me: tuple[str, str] | None, nested: bool) -> None:
@@ -119,11 +127,11 @@ class _Walker(_Inference):
                 func = self.idx.funcs[fid]
                 self._defined(stmt, fid, func.cls, owner, local, self_cls)
                 me = None
-                if func.cls and stmt.args.args and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list) \
-                        and not _rebinds(stmt, stmt.args.args[0].arg):
+                if func.cls and _positional(stmt) and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list) \
+                        and not _rebinds(stmt, _positional(stmt)[0].arg):
                     # fix round 29: a method that rebinds its first parameter (`self = other`, `for self in`,
                     # `except E as self`, `self += x`, `cls = Repo`) has no self of its class: a plain local
-                    me = (stmt.args.args[0].arg, func.cls)
+                    me = (_positional(stmt)[0].arg, func.cls)
                 names = _locals(stmt)                  # once per function, not per statement
                 self._class_scope = None               # a method body does not see the class body's names
                 try:
@@ -385,6 +393,8 @@ class _Walker(_Inference):
                                  *((k, d) for k, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None)]:
                 if arg.annotation is not None and self._empty_depends(default, local, me):
                     self._built(arg.annotation, owner, default, local, me)
+        own = self._own_caller(node, owner, local, me) \
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else None
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.AnnAssign) and child is node.annotation:
                 # fix round 28: a module or class body evaluates `x: <annotation>` (a function body does not)
@@ -394,11 +404,74 @@ class _Walker(_Inference):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child is node.returns:
                 self._annotation(child, owner, local, me)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.body:
-                self._shadowed(node, node.args, self._node, child, owner, local, me)
+                self._as_caller(own, owner, self._shadowed, node, node.args, self._node, child, owner, local, me)
             elif isinstance(node, ast.ClassDef) and child in node.body:
-                self._shadowed(node, None, self._node, child, owner, local, me)
+                self._as_caller(own, owner, self._shadowed, node, None, self._node, child, owner, local, me)
             else:
                 self._node(child, owner, local, me)
+
+    def _own_caller(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda, owner: str,
+                    local: set[str], me: tuple[str, str] | None) -> str | None:
+        """fix round 33: a nested function, lambda or class that may run from outside the code it is defined in
+        (returned, stored, passed, given to a decorator that may keep it, bound in a module or class body, or a
+        class at all: its instances may leave) is a caller of its own, an entrypoint: what its body calls is not
+        excused by the door or allowed function it is defined in. One only called there by name (`def inner():
+        ...; inner()`), or a lambda called where it is written, stays its owner's code. The id is
+        `<owner>.<name>` (`<owner>.<lambda:line:col>`), a function with no node of its own."""
+        scope = next((s for s in reversed(self._scopes) if not isinstance(s, _COMPREHENSIONS)), None)
+        if isinstance(scope, ast.ClassDef):
+            return None                                 # a nested class's method: the class's own code
+        if isinstance(node, ast.Lambda):
+            if id(node) in self._called:
+                return None
+            name = f"<lambda:{node.lineno}:{node.col_offset}>"
+        home = scope or self.idx.funcs[owner].node or self.mod.tree   # where the name is bound
+        if not isinstance(node, ast.Lambda):
+            name = f"<{node.name}>"
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not isinstance(home, ast.Module) \
+                    and all(self._keeps_value(d, local, me) for d in node.decorator_list) \
+                    and node.name not in self._values_in(home):
+                return None                             # only called by name where it is defined
+        own = f"{owner}.{name}"
+        if own in self.idx.funcs:
+            own = f"{owner}.{name[:-1]}@{node.lineno}:{node.col_offset}>"
+        self.idx.funcs[own] = _Func(own, self.mod.name, self.mod.file, self.mod.root, node.lineno, node.col_offset,
+                                    None)
+        # the owner may still call it (by name, or through the value it made): what the owner reaches through it,
+        # as a name-matched call, as when the nested code was the owner's own (not proof that it has a caller: it
+        # stays an entrypoint)
+        self.edges.append(_Edge(owner, own, node.lineno, node.col_offset, True))
+        return own
+
+    def _values_in(self, scope: ast.AST) -> set[str]:
+        """The names read in scope (nested scopes included) as a value somewhere (anything but the callee of a
+        call; a global or nonlocal declaration too): once per scope."""
+        got = self._values.get(id(scope))
+        if got is None:
+            nodes = list(_under(scope))
+            calls = {id(n.func) for n in nodes if isinstance(n, ast.Call)}
+            got = self._values[id(scope)] = set()
+            for n in nodes:
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and id(n) not in calls:
+                    got.add(n.id)
+                elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                    got.update(n.names)
+        return got
+
+    def _as_caller(self, own: str | None, owner: str, walk: Callable[..., None], *args: Any) -> None:
+        """walk(*args), with what it records for owner (its calls, its sites) recorded for own instead, when
+        own is set: the nested code is analysed in its owner's scope (names, types, self) as before."""
+        if own is None:
+            walk(*args)
+            return
+        e0, s0 = len(self.edges), len(self.sites)
+        walk(*args)
+        for e in self.edges[e0:]:
+            if e.caller == owner:
+                e.caller = own
+        for s in self.sites[s0:]:
+            if s.owner == owner:
+                s.owner = own
 
     def _shadowed(self, scope: ast.AST, args: ast.arguments | None, walk: Callable[..., None], node: ast.AST,
                   *rest: Any) -> None:
@@ -408,8 +481,11 @@ class _Walker(_Inference):
         glob = _globals_of(scope)
         if len(rest) == 3 and isinstance(rest[1], set):
             # the scope's own bindings are local in it (fix round 27: the owner's locals no longer hold them)
-            rest = (rest[0], (rest[1] - glob) | (_locals(scope) if not isinstance(scope, ast.Lambda) else set()),
-                    rest[2])
+            own = _locals(scope) if not isinstance(scope, ast.Lambda) else set()
+            me = rest[2]
+            if me and me[0] in (own | set(_params(args) if args is not None else ())) - glob:
+                me = None                              # fix round 33: `lambda self: self.save()` has its own self
+            rest = (rest[0], (rest[1] - glob) | own, me)
         shadow, self._shadow = self._shadow, (self._shadow | set(_params(args) if args is not None else ())) - glob
         scopes, self._scopes = self._scopes, (*self._scopes, scope)
         try:
@@ -626,9 +702,11 @@ class _Walker(_Inference):
             self._rebound(node, owner, local, me)
             self._type_use(node.value)                     # `store.write = x` sets an attribute of store
         if isinstance(node, ast.Lambda):
+            # its defaults, in the enclosing scope (fix round 33: `lambda go=go: ...` reads the enclosing go)
+            self._expr(node.args, owner, local, me)
             local = local | _locals(node)
-            self._expr(node.args, owner, local, me)            # its defaults, in the enclosing scope
-            self._shadowed(node, node.args, self._expr, node.body, owner, local, me)
+            own = self._own_caller(node, owner, local, me)
+            self._as_caller(own, owner, self._shadowed, node, node.args, self._expr, node.body, owner, local, me)
             return
         if isinstance(node, ast.Compare):
             for x in [node.left, *node.comparators]:          # `x is C`, `type(x) == C`: compared, not called
@@ -636,11 +714,13 @@ class _Walker(_Inference):
                     self._type_use(x)
         elif isinstance(node, ast.Subscript) and _dotted(node.value) and _generic(self._resolve(node.value, local, me)):
             self._type_use(node.slice)                        # `list[C]`, `Optional[C]`: a type, never called
+        outer = local
         if isinstance(node, _COMPREHENSIONS):
             local = local | _comp_targets(node)                # `for x in xs` binds x in the comprehension only
         if isinstance(node, _COMPREHENSIONS) and self._class_scope is not None and not self._scopes:
-            # in a class body, only a comprehension's first iterable sees the class's names
-            self._expr(node.generators[0].iter, owner, local, me)
+            # in a class body, only a comprehension's first iterable sees the class's names (and, fix round 33,
+            # it is evaluated before the comprehension binds its targets: `[f for f in f]` reads the class's f)
+            self._expr(node.generators[0].iter, owner, outer, me)
             scope, self._class_scope = self._class_scope, None
             try:
                 for child in ast.iter_child_nodes(node):
@@ -653,7 +733,13 @@ class _Walker(_Inference):
                 self._class_scope = scope
             return
         for child in ast.iter_child_nodes(node):
-            if not (isinstance(node, ast.JoinedStr) and isinstance(child, ast.Constant)):
+            if isinstance(node, _COMPREHENSIONS) and child is node.generators[0]:
+                # fix round 33: the first iterable is evaluated in the enclosing scope, before the targets bind
+                self._expr(child.target, owner, local, me)
+                self._expr(child.iter, owner, outer, me)
+                for x in child.ifs:
+                    self._expr(x, owner, local, me)
+            elif not (isinstance(node, ast.JoinedStr) and isinstance(child, ast.Constant)):
                 self._expr(child, owner, local, me)
 
     def _call_expr(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
@@ -727,10 +813,15 @@ class _Walker(_Inference):
             return
         if node.attr not in self.idx.short_names():
             return
-        if isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
-            rcv: tuple[str, bool] | None = (me[1], False)     # self.m with no m on self's class
+        of = _class_of(node.value)             # fix round 33: `type(x).m = v`, `x.__class__.m = v`: on x's class
+        obj = node.value if of is None else of
+        rcv: tuple[str, bool] | None
+        if isinstance(obj, ast.Name) and me and obj.id == me[0]:
+            rcv = (me[1], False)                               # self.m with no m on self's class
         else:
-            rcv = self._receiver(node.value, owner, local, me)
+            rcv = self._receiver(obj, owner, local, me)
+        if of is not None and rcv is not None:
+            rcv = (rcv[0], False) if rcv[0] in self.idx.classes else None   # (or a subclass of it)
         if rcv is None:
             self._site("attrpatch", owner, node, node.attr)
             return
@@ -922,8 +1013,8 @@ class _Walker(_Inference):
             return True
         f = self.idx.funcs.get(owner)
         fn = f.node if f is not None else None
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args \
-                or fn.args.args[0].arg != me[0]:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _positional(fn) \
+                or _positional(fn)[0].arg != me[0]:
             return False
         return fn.name in ("__init_subclass__", "__class_getitem__") or any(
             _dotted(d) in ("classmethod", "builtins.classmethod") for d in fn.decorator_list)
@@ -1119,9 +1210,9 @@ def _passes_through(fn: ast.FunctionDef) -> bool:
     """A scanned decorator that keeps nothing: every return gives back its first parameter or a function
     defined in it, the parameter is never rebound, and every other use of it is a call (or functools.wraps of
     it) inside such a nested wrapper, which is only returned (`HOOKS.append(f); return f` keeps it)."""
-    if not fn.args.args or _rebinds(fn, fn.args.args[0].arg):
+    if not _positional(fn) or _rebinds(fn, _positional(fn)[0].arg):
         return False
-    p = fn.args.args[0].arg
+    p = _positional(fn)[0].arg
     inner = [n for n in fn.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     names = {n.name for n in inner}
     # a wrapper's own decorators are handed the wrapper (fix round 27): only functools.wraps(...) is known

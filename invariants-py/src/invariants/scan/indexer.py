@@ -515,11 +515,12 @@ class _Index:
                     self.methods_by_name[node.name].add(fid)
                     self.owners_by_name[node.name].add(cls)
                     self._class_events[cls].append(("def", node.name, fid))
-                    if node.args.args:                 # how the first parameter is used: cls or self
+                    first = [*node.args.posonlyargs, *node.args.args]
+                    if first:                          # how the first parameter is used: cls or self
                         decos = {_dotted(d) for d in node.decorator_list}
                         kind = "cm" if decos & {"classmethod", "builtins.classmethod"} else \
                             "static" if decos & {"staticmethod", "builtins.staticmethod"} else "plain"
-                        self.first_params[(node.args.args[0].arg, cls)].add(kind)
+                        self.first_params[(first[0].arg, cls)].add(kind)
             elif isinstance(node, ast.ClassDef):
                 cid = f"{prefix}.{node.name}"
                 self.classes[cid] = {"methods": {}, "bases": node.bases, "module": mod.name, "node": node}
