@@ -143,7 +143,8 @@ is the one support script that calls the gateway directly. `inv init` finds both
 
 It proposes one rule per repository, runs the real scan on it, and freezes what it finds. A back
 door is frozen with its whole call chain: if `admin_goodwill` calls `goodwill_refund`, which calls
-the gateway, both go in `allow`. A rule that still fails with its back doors frozen (for example,
+the gateway, both go in `allow` (every function on a path to the sink that skips the door does,
+however long the path). A rule that still fails with its back doors frozen (for example,
 when the finding is inside the door itself, which `allow` cannot freeze) is written commented out,
 with the reason. This is
 real output from an app whose repositories use SQLAlchemy, a Django-style manager and Stripe, with

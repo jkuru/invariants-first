@@ -28,6 +28,7 @@ import hashlib
 import io
 import keyword
 import pathlib
+import textwrap
 import tokenize
 from typing import Any, Callable
 
@@ -41,7 +42,7 @@ class _Lines:
 
     def __init__(self, trees: dict[pathlib.Path, ast.Module] | None = None) -> None:
         self._files: dict[pathlib.Path, list[str]] = {}
-        self._stmts: dict[pathlib.Path, list[tuple[int, int, int, int, int]] | None] = {}
+        self._stmts: dict[pathlib.Path, list[tuple[int, int, int, int, int, ast.AST]] | None] = {}
         self._trees = trees or {}                  # the index's own trees (fix round 28: not parsed again)
         self._plain: set[pathlib.Path] = set()     # files whose lines are the parser's lines
 
@@ -60,11 +61,12 @@ class _Lines:
         lines = self._read(pathlib.Path(root or ".") / file)
         return lines[line - 1] if 0 < line <= len(lines) else ""
 
-    def _spans(self, path: pathlib.Path) -> list[tuple[int, int, int, int, int]] | None:
-        """(first line, first col, last line, last col, last line of the part hashed) of every statement:
-        a simple statement is hashed whole, a compound one (def, class, if, for, with, try, match) by its
-        header (decorators included): the lines before its body, or through the body's first line when
-        the body starts on the header's last line (`if x: y()`). None: the file does not parse."""
+    def _spans(self, path: pathlib.Path) -> list[tuple[int, int, int, int, int, ast.AST]] | None:
+        """(first line, first col, last line, last col, last line of the part hashed, node) of every
+        statement (an `except` clause and a `case` count as one): a simple statement is hashed whole, a
+        compound one (def, class, if, for, with, try, match) by its header (decorators included): the
+        lines before its body, or through the body's first line when the body starts on the header's last
+        line (`if x: y()`). None: the file does not parse."""
         if path not in self._stmts:
             lines = self._read(path)
             tree = self._trees.get(path) if path in self._plain else None
@@ -74,9 +76,18 @@ class _Lines:
                 except (SyntaxError, ValueError):
                     self._stmts[path] = None
                     return None
-            out = []
+            out: list[tuple[int, int, int, int, int, ast.AST]] = []
             for n in ast.walk(tree):
-                if not isinstance(n, ast.stmt) or n.end_lineno is None or n.end_col_offset is None:
+                if isinstance(n, ast.match_case):    # a case has no position of its own: its pattern's
+                    b = n.body[-1]
+                    if b.end_lineno is not None and b.end_col_offset is not None:
+                        own = not lines[n.body[0].lineno - 1][:n.body[0].col_offset].strip()
+                        last = max(n.pattern.lineno, n.body[0].lineno - 1 if own else n.body[0].lineno)
+                        out.append((n.pattern.lineno, n.pattern.col_offset, b.end_lineno, b.end_col_offset,
+                                    last, n))
+                    continue
+                if not isinstance(n, (ast.stmt, ast.excepthandler)) or n.end_lineno is None \
+                        or n.end_col_offset is None:
                     continue
                 start, col = n.lineno, n.col_offset
                 for d in getattr(n, "decorator_list", ()):
@@ -90,26 +101,35 @@ class _Lines:
                     last = max(n.lineno, b.lineno - 1 if own else b.lineno)
                 elif isinstance(n, ast.Match) and n.cases:
                     last = max(n.lineno, n.cases[0].pattern.lineno - 1)
-                out.append((start, col, n.end_lineno, n.end_col_offset, last))
+                out.append((start, col, n.end_lineno, n.end_col_offset, last, n))
             self._stmts[path] = out
         return self._stmts[path]
 
-    def statement(self, root: str | None, file: str, line: int, col: int) -> str:
-        """The source of the innermost statement at line:col (1-based col), spacing normalized: every
-        line of a simple statement, the header of a compound one. A position in no statement's hashed
-        part (an `else:` line, a file that does not parse) gives its physical line."""
-        path = pathlib.Path(root or ".") / file
-        spans = self._spans(path)
-        lines = self._read(path)
+    def _best(self, path: pathlib.Path, line: int, col: int) -> tuple[int, int, int, int, int, ast.AST] | None:
+        """The innermost statement whose hashed part holds line:col (1-based col): the one that starts last."""
         pos = (line, max(col - 1, 0))
-        best: tuple[int, int, int, int, int] | None = None
-        for s in spans or ():
+        best: tuple[int, int, int, int, int, ast.AST] | None = None
+        for s in self._spans(path) or ():
             inside = (s[0], s[1]) <= pos < (s[2], s[3]) or (col <= 1 and s[0] <= line <= s[2])
             if inside and line <= s[4] and (best is None or (s[0], s[1]) >= (best[0], best[1])):
-                best = s                         # the innermost: the one that starts last
+                best = s
+        return best
+
+    def statement(self, root: str | None, file: str, line: int, col: int) -> str:
+        """The source of the innermost statement at line:col (1-based col): every line of a simple
+        statement, the header of a compound one. A position in no statement's hashed part (an `else:`
+        line, a file that does not parse) gives its physical line."""
+        path = pathlib.Path(root or ".") / file
+        best = self._best(path, line, col)
         if best is None:
             return self.line(root, file, line)
-        return "\n".join(lines[best[0] - 1:best[4]])
+        return "\n".join(self._read(path)[best[0] - 1:best[4]])
+
+    def site(self, root: str | None, file: str, line: int, col: int) -> ast.AST | str:
+        """What a finding's sha hashes: the innermost statement at line:col (its node), else the physical
+        line's text (an `else:` line, a file that does not parse)."""
+        best = self._best(pathlib.Path(root or ".") / file, line, col)
+        return best[5] if best is not None else self.line(root, file, line)
 
 
 _LAYOUT = frozenset({tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
@@ -170,11 +190,62 @@ def _without_magic_commas(toks: list[tuple[int, str]]) -> list[str]:
     return out
 
 
-def site_sha(code: str, owner: str | None, text: str, basis: list[str] | None = None) -> str:
-    """The key of an unresolved finding: its code, its function, its statement (spacing normalized) and,
+# fix round 29: what a statement means, not how it is written. A formatter (black, ruff format) changes
+# quotes, parentheses, number case and line breaks; none changes the syntax tree. Python's own ast.dump
+# is not the key: 3.13 leaves out empty fields that 3.11 and 3.12 show.
+_BLOCKS = frozenset({"body", "orelse", "finalbody", "handlers", "cases"})   # a compound statement's blocks
+_UNSAID = frozenset({"ctx", "kind", "type_comment"})   # set by where a name is, u"" and `# type:` comments
+
+
+def _tree(node: Any, header: bool = False) -> str:
+    """The syntax tree under node without positions, the same on every Python version: a node is its class
+    and its fields (an empty or None field left out, as 3.13 leaves it out); header: without the blocks of
+    a compound statement (its header alone: the test, the iterable and target, the items, the decorators
+    and signature, the subject, an except clause's type and name, a case's pattern and guard)."""
+    if isinstance(node, ast.AST):
+        fields = []
+        for name in node._fields:
+            if name in _UNSAID or (header and name in _BLOCKS):
+                continue
+            v = getattr(node, name, None)
+            if v is None or (isinstance(v, list) and not v):
+                continue
+            fields.append(f"{name}={_tree(v)}")
+        return f"{type(node).__name__}({', '.join(fields)})"
+    if isinstance(node, list):
+        return "[" + ", ".join(_tree(x) for x in node) + "]"
+    try:
+        return repr(node)
+    except ValueError:                           # an int too long to print (sys.set_int_max_str_digits)
+        return f"int:{node.bit_length()}:{node % (1 << 64)}"
+
+
+def _key(stmt: ast.AST | str) -> str:
+    """What a site's sha hashes for its statement: its syntax tree (a compound one's header), so a
+    reformat never changes it and a change of any token that means something does. A statement given as
+    text is parsed first; text that is not one statement (a physical line on its own) is its tokens."""
+    if isinstance(stmt, str):
+        try:
+            body = ast.parse(textwrap.dedent(stmt.strip("\n"))).body
+        except (SyntaxError, ValueError):
+            body = []
+        if len(body) != 1:
+            return "text " + _normalized(stmt)
+        stmt = body[0]
+    return "tree " + _tree(stmt, header=True)
+
+
+def site_sha(code: str, owner: str | None, stmt: ast.AST | str, basis: list[str] | None = None) -> str:
+    """The key of an unresolved finding: its code, its function, its statement's syntax tree (_key) and,
     for an inferred path, what reaches it (basis: the entrypoints and name-matched calls)."""
-    norm = _normalized(text)
-    parts = [code, owner or "", norm, *(["reached by", *basis] if basis is not None else [])]
+    parts = [code, owner or "", _key(stmt), *(["reached by", *basis] if basis is not None else [])]
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:SHA_HEX]
+
+
+def _text_sha(code: str, owner: str | None, text: str, basis: list[str] | None = None) -> str:
+    """The sha inv gave a site before fix round 29 (its statement's tokens): an entry that still names one
+    is told the new sha of the same site, not only that it matches nothing."""
+    parts = [code, owner or "", _normalized(text), *(["reached by", *basis] if basis is not None else [])]
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:SHA_HEX]
 
 
@@ -200,14 +271,17 @@ def defer_sha(findings: list[Finding], lines: _Lines, basis: Callable[[], Basis 
         f.__dict__["_fill"] = fill
 
 
-def fill_sha(findings: list[Finding], lines: _Lines, basis: Basis | None = None) -> None:
+def fill_sha(findings: list[Finding], lines: _Lines, basis: Basis | None = None, old: bool = False) -> None:
     """Give every unresolved finding in a file its sha (what an allow_unresolved entry names). basis, for
     an unresolved/inferred-path finding: what reaches its site, which its sha covers too (the finding
-    lists the first SHOWN of it)."""
+    lists the first SHOWN of it). old: also the sha an earlier inv gave it (_text_sha), for apply."""
     for f in findings:
         if f.kind == "unresolved" and f.file and f.line > 0 and f.sha is None:
             b = basis(f) if basis is not None and f.code == "unresolved/inferred-path" else None
-            f.sha = site_sha(f.code, f.owner, lines.statement(f.root, f.file, f.line, f.col), b)
+            f.sha = site_sha(f.code, f.owner, lines.site(f.root, f.file, f.line, f.col), b)
+            if old:
+                f.__dict__["_text_sha"] = _text_sha(f.code, f.owner, lines.statement(f.root, f.file, f.line,
+                                                                                     f.col), b)
             if b is not None:
                 f.reached_by = b[:SHOWN] + ([f"and {len(b) - SHOWN} more"] if len(b) > SHOWN else [])
 
@@ -353,6 +427,17 @@ def apply(rule: str, entries: list[Accept], findings: list[Finding]) -> tuple[li
             continue
         pick = min(cands(e), key=lambda f: (abs(f.line - e.line), f.line, f.col), default=None)
         if pick is None:
+            was = min((f for f in findings if id(f) not in taken and f.kind == "unresolved" and f.file == e.file
+                       and f.code == e.code and f.__dict__.get("_text_sha") == e.sha),
+                      key=lambda f: (abs(f.line - e.line), f.line, f.col), default=None)
+            if was is not None:                  # fix round 29: a sha from before the syntax-tree hash
+                unused.append(Finding("missing", rule, "missing/allow-unresolved-unused",
+                                      f"allow_unresolved entry {e.at} ({e.code}) has a sha {e.sha} from an "
+                                      f"earlier inv, which hashed the statement's text (a reformat changed it); "
+                                      f"the site at {was.file}:{was.line} is the statement reviewed, unchanged: "
+                                      f"write sha {was.sha} in the entry, then run `inv lock`",
+                                      e.file, e.line, e.col or 1))
+                continue
             more = (" (for an inferred path: also when the entrypoints or name-matched calls that reach the "
                     "site changed, such as a new untyped caller)" if e.code == "unresolved/inferred-path" else "")
             unused.append(Finding("missing", rule, "missing/allow-unresolved-unused",

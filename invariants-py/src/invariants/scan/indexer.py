@@ -295,8 +295,10 @@ class _Index:
                         continue
                     shown = ", ".join(sorted(f"{p}.{name}" for p in found)[:4])
                     self.problems.append((mod.root, mod.file, node.lineno, "unresolved/unknown-module",
-                                          f"imports {name}, which is no top-level module under the source roots "
-                                          f"but which several modules below a root may be ({shown}): which one "
+                                          f"imports {name}, which is not installed where the scan runs: if it "
+                                          f"is a dependency, run the scan where it is installed (it is then "
+                                          f"third-party code); else it is no top-level module under the source "
+                                          f"roots but several modules below a root may be ({shown}): which one "
                                           f"Python imports depends on sys.path, so calls through it cannot be "
                                           f"traced; import it by its full name"))
             if mod.rebase:

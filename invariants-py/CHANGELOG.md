@@ -403,6 +403,29 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   longer types it as the class. An import the importing file's own directory also holds, shadowing a
   top-level module (under every rule) or a standard-library module (under a rule that module's code
   bears on), is `unresolved/unknown-module`.
+- Fix round 29 (adoption on real codebases). **Every `allow_unresolved` sha changes once**: a site's
+  sha now hashes the syntax tree of its statement (a compound statement's header: the test, the
+  iterable and target, the items, the decorators and signature), not its tokens, so a formatter
+  (black, `ruff format`: quotes, f-string quotes, redundant or added parentheses, `0XAB` to `0xAB`,
+  `1E5` to `1e5`, line breaks) never changes it and a change of what the statement means does; the
+  key is the same on Python 3.11 to 3.14. A sha is still 16 hex digits: an entry that names the sha
+  this version used to give is `missing/allow-unresolved-unused` with the new sha of the same site to
+  write (then `inv lock`, as for any changed entry); the SARIF fingerprint is `invSite/v3`. `inv init`
+  works out the functions on door-free paths once (it re-ran the path search for every allowed name:
+  sqlalchemy 48 s, torch did not finish), and freezes every function on a door-free path to the sink,
+  not only those on the shortest path from each entrypoint: a function on a longer path was frozen and
+  then reported as an unused allow entry, which deleting failed the rule (fact-pipeline's draft was
+  refused for good); an allow entry is in use when it is on any such path. The freeze stops when a
+  round freezes nothing new (unresolved sites left kept a rule from passing, so all five rounds re-ran
+  the same scan), a function taken as a value is searched from once, the path search spreads a
+  name-matched fan once per search, and the source read for shas is kept across the scans of one
+  graph; findings, paths and messages are unchanged. A long freeze prints progress lines. A method call on what calling a value class of the standard library makes
+  (`pathlib.Path(__file__).resolve()`, `datetime(...)`, `Decimal(...)`, a `str` literal) is that class's
+  method and never name-matches a scanned method of that name (another class outside the scan still
+  is: a wrapper may delegate, `io.TextIOWrapper(f).write` calls `f.write`). An import that is not
+  installed and that several modules below a root may be says to run the scan where the dependency
+  is installed. The text report shows each finding's code, and a rule with unresolved findings and no
+  `allow_unresolved` is told that `allow_unresolved: []` shows their shas.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

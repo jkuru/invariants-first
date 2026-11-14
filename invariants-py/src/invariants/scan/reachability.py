@@ -7,7 +7,7 @@ Every search treats a fan exactly as those edges in that place, without making t
 from __future__ import annotations
 
 import collections
-from typing import Iterable, Iterator, Union
+from typing import Any, Iterable, Iterator, Union
 
 from .contracts import _Edge, _Fan, _Site
 from .indexer import _Index
@@ -94,33 +94,51 @@ def door_only(idx: _Index, edges: list[_Call], sites: list[_Site], entries: list
 
 
 def _paths(start: str, goals: set[str], succ: dict[str, list[_Call]], inferred_ok: bool,
-           allowed: frozenset[str] | set[str] = frozenset()) -> Iterator[tuple[list[str], _Edge]]:
+           allowed: frozenset[str] | set[str] = frozenset(),
+           split: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] | None = None
+           ) -> Iterator[tuple[list[str], _Edge]]:
     """BFS: for each call into a goal reachable from start, the shortest call path to it that passes at
     least one function outside `allowed` (a path of allowed functions alone is a frozen back door), and
-    that last edge, shortest first."""
+    that last edge, shortest first. A fan's callees that are not goals are spread once per search from
+    states that left `allowed` (and once from those that did not): each gets the same state from any
+    caller, so spreading them again adds nothing (fix round 29: a large fan, spread again from each of its
+    callers, cost minutes on a large tree). split: a fan's (goal, other) callees, kept across searches."""
     State = tuple[str, bool]                     # (function, the path so far left `allowed`)
     first: State = (start, start not in allowed)
     prev: dict[State, State | None] = {first: None}
     queue = collections.deque([first])
+    split = {} if split is None else split
+    spread: set[tuple[int, bool]] = set()
     while queue:
         st = queue.popleft()
         n, out = st
         for e in succ.get(n, ()):
             if e.inferred and not inferred_ok:
                 continue
-            for callee in (e.callees if type(e) is _Fan else (e.callee,)):  # type: ignore[union-attr]
-                if callee in goals:
-                    if not out and not n.endswith(_MODULE):
-                        continue                 # allowed functions all the way: frozen (a module body's
-                        # own call into the sink never is: fix round 28)
-                    names = [callee]
+            if type(e) is _Fan:
+                key = id(e.callees)
+                got = split.get(key)
+                if got is None:
+                    got = split[key] = (tuple(c for c in e.callees if c in goals),
+                                        tuple(c for c in e.callees if c not in goals))
+                into, rest = got
+                if (key, out) in spread:
+                    rest = ()
+                else:
+                    spread.add((key, out))
+            else:
+                c = e.callee  # type: ignore[union-attr]
+                into, rest = ((c,), ()) if c in goals else ((), (c,))
+            if into and (out or n.endswith(_MODULE)):    # else allowed functions all the way: frozen (a
+                for callee in into:                       # module body's own call into the sink never is:
+                    names = [callee]                      # fix round 28)
                     cur: State | None = st
                     while cur is not None:
                         names.append(cur[0])
                         cur = prev[cur]
                     yield list(reversed(names)), (e if type(e) is _Edge else
                                                   _Edge(n, callee, e.line, e.col, True, e.via_getattr))
-                    continue
+            for callee in rest:
                 nxt: State = (callee, out or callee not in allowed)
                 if nxt in prev:
                     continue
@@ -200,6 +218,8 @@ class _Pass:
                 got = tuple(c for c in cs if c in goals or c in live)
                 pruned[id(cs)] = cs if len(got) == len(cs) else got
             return pruned[id(cs)]
+        self._split: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] = {}   # a fan's (goal, other) callees
+        self._dist: dict[str, int] | None = None                                 # first_path's distances
         self.succ: dict[str, list[_Call]] = {}
         for c, es in kept.items():
             if c not in live:
@@ -219,7 +239,130 @@ class _Pass:
         """What _paths(start, goals, succ, inferred_ok, allowed) yields."""
         if start not in self.live:
             return iter(())
-        return _paths(start, self.goals, self.succ, True, allowed)
+        return _paths(start, self.goals, self.succ, True, allowed, self._split)
+
+    def first_path(self, start: str) -> list[str] | None:
+        """The functions on the first path paths(start) yields (no `allowed`), without a search from start
+        (fix round 29: one search per function taken as a value cost minutes on a large tree). Breadth
+        first, a search visits the functions at one distance from start in the order of the calls that
+        lead to them, so the first path is the shortest to a call into a goal that takes, at each step,
+        the first call (and a fan's first callee) one step nearer: worked out from every function's
+        distance to such a call, found once for all."""
+        if start not in self.live:
+            return None
+        dist = self._dist if self._dist is not None else self._distances()
+        names, n = [start], start
+        while True:
+            d = dist[n]
+            for _, into, rest in self._edges(n):
+                if d == 0 and into:
+                    return names + [into[0]]
+                nxt = next((c for c in rest if dist.get(c) == d - 1), None) if d else None
+                if nxt is not None:
+                    break
+            else:
+                return None                      # (no live function lacks a distance)
+            names.append(nxt)
+            n = nxt
+
+    def _distances(self) -> dict[str, int]:
+        """Each live function's distance in calls to a call into a goal: a breadth-first search back from
+        the functions that call one, a fan's callers one step beyond the nearest of its callees."""
+        callers: dict[Any, list[Any]] = collections.defaultdict(list)    # a function or fan: who calls it
+        for n in self.succ:
+            for e, into, rest in self._edges(n):
+                if type(e) is _Fan:
+                    key = id(e.callees)
+                    if ("", key) not in callers:
+                        for c in rest:
+                            callers[c].append(("", key))          # a fan is as near as its nearest callee
+                    callers[("", key)].append(n)
+                else:
+                    for c in rest:
+                        callers[c].append(n)
+        dist: dict[Any, int] = {}
+        line: collections.deque[Any] = collections.deque()
+        for n in self.succ:
+            if any(into for _, into, _ in self._edges(n)):
+                dist[n] = 0
+                line.append(n)
+        while line:                              # 0-1 breadth first: a callee to its fan costs no step
+            x = line.popleft()
+            for p in callers.get(x, ()):
+                d = dist[x] + (0 if isinstance(p, tuple) else 1)
+                if p not in dist or d < dist[p]:
+                    dist[p] = d
+                    line.appendleft(p) if isinstance(p, tuple) else line.append(p)
+        self._dist = {k: v for k, v in dist.items() if isinstance(k, str)}
+        return self._dist
+
+    def _edges(self, n: str) -> Iterator[tuple[_Call, tuple[str, ...], tuple[str, ...]]]:
+        """n's calls, each with its callees that are goals and the others (a fan's split once)."""
+        goals, split = self.goals, self._split
+        for e in self.succ.get(n, ()):
+            if type(e) is _Fan:
+                key = id(e.callees)
+                got = split.get(key)
+                if got is None:
+                    cs = e.callees
+                    got = split[key] = (tuple(c for c in cs if c in goals), tuple(c for c in cs if c not in goals))
+                yield e, got[0], got[1]
+            else:
+                c = e.callee  # type: ignore[union-attr]
+                yield (e, (c,), ()) if c in goals else (e, (), (c,))
+
+    def on_any_path(self, starts: list[str], allowed: frozenset[str] | set[str] = frozenset()) -> set[str]:
+        """Every function on some call path from a start to a reported call into a goal (one made having
+        left `allowed`, or from a module body), and the goals so called: the search states reached from
+        the starts that reach such a call. One pass forward, one back; a fan spread from states that left
+        `allowed` (or did not) is one node between its callers and its callees, so it is spread once."""
+        State = tuple[str, bool]                 # (function, left `allowed`); a fan: ("", id, left)
+        seen: set[Any] = {(s, s not in allowed) for s in starts if s in self.live}
+        stack: list[Any] = list(seen)
+        back: dict[Any, list[Any]] = collections.defaultdict(list)
+        hits: list[Any] = []
+        out: set[str] = set()
+        while stack:
+            st = stack.pop()
+            if len(st) == 3:                     # a fan: its callees that are not goals
+                for callee in self._split[st[1]][1]:
+                    nxt: State = (callee, st[2] or callee not in allowed)
+                    back[nxt].append(st)
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+                continue
+            n, left = st
+            hit = False
+            for e, into, rest in self._edges(n):
+                if into and (left or n.endswith(_MODULE)):
+                    hit = True
+                    out.update(into)
+                if rest and type(e) is _Fan:
+                    via = ("", id(e.callees), left)
+                    back[via].append(st)
+                    if via not in seen:
+                        seen.add(via)
+                        stack.append(via)
+                    continue
+                for callee in rest:
+                    nxt = (callee, left or callee not in allowed)
+                    back[nxt].append(st)
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+            if hit:
+                hits.append(st)
+        done = set(hits)
+        while hits:
+            st = hits.pop()
+            if len(st) == 2:
+                out.add(st[0])
+            for p in back.get(st, ()):
+                if p not in done:
+                    done.add(p)
+                    hits.append(p)
+        return out
 
     def into_goal(self, e: _Call) -> bool:
         if type(e) is _Fan:
@@ -272,19 +415,16 @@ def _search_order(passes: list[_Pass], starts: list[str], allowed: frozenset[str
                     yield k, names, last
 
 
-def _every_path_node(passes: list[_Pass], starts: list[str], allowed: frozenset[str] | set[str],
-                     only: str | None = None) -> set[str]:
-    """Every function on a path _paths yields from any start (what the search from every start collected
-    as it went). only: stop as soon as that function is found."""
+def _every_path_node(passes: list[_Pass], starts: list[str], allowed: frozenset[str] | set[str]) -> set[str]:
+    """Every function on a door-free call path from a start to a reported call into a goal, in either pass,
+    and the goals so called: what `inv init` freezes in allow, and what makes an allow entry in use (fix
+    round 29: not only the functions on the path the search yields from each start, the shortest one,
+    which depended on the order of the search, left a function on a longer path out, so that `inv init`
+    froze it, then called its entry unused, and deleting it failed the rule; and cost one search per
+    entrypoint, minutes on a large tree)."""
     out: set[str] = set()
     for ps in passes:
-        if only is not None and only not in ps.live:
-            continue
-        for s in starts:
-            for names, _ in ps.paths(s, allowed):
-                out.update(names)
-            if only is not None and only in out:
-                return out
+        out |= ps.on_any_path(starts, allowed)
     return out
 
 

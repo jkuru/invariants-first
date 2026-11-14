@@ -73,6 +73,9 @@ class Graph:
     calls: list[_Edge | _Fan]            # the call records; a name-matched call is one _Fan
     sites: list[_Site]
     entries: list[str]
+    # the source of the files findings are in, read and parsed once for every scan of this graph (fix round
+    # 29: `inv init` scans each drafted rule again and again)
+    lines: accept._Lines | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def edges(self) -> _Edges:
@@ -359,7 +362,9 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     entries = g.entries
     progress = _Progress()
     guarded = _guarded(idx, doc)
-    lines = accept._Lines({m.file: m.tree for m in idx.modules.values()})
+    if g.lines is None:
+        g.lines = accept._Lines({m.file: m.tree for m in idx.modules.values()})
+    lines = g.lines
     for k, med in enumerate(scanned.values()):
         progress("checking rule", k, len(scanned))
         on = _OnPaths()                                # worked out when read (inv init), not here
@@ -369,7 +374,7 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
                           str(r)) for r, f, line, code, msg in idx.problems]
         found += _skipped_importers(idx, med)
         if med.accept is not None:                     # reviewed sites: shown as accepted, never failing
-            accept.fill_sha(found, lines, _inferred_basis(idx, med, edges, entries, found))
+            accept.fill_sha(found, lines, _inferred_basis(idx, med, edges, entries, found), old=bool(med.accept))
             found, ok = accept.apply(med.rule, med.accept, found)
             report.accepted += ok
         else:                                          # hashed only when asked (JSON, SARIF, the API)
