@@ -308,11 +308,40 @@ not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still
 - **The always-skipped directories are counted.** `inv scan` prints how many files each
   always-skipped directory left out (`skipped (directories the scan always skips): build/ 3 file(s)`;
   `skipped` in `--format json`). The list is `invariants.scan.SKIPPED` (dot-directories, then
-  `__pycache__`, `build`, `dist`, `node_modules`, `site-packages`, `venv`). A file there that scanned
-  code cannot import (it is not under the project's package names) but that itself imports the module
-  a rule's sink lives in is `unresolved/skipped-importer` under that rule: a standalone script in
-  `build/` or `.ops/` would call the sink unchecked. Files under `site-packages` or `node_modules`, and
-  copies of scanned modules (`build/lib/app/x.py` beside `app/x.py`), stay quiet.
+  `__pycache__`, `build`, `dist`, `node_modules`, `site-packages`, `venv`).
+- **A file in an always-skipped directory that reaches scanned code is reported.** A file there that
+  imports any scanned module (`from facade import send`, also through a module that re-exports the
+  sink), statically or by a literal dynamic import (`importlib.import_module("payments")`,
+  `__import__("payments")`), or that runs or imports code it names at run time (a computed
+  `import_module`, `exec`, `runpy`), is `unresolved/skipped-importer` under every rule: run as a
+  script, or put on `sys.path`, its calls are not checked. Three kinds of file stay quiet: one that is a
+  scanned module itself (reached through a symlink), an exact copy of one (`build/lib/app/x.py` with the
+  same bytes as `app/x.py`), and code in a recognised third-party tree (a virtualenv, found by its
+  `pyvenv.cfg`; a `site-packages` holding `*.dist-info` or `*.egg-info`; a node package
+  `node_modules/<pkg>/` with its `package.json`). Even there, an import of a project module that the
+  tree does not itself install is reported, and so is any import of one from a file that writes
+  `sys.path`. A hand-made `site-packages/` or `node_modules/` directory is not third-party.
+- **Symlinked directories are followed.** A symlink to a directory inside a root is read the way
+  Python imports it: `pkg/admin -> ../.vendor/admin` makes `.vendor/admin/tasks.py` the scanned module
+  `pkg.admin.tasks`. A link back into its own ancestry is not followed again, each target is entered
+  through a link once per root, and a link inside an always-skipped directory is not followed. A
+  target outside every root is still scanned under the package that holds the link, and `inv scan`
+  prints a note naming the link.
+- **An unknown submodule of a scanned package is not third-party.** An import of a module under a
+  package the roots hold that no file under the roots is (`import pkg.admin.tasks` with no
+  `pkg/admin`, a dangling symlink, `from pkg import admin` where `pkg/__init__.py` binds no `admin`,
+  any missing module of a namespace package there) is `unresolved/unknown-module` under every rule. A
+  module made at build time (a `_version.py` written by the build) counts: commit it or exclude the
+  importer. A package whose `__init__.py` star-imports, defines a module `__getattr__` or writes
+  `globals()` may bind any name, so `from pkg import x` from it stays quiet.
+- **Archives and import-path writes are reported.** A zip archive in a root (`.zip`, `.egg`, `.whl`,
+  `.pyz`) holding Python modules is `unresolved/no-source` under every rule, wherever it lies,
+  unless an exclude glob leaves it out or it belongs to a recognised third-party tree; an archive of
+  data only stays quiet. Scanned code that changes where Python finds modules is
+  `unresolved/reflection` under every rule: a call that changes `sys.path`, `sys.meta_path`,
+  `sys.path_hooks` or `sys.path_importer_cache` (any method but a read such as `index`), an
+  assignment or deletion of them or of an item, `importlib.invalidate_caches()`, `site.addsitedir()`
+  and `zipimport.zipimporter()`. Reading `sys.path` stays quiet.
 
 ## Limitations
 

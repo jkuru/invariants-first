@@ -20,16 +20,19 @@ from __future__ import annotations
 import ast
 import dataclasses
 import pathlib
+import re
 from typing import Any, Iterable, Iterator
 
 from .checks import _canon_py, _check_rule
 from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report, ScanConfigError,
                         _Edge, _Module, _Site)
+from .astutil import _dotted
 from .indexer import _Index
 from .mediation import _mediation, _not_scanned
 from .reachability import _entrypoints, door_only
 from .sarif import to_sarif
-from .sources import SKIPPED, _layout, _skipped, _Source, anywhere, iter_sources
+from .sources import (SKIPPED, Found, _layout, _skipped, _Source, anywhere, holds_code, iter_sources, provides,
+                      third_party)
 from .text import to_text
 from .walker import _Walker
 
@@ -78,8 +81,19 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str]) -> _Inde
     """The first pass over the roots: scanned modules indexed, excluded ones noted (not read)."""
     idx = _Index()
     skipped: list[_Source] = []
-    found = _layout((pathlib.Path(r) for r in roots), exclude)
+    walked = Found()
+    found = _layout((pathlib.Path(r) for r in roots), exclude, walked)
     names = {s.name for s in found}
+    for s in found:                                    # what a file under the roots is named, from any root
+        for n in (s.name, *s.aliases):
+            idx.files_named.add(n)
+            idx.module_files.add(n)
+            if s.form == "package":
+                idx.package_names.add(n)
+            parts = n.split(".")
+            for i in range(1, len(parts)):
+                idx.files_named.add(".".join(parts[:i]))
+                idx.package_names.add(".".join(parts[:i]))
     for s in found:                                    # every other root's name for a file is an alias
         if s.shadowed_by is None:
             for a in s.aliases:
@@ -124,60 +138,121 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str]) -> _Inde
                 idx.no_source[name] = s.file
             else:
                 idx.excluded_files[name] = s.file
-        elif s.form in ("source", "package") and not s.globbed:
+        if s.form in ("source", "package") and not s.globbed:
             idx.skipped_files.append((s.root, s.file, pattern))
+    idx.scanned_real = {m.file.resolve() for m in idx.modules.values()}
+    for top, link in walked.outside:
+        rel = link.relative_to(top).as_posix()
+        idx.notes.append(f"{rel} is a symlink to a directory outside the source roots: it is scanned under "
+                         f"the name of the package that holds the link")
+    for top, arc, globbed in walked.archives:
+        rel = arc.relative_to(top).as_posix()
+        if globbed is not None or third_party(top, arc, idx.third_party) is not None or not (count := holds_code(arc)):
+            continue                                   # excluded, a virtualenv's own egg, or no code in it
+        idx.problems.append((top, arc, 1, "unresolved/no-source",
+                             f"{rel} is an archive holding {count} Python module(s), which Python imports once it "
+                             f"is on sys.path (zipimport): what they run and call is not checked; keep their "
+                             f"source in the root, or delete it"))
     idx.unresolved_imports()
+    idx.import_path_writes()
     return idx
 
 
-_THIRD_PARTY = frozenset({"site-packages", "node_modules", "__pycache__"})
+# calls that import a module named by their first argument; and calls that run code named at run time (the
+# builtins only as plain names: the methods `re.compile` and `model.eval` are not them)
+_IMPORTS_NAMED = frozenset({"import_module", "__import__", "run_module"})
+_RUNS_NAMED = frozenset({"run_path", "spec_from_file_location", "SourceFileLoader", "zipimporter", "load_module",
+                         "exec_module"})
+_RUNS_BUILTIN = frozenset({"exec", "eval", "compile", "execfile", "builtins.exec", "builtins.eval",
+                           "builtins.compile"})
+_PATH_STATE = ("sys.path.", "sys.meta_path.", "sys.path_hooks.")
 
 
 def _skipped_imports(idx: _Index, root: pathlib.Path, file: pathlib.Path) -> list[tuple[int, str]]:
-    """(line, module) for every import in a file in an always-skipped directory, read once; none when the
-    file is third-party code (under site-packages/node_modules) or a copy of a scanned module (build/lib)."""
+    """(line, what) for every scanned module a file in an always-skipped directory imports, statically or by
+    a literal dynamic import, and for every call in it that runs or imports code it names at run time,
+    read once. None when the file is a scanned module itself (through a symlink) or an exact copy of one
+    (build/lib); in a recognised third-party tree (a virtualenv, a node package), an import that the tree
+    itself provides and a computed import stay quiet, unless the file changes sys.path."""
     if file in idx.skipped_imports:
         return idx.skipped_imports[file]
+    got: list[tuple[int, str]] = []
+    idx.skipped_imports[file] = got
     rel = file.relative_to(root)
     parts = [*rel.parts[:-1], rel.stem]
     if parts[-1] == "__init__":
         parts.pop()
-    known = {*idx.modules, *idx.excluded}
-    copy = any(".".join(parts[i:]) in known for i in range(1, len(parts)))
-    got: list[tuple[int, str]] = []
-    if not (_THIRD_PARTY & set(rel.parts) or copy):
-        try:
-            tree = ast.parse(file.read_bytes(), filename=str(file))
-        except (SyntaxError, ValueError, OSError):
-            tree = ast.Module(body=[], type_ignores=[])
-        package = ".".join(parts if rel.stem == "__init__" else parts[:-1])
-        mod = _Module(f"<skipped {rel.as_posix()}>", file, root, tree, package)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                got += [(node.lineno, idx.real(a.name)) for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                src = idx._absolute(mod, node)
-                got += [(node.lineno, src), *((node.lineno, f"{src}.{a.name}") for a in node.names)]
-    idx.skipped_imports[file] = got
+    try:
+        data = file.read_bytes()
+    except OSError:
+        data = b""
+    if idx.skipped_words is None:                      # a file naming none of these cannot reach scanned code
+        words = {n.split(".")[0] for n in (*idx.modules, *idx.module_alias)} | _IMPORTS_NAMED | _RUNS_NAMED | {
+            w.rpartition(".")[2] for w in _RUNS_BUILTIN}
+        idx.skipped_words = re.compile(rb"\b(?:" + b"|".join(re.escape(w.encode()) for w in sorted(words)) + rb")\b")
+    if not idx.skipped_words.search(data) or file.resolve() in idx.scanned_real or any(
+            (m := idx.modules.get(".".join(parts[i:]))) is not None and _same(m.file, data) for i in range(len(parts))):
+        return got
+    try:
+        tree = ast.parse(data, filename=str(file))
+    except (SyntaxError, ValueError):
+        tree = ast.Module(body=[], type_ignores=[])
+    package = ".".join(parts if rel.stem == "__init__" else parts[:-1])
+    mod = _Module(f"<skipped {rel.as_posix()}>", file, root, tree, package)
+    tops = {n.split(".")[0] for n in (*idx.modules, *idx.module_alias)}
+    names: list[tuple[int, str]] = []
+    runs: list[tuple[int, str]] = []
+    paths = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [(node.lineno, idx.real(a.name)) for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            src = idx._absolute(mod, node)
+            names += [(node.lineno, src), *((node.lineno, f"{src}.{a.name}") for a in node.names)]
+        elif isinstance(node, ast.Call):
+            d = _dotted(node.func) or ""
+            last = d.rpartition(".")[2]
+            first = node.args[0] if node.args else None
+            if last in _IMPORTS_NAMED and isinstance(first, ast.Constant) and isinstance(first.value, str):
+                names.append((node.lineno, idx.real(first.value.lstrip("."))))
+            elif last in _IMPORTS_NAMED or last in _RUNS_NAMED or d in _RUNS_BUILTIN:
+                runs.append((node.lineno, f"{d}()"))
+            paths = paths or d.startswith(_PATH_STATE)
+        elif isinstance(node, (ast.Assign, ast.AugAssign)):
+            paths = paths or any(f"{_dotted(t.value if isinstance(t, ast.Subscript) else t)}.".startswith(_PATH_STATE)
+                                 for t in (node.targets if isinstance(node, ast.Assign) else [node.target]))
+    base = third_party(root, file, idx.third_party)
+    for line, name in names:
+        top = name.split(".")[0]
+        if top in tops and (base is None or paths or not provides(base, file, top)):
+            got.append((line, f"imports {name}, which the scan reads,"))
+    if base is None:
+        got += [(line, f"runs or imports code it names at run time ({call}), which may be scanned code,")
+                for line, call in runs]
+    got.sort()
     return got
 
 
+def _same(file: pathlib.Path, data: bytes) -> bool:
+    try:
+        return file.read_bytes() == data
+    except OSError:
+        return False
+
+
 def _skipped_importers(idx: _Index, med: Mediation) -> list[Finding]:
-    """A file in an always-skipped directory (build/, dist/, a dot-directory, ...) that is not importable
-    under the project's package names, so no scanned code can reach it, but that imports a module holding
-    one of the rule's sinks: a standalone script there runs unchecked."""
-    homes = {idx.funcs[c].module for p in med.sinks if (c := _canon_py(idx, p)) in idx.funcs}
+    """A file in an always-skipped directory (build/, dist/, a dot-directory, a hand-made site-packages/, ...)
+    that imports scanned code, or runs code it names at run time: if it runs, as a standalone script or
+    through sys.path, its calls are not checked, so no path through it to a sink is seen."""
     out: list[Finding] = []
     for root, file, where in idx.skipped_files:
-        for line, name in _skipped_imports(idx, root, file):
-            home = next((h for h in homes if name == h or name.startswith(h + ".")), None)
-            if home is not None:
-                out.append(Finding("unresolved", med.rule, "unresolved/skipped-importer",
-                                   f"imports {name} (where the sink lives) from a {where!r} directory, which the "
-                                   f"scan always skips: if this file runs, its calls are not checked; move it "
-                                   f"out of {where}/ or delete it", file.relative_to(root).as_posix(), line, 1,
-                                   str(root)))
-                break
+        hits = _skipped_imports(idx, root, file)
+        if hits:
+            line, what = hits[0]
+            out.append(Finding("unresolved", med.rule, "unresolved/skipped-importer",
+                               f"{what} from a {where!r} directory, which the scan always skips: if this file "
+                               f"runs, its calls are not checked; move it out of {where}/ or delete it",
+                               file.relative_to(root).as_posix(), line, 1, str(root)))
     return out
 
 

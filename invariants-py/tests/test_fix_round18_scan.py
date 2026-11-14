@@ -130,8 +130,11 @@ def test_an_annotation_naming_an_excluded_class_is_not_a_reference(tmp_path):
 ], ids=["build-call", "dist-attr", "build-ref"])
 def test_a_reference_into_a_skipped_directory_of_the_project_is_reported(tmp_path, ops, extra):
     rep = _scan(tmp_path, ops, extra)
-    assert _codes(rep) == ["unresolved/excluded-callee"], rep.findings
-    assert "'build'" in rep.findings[0].message or "'dist'" in rep.findings[0].message
+    # a file there that imports scanned code is also a skipped importer (fix round 24): it may run as a script
+    importer = ["unresolved/skipped-importer"] if "app.repo" in "".join(extra.values()) else []
+    assert sorted(_codes(rep)) == ["unresolved/excluded-callee", *importer], rep.findings
+    ref = next(f for f in rep.findings if f.code == "unresolved/excluded-callee")
+    assert "'build'" in ref.message or "'dist'" in ref.message
 
 
 def test_a_skipped_directory_is_reported_with_no_excludes_at_all(tmp_path):
