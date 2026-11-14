@@ -89,7 +89,10 @@ def pattern_size(p: str) -> int:
             if nxt == "Q":                          # \Q...\E: each character a literal
                 end = p.find("\\E", i + 2)
                 end = n if end < 0 else end
-                atom(max(1, end - i - 2))
+                if end - i - 2 > 1:                 # a quantifier after it repeats its last character only
+                    atom(end - i - 3)
+                if end > i + 2:                     # an empty \Q\E is nothing: a quantifier takes the atom before
+                    atom(1)
                 i = end + 2
                 continue
             i += 2
@@ -288,6 +291,15 @@ class _Parser:
             atom = self.atom()
             if atom is None:
                 continue
+            if atom[0] == "quote":                       # \Q...\E: literals, one at a time (as RE2)
+                lits = atom[1]
+                if not lits:                             # nothing: a quantifier after it takes the item before
+                    if items and self.more() and self.peek() in "*+?{":
+                        # RE2 refuses only adjacent operators (a**): a*\Q\E+ repeats a* again
+                        items.append(self.repeat(items.pop()))
+                    continue                             # with nothing before, atom() refuses the quantifier
+                items.extend(lits[:-1])
+                atom = lits[-1]
             items.append(self.repeat(atom))
         return ("cat", items)
 
@@ -350,6 +362,11 @@ class _Parser:
             return ("assert", "eol" if self.flags["m"] else "eot")
         if c in "*+?":
             raise RegexError(f"missing argument to repetition operator {c}")
+        if c == "{":
+            self.i -= 1
+            if self.braces() is not None:              # {2} with nothing before it: an error in RE2
+                raise RegexError("missing argument to repetition operator {")
+            self.i += 1
         if c == "\\":
             return self.escape()
         return self.lit(c)
@@ -451,7 +468,7 @@ class _Parser:
                 end = self.s.find("\\E", self.i)
                 text = self.s[self.i:] if end < 0 else self.s[self.i:end]
                 self.i = len(self.s) if end < 0 else end + 2
-                return ("cat", [self.lit(x) for x in text])
+                return ("quote", [self.lit(x) for x in text])
         if not c.isascii() or c.isalnum():           # RE2 takes an escaped ASCII punctuation mark (\_ too)
             raise RegexError(f"invalid escape sequence \\{c}")
         return self.lit(c)
@@ -574,9 +591,15 @@ def search(code: list[list], text: str, max_steps: int) -> tuple[bool, int]:
     """(found, steps): is there a match anywhere in text. Raises StepLimit past max_steps."""
     n, steps = len(text), 0
     clist: list[int] = []
+    mid_checked = False
     for pos in range(n + 1):
         prev = text[pos - 1] if pos else ""
         cur = text[pos] if pos < n else ""
+        if not mid_checked and cur > "\x7f":
+            mid_checked = True                   # once: every position inside a character is alike
+            found, steps = _mid_char(code, steps, max_steps)
+            if found:
+                return True, steps
         seen: set[int] = set()
         nlist: list[int] = []
         work = clist + [0]                       # live threads plus a fresh start here (order is moot for yes/no)
@@ -617,6 +640,34 @@ def search(code: list[list], text: str, max_steps: int) -> tuple[bool, int]:
                 if ok:
                     work.append(pc + 1)
         clist = nlist
+    return False, steps
+
+
+def _mid_char(code: list[list], steps: int, max_steps: int) -> tuple[bool, int]:
+    """Whether a match starts inside a multi-byte character, as RE2 finds it: RE2 searches UTF-8 bytes,
+    so its unanchored search also starts between the bytes of one character. There both neighbours
+    are non-word bytes, so \\B holds and \\b does not; no ^ $ \\A \\z holds, and nothing consumes a
+    continuation byte: only a pattern that can reach its end through \\B alone matches there
+    ('aéa'.matches('\\B') is true)."""
+    seen: set[int] = set()
+    work = [0]
+    while work:
+        pc = work.pop()
+        if pc in seen:
+            continue
+        seen.add(pc)
+        steps += 1
+        if steps > max_steps:
+            raise StepLimit(steps)
+        ins = code[pc]
+        if ins[0] == "match":
+            return True, steps
+        if ins[0] == "jmp":
+            work.append(ins[1])
+        elif ins[0] == "split":
+            work += [ins[2], ins[1]]
+        elif ins[0] == "assert" and ins[1] == "nwordb":
+            work.append(pc + 1)
     return False, steps
 
 

@@ -22,7 +22,8 @@ class _Report(_Ablation):
                 "uncollected": [[rid, [list(u) for u in rows]] for rid, rows in self._uncollected.items()],
                 "results": [[rid, nodeid, res] for (rid, nodeid), res in self._results.items()],
                 "notes": list(self.ablation_notes), "totals": self.totals,
-                "verify": {"problems": self.verify_problems, "count": self.verify_count}}
+                "verify": {"problems": self.verify_problems, "count": self.verify_count},
+                "usage": self.usage_problem}
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodedown(self, node: Any, error: Any) -> None:
@@ -31,6 +32,8 @@ class _Report(_Ablation):
         if not isinstance(data, dict):
             return
         self.workers_reported += 1
+        if data.get("usage"):
+            self.usage_problem = str(data["usage"])
         for rid, st in data["statuses"]:
             self.statuses.setdefault(rid, st)
         for rid, d in data.get("digests") or []:

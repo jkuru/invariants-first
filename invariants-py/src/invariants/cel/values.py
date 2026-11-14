@@ -371,11 +371,16 @@ def check_zone(tz: Any) -> str:
     return typing.cast(str, tz)
 
 
-def getter(name: str, v: Any, tz: Any = None) -> int:
-    """The CEL timestamp and duration getters (getFullYear, getMonth, ..., getMilliseconds)."""
+NOT_GIVEN: Any = type("NotGiven", (), {"__repr__": lambda self: "NOT_GIVEN"})()   # a getter called without a zone
+
+
+def getter(name: str, v: Any, tz: Any = NOT_GIVEN) -> int:
+    """The CEL timestamp and duration getters (getFullYear, getMonth, ..., getMilliseconds). Without tz,
+    a timestamp is read in UTC; a tz that is given must be a zone string: null is no zone, but an error
+    (no such overload), as in cel-expr, never UTC."""
     if isinstance(v, datetime.timedelta):
-        if tz is not None:
-            raise CelError(f"no such overload: duration.{name}(string)")
+        if tz is not NOT_GIVEN:
+            raise CelError(f"no such overload: duration.{name}({'null' if tz is None else 'string'})")
         us = v // _US
         total = abs(us)
         sign = -1 if us < 0 else 1
@@ -391,7 +396,7 @@ def getter(name: str, v: Any, tz: Any = None) -> int:
     if not isinstance(v, datetime.datetime):
         raise CelError(f"no such overload: {name}() on a value that is not a timestamp or duration")
     try:                # a zone can move an instant near CEL's range ends past year 1 or 9999
-        t = v.astimezone(UTC if tz is None else zone(tz))
+        t = v.astimezone(UTC if tz is NOT_GIVEN else zone(tz))
     except (OverflowError, ValueError):
         raise CelError("timestamp out of range") from None
     return {

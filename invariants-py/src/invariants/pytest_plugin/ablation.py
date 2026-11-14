@@ -72,7 +72,12 @@ class _Ablation(_SessionState):
         """Match each rule's falsified_by entries to the collected items."""
         if not reg.rules:
             # a green run that ablated nothing proves nothing: a usage error (exit 4), not a pass
-            raise pytest.UsageError(f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}")
+            problem = f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}"
+            if self.worker:     # raised here it is a worker crash (exit 3): the controller exits 4
+                self.usage_problem = problem
+                session.items[:] = []
+                return
+            raise pytest.UsageError(problem)
         index = {item.nodeid: i for i, item in enumerate(session.items)}
         for rule in reg.rules.values():
             falsifiers = rule.raw.get("falsified_by") or []

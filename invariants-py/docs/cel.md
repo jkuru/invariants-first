@@ -93,7 +93,14 @@ one character at a time, as RE2 does: `s`, `S` and `ſ` match each other, but `�
 is closed under that folding first and negated after, as RE2 builds it: `(?i)\p{Lu}` matches `a`,
 `(?i)\w` matches `K` (the Kelvin sign, which folds to `k`) and `(?i)\W` does not. An escaped ASCII
 punctuation mark is that character (`\_` too); an escaped non-ASCII character (`\é`) is not RE2
-syntax.
+syntax. `\Q...\E` is its characters one at a time, as in RE2: a quantifier after it repeats the last
+one (`^\Qab\E*$` matches `abbb`, not `abab`), and an empty `\Q\E` is nothing, so a quantifier after
+it takes what comes before (`a\Q\E*` is `a*`; `\Q\E?` alone is not a valid pattern). A repeat count
+with nothing before it (`{2}`, `a|{2}`) is not valid RE2, not a literal. RE2 searches UTF-8 bytes,
+and the subset follows it at the one place that shows: a search may start inside a multi-byte
+character, where `\B` holds (its neighbours are non-word bytes) and nothing else does, so
+`"aéa".matches("\\B")` is true on both backends; `\b` and every pattern that reads a character
+match at character boundaries only.
 
 **The pattern limit, on both.** A `matches()` pattern may be at most 4,096 characters, nest groups
 at most 64 deep, and expand (every `{n,m}` written out) to at most 5,000 instructions. A constant
@@ -194,8 +201,9 @@ zero) or int Unix seconds; `duration()` takes a sign and number-unit parts with 
 an optional IANA zone or offset (`t.getHours("America/New_York")`, `t.getHours("+05:30")`; an
 offset must be between `-23:59` and `+23:59`); a zone read from data (`t.getHours(args.tz)`) is
 checked by the same rules on every backend, so `""`, `"+99:00"`, an unknown name, a name with a
-NUL, space or other control character, or digits of another script (`"+٠٥:٣٠"`) is a
-`rule_error` everywhere. A getter whose zone moves an instant past CEL's range
+NUL, space or other control character, or digits of another script (`"+٠٥:٣٠"`), or null (an
+`args.tz` of None: no zone, not UTC) is a `rule_error` everywhere; so is any argument to a
+duration's getter (`d.getSeconds(args.tz)`). A getter whose zone moves an instant past CEL's range
 (`t.getFullYear('-23:59')` on 0001-01-01, `t.getFullYear('+23:59')` on 9999-12-31) is a `rule_error`
 "timestamp out of range" on every backend (cel-cpp printed year 0 and 10000). Digits in timestamp, duration and ISO 8601 text (and in rule text) are
 ASCII only: `duration("٥m")` and a `timedelta` reply field `"PT٥M"` are refused. On
@@ -319,7 +327,9 @@ durations (`timedelta`) are families of their own, and `UUID` is a string. Annot
 through PEP 695 aliases (`type Cents = int`, `Page[int]`), `NewType`, `Annotated` and a TypedDict
 key's `Required`/`NotRequired`/`ReadOnly`, as the lock pins them: `args.amount == "x"` with
 `amount: Cents` is refused like it is with `amount: int`, and a `typing_extensions.TypedDict` is a
-closed record like a `typing.TypedDict`.
+closed record like a `typing.TypedDict`. An alias whose value does not evaluate (`type Later =
+OnlyTyping`, with `OnlyTyping` imported under `TYPE_CHECKING`) is dyn, as an annotation that does not
+resolve is, and the lock pins it by its name (`{"unresolved": "Later"}`).
 
 ## Known engine differences
 

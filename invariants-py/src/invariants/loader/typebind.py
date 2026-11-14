@@ -47,7 +47,12 @@ def _type_env(rule: Rule, reg: Registry, i: Any, names: dict[str, str]) -> dict[
             continue
         t = env.get(head, tc.DYN)
         for f in rest:
-            t = t.field(f)
+            try:
+                t = t.field(f)
+            except tc.TypeMismatch as e:     # view {x: args.n.m} with n: int
+                where = "" if i == "rule" else f"enforcer {i} ({point}) "
+                how = "view" if n in (enf.get("view") or {}) else "bind"
+                raise LoadError(f"{rule.id}: {where}{how} {n}: {path!r} does not resolve: {e}") from None
         env[n] = t
     return env
 

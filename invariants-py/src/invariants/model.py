@@ -101,6 +101,8 @@ class Rule:
     notes: list[str] = dataclasses.field(default_factory=list)
     max_status: str = "candidate"
     semantic_resamples: int = 0
+    # the provider and target records the rule reads, as loaded (registry.coverage.rule_digest)
+    bound: dict[str, Any] = dataclasses.field(default_factory=dict)
     refs: frozenset[tuple[str, ...]] = frozenset()        # every path the clauses read
     reads: frozenset[tuple[str, ...]] = frozenset()       # what engines convert for them (cel.subset.reads)
 

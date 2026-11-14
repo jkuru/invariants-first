@@ -90,9 +90,13 @@ _PROSE = frozenset({"id", "rev", "status", "evidence", "statement", "why", "owne
 def rule_digest(rule: Rule) -> str:
     """The digest of what an ablation result is about: every field of the rule as loaded but its
     prose, id, rev, status and evidence (so its bad, enforcers, model_policy, subject, mediation and
-    falsified_by). The pytest plugin writes it per rule into --inv-report-json; a report whose digest
-    differs judged another version of the rule."""
+    falsified_by), and the records it reads: the providers its names bind and its targets' (Rule.bound),
+    so a provider switched to another function, or a target's effects changed, is another version.
+    The pytest plugin writes it per rule into --inv-report-json; a report whose digest differs judged
+    another version of the rule."""
     sem = {k: v for k, v in rule.raw.items() if k not in _PROSE}
+    if rule.bound:
+        sem["(bound records)"] = rule.bound    # a key no rule field can have
     data = json.dumps(sem, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return "sha256:" + hashlib.sha256(data.encode()).hexdigest()
 
@@ -101,16 +105,16 @@ def _ablation_problems(rule: Rule, data: Mapping[str, Any]) -> list[str]:
     """Why ablation does not back the rule, from the pytest plugin's report (--inv-report-json).
 
     The report must be for this version of the rule: its digest for the rule (ablation.digests)
-    must be rule_digest(rule). A report for another version (bad, an enforcer or falsified_by
-    changed since it ran), or one that names no digest, proves nothing about this one."""
+    must be rule_digest(rule). A report for another version (bad, an enforcer, falsified_by or a
+    record it reads changed since it ran), or one that names no digest, proves nothing about this one."""
     abl = data.get("ablation", data)
     if not isinstance(abl, Mapping):
         return ["ablation: the report holds no ablation results"]
     digests = abl.get("digests")
     digest = digests.get(rule.id) if isinstance(digests, Mapping) else None
     if digest is not None and digest != rule_digest(rule):
-        return ["ablation: the report is for another version of the rule (its bad, enforcers or falsified_by "
-                "changed since pytest --inv-ablate ran); run it again"]
+        return ["ablation: the report is for another version of the rule (its bad, enforcers, falsified_by, or "
+                "a provider or target record it reads changed since pytest --inv-ablate ran); run it again"]
     if rule.id in (abl.get("not_load_bearing") or []):
         return ["ablation: guard not load-bearing (a falsifier still passes with the rule off)"]
     rows = (abl.get("rules") or {}).get(rule.id)

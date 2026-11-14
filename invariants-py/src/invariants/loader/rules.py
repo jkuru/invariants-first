@@ -310,6 +310,7 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     if rule.policy is not None and rule.enforcer("model_call")[1] is None:
         raise LoadError(f"{rid}: model_policy needs a model_call enforcer")
     rule.snapshot = _snapshot_paths(rule, reg)
+    rule.bound = _bound_records(rule, reg)
     if rule.status == "retired":
         return rule
     _check_scopes(rule, reg)
@@ -321,6 +322,22 @@ def _load_rule(raw: Any, reg: Registry, base_dir: pathlib.Path, eng: cel.Backend
     _typecheck(rule, reg, [(str(c["when"]), str(c.get("message", rid))) for c in bads])
     _compute_max_status(rule, reg, target_key)
     return rule
+
+
+def _bound_records(rule: Rule, reg: Registry) -> dict[str, Any]:
+    """The provider records the rule's names bind and the records of its targets (subject.target, an
+    enforcer's own target): part of what an ablation report is about (rule_digest), so switching a
+    provider's function or a target's effects makes an earlier report stale."""
+    provs = sorted({p.split(".")[1] for m in rule.names_for.values() for p in m.values()
+                    if p.startswith("provider.") and p.split(".")[1] in reg.providers})
+    tks = sorted({k for k in [rule.target_key, *(e.get("target") for e in rule.enforcers if isinstance(e, dict))]
+                  if isinstance(k, str)})
+    out: dict[str, Any] = {}
+    if provs:
+        out["providers"] = {n: reg.providers[n].raw for n in provs}
+    if tks:
+        out["targets"] = {k: reg.targets.get(k) for k in tks}
+    return out
 
 
 def _compute_max_status(rule: Rule, reg: Registry, target_key: str | None) -> None:

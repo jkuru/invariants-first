@@ -48,6 +48,7 @@ class _SessionState:
         self.no_verdict: list[str] = []                 # inv_scan verdicts asked for during that re-run
         self.worker = hasattr(config, "workerinput")    # a pytest-xdist worker: the controller reports
         self.workers_reported = 0
+        self.usage_problem: str | None = None           # a worker's usage error: the controller exits 4
 
     def _shown(self, path: pathlib.Path | None) -> str | None:
         """path relative to the pytest rootdir when it is under it (reports carry no local absolute paths)."""

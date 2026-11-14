@@ -19,8 +19,20 @@ MAX_UNWRAP = 24                         # alias / NewType / Annotated layers fol
 
 
 def is_alias(t: Any) -> bool:
-    """A PEP 695 alias (typing.TypeAliasType, 3.12+, or typing_extensions' backport)."""
-    return type(t).__name__ == "TypeAliasType" and hasattr(t, "__value__")
+    """A PEP 695 alias (typing.TypeAliasType, 3.12+, or typing_extensions' backport): judged by its type,
+    never by reading __value__ (which evaluates the alias's value and can raise)."""
+    return type(t).__name__ == "TypeAliasType"
+
+
+def alias_target(t: Any) -> Any:
+    """The value of the alias t, or, when evaluating it fails (`type Later = OnlyTyping` with OnlyTyping
+    imported under TYPE_CHECKING: a NameError; any other error its value raises), the alias's name as a
+    string: read as an unresolvable annotation is (dyn at load, `{"unresolved": name}` in the lock),
+    stably and without the crash."""
+    try:
+        return t.__value__
+    except Exception:
+        return str(getattr(t, "__name__", None) or "?")
 
 
 def is_newtype(t: Any) -> bool:
@@ -35,7 +47,7 @@ def unalias(t: Any) -> Any:
     parameters (a TypeVarTuple, a ParamSpec, a wrong count): see alias_value."""
     for _ in range(MAX_UNWRAP):
         if is_alias(t):
-            t = t.__value__
+            t = alias_target(t)
             continue
         if isinstance(t, typing.NewType):
             t = t.__supertype__
@@ -47,7 +59,7 @@ def unalias(t: Any) -> Any:
         if len(params) != len(args) or not all(isinstance(p, typing.TypeVar) for p in params):
             return t
         try:
-            t = substitute(origin.__value__, dict(zip(params, args)))
+            t = substitute(alias_target(origin), dict(zip(params, args)))
         except Exception:                                      # a value typing cannot re-parameterise
             return t
     return t
@@ -57,7 +69,7 @@ def alias_value(t: Any) -> Any:
     """The value of the alias `X[...]` subscripts when unalias could not substitute its arguments, its
     type variables left free; None when t is no subscripted alias."""
     origin = typing.get_origin(t)
-    return origin.__value__ if is_alias(origin) else None
+    return alias_target(origin) if is_alias(origin) else None
 
 
 def substitute(value: Any, mapping: dict[Any, Any]) -> Any:

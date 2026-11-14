@@ -189,6 +189,9 @@ SQLAlchemy `AsyncSession`) never overlap. A provider that is safe to overlap say
 `concurrent: true` in its record (or `@inv.provider("name", concurrent=True)`); consecutive calls of
 providers that all opted in are awaited together with `asyncio.gather`. A rule whose
 sync target reads an `async def` provider is a `LoadError`, since a sync wrapper cannot await it.
+What counts is the function the guard or edge decorates, as it runs: an async wrapper of a sync
+def is async; a sync wrapper of an async def is sync, except for a guard's `post_effect` checks
+and a model call, which run on the coroutine it returns.
 
 **Clauses per enforcer are not supported.** A clause belongs to the rule, so it is evaluated at
 every enforcer. Scoping a clause to some points (`bad: [{when, points: [decorator]}]`) would let an
@@ -417,9 +420,10 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   decision, not this case.
 - **Which version of the rule.** `--inv-report-json` records each rule's digest
   (`ablation.digests`: every field of the rule but its prose, `id`, `rev`, `status` and
-  `evidence`). `inv status --ablation` and `inv.standing(ablation=...)` take a rule's results only
+  `evidence`, with the records of the providers it reads and of its targets). `inv status --ablation` and `inv.standing(ablation=...)` take a rule's results only
   from a report whose digest matches the rule as loaded now; a report written before its `bad`, an
-  enforcer or `falsified_by` changed (or one with no digest) proves nothing, so run
+  enforcer, `falsified_by`, a provider it reads (`from: py:app.cap_a` switched to `cap_b`) or its
+  target's record changed (or one with no digest) proves nothing, so run
   `pytest --inv-ablate --inv-report-json` again.
 - **Schema-held rules.** Ablating a rule enforced by `point: type` (a closed `Literal`, or
   `extra="forbid"`) does not relax `inv.parse`, so a parse-error falsifier still passes and

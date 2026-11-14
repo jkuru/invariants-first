@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 from typing import Any, Iterator, cast
 
 import pytest
@@ -28,11 +29,13 @@ class InvSession(_Report):
 
     def controller_checks(self) -> None:
         """pytest-xdist controller, before any worker starts: the usage errors of --inv-ablate that a
-        worker would raise after collection (no rule file, a missing one, one with no rules) are
+        worker would raise after collection for a rule file (a missing one, one with no rules) are
         raised here, so the run exits 4 (a usage error), not 3 (a worker's INTERNALERROR). The rule
-        file is only read, not loaded: its python contracts may need the workers' collection."""
+        file is only read, not loaded: its python contracts may need the workers' collection. With no
+        rule file the workers decide: rules the tests load themselves (a conftest's inv.load) are
+        rules, as without xdist."""
         if self.rules_path is None:
-            raise pytest.UsageError(f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}")
+            return
         if not self.rules_path.is_file():
             raise pytest.UsageError(f"--inv-rules: {self.rules_path} does not exist")
         try:
@@ -74,6 +77,10 @@ class InvSession(_Report):
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
         if self.worker:                             # the controller writes the report and decides
             cast(Any, self.config).workeroutput["invariants"] = self.worker_payload()
+            return
+        if self.controller and self.usage_problem:  # a worker's usage error: exit 4, as without xdist
+            sys.stderr.write(f"ERROR: {self.usage_problem}\n")
+            session.exitstatus = pytest.ExitCode.USAGE_ERROR
             return
         if self.controller and not self.workers_reported and (self.ablate_on or self.verify_on):
             self.ablation_notes.append("no pytest-xdist worker reported its invariants results")

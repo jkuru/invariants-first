@@ -37,16 +37,61 @@ def binding_problem(rule: Rule, reg: Registry, i: Any, target: Any, tk: str) -> 
     enf = rule.enforcers[i]
     if enf["point"] not in EVALUATED or enf["mode"] == "off":
         return None
-    fn = inspect.unwrap(target)
-    fn = getattr(fn, "__func__", fn)
-    if inspect.iscoroutinefunction(fn):
+    if _runs_async(target, enf["point"], enf.get("timing")):
         return None
     for p in m.values():
         if p.startswith("provider.") and reg.providers[p.split(".")[1]].is_async:
             return (f"{rid}: provider {p.split('.')[1]} is async def, but the {enf['point']} enforcer's target "
                     f"{tk} is sync, so it cannot await it (every call would be a rule_error); make {tk} async or "
-                    f"the provider sync")
+                    f"the provider sync{_sync_wrapper_hint(target)}")
     return None
+
+
+def _sync_wrapper_hint(target: Any) -> str:
+    fn = inspect.unwrap(target)
+    if not inspect.iscoroutinefunction(getattr(fn, "__func__", fn)):
+        return ""
+    return (" (it wraps an async def, but the function the decorator wraps is a sync wrapper, so its checks "
+            "run sync before the coroutine exists: put the decorator directly on the async def, or make the "
+            "wrapper async)")
+
+
+_KIND = {"decorator": "guard", "middleware": "guard", "model_call": "model_call", "edge": "edge"}
+
+
+def _inv_wrapper(target: Any, kind: str) -> Any:
+    """The @inv.guard / @inv.model_call / @inv.edge wrapper (by kind) in target's __wrapped__ chain: what
+    actually evaluates the enforcer. None when there is none (yet: inv verify reports a missing one)."""
+    layer: Any = target
+    for _ in range(64):
+        if layer is None:
+            return None
+        layer = getattr(layer, "__func__", layer)          # a classmethod / staticmethod
+        if getattr(layer, "__inv_kind__", None) == kind:
+            return layer
+        layer = getattr(layer, "__wrapped__", None)
+    return None
+
+
+def _runs_async(target: Any, point: str, timing: Any) -> bool:
+    """Whether the enforcer's checks at point and timing run on the async path (so an async provider can
+    be awaited), judged as the wrapper that runs them decides: a guard or an edge by the function it
+    decorates itself (its own coroutine-ness, never unwrapped: an async wrapper of a sync def runs
+    async, a sync wrapper of an async def runs sync), except that a sync guard's post_effect checks
+    run async when the function returns a coroutine (a sync wrapper of an async def); a model call
+    runs async for an async body and for a sync wrapper of an async def (its first reply is a
+    coroutine). Without such a wrapper, the innermost function decides."""
+    w = _inv_wrapper(target, _KIND.get(point, ""))
+    inner = None if w is None else getattr(w, "__wrapped__", None)
+    if inner is None:
+        fn = inspect.unwrap(target)
+        return inspect.iscoroutinefunction(getattr(fn, "__func__", fn))
+    if inspect.iscoroutinefunction(w):
+        return True
+    if point == "edge" or (_KIND[point] == "guard" and timing != "post_effect"):
+        return False
+    fn = inspect.unwrap(inner)
+    return inspect.iscoroutinefunction(getattr(fn, "__func__", fn))
 
 
 def _unresolved_arg(rid: str, name: str, target: Any, tk: str) -> str:

@@ -37,7 +37,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   dyn, and a `typing_extensions.TypedDict` as an open map, so a clause such as `args.amount == "x"`
   with `amount: Cents` (`type Cents = int`) passed the load; it is now refused as with `int`. A
   provider returning `UserId` (`NewType("UserId", int)`), an alias of `int` or `Annotated[int, ...]`
-  now matches `type: int` instead of being refused.
+  now matches `type: int` instead of being refused. An alias whose value does not evaluate (`type
+  Later = OnlyTyping`, `OnlyTyping` imported under `TYPE_CHECKING`) is read as an unresolved
+  annotation (dyn; pinned by its name): `inv.load`, `inv validate` and `inv lock` used to raise its
+  `NameError`.
+- A `view` or `bind` path into a field of a scalar parameter (`view: {x: args.n.m}` with `n: int`)
+  is a `LoadError` naming the rule; it was a bare `TypeMismatch` from `inv.load` and `inv validate`.
 - Load errors say what to do: a near miss is named (`unknown field(s) ['tset'] (did you mean
   'tests'?)`, `billing has no 'servce'; did you mean 'service'?`, `args.amout ... (did you mean
   args.amount? its parameters: ...)`, `amount is a parameter of py:...: write args.amount`, a
@@ -92,6 +97,11 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `post_effect` checks always see the call's real result: over a sync wrapper of an async def, the
   guard awaits the coroutine first; another awaitable is a `TypeError`. `@inv.guard` above
   `@pydantic.validate_call` is a `TypeError` (it would check the uncoerced arguments).
+- Whether a guard or an edge can read an async provider is judged by the function it decorates, as
+  the wrapper runs it, not by the innermost function: a `pre_effect` check reading one over a sync
+  wrapper of an async def is a `LoadError` (it loaded, then every call was a `rule_error`), and a
+  guard over an async wrapper of a sync def reads one (it was refused at load though the guard
+  runs async). A model call over a sync wrapper of an async def still runs async.
 - `JsonlReviews` writes an int too long for decimal text as `"<int 0x...>"`, so a value's size never
   stops a review from opening.
 - Providers are read at the enforcer's timing; `old_self` rules compare a target's state before and
@@ -144,7 +154,14 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - Under `(?i)` the subset's regex classes (`\w`, `\W`, `\d`, `\s`, `\pL`, `\p{Lu}`, `[:upper:]`)
   fold case as RE2 does (closed under folding, then negated): `(?i)\p{Lu}` matches `a` and
   `(?i)\W` no longer matches the Kelvin sign, as on cel-expr. `\_` is a literal `_` and `\é` is
-  refused, as in RE2.
+  refused, as in RE2. `\Q...\E` is its characters one at a time, as in RE2: a quantifier after it
+  repeats the last one (`^\Qab\E*$` matched `abab` on the subset, `abbb` on cel-expr), an empty
+  `\Q\E` is nothing (`\Q\E?` was true on the subset and passed the load-time check), and a repeat
+  count with nothing before it (`{2}`) is an error, not a literal. A search may start inside a
+  multi-byte character, as RE2's byte search does, where `\B` holds: `"aéa".matches("\\B")` is true
+  on both (it was false on the subset).
+- A timestamp getter given a null zone (`t.getHours(args.tz)` with `tz` None) is a `rule_error` on
+  every backend; the subset read it as UTC. So is any argument to a duration's getter.
 - `int()`, `uint()` and `double()` of text take ASCII whitespace around the number only, as absl
   does on cel-expr: `int("500\u00a0")` was `500` on the subset and is a `rule_error` on both, and
   `"1\u001c"` no longer escapes as a Python `ValueError` (every conversion failure is a CelError).
@@ -431,13 +448,17 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`. With `--inv-ablate` or `--inv-verify`
   and no `--inv-rules` or `inv_rules`, it loads `invariants.yaml` (`.yml`, `.json`) from the rootdir;
   `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run; under
-  pytest-xdist too (the controller checks before any worker starts: it was exit 3, a worker's
-  INTERNALERROR).
+  pytest-xdist too (the controller checks a rule file before any worker starts, and exits 4 when the
+  workers found no rules: it was exit 3, a worker's INTERNALERROR). With no rule file, rules the
+  tests load themselves (a conftest's `inv.load`) count under `-n` as without it (the controller
+  used to refuse them as no rules).
 - `--inv-report-json` writes each rule's digest (`ablation.digests`: every field of the rule but its
   prose, id, rev, status and evidence). `inv status --ablation` and `inv.standing(ablation=...)`
   accept a rule's ablation results only from a report whose digest matches the rule as loaded now:
   a report for another version of the rule (its `bad`, enforcers or `falsified_by` changed since)
-  or with no digest proves nothing (it used to say held, ablation proved it: yes).
+  or with no digest proves nothing (it used to say held, ablation proved it: yes). The digest covers
+  the records of the providers the rule reads and of its targets too, so switching a provider from
+  `py:app.cap_a` to `cap_b` makes an earlier report stale.
 - `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain, below
   `enforce` or escalated at it, and an edge given a verdict `abstain`) next to the other four.
 - Ablation re-runs each rule's `falsified_by` tests with the rule off: a falsifier is caught only when

@@ -94,7 +94,10 @@ Stacking `@inv.guard` with other decorators:
   wrapper does the same: when the body returns a coroutine, the decorated call returns a coroutine
   that runs the whole model call asynchronously (each reply awaited, async providers awaited), as
   for an `async def` body; a body that returns another awaitable is a `TypeError`, never parsed as
-  the model's reply.
+  the model's reply. Whether an async provider can be read is decided as the wrapper runs: a guard
+  over a sync wrapper of an async def reads one in `post_effect` checks only (its `pre_effect`
+  checks run sync, so reading one there is a `LoadError`), a guard or edge over an async wrapper of
+  a sync def runs async and reads them, and an edge over a sync wrapper runs sync.
 - **`@inv.edge`** hands its consumer exactly the re-checked value: the received `Checked` must be
   exactly the annotated class (a subclass is a `TypeError`), and a state is copied as a plain `dict`
   (from any dict, subclasses included) or as exactly the annotated dataclass or pydantic model (an
@@ -380,7 +383,7 @@ pytest --inv-rules invariants.yaml --inv-verify --inv-ablate --inv-report
 |---|---|
 | `--inv-rules PATH` | Loads the rule file after collection. You can also set it with the ini option `inv_rules` (relative to the ini file). With `--inv-ablate` or `--inv-verify` and neither given, it loads `invariants.yaml`, `invariants.yml` or `invariants.json` from pytest's rootdir. |
 | `--inv-verify` | Fails the session when a target lacks its guard. |
-| `--inv-ablate` | Re-runs each rule's `falsified_by` tests with the rule turned off in every registry and in `INV_ABLATE` (so subprocesses see it). A falsifier that still passes fails the session with "guard not load-bearing". With no rules loaded (no rule file found, and none loaded by the tests) it is a usage error (exit 4), not a pass; under pytest-xdist the controller checks this before any worker starts (no rule file, a missing one, or one with no rules), so it is exit 4 there too. What counts as caught, and what is `inconclusive`, is in [concepts.md](concepts.md#ablation). |
+| `--inv-ablate` | Re-runs each rule's `falsified_by` tests with the rule turned off in every registry and in `INV_ABLATE` (so subprocesses see it). A falsifier that still passes fails the session with "guard not load-bearing". With no rules loaded (no rule file found, and none loaded by the tests) it is a usage error (exit 4), not a pass; under pytest-xdist it is exit 4 there too: the controller checks a rule file before any worker starts (a missing one, or one with no rules), and with no rule file the workers decide (rules a conftest loads count, as without `-n`) and the controller exits 4 when they found none. What counts as caught, and what is `inconclusive`, is in [concepts.md](concepts.md#ablation). |
 | `--inv-ablate-lenient` | With `--inv-ablate`, fail only on a falsifier that still passes. |
 | `--inv-report` | Prints per-rule reach, ok, violation, rule_error, parse_error and abstain counts (abstain: a model call's abstain, below `enforce` where it proceeds or escalated at it, and an edge given verdict `abstain`). |
 | `--inv-report-json PATH` | Writes the same counts as JSON (with `--inv-ablate`, the ablation results and `ablation.digests`: each rule's digest, which `inv status --ablation` checks: a report for another version of a rule, or with no digest, does not prove it). |
