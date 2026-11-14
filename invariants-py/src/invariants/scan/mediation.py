@@ -9,7 +9,7 @@ from .. import _scan_hooks
 from .contracts import Accept, Mediation, ScanConfigError
 
 _AT = re.compile(r"^(?P<file>[^:]+):(?P<line>[1-9][0-9]*)(?::(?P<col>[1-9][0-9]*))?$")
-_SHA = re.compile(r"^[0-9a-f]{10}$")
+_SHA = re.compile(r"^[0-9a-f]{16}$")
 ACCEPT_FIELDS = frozenset({"at", "code", "sha", "why"})
 
 
@@ -87,8 +87,10 @@ def _accepts(rid: str, raw: Any) -> list[Accept]:
             raise ScanConfigError(f"{at}: only an unresolved finding can be accepted, not {code!r}: a bypass or a "
                                   f"forbidden idiom is fixed, or a known back door is frozen in allow")
         if not _SHA.match(e["sha"]):
-            raise ScanConfigError(f"{at}: sha must be the 10 hex digits the scan gives the finding (inv scan "
-                                  f"--format json), got {e['sha']!r}")
+            old = (": a 10-digit sha is from a version that hashed one line; review the site again and "
+                   "write the sha the scan gives it now" if re.fullmatch(r"[0-9a-f]{10}", e["sha"]) else "")
+            raise ScanConfigError(f"{at}: sha must be the 16 hex digits the scan gives the finding (inv scan "
+                                  f"--format json), got {e['sha']!r}{old}")
         if not e["why"].strip():
             raise ScanConfigError(f"{at}: why must say why the reviewed site cannot reach the sink")
         out.append(Accept(e["at"], m["file"], int(m["line"]), int(m["col"]) if m["col"] else None, code,

@@ -55,14 +55,18 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   (give `bad`, and optionally `tests`). A door rule without `guard:` cannot have `bad`.
 - `allow_unresolved` (short for `mediation.allow_unresolved`) accepts unresolved findings a person
   has reviewed, one site each: `{at: "app/plugins.py:41", code: unresolved/reflection, sha:
-  3f9c0a17be, why: "..."}`, with the sha `inv scan --format json` gives the finding. A matching
-  finding is shown as accepted and does not fail the rule; an edit above it keeps the entry, an edit
-  of the site does not, and an entry that matches nothing is `missing/allow-unresolved-unused`. Only
+  3f9c0a17be52d4e1, why: "..."}`, with the sha (16 hex digits) `inv scan --format json` gives the
+  finding: a hash of its code, its function and its whole statement (and, for an inferred path, the
+  entrypoints and name-matched calls that reach it). A matching finding is shown as accepted and does
+  not fail the rule; an edit above it keeps the entry (reported as moved), an edit of any line of its
+  statement does not, nor does a new caller of an inferred path, and an entry that matches nothing is
+  `missing/allow-unresolved-unused`. Only
   `unresolved/*` codes can be accepted, never a `bypass` or `forbidden` finding (see
   [scan.md](scan.md#accepting-a-reviewed-unresolved-site)).
-- The lock reports these as weakenings: a new `allow` entry, a new `allow_unresolved` entry (or one
-  that drops its column), a new door, a removed sink, and removing the rule. Deleting an `allow` or
-  `allow_unresolved` entry or a door is a tightening.
+- The lock reports these as weakenings: a new `allow` entry, a new `allow_unresolved` entry (a
+  second entry with the same file, code and sha included: each accepts one finding, so it accepts one
+  more copy of that statement), one that drops its column, a new door, a removed sink, and removing
+  the rule. Deleting an `allow` or `allow_unresolved` entry or a door is a tightening.
 
 `inv init` drafts door rules from the code: see [start.md](start.md#3-path-laws-doors-and-back-doors).
 

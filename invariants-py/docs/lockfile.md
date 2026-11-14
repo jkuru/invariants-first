@@ -161,6 +161,11 @@ These changes are marked **WEAKENED**:
 - `timing` moved to `post_effect`;
 - a removed sink;
 - a new door on a scanned sink, or a new `allow` entry (a back door is now let through);
+- a `mediation.allow_unresolved` site (file, code, sha) named by more entries than before, compared
+  as a multiset: a new site, or a second entry for a sha one entry named (each entry accepts one
+  finding, and identical statements in one function share a sha), or more entries for it without a
+  column (they match any column of the line); fewer entries for a site is a tightening, and a new
+  line or `why` is neither;
 - a target declared `effects: none`, or a target no longer covered;
 - `compares_to` removed, `compensable` set to true, or more `format_retries` or
   `semantic_resamples`;
@@ -284,6 +289,7 @@ change unless `--accept-weakening` is given.
 | analysed | `mediation.sink` | a sink is removed |
 | analysed | `mediation.door` | a door is added to a rule that already had a sink |
 | analysed | `mediation.allow` | an entry is added |
+| analysed | `mediation.allow_unresolved` | a site (file, code, sha) is named by more entries than before, or by more entries without a column (a multiset: a duplicate entry counts) |
 | analysed | rule `targets`, `applies_to` | a target is no longer covered |
 | analysed | `mediation.residual_paths` | an entry is removed (it can raise the rule's standing to `held`) |
 | analysed | `mediation.chokepoint` (by digest) | it is added or edited (it can raise the rule's standing to `held`); removing it is a change |

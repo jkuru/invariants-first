@@ -27,7 +27,7 @@ import time
 from typing import Any, Iterable, Iterator
 
 from . import accept
-from .checks import _canon_py, _check_rule
+from .checks import _canon_py, _check_rule, _declared, _Targets
 from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Accept, Finding, Mediation, Report,
                         ScanConfigError,
                         _Edge, _Fan, _Module, _OnPaths, _Site)
@@ -366,7 +366,7 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
         found += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                           str(r)) for r, f, line, code, msg in idx.problems]
         found += _skipped_importers(idx, med)
-        accept.fill_sha(found, lines)
+        accept.fill_sha(found, lines, _inferred_basis(idx, med, edges, entries, found))
         if med.accept is not None:                     # reviewed sites: shown as accepted, never failing
             found, ok = accept.apply(med.rule, med.accept, found)
             report.accepted += ok
@@ -375,6 +375,20 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     report.findings.sort(key=lambda f: (f.rule, order[f.kind], f.file or "", f.line, f.col, f.code))
     report.accepted.sort(key=lambda f: (f.rule, f.file or "", f.line, f.col, f.code))
     return report
+
+
+def _inferred_basis(idx: _Index, med: Mediation, edges: list[_Edge | _Fan], entries: list[str],
+                    found: list[Finding]) -> accept.InferredBasis | None:
+    """What an unresolved/inferred-path finding's sha covers besides its site (accept.InferredBasis), from
+    the rule's door-free graph with name-matched calls; None when the rule has no such finding."""
+    if not any(f.code == "unresolved/inferred-path" for f in found):
+        return None
+    t = _Targets(_declared(idx, med.rule, med.sinks, "sink", []), _declared(idx, med.rule, med.doors, "door", []),
+                 _declared(idx, med.rule, med.allow, "allow", []))
+    goals = t.sinks - t.doors
+    ps = t.passes(edges)[1]
+    return accept.InferredBasis(ps.succ, [s for s in entries if s not in t.sinks and s not in t.doors], goals,
+                                found)
 
 
 # decorators that put an inv guard on a function (it checks the rule's values before or after it runs)
