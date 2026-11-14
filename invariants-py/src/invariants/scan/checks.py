@@ -85,19 +85,25 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Si
     return out
 
 
-def _merge_groups(parts: list[list[Finding]]) -> list[Finding]:
+def _merge_groups(parts: list[list[Finding]], judged: list[set[str]] | None = None) -> list[Finding]:
     """The findings of a rule checked part by part (Mediation.groups: a sink mapping), as one list: a
     finding two parts give alike (a parse error, a door two sinks share that is missing, the same site) is
-    one, and an allow entry is unused (missing/allow-unused) only when every part finds it unused (allow
-    is rule-wide)."""
-    unused = [{f.message for f in got if f.code == "missing/allow-unused"} for got in parts]
-    everywhere = set.intersection(*unused) if unused else set()
+    one, and an allow entry is unused (missing/allow-unused) only when every part that can judge it finds it
+    unused (allow is rule-wide). judged: per part, the allowed functions it can judge, those neither a sink
+    nor a door of it (fix round 31: a part never reports its own door, so a stale entry that is a door of
+    one sink is reported when every other part finds it unused); None: every part judges every entry."""
+    unused = [{f.owner for f in got if f.code == "missing/allow-unused"} for got in parts]
+    if judged is None:
+        everywhere = set.intersection(*unused) if unused else set()
+    else:
+        named = set().union(*judged) if judged else set()
+        everywhere = {a for a in named if all(a in u for u, j in zip(unused, judged) if a in j)}
     seen: set[tuple[object, ...]] = set()
     out: list[Finding] = []
     for got in parts:
         for f in got:
             key = (f.kind, f.code, f.file, f.line, f.col, f.message)
-            if key in seen or (f.code == "missing/allow-unused" and f.message not in everywhere):
+            if key in seen or (f.code == "missing/allow-unused" and f.owner not in everywhere):
                 continue
             seen.add(key)
             out.append(f)

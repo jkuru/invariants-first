@@ -466,6 +466,24 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   excused and the drafted rule passed. It freezes only the functions on a door-free path of
   extracted calls; an inferred-path site stays an unresolved finding, listed and drafted in
   `allow_unresolved` for review (the rule is written commented out until each says why).
+- Lookups the scan missed (round 31): `x.__getattribute__("save")`, `object.__getattribute__(x,
+  "save")` and `type.__getattribute__(type(x), "pay")` on any receiver are `getattr(x, "save")`
+  (naming the sink is `forbidden/getattr-sink`; otherwise an edge or a name-matched call);
+  `type(r).__dict__["pay"]`, `.get("pay")`, `r.__class__.__dict__["pay"]` and
+  `type(r).__mro__[0].__dict__["pay"]` are the method of r's class (typed) or name-matched;
+  `"{0.total}".format(a)` and `format_map` look up the attributes their literal fields name, as
+  `attrgetter` does; a datetime or time method that asks its `tzinfo` (`utcoffset`, `dst`, `tzname`,
+  `astimezone`, `isoformat`, `strftime`, `timestamp`, ...) is name-matched to the scanned methods
+  `utcoffset`, `dst`, `tzname` and `fromutc`. A value class of the standard library honours a
+  second module-level binding (`global Path; Path = Repo`) as a scanned class does, and a name
+  written as an attribute of its module by any code (`ops.Safe = Repo`, `setattr(ops, "Safe",
+  Repo)`) is a runtime value there. Two different huge integer literals no longer share a sha.
+- Rule checks (round 31): a sink that is its own door (`{S: [S]}`, or `S` in both `sink` and `door`)
+  is a load error; a rule's own `allow_unresolved` entry that lists `rules` other rules do not hold
+  is refused (an entry for several rules goes in the file's top-level `allow_unresolved`); with a
+  sink mapping, a stale `allow` entry that is a door of one sink is `missing/allow-unused` when every
+  other sink's check finds it unused. The hint for an `allow_unresolved` sha from an earlier inv
+  says that a person runs `inv lock --accept-weakening` after writing the new sha.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

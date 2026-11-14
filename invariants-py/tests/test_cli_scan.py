@@ -230,10 +230,11 @@ def test_getattr_literal_non_sink_is_followed(tmp_path):
     assert [f.path for f in r.findings] == [["app.x.f", "app.helpers.h", "app.store.write"]]
 
 
-def test_sink_equal_to_door_has_no_paths(tmp_path):
-    r = _scan(tmp_path, {"app/x.py": "from app import svc\ndef f(c):\n    svc.door(c, 1)\n"},
+def test_sink_equal_to_door_is_refused(tmp_path):
+    # round 31: a sink that is its own door would pass every call to it, so it is a load error
+    with pytest.raises(scan.ScanConfigError, match="own door"):
+        _scan(tmp_path, {"app/x.py": "from app import svc\ndef f(c):\n    svc.door(c, 1)\n"},
               _doc(sink="py:app.svc.door", door="py:app.svc.door"))
-    assert r.findings == [] and r.rule_result("R-9") == "pass"
 
 
 def test_door_defaults_to_subject_target(tmp_path):

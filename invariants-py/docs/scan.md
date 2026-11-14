@@ -55,7 +55,11 @@ checked together): a path to `record_refund` that passes only `BillingService.ca
 ("... reaches the sink without passing app.service.BillingService.refund"), where the list form lets
 it through. `door` is left out (or names exactly the doors the mapping lists), `allow` and
 `allow_unresolved` are rule-wide, a finding two sinks' checks give alike is reported once, and an
-`allow` entry is `missing/allow-unused` only when no sink's check uses it. A path through one sink
+`allow` entry is `missing/allow-unused` only when no sink's check uses it (a sink's check cannot judge
+an entry that is one of its own doors or sinks: such an entry is unused when every other check finds
+it unused). Because `allow` is rule-wide, an allowed back door frozen for one sink is let through to
+any sink of the mapping; split the rule when that matters. A sink is never its own door
+(`{S: [S]}` is a load error, as is `S` in both `sink` and `door` in the list form). A path through one sink
 into another (`cancel_subscription` calling `record_refund`) is checked against the second sink's
 doors too. `--format json` gives the rule's `pairs` beside its `sinks` and `doors`.
 
@@ -253,7 +257,8 @@ return another class; whose module-level name is bound more than once (`Safe = R
 over it, a star import that exports another `Safe` (any star import of a module the scan does not read), a `case
 {**Safe}` capture, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
 dunder or a computed name written on it (`Leaf.__bases__ = (...)`, `setattr(Safe, name, f)`) or the
-class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__` or
+class itself rebound from outside (`ops.Safe = Repo`; where ops only imports Safe, or by
+`setattr(ops, "Safe", Repo)`, the name Safe in ops resolves to nothing); or whose methods assign `self.__class__` or
 call a computed setattr on self (below). A method that rebinds its first parameter anywhere (`self =
 other`, `for self in`, a walrus, `with ... as self`, `case self`, unpacking, `except E as self`, `self
 += x`, `cls = Repo`) has no `self` of its class: the name is a plain local there. A
@@ -337,7 +342,12 @@ So does a value class of the standard library, built here: `pathlib.Path(__file_
 address, `str(x)`, `int(x)`, `tuple(x)` and a string literal or f-string (`", ".join(xs)`) call that
 class's own method (one it defines: any other name, or one some code assigns on an object, stays
 name-matched), never a scanned method of that name. An instance of one holds its own data and no
-method of one calls a method of an object it was given by name. Any other class outside the scan
+method of one calls a method of an object it was given by name, except a datetime's or time's
+`tzinfo`: `utcoffset()`, `dst()`, `tzname()`, `astimezone()`, `isoformat()`, `strftime()`,
+`timestamp()`, `timetuple()` and the like on one are also name-matched to every scanned `utcoffset`,
+`dst`, `tzname` and `fromutc`. A value class's name bound more than once at module scope
+(`global Path; Path = Repo`), or written as an attribute of its module, resolves to nothing, as a
+scanned class's does. Any other class outside the scan
 is not typed: a wrapper delegates (`io.TextIOWrapper(f).write(s)` calls `f.write`,
 `types.SimpleNamespace(save=f).save()` calls `f`), and third-party code is not read.
 
@@ -352,7 +362,12 @@ sink. A lookup in a scanned module's or class's namespace is a `getattr` on it:
 `store.__dict__` (a computed key, `.items()`, the dict as a value) or `inspect.getmembers(store)` is
 `unresolved/reflection`, like `vars(store)`. `type(obj).__dict__` and `obj.__class__.__dict__` are
 a class namespace too, as are `C.__mro__[i].__dict__`, `C.__bases__[i].__dict__` and
-`C.__base__.__dict__`; any other read of `C.__mro__` is `unresolved/reflection` (its classes are
+`C.__base__.__dict__`: a literal key there (`type(r).__dict__["pay"](r)`) is the method `r.pay` may
+be (typed, or name-matched), and any class above (`__mro__`, `__bases__`, `__base__`) name-matched.
+`x.__getattribute__("save")`, `object.__getattribute__(x, "save")` and
+`type.__getattribute__(type(x), "save")` on any other receiver are `getattr(x, "save")`, called or
+taken as a value. A literal `str.format` string (`"{0.total}".format(a)`, `format_map`) looks up the
+attributes its fields name, as `attrgetter("total")` does. Any other read of `C.__mro__` is `unresolved/reflection` (its classes are
 values). `f.__globals__` on a scanned function is the namespace of its module
 (`door.__globals__["sink"]` is `forbidden/getattr-sink`); on a function the scan cannot name it is
 `unresolved/reflection`. `builtins.__dict__` (and the `__dict__` of any module outside the scan) is

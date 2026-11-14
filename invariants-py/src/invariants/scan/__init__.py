@@ -62,7 +62,30 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
             skipped[rid] = why
             continue
         scanned[rid] = _mediation(rid, raw, med)
+    _check_shared(doc, scanned)
     return scanned, skipped
+
+
+def _check_shared(doc: dict[str, Any], scanned: dict[str, Mediation]) -> None:
+    """fix round 31: an allow_unresolved entry that lists rules is one the file's top-level allow_unresolved
+    gave each rule it lists (loader.short_forms): one written in a rule's own list naming other rules would
+    say "shared by" rules that never got it. Every rule it names must hold the same entry."""
+    held: dict[str, list[Any]] = {}
+    for raw in doc.get("rules") or []:
+        if isinstance(raw, dict) and isinstance(raw.get("id"), str):
+            own = (raw.get("mediation") or {}).get("allow_unresolved") if isinstance(raw.get("mediation"), dict) \
+                else None
+            held[raw["id"]] = own if isinstance(own, list) else []
+    for rid, med in scanned.items():
+        for i, a in enumerate(med.accept or []):
+            for other in a.rules:
+                if other != rid and a.as_dict() not in [
+                        {k: v for k, v in e.items() if k in ("at", "code", "sha", "why", "rules")}
+                        for e in held.get(other, []) if isinstance(e, dict)]:
+                    raise ScanConfigError(
+                        f"{rid}: mediation.allow_unresolved[{i}]: rules names {other}, which holds no such entry: "
+                        f"a rule's own entry accepts its site under that rule alone (leave rules out); an entry "
+                        f"for several rules goes in the file's top-level allow_unresolved, with rules: [...]")
 
 
 @dataclasses.dataclass
@@ -396,7 +419,9 @@ def _check_paired(idx: _Index, med: Mediation, edges: list[_Edge | _Fan], lines:
     bypass. The same finding from two parts is one; an allow entry is unused when no part uses it; each
     part's inferred paths are hashed in its own door-free graph. Accepted findings go to report.accepted."""
     parts = [(sub, _check_rule(idx, sub, edges, sites, entries, on, guarded=guarded)) for sub in med.groups()]
-    found = _merge_groups([got for _, got in parts])
+    judged = [_declared(idx, sub.rule, sub.allow, "allow", []) - _declared(idx, sub.rule, sub.sinks, "sink", [])
+              - _declared(idx, sub.rule, sub.doors, "door", []) for sub, _ in parts]
+    found = _merge_groups([got for _, got in parts], judged)
     rest = [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                     str(r)) for r, f, line, code, msg in idx.problems]
     rest += _skipped_importers(idx, med)

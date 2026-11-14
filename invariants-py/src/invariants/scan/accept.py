@@ -217,7 +217,7 @@ def _tree(node: Any, header: bool = False) -> str:
     try:
         return repr(node)
     except ValueError:                           # an int too long to print (sys.set_int_max_str_digits)
-        return f"int:{node.bit_length()}:{node % (1 << 64)}"
+        return f"int:{hex(node)}"                # hex has no digit limit: every bit counts (fix round 31)
 
 
 def _key(stmt: ast.AST | str) -> str:
@@ -435,7 +435,9 @@ def apply(rule: str, entries: list[Accept], findings: list[Finding]) -> tuple[li
                                       f"allow_unresolved entry {e.at} ({e.code}) has a sha {e.sha} from an "
                                       f"earlier inv, which hashed the statement's text (a reformat changed it); "
                                       f"the site at {was.file}:{was.line} is the statement reviewed, unchanged: "
-                                      f"write sha {was.sha} in the entry, then run `inv lock`",
+                                      f"write sha {was.sha} in the entry (the same statement, hashed the new "
+                                      f"way); a person then runs `inv lock --accept-weakening` after checking "
+                                      f"each site (the lock reads a new sha as a new acceptance)",
                                       e.file, e.line, e.col or 1))
                 continue
             more = (" (for an inferred path: also when the entrypoints or name-matched calls that reach the "
