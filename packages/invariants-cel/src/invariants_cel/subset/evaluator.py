@@ -14,9 +14,8 @@ from typing import Any, Callable
 from ..errors import CelError
 from .catalog import _MACROS
 from .cost import DEFAULT_BUDGET, CostExceeded
-from .data import (Uint, _bool, _data, _int_range, _nty, _num, _on_map, _safe_repr, _select, _ty, as_container,
-                   has_enum_key, map_key)
-from .equality import _eq, lookup, whole
+from .data import Uint, _bool, _data, _int_range, _nty, _num, _on_map, _safe_repr, _select, _ty, as_container, map_key
+from .equality import _eq, cel_keys, lookup, unique
 from .functions import _BUILTINS, ENGINE_ONLY
 from .operators import _ORDER, _arith, _in, _order
 from .parser import Node
@@ -81,9 +80,9 @@ def _sel(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
 
 
 def _idx(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
-    o, i = as_container(evaluate(n[1], env, budget)), evaluate(n[2], env, budget)
+    o, i = as_container(evaluate(n[1], env, budget), budget), evaluate(n[2], env, budget)
     if isinstance(o, Mapping):
-        found, v = _on_map(o, "reading a key", lambda: lookup(o, i))
+        found, v = _on_map(o, "reading a key", lambda: lookup(o, i, budget))
         if not found:
             err = CelError("no such key")          # the key is request data: only in .detail
             err.detail = _safe_repr(i)
@@ -142,11 +141,11 @@ def _bin(n: Node, env: dict[str, Any], budget: list[int]) -> Any:
         return not decider
     a, b = evaluate(n[2], env, budget), evaluate(n[3], env, budget)
     if op == "==":
-        return _eq(a, b)
+        return _eq(a, b, budget)
     if op == "!=":
-        return not _eq(a, b)
+        return not _eq(a, b, budget)
     if op == "in":
-        return _in(a, b)
+        return _in(a, b, budget)
     if op in _ORDER:
         return _order(op, a, b)
     return _arith(op, a, b)
@@ -172,7 +171,7 @@ def _call(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], bu
 
 def _has(sel: Node, env: dict[str, Any], budget: list[int]) -> bool:
     """has(e.f): whether e has the field f (a frame of its own, as a call level always had)."""
-    return _select(evaluate(sel[1], env, budget), sel[2], test=True)
+    return _select(evaluate(sel[1], env, budget), sel[2], test=True, budget=budget)
 
 
 def _arguments(tgt: Node | None, args: list[Node], env: dict[str, Any], budget: list[int]) -> list[Any]:
@@ -181,10 +180,12 @@ def _arguments(tgt: Node | None, args: list[Node], env: dict[str, Any], budget: 
     return ([evaluate(tgt, env, budget)] if tgt is not None else []) + [evaluate(a, env, budget) for a in args]
 
 
-def _iter(v: Any, name: str) -> list[Any]:
-    v = as_container(v)
+def _iter(v: Any, name: str, budget: list[int]) -> list[Any]:
+    """The elements a comprehension runs over: a list's, or a map's keys read as CEL keys (cel_keys:
+    a key CEL cannot hold is an error, as on cel-expr; the values are not read)."""
+    v = as_container(v, budget)
     if isinstance(v, Mapping):
-        return _on_map(v, f"{name}() over the keys", lambda: list(whole(v)) if has_enum_key(v) else list(v))
+        return _on_map(v, f"{name}() over the keys", lambda: cel_keys(v))
     if isinstance(v, (list, tuple)):
         return list(v)
     raise CelError(f"{name}() on {_ty(v)}")
@@ -196,23 +197,13 @@ def _macro(name: str, tgt: Node | None, args: list[Node], env: dict[str, Any], b
         tgt, args = args[0], args[1:]
     if tgt is None:                   # the parser refuses this form; never evaluate it
         raise CelError(f"{name}() needs a receiver list")
-    items, var, body = _iter(evaluate(tgt, env, budget), name), args[0][1], args[1]
+    items, var, body = _iter(evaluate(tgt, env, budget), name, budget), args[0][1], args[1]
     if name in ("map", "inv.unique_by"):
         vals = [evaluate(body, {**env, var: x}, budget) for x in items]
-        return vals if name == "map" else _unique(vals)
+        return vals if name == "map" else unique(vals, budget)
     if name == "filter":
         return [x for x in items if _bool(evaluate(body, {**env, var: x}, budget), name)]
     return _quantify(name, items, var, body, env, budget)
-
-
-def _unique(vals: list[Any]) -> bool:
-    """inv.unique_by: no two keys are CEL-equal."""
-    keys: list[Any] = []
-    for v in vals:
-        if any(_eq(v, key) for key in keys):
-            return False
-        keys.append(v)
-    return True
 
 
 _STOPS = {"exists": True, "all": False}       # where cel-cpp's loop condition ends all and exists

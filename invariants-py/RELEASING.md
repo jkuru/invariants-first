@@ -22,7 +22,6 @@ project owner, then delete this section. The dummies must not ship:
 | Field                                      | Today (dummy)                                       | Owner must supply                   |
 |--------------------------------------------|-----------------------------------------------------|-------------------------------------|
 | `[project] name` (four `pyproject.toml`)   | `invariants-first`, `invariants-cel`, `invariants-scan`, `invariants-schema-diff` | the final distribution names |
-| `[project] authors` (all four)             | Example Maintainer, `maintainer@example.com`        | the names and contacts to publish   |
 | `[project.urls]` (all four)                | Homepage, Source, Issues, Changelog on `example.com` | the repository's public URLs        |
 | SARIF `informationUri` (`packages/invariants-scan/src/invariants_scan/sarif.py`) | `https://example.com/invariants-first` | the project URL |
 
@@ -63,10 +62,11 @@ while this section exists or any `example.com` value remains in `pyproject.toml`
 - [ ] **SARIF tool URL.** `inv scan --format sarif` reports `informationUri` as the dummy
       `https://example.com/invariants-first` (in `packages/invariants-scan/src/invariants_scan/sarif.py`); set it to the
       project URL.
-- [ ] **Authors and maintainers.** `authors` in `[project]` (all four `pyproject.toml`) is the dummy
-      "Example Maintainer <maintainer@example.com>". Replace it (and add `maintainers` if they differ) with the names
-      and contact addresses the maintainers choose to publish. The `LICENSE` appendix's copyright line is
-      the Apache template and needs no change, but a `NOTICE` file may name the copyright holder.
+- [x] **Authors.** Settled by the owner: `authors` in `[project]` (all four `pyproject.toml`) is
+      `[{name = "Claude"}, {name = "Gemini"}, {name = "Jerry"}]`, names only, with no email address
+      (Jerry built it). Add `maintainers` only if the owner names them. The `LICENSE` appendix's
+      copyright line is the Apache template and needs no change, but a `NOTICE` file may name the
+      copyright holder.
 - [ ] **PyPI trusted publishing.** Create the four projects on PyPI (and TestPyPI), register this
       repository's release workflow (`.github/workflows/release.yml`, environments `testpypi` and
       `pypi`) as a trusted publisher, and create those two GitHub environments (required reviewers

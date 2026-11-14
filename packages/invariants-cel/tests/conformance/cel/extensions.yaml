@@ -20,7 +20,11 @@ cases:
 - {name: unique_by empty, expr: 'inv.unique_by([], x, x)', expected: violation}
 - {name: unique_by error in key, expr: 'inv.unique_by(xs, x, x.nope)', env: {xs: [{k: 1}]}, expected: rule_error}
 - {name: unique_by over map keys, expr: '!inv.unique_by({"a": 1, "b": 2}, k, k)', expected: ok}
-- {name: unique_by needs a variable, expr: 'inv.unique_by(xs, 1, 1)', env: {xs: []}, expected: parse_error}
+- {name: unique_by lists equal across int and double, expr: 'inv.unique_by([[1, [2]], [1, [2.0]]], x, x)', expected: ok}
+- {name: unique_by maps equal in any order, expr: 'inv.unique_by([{"a": 1, "b": 2}, {"b": 2, "a": 1}], x, x)', expected: ok}
+- {name: unique_by bool is not a number, expr: 'inv.unique_by([1, true, [0], [false]], x, x)', expected: violation}
+- {name: unique_by a repeat late in a long list, expr: 'inv.unique_by(xs, x, x)', env: {xs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15.0]}, expected: ok}
+- {name: unique_by needs a variable,expr: 'inv.unique_by(xs, 1, 1)', env: {xs: []}, expected: parse_error}
 - {name: extensions compose, expr: 'inv.sum(inv.zip([1, 2], [3, 4]).map(p, p[0] * p[1]))', value: 11}
 - {name: sum arity is checked at load, expr: 'inv.sum([1], [2]) == 1', expected: parse_error}
 - {name: zip arity is checked at load, expr: 'inv.zip([1]) == []', expected: parse_error}

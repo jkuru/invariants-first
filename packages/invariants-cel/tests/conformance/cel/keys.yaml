@@ -24,3 +24,11 @@ cases:
 - {name: null map literal key is an error, expr: 'size({null: 1}) == 1', expected: rule_error}
 - {name: list map literal key is an error, expr: 'size({[1]: 1}) == 1', expected: rule_error}
 - {name: repeated map literal key is an error, expr: 'size({1: "a", 1: "b"}) == 1', expected: rule_error}
+# a map from the data with a key CEL cannot hold (fix round 34): the macros and size() read its keys as
+# CEL keys on every backend, so it is an error there; they never read its values
+- {name: double key from data under exists is an error, expr: 'm.exists(k, true)', env: {m: {1.5: 1, a: 2}}, expected: rule_error}
+- {name: double key from data under all is an error, expr: 'm.all(k, false)', env: {m: {1.5: 1}}, expected: rule_error}
+- {name: null key from data under filter is an error, expr: 'size(m.filter(k, true)) == 1', env: {m: {null: 1}}, expected: rule_error}
+- {name: null key from data under unique_by is an error, expr: 'inv.unique_by(m, k, k)', env: {m: {null: 1}}, expected: rule_error}
+- {name: size of a map from data with a double key is an error, expr: 'size(m) == 1', env: {m: {2.5: 1}}, expected: rule_error}
+- {name: a map comprehension reads only the keys, expr: 'm.exists(k, k == "a")', env: {m: {a: .nan}}, expected: violation}

@@ -152,12 +152,7 @@ def ext_unique(vals: Any) -> bool:
     """True if no two values are equal (the tail of inv.unique_by after the map)."""
     if not isinstance(vals, (list, tuple)):
         raise CelError("inv.unique_by() needs a list or map")
-    seen: list[Any] = []
-    for v in vals:
-        if any(subset._eq(v, s) for s in seen):
-            return False
-        seen.append(v)
-    return True
+    return subset.unique(vals)             # hashed by CEL value: linear (fix round 34)
 
 
 # ---- shared: printing a subset tree back to CEL text, with the extensions renamed --------
@@ -438,12 +433,21 @@ _MAX_DEPTH = 64
 
 
 def _fields(o: Any) -> dict[str, Any] | None:
-    """Public data fields of a non-mapping object, or None if it is not record-like."""
+    """Public data fields of a non-mapping object, or None if it is not record-like. A pydantic
+    model's are its fields and then its computed fields (@computed_field), as model_dump() has them."""
     if dataclasses.is_dataclass(o) and not isinstance(o, type):
         return {f.name: getattr(o, f.name) for f in dataclasses.fields(o) if not f.name.startswith("_")}
     mf = getattr(type(o), "model_fields", None)
     if isinstance(mf, dict):
-        return {k: getattr(o, k) for k in mf if not k.startswith("_")}
+        model = {k: getattr(o, k) for k in mf if not k.startswith("_")}
+        computed = getattr(type(o), "model_computed_fields", None)
+        for k in computed if isinstance(computed, dict) else ():
+            if not k.startswith("_"):
+                try:
+                    model[k] = getattr(o, k)
+                except Exception as e:      # a computed field that fails is an evaluation error
+                    raise raised(f"reading {k!r}", e) from e
+        return model
     if values.listlike(o):              # a sequence or iterable is never the map of its attributes
         raise values.listlike_error(o)
     out: dict[str, Any] = {}

@@ -83,12 +83,13 @@ def _order(op: str, a: Any, b: Any) -> bool:
     return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
 
 
-def _in(a: Any, b: Any) -> bool:
-    """a in b. The list or map is read whole, as on the engines (a record as the map of its fields)."""
-    b = as_container(b)
+def _in(a: Any, b: Any, budget: list[int] | None = None) -> bool:
+    """a in b. The list or map is read whole, as on the engines (a record as the map of its fields),
+    charged to budget (cost.charge_whole)."""
+    b = as_container(b, budget)
     if isinstance(b, (list, tuple)):
-        b = whole(b)
-        return any(_eq(a, x) for x in b)
+        b = whole(b, budget)
+        return any(_eq(a, x, budget) for x in b)
     if isinstance(b, Mapping):
-        return lookup(_on_map(b, "reading", lambda: whole(b)), whole(a))[0]
+        return lookup(_on_map(b, "reading", lambda: whole(b, budget)), whole(a, budget))[0]
     raise CelError(f"no such overload: in {_ty(b)}")
