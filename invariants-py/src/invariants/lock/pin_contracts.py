@@ -9,11 +9,13 @@ import json
 import pathlib
 from typing import Any
 
-from .. import _typeinfo as ti
+from invariants_cel import typeinfo as ti
+from invariants_schema_diff.changes import _plain, _sha
+
 from ..confinement import confined
 from ..errors import LoadError
 from ..resolve import resolve_ref
-from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS, _plain, _sha
+from .contracts import PY_CONTRACTS, SCHEMA_CONTRACTS
 from .pin_jsonschema import json_schema
 from .pin_signatures import _signature_pin
 from .pin_types import _DATA_KEYS, SCHEMA_PROSE, Schemas, _class_ref, _type_schema, resolved_schema, strip_prose

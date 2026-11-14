@@ -13,6 +13,9 @@ defaults:
     working-directory: invariants-py    # the library; the apps job overrides this
 
 env:
+  # the three workspace libraries (packages/), installed before invariants-first, which depends on them
+  # (they are not on the package index: pip takes them from here)
+  WORKSPACE: -e ../packages/invariants-cel -e ../packages/invariants-scan -e ../packages/invariants-schema-diff
   # the tests that need only the core dependencies (PyYAML) and pytest
   CORE_TESTS: >-
     tests/test_package.py tests/test_mcp.py tests/test_cel.py tests/test_cel_conformance.py
@@ -20,14 +23,18 @@ env:
   # every module imports, except an integration whose own extra is not installed
   CORE_IMPORTS: |
     import importlib, pkgutil, invariants
-    extras = {"invariants.integrations.fastapi": "fastapi", "invariants.integrations.pydantic": "pydantic"}
-    for m in pkgutil.walk_packages(invariants.__path__, "invariants."):
-        try:
-            importlib.import_module(m.name)
-        except ModuleNotFoundError as e:
-            if e.name != extras.get(m.name):
-                raise
-    print("imported", invariants.__version__, invariants.__file__)
+    extras = {"invariants.integrations.fastapi": "fastapi", "invariants.integrations.pydantic": "pydantic",
+              "invariants_cel.expr_python": "cel_expr_python"}
+    for pkg in ("invariants", "invariants_cel", "invariants_scan", "invariants_schema_diff"):
+        top = importlib.import_module(pkg)
+        for m in pkgutil.walk_packages(top.__path__, pkg + "."):
+            try:
+                importlib.import_module(m.name)
+            except ModuleNotFoundError as e:
+                if e.name != extras.get(m.name):
+                    raise
+        print("imported", pkg, top.__file__)
+    print("invariants", invariants.__version__)
 
 jobs:
   test:
@@ -47,7 +54,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,cel]'
+          python -m pip install $WORKSPACE -e '.[dev,cel]'
       - name: Test
         env:
           INV_CEL_BACKEND: ${{ matrix.backend }}
@@ -64,8 +71,11 @@ jobs:
       - name: mypy
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,cel]'
+          python -m pip install $WORKSPACE -e '.[dev,cel]'
           python -m mypy
+          for lib in invariants-cel invariants-scan invariants-schema-diff; do
+            (cd "../packages/$lib" && python -m mypy)
+          done
 
   core-only:
     name: the core install alone, then tests without the cel extra
@@ -78,7 +88,7 @@ jobs:
       - name: Install the library with no extras, and pytest
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest      # no extras: the core must run on its own dependencies
+          python -m pip install $WORKSPACE -e . pytest   # no extras: the core must run on its own dependencies
           python -m pip check
       - name: Import every module and run the core tests on the core dependencies alone
         run: |
@@ -87,7 +97,7 @@ jobs:
           python -m pytest -q $CORE_TESTS
       - name: The full suite without the cel extra
         run: |
-          python -m pip install -e '.[dev]'      # the suite's own dependencies; still no cel-expr
+          python -m pip install $WORKSPACE -e '.[dev]'   # the suite's own dependencies; still no cel-expr
           python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('cel_expr_python') is not None)"
           python -m pytest tests -q
 
@@ -102,7 +112,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,cel]'
+          python -m pip install $WORKSPACE -e '.[dev,cel]'
       - name: Test with assert statements stripped
         env:
           PYTHONOPTIMIZE: "1"          # the library must never rely on `assert` for a check
@@ -121,8 +131,50 @@ jobs:
       - name: Install and test
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,cel]'
+          python -m pip install $WORKSPACE -e '.[dev,cel]'
           python -m pytest tests -q -n 2
+
+  # each library on its own: only it (and the libraries it depends on, from this checkout) is installed,
+  # not editable, and its tests import that installed copy; invariants-first is not there to lean on
+  library:
+    name: ${{ matrix.package }} alone (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/${{ matrix.package }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [invariants-cel, invariants-scan, invariants-schema-diff]
+        python: ["3.11", "3.14"]
+        include:
+          - package: invariants-cel
+            python: "3.13"
+            extras: test,cel              # the cel-expr engine too: every case on both engines
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Install the library alone
+        run: |
+          python -m pip install --upgrade pip
+          deps=""
+          if [ "${{ matrix.package }}" = invariants-schema-diff ]; then deps="../invariants-cel"; fi
+          python -m pip install $deps ".[${{ matrix.extras || 'test' }}]"
+          python -m pip check
+          python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('invariants') is not None)"
+      - name: Test
+        run: |
+          mod=$(echo "${{ matrix.package }}" | tr - _)
+          python -c "import $mod, sys; sys.exit('site-packages' not in $mod.__file__)"
+          python -m pytest tests -q -p no:cacheprovider
+      - name: mypy
+        if: matrix.python == '3.14'
+        run: |
+          python -m pip install mypy==2.4.1
+          python -m mypy
 
   build:
     runs-on: ubuntu-latest
@@ -131,28 +183,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Build wheel and sdist
+      - name: Build the four distributions (wheel and sdist each)
         run: |
           python -m pip install build twine
-          python -m build
+          for lib in invariants-cel invariants-scan invariants-schema-diff; do
+            python -m build --outdir dist "../packages/$lib"
+          done
+          python -m build --outdir dist .
+          ls dist
       - name: Check the distributions' metadata
         run: python -m twine check --strict dist/*
       - name: Install the wheel into a fresh venv and smoke-test it
         run: |
           python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/pip install dist/*.whl pytest     # the wheel's own dependencies, no extras
+          # invariants-first's dependencies on the three libraries resolve to the wheels built here
+          /tmp/wheelcheck/bin/pip install --find-links dist dist/invariants_first-*.whl pytest
           /tmp/wheelcheck/bin/pip check
+          /tmp/wheelcheck/bin/python -c "import importlib.metadata as m; print([m.version(d) for d in ('invariants-cel', 'invariants-scan', 'invariants-schema-diff')])"
           /tmp/wheelcheck/bin/python -c "$CORE_IMPORTS"
-          # the tests below must import the installed wheel, never this checkout's src/
-          /tmp/wheelcheck/bin/python -c "import invariants, sys; sys.exit('site-packages' not in invariants.__file__)"
+          # the tests below must import the installed wheels, never this checkout's src/
+          /tmp/wheelcheck/bin/python -c "import invariants, invariants_cel, invariants_scan, invariants_schema_diff as d, sys; sys.exit(not all('site-packages' in m.__file__ for m in (invariants, invariants_cel, invariants_scan, d)))"
           /tmp/wheelcheck/bin/inv --version
           /tmp/wheelcheck/bin/inv --help
           /tmp/wheelcheck/bin/inv-mcp --help
+          /tmp/wheelcheck/bin/inv-scan --help
           /tmp/wheelcheck/bin/python -m pytest -q -p no:cacheprovider $CORE_TESTS
       - name: Install the sdist into a fresh venv
         run: |
           python -m venv /tmp/sdistcheck
-          /tmp/sdistcheck/bin/pip install dist/*.tar.gz
+          /tmp/sdistcheck/bin/pip install --find-links dist dist/invariants_first-*.tar.gz
           cd /tmp && /tmp/sdistcheck/bin/python -c "import invariants, invariants.cli, invariants.mcp; print(invariants.__version__, invariants.__file__)"
           /tmp/sdistcheck/bin/inv --help
           /tmp/sdistcheck/bin/inv-mcp --help

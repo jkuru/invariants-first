@@ -8,8 +8,9 @@ import pydantic
 import pytest
 
 import invariants as inv
-from invariants import cel, registry
-from invariants.cel import subset
+import invariants_cel as cel
+from invariants import registry
+from invariants_cel import subset
 from support import raises
 
 MOD = __name__

@@ -8,8 +8,9 @@ import dataclasses
 import typing
 from typing import Any
 
-from .. import _typeinfo as ti
-from .contracts import MAX_DEPTH, _plain
+from invariants_cel import typeinfo as ti
+from invariants_schema_diff.changes import MAX_DEPTH, _plain
+
 from .pin_types import class_shape, strip_prose
 
 

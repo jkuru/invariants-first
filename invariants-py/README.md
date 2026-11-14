@@ -32,7 +32,7 @@ calls the payment gateway. `inv init` finds both, freezes the back doors that sk
 and from then on no change can loosen a limit or add a back door without a person accepting it.
 
 ```bash
-pip install invariants-first        # a dev dependency; not on PyPI yet: pip install -e path/to/invariants-py
+pip install invariants-first        # a dev dependency; not on PyPI yet: pip install path/to/packages/invariants-* -e path/to/invariants-py
 inv init                            # drafts invariants.yaml from your code and locks it; commit both files
 ```
 
@@ -245,7 +245,7 @@ This is the full system, end to end on one rule. For the lighter start, see
 [Start in 10 minutes](#start-in-10-minutes-lock-the-laws-you-already-have).
 
 ```bash
-pip install 'invariants-first[schema]' pytest   # not on PyPI yet: pip install -e 'path/to/invariants-py[schema]'
+pip install 'invariants-first[schema]' pytest   # not on PyPI yet: pip install path/to/packages/invariants-* -e 'path/to/invariants-py[schema]'
 ```
 
 Python 3.11+; the core depends only on PyYAML. Extras: `[schema]` (the JSON Schema check in
@@ -516,7 +516,7 @@ trace (the committed traces are hand-written), Claude, or a recording
 
 ## Contributing
 
-`pip install -e '.[dev,cel]'`, then run the suite on each CEL backend
+`pip install -e ../packages/invariants-cel -e ../packages/invariants-scan -e ../packages/invariants-schema-diff -e '.[dev,cel]'`, then run the suite on each CEL backend
 (`INV_CEL_BACKEND=subset|cel-expr python -m pytest tests -q`) and `python -m mypy`. The library
 never rewrites your code's AST and never calls `eval` or `exec` (a test checks its source for
 `eval(` and `exec(`).

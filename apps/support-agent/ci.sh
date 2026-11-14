@@ -19,7 +19,9 @@ else
     echo "ci.sh: creating .venv from $BASE (set PYTHON to reuse an existing interpreter)" >&2
     "$BASE" -m venv --clear .venv
     if [ -f ../../invariants-py/pyproject.toml ] && [ -d ../../invariants-py/src/invariants ]; then
-      .venv/bin/python -m pip install -q --disable-pip-version-check -e "../../invariants-py[pydantic,schema]"
+      # the three libraries invariants-first depends on (packages/), then invariants-first itself
+      .venv/bin/python -m pip install -q --disable-pip-version-check -e ../../packages/invariants-cel \
+        -e ../../packages/invariants-scan -e ../../packages/invariants-schema-diff -e "../../invariants-py[pydantic,schema]"
     fi
     if ! .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev,langgraph]'; then
       [ "${REQUIRE_LANGGRAPH:-}" != 1 ] \

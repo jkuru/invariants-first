@@ -56,7 +56,10 @@ runs:
         "$base_py" -I -m venv "$gate"
         gate_py="$gate/bin/python"
         [ -x "$gate_py" ] || gate_py="$gate/Scripts/python.exe"
-        "$gate_py" -I -m pip install --quiet --disable-pip-version-check "${GITHUB_ACTION_PATH:?}/invariants-py[schema]"
+        # invariants-first and the three libraries it depends on, all from the action's own checkout
+        "$gate_py" -I -m pip install --quiet --disable-pip-version-check \
+          "${GITHUB_ACTION_PATH:?}/packages/invariants-cel" "${GITHUB_ACTION_PATH:?}/packages/invariants-scan" \
+          "${GITHUB_ACTION_PATH:?}/packages/invariants-schema-diff" "${GITHUB_ACTION_PATH:?}/invariants-py[schema]"
         echo "invariants gate: $gate_py"
     - name: install the project's dependencies
       if: ${{ inputs.install != '' }}

@@ -6,8 +6,8 @@ import dataclasses
 import pytest
 
 import invariants as inv
-from invariants import cel
-from invariants.cel import subset
+import invariants_cel as cel
+from invariants_cel import subset
 from support import FIXTURES, RULES, raises
 
 

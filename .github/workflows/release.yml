@@ -1,12 +1,13 @@
-# Release: build the sdist and wheel and upload them to PyPI with trusted publishing (OpenID
-# Connect; no API token is stored in the repository). A draft until the "Before publishing" list in
-# invariants-py/RELEASING.md is done: the first job refuses to go on while that section exists, so
+# Release: build the four distributions' sdists and wheels (invariants-cel, invariants-scan and
+# invariants-schema-diff from packages/, then invariants-first, which depends on them) and upload them to
+# PyPI with trusted publishing (OpenID Connect; no API token is stored in the repository), in that order.
+# A draft until the "Before publishing" list in invariants-py/RELEASING.md is done: the first job refuses to go on while that section exists, so
 # this workflow cannot upload placeholder metadata (tests/test_fix_round6.py checks that the section and
 # the placeholders are open or settled together, so deleting the section with them keeps CI green). It runs only by hand (Actions > release > Run
 # workflow), never on a push or a tag.
 #
 # Before the first run, a maintainer:
-#   1. creates the project on PyPI and on TestPyPI under the final distribution name;
+#   1. creates the four projects on PyPI and on TestPyPI under the final distribution names;
 #   2. registers this repository, this workflow file (release.yml) and the environments below
 #      (`testpypi`, `pypi`) as trusted publishers there;
 #   3. creates the two GitHub environments, with required reviewers on `pypi`.
@@ -40,8 +41,9 @@ jobs:
             echo "RELEASING.md still lists release blockers under 'Before publishing'; settle them first" >&2
             exit 1
           fi
-          if grep -q 'example\.com' pyproject.toml src/invariants/scan/sarif.py; then
-            echo "pyproject.toml or the SARIF informationUri still holds the dummy example.com values" >&2
+          if grep -q 'example\.com' pyproject.toml ../packages/*/pyproject.toml \
+              ../packages/invariants-scan/src/invariants_scan/sarif.py; then
+            echo "a pyproject.toml or the SARIF informationUri still holds the dummy example.com values" >&2
             exit 1
           fi
 
@@ -53,12 +55,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Build the sdist and wheel
+      - name: Build the sdists and wheels, one directory per distribution in release order
         run: |
           python -m pip install build twine
-          python -m build
+          python -m build --outdir dist/1-cel ../packages/invariants-cel
+          python -m build --outdir dist/2-scan ../packages/invariants-scan
+          python -m build --outdir dist/3-schema-diff ../packages/invariants-schema-diff
+          python -m build --outdir dist/4-first .
       - name: Check the metadata renders
-        run: python -m twine check --strict dist/*
+        run: python -m twine check --strict dist/*/*
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -75,14 +80,24 @@ jobs:
         with:
           name: dist
           path: dist/
-      - name: Upload to TestPyPI
-        if: inputs.target == 'testpypi'
+      # the libraries first: invariants-first's dependencies are on the index before it is
+      - name: Upload invariants-cel
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/
-      - name: Upload to PyPI
-        if: inputs.target == 'pypi'
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          packages-dir: dist/1-cel/
+      - name: Upload invariants-scan
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          packages-dir: dist/2-scan/
+      - name: Upload invariants-schema-diff
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          packages-dir: dist/3-schema-diff/
+      - name: Upload invariants-first
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          packages-dir: dist/4-first/

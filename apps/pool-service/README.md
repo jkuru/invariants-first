@@ -11,6 +11,7 @@ This is a standalone project. It sits in `apps/` of the monorepo and depends on
 the library as an installed package:
 
 ```
+pip install -e ../../packages/invariants-cel -e ../../packages/invariants-scan -e ../../packages/invariants-schema-diff   # the libraries it depends on
 pip install -e '../../invariants-py[fastapi,pydantic,schema]'   # the library from this checkout (or pip install invariants-first)
 pip install -e '.[dev]'
 ```

@@ -44,7 +44,9 @@ from .registry import (ErrorSpike, Handoff, JsonlReviews, MemoryReviews, Registr
 from .snapshot import check_snapshot
 
 # The layers below the package import nothing above them; it wires what they read from above here.
-from . import _scan_hooks, confinement as _confinement, registry as _registry
+from invariants_scan import hooks as _scan_hooks  # noqa: E402
+
+from . import confinement as _confinement, registry as _registry
 from .loader import binding_problem as _binding_problem, schemas as _schemas
 from .registry import coverage as _coverage
 
@@ -68,7 +70,7 @@ try:
     __version__ = _metadata.version("invariants-first")
 except _metadata.PackageNotFoundError:      # running from a source tree that is not installed
     __version__ = "0.0.0+unknown"
-CEL_BACKEND = "subset"     # the default backend name; see invariants.cel.get_backend
+CEL_BACKEND = "subset"     # the default backend name; see invariants.cel.get_backend (invariants_cel)
 
 __all__ = [
     "provider", "Dependency", "guard", "model_call", "edge", "Checked", "parse",

@@ -9,7 +9,8 @@ import inspect
 import typing
 from typing import Any, Callable
 
-from .. import _typeinfo as ti
+from invariants_cel import typeinfo as ti
+
 from ..errors import LoadError
 from ..resolve import resolve
 

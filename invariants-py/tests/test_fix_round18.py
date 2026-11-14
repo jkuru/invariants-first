@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import invariants_schema_diff.changes
 import json
 import pathlib
 import subprocess
@@ -235,7 +236,7 @@ def test_model_for_replay_compares_the_configured_model(tmp_path):
 # --- 7. schema weakenings ----------------------------------------------------------------------------
 def _weak(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     a, b = {"jsonschema": old}, {"jsonschema": new}
-    return [why for p, x, y in lock.contracts._json_paths(a, b, "", [])
+    return [why for p, x, y in invariants_schema_diff.changes._json_paths(a, b, "", [])
             if (why := lock.constraint_weakening(p, x, y, a, b))]
 
 
@@ -313,7 +314,7 @@ def test_pydantic_extra_forbid_optional_field_is_a_weakening():
 
     a, b = {"pydantic": Old.model_json_schema()}, {"pydantic": New.model_json_schema()}
     assert a["pydantic"]["additionalProperties"] is False
-    whys = [why for p, x, y in lock.contracts._json_paths(a, b, "", [])
+    whys = [why for p, x, y in invariants_schema_diff.changes._json_paths(a, b, "", [])
             if (why := lock.constraint_weakening(p, x, y, a, b))]
     assert any("is_admin" in w for w in whys), whys
 

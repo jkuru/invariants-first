@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invariants-scan"
+version = "0.1.0"
+description = "A static, read-only call-graph check for Python: every call path to a protected sink passes its door."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{name = "Example Maintainer", email = "maintainer@example.com"}]   # dummy: see invariants-py/RELEASING.md
+dependencies = []
+keywords = ["static-analysis", "call-graph", "ast", "sarif"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+
+# Dummy URLs on example.com (reserved for examples): replace them before a release (invariants-py/RELEASING.md).
+[project.urls]
+Homepage = "https://example.com/invariants-first"
+Source = "https://example.com/invariants-first/source"
+Issues = "https://example.com/invariants-first/issues"
+Changelog = "https://example.com/invariants-first/changelog"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+inv-scan = "invariants_scan.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+invariants_scan = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/invariants_scan"]
+warn_unused_ignores = true
+check_untyped_defs = true

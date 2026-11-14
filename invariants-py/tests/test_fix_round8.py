@@ -17,8 +17,8 @@ import pytest
 
 import invariants as inv
 import round8 as r8
-from invariants import cel
-from invariants.cel import available_backends, get_backend
+import invariants_cel as cel
+from invariants_cel import available_backends, get_backend
 from invariants.integrations import pydantic as inv_pd
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]

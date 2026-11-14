@@ -7,7 +7,8 @@ import pathlib
 
 import pytest
 
-from invariants import doors, graphify, scan
+import invariants_scan as scan
+from invariants import doors, graphify
 from invariants.loader import expand_short_forms
 from cli_support import run_inv, write_project
 

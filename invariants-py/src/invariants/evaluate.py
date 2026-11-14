@@ -5,8 +5,9 @@ import logging
 import time
 from typing import Any
 
-from .cel import CelError
-from .cel.errors import ALLOW_NON_FINITE
+from invariants_cel import CelError
+from invariants_cel.errors import ALLOW_NON_FINITE
+
 from .errors import RAISE
 from .model import DEFAULT_NAMES, Outcome, Rule
 from .providers import ProviderFailed, fetch_providers, read_by_clauses, resolve_path

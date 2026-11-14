@@ -34,8 +34,8 @@ import invariants as inv
 import invariants.testing
 import round24 as r24
 
-from invariants.cel import _regex, available_backends, get_backend
-from invariants.cel.errors import CelError
+from invariants_cel import _regex, available_backends, get_backend
+from invariants_cel.errors import CelError
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 HAS_CEL_EXPR = "cel-expr" in BACKENDS
@@ -292,7 +292,7 @@ def test_a_constant_pattern_over_the_limit_does_not_load(backend):
 
 
 def test_the_subset_charges_pattern_compiles_cached_or_not():
-    from invariants.cel.subset import cost
+    from invariants_cel.subset import cost
     p = "[a-z]{400}"                       # ~400 instructions: about 25 units a call
     prog = get_backend("subset").compile(f"args.xs.exists(x, x.matches('{p}'))")
     cost._RE_CACHE.clear()
@@ -308,7 +308,7 @@ def test_the_pattern_size_bound_covers_the_subset_program():
 
 
 def test_the_pattern_cache_is_bounded():
-    from invariants.cel.subset import cost
+    from invariants_cel.subset import cost
     for i in range(cost._RE_CACHE_MAX + 50):
         kind("subset", "args.s.matches(args.p)", s="a", p=f"a{i}")
     assert len(cost._RE_CACHE) <= cost._RE_CACHE_MAX

@@ -17,7 +17,7 @@ import pytest
 
 import invariants as inv
 import round7 as r7
-from invariants.cel import available_backends, get_backend
+from invariants_cel import available_backends, get_backend
 from invariants.loader import closed_schema
 from invariants.testing import make_checked
 

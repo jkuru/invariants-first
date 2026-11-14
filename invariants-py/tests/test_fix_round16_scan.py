@@ -10,7 +10,8 @@ import textwrap
 
 import pytest
 
-from invariants import bootstrap, doors, scan
+import invariants_scan as scan
+from invariants import bootstrap, doors
 from cli_support import write_project
 
 REPO = textwrap.dedent("""

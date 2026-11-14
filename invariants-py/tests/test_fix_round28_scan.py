@@ -30,8 +30,9 @@ import textwrap
 import pytest
 from cli_support import write_project
 
-from invariants import doors, scan
-from invariants.scan import accept
+import invariants_scan as scan
+from invariants import doors
+from invariants_scan import accept
 
 PAY = "def send_to_gateway(c, a):\n    pass\n\ndef refund(c, a):\n    send_to_gateway(c, a)\n"
 

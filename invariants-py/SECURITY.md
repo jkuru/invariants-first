@@ -34,7 +34,7 @@ These are security issues:
   clause must be a `rule_error`, on every backend.
 - A value a rule reads becoming a different value on its way to CEL: a naive datetime read as if it
   were in some timezone, a `Decimal` rounded to a double, a `date` turned into a timestamp. The
-  mapping in `invariants/cel/values.py` refuses these (a `LoadError` or a `rule_error`), on every
+  mapping in `invariants_cel/values.py` refuses these (a `LoadError` or a `rule_error`), on every
   backend.
 - A pydantic reply schema accepting a value a strict schema refuses (`"0.5"` or `true` for a float)
   unless its `model_config` sets `strict=False`.

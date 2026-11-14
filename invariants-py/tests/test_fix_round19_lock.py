@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import invariants_schema_diff.schemas
 import dataclasses
 import json
 import pathlib
@@ -31,7 +32,7 @@ from cli_support import CLEAN, copy_app, run_inv
 
 # --- 3. additionalProperties absent on a map ----------------------------------------------------------
 def _schema_diff(a, b, kind="pydantic"):
-    ch = lockmod.schema_diff._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", kind: a}},
+    ch = invariants_schema_diff.schemas._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", kind: a}},
                                   {"B": {"name": "M", kind: b}})
     return any(c.weakened for c in ch), [str(c) for c in ch]
 

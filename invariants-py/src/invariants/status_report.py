@@ -9,11 +9,12 @@ import json
 import pathlib
 from typing import Any, Iterable, Mapping
 
+from invariants_scan import Report
+
 from .errors import CoverageError
 from .model import GUARD_POINTS, Rule
 from .registry import Registry
 from .registry.coverage import _ablation_problems, _target_problems
-from .scan import Report
 
 DOWNGRADE = {"held": "enforce(known-callers)"}
 # an unresolved site cannot go in allow: (that freezes a resolved call path); a person who reviewed

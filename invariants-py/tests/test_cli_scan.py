@@ -8,7 +8,8 @@ import jsonschema
 import pytest
 
 import invariants as inv
-from invariants import cli, scan
+import invariants_scan as scan
+from invariants import cli
 from cli_support import BYPASS, CLEAN, run_inv, write_project
 
 

@@ -23,8 +23,8 @@ from invariants import lock
 from invariants.cli import git_base
 from invariants.confinement import CONFINE_ENV
 from invariants.errors import LoadError
-from invariants.lock.contracts import _json_paths
-from invariants.lock.schema_diff import constraint_weakening
+from invariants_schema_diff.changes import _json_paths
+from invariants_schema_diff.schemas import constraint_weakening
 from test_fix_round26_confine import _mcp
 
 

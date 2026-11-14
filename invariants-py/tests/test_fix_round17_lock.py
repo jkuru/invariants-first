@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import invariants_schema_diff.schemas
 import json
 import os
 import pathlib
@@ -95,7 +96,7 @@ def test_a_lock_that_stayed_still_compares(tmp_path):
 
 # --- 2. additionalProperties ------------------------------------------------------------------------
 def _schema_diff(a, b):
-    ch = lockmod.schema_diff._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", "pydantic": a}},
+    ch = invariants_schema_diff.schemas._schema_changes([("contract c", "schema", "A", "B")], {"A": {"name": "M", "pydantic": a}},
                                   {"B": {"name": "M", "pydantic": b}})
     return any(c.weakened for c in ch), [str(c) for c in ch]
 

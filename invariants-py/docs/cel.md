@@ -1,7 +1,9 @@
 # CEL
 
 Rules are written in [CEL](https://cel.dev), the Common Expression Language. This page covers the
-two engines, how Python values reach a rule, and where the engines still differ.
+two engines, how Python values reach a rule, and where the engines still differ. The engines and the
+type check are the invariants-cel library (`invariants_cel`, under `packages/invariants-cel/` of the
+monorepo), which `invariants.cel` re-exports and which works on its own: see its README.
 
 - [Backends](#backends)
 - [Cost limits](#cost-limits)
@@ -43,7 +45,7 @@ arguments or in a form CEL does not have (`size(x, 1)`, `x.size(1)`, `'a'.starts
 (`invariants.cel.subset.ARITY`), and a macro written in global form (`exists(xs, x, p)`; write
 `xs.exists(x, p)`). `has()` has only the global form: `x.has(y)` does not parse ("has() has only the
 global form: has(a.b)"). The extensions `inv.sum`, `inv.zip` and `inv.unique_by` work on every backend.
-Every backend passes the conformance suite in `tests/conformance/cel/`.
+Every backend passes the conformance suite in `packages/invariants-cel/tests/conformance/cel/`.
 
 ## Cost limits
 
@@ -147,11 +149,11 @@ The subset's conversions follow the CEL spec: `int()` takes an int, a bool, a do
 space, tab, newline, vertical tab, form feed or carriage return, as absl reads it on cel-expr, so
 `int("500\u00a0")` is a `rule_error` on both); `double()` takes an int, a double or decimal text; `string()` takes a string, an int, a bool (`"true"`) or UTF-8 bytes; `bool()` takes a bool or the text `1`, `t`, `true`, `TRUE`, `True`, `0`, `f`, `false`, `FALSE`, `False`. `string()` of a double is a `rule_error` on the subset, because the engines print doubles differently (`string(2.0)` is `"2"` on cel-expr and `"2.0"` on other engines); compare the number instead. On cel-expr the adapter routes `int()`, `double()`, `bool()` and `string()` of text, of a bool and (for `int()`) of a double through the same rules, so these agree on every backend (conformance suite `types.yaml`): `double("0x10")`, `int("0x10")`, `int("1_0")`, `double("1_0")`, non-ASCII digits (`int("٣")`), `int(-9223372036854775808.0)` and `bool(1)` are `rule_error`s, and `string(true)` is `"true"`. `timestamp()` and `duration()` of text, `string()` of a timestamp or a
 duration, `int()` of a timestamp and the getters follow one set of rules on every backend too
-(`cel/values.py`; conformance suite `time.yaml`).
+(`invariants_cel/values.py`; conformance suite `time.yaml`).
 
 ## Python to CEL types
 
-Every backend reads Python values through one mapping (`invariants/cel/values.py`), and the
+Every backend reads Python values through one mapping (`invariants_cel/values.py`), and the
 load-time type checker uses the same table, so a rule reads the same value everywhere:
 
 | Python value | CEL value | Notes |

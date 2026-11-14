@@ -20,8 +20,8 @@ from typing import Any
 import pytest
 
 from invariants import providers, snapshot
-from invariants.cel import available_backends, get_backend
-from invariants.cel.errors import CelError, CelSyntaxError
+from invariants_cel import available_backends, get_backend
+from invariants_cel.errors import CelError, CelSyntaxError
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 INT_MIN, INT_MAX = -2**63, 2**63 - 1
@@ -80,7 +80,7 @@ def test_uint_literals_are_uint_values(backend: str, expr: str) -> None:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_uint_literal_reads_as_uint_call(backend: str) -> None:
-    from invariants.cel import subset
+    from invariants_cel import subset
     assert subset.parse("5u") == subset.parse("uint(5)")
     assert subset.parse("0x10u") == subset.parse("uint(16)")
 

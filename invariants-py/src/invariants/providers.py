@@ -7,8 +7,9 @@ import contextvars
 from collections.abc import Mapping
 from typing import Any, Callable, Generic, Iterator, TypeVar
 
-from .cel import CelError
-from .cel.errors import raised
+from invariants_cel import CelError
+from invariants_cel.errors import raised
+
 from .model import Provider, Rule
 from .registry import Registry
 

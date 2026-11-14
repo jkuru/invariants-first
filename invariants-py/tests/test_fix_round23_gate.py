@@ -171,7 +171,7 @@ def test_a_root_that_makes_an_exclude_match_more_is_a_weakening(tmp_path):
 
 # --- M1: the always-skipped directories are pinned ------------------------------------------------
 def test_the_skip_list_is_pinned_from_what_the_scan_skips():
-    from invariants.scan import SKIP_DIRS
+    from invariants_scan import SKIP_DIRS
     pin = lock.scan_pin(["."], [])
     assert pin["skip"] == sorted({*SKIP_DIRS, ".*"}) == lock.scan_skip()
 

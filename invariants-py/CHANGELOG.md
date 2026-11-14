@@ -13,9 +13,31 @@ authors, PyPI trusted publishing) is not settled yet: see "Before publishing" in
 The publishing metadata holds dummy values on `example.com` (authors, `[project.urls]`, the SARIF
 `informationUri`); the release workflow refuses to upload while any remains.
 
-What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the extras are
-`schema` (jsonschema, for `inv validate`), `cel` (the cel-expr engine), `pydantic`, `fastapi`,
-`otel` and `anthropic`. The package is imported as `invariants`.
+What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML and the three libraries
+below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-expr engine, now
+`invariants-cel[cel]`), `pydantic`, `fastapi`, `otel` and `anthropic`. The package is imported as
+`invariants`.
+
+### Four distributions
+
+- The project is split into four distributions, released together at one version: `invariants-cel`
+  (import `invariants_cel`: the two CEL engines, the Python-to-CEL value mapping, `typecheck` and
+  `typeinfo`), `invariants-scan` (`invariants_scan`: the path-law scan, with `hooks` for what a host
+  wires, and a new `inv-scan` command over a JSON rule document), `invariants-schema-diff`
+  (`invariants_schema_diff`: the JSON Schema and CEL weakening judges over canonical JSON and `Change`,
+  with a new `schema_changes(old, new)`; depends on `invariants-cel`) and `invariants-first`
+  (`invariants`), which depends on the three (`==` the same version). The libraries are standard
+  library only, live under `packages/` of the monorepo, have their own tests, READMEs and CI jobs, and
+  never import `invariants` (tests/test_layering_packages.py). Public paths are unchanged:
+  `invariants.cel` (`inv.cel`, and `invariants.__all__`) and `invariants.scan` re-export the
+  libraries' public API, and `invariants.lock` keeps `constraint_weakening`, `compare_bad`, `Change`,
+  `FIELD_POLICY` and the rest. The private modules that moved (`invariants._typeinfo`,
+  `invariants.typecheck`, `invariants._scan_hooks`, `invariants.lock.schema_diff`, `cel_canon`,
+  `cel_sites`, `cel_mono`, and the canonical-JSON half of `invariants.lock.contracts`) are imported by
+  their new names. Installing from a checkout now installs the three libraries first
+  (`pip install -e ../packages/invariants-cel -e ../packages/invariants-scan -e
+  ../packages/invariants-schema-diff -e .`); the apps' `ci.sh` and the GitHub Action do.
+- `inv`'s note on which app module failed to import never names a library module (fix round 27).
 
 ### The rule file
 

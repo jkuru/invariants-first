@@ -23,9 +23,10 @@ import sys
 import tempfile
 from typing import Any, Callable, Sequence
 
+from invariants_scan.text import safe_output
+
 from .. import lock
 from ..errors import LoadError
-from ..scan.text import safe_output
 from .common import ALLOW_WEAKENING_ENV, SITE, Usage
 
 _BOOT = ("import json, sys\n"

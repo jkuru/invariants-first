@@ -22,9 +22,9 @@ import textwrap
 import pytest
 from cli_support import run_inv, write_project
 
-from invariants import scan
+import invariants_scan as scan
 from invariants.lock.rule_diff import _accept_changes
-from invariants.scan import accept
+from invariants_scan import accept
 
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
@@ -356,13 +356,13 @@ def test_an_inferred_path_through_a_cycle_covers_every_caller_in_it(tmp_path):
                                       ("args.x > 1 || args.y < 2", "false || args.y < 2 || args.x > 1")])
 def test_an_identity_constant_in_a_bad_chain_is_the_same_condition(old, new):
     """`a && true` and `a || false` are a, for a bool a: no weakening, and never 'matches fewer cases'."""
-    from invariants.cel import subset
-    from invariants.lock.cel_mono import judge_bad
+    from invariants_cel import subset
+    from invariants_schema_diff.cel_mono import judge_bad
     assert judge_bad(old, new, subset.parse, None)[0] == "same"
 
 
 @pytest.mark.parametrize("old, new", [("args.x", "args.x && true"), ("args.x > 1", "args.x > 1 && args.y > 1")])
 def test_a_conjunct_that_may_not_be_a_bool_is_still_not_the_same(old, new):
-    from invariants.cel import subset
-    from invariants.lock.cel_mono import judge_bad
+    from invariants_cel import subset
+    from invariants_schema_diff.cel_mono import judge_bad
     assert judge_bad(old, new, subset.parse, None)[0] != "same"

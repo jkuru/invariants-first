@@ -45,8 +45,8 @@ def _strings(v: Any, prefix: str = "") -> bool:
 
 def _check_pairs(rid: str, sink: Any, where: str = "mediation.sink") -> None:
     """A sink mapping's shape (scan.mediation.pairs_of), as a LoadError."""
-    from ..scan import ScanConfigError
-    from ..scan.mediation import pairs_of
+    from invariants_scan import ScanConfigError
+    from invariants_scan.mediation import pairs_of
     try:
         pairs_of(rid, sink, where)
     except ScanConfigError as e:
@@ -56,8 +56,8 @@ def _check_pairs(rid: str, sink: Any, where: str = "mediation.sink") -> None:
 def _check_allow_map(rid: str, allow: Any, sinks: list[str], where: str = "mediation.allow") -> dict[str, list[str]]:
     """allow in a rule whose sink is a mapping (scan.mediation.allow_map_of), as a LoadError; the map with
     each entry's sinks as a list."""
-    from ..scan import ScanConfigError
-    from ..scan.mediation import allow_map_of
+    from invariants_scan import ScanConfigError
+    from invariants_scan.mediation import allow_map_of
     try:
         return allow_map_of(rid, allow, sinks, where)
     except ScanConfigError as e:

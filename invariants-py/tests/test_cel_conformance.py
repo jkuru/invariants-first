@@ -1,4 +1,6 @@
-"""CEL backend conformance: the YAML cases in tests/conformance/cel, run on every installed backend.
+"""CEL backend conformance through the evaluator (inv.evaluate_env): the YAML cases of the CEL engine
+(packages/invariants-cel/tests/conformance/cel, which runs them on the engine alone), run on every
+installed backend.
 
 Known disagreements are listed per backend in expected_failures.yaml and run as strict xfail.
 Set INV_CEL_FULL_MATRIX=1 to also run the whole test suite once per backend.
@@ -19,10 +21,14 @@ import pytest
 import yaml
 
 import invariants as inv
-from invariants import cel
+import invariants_cel as cel
 
 HERE = pathlib.Path(__file__).parent
-CASES_DIR = HERE / "conformance" / "cel"
+# the cases are the CEL engine's (packages/invariants-cel/tests); here they run through the evaluator
+CASES_DIR = HERE.parents[1] / "packages" / "invariants-cel" / "tests" / "conformance" / "cel"
+if not CASES_DIR.is_dir():
+    pytest.skip("the CEL conformance cases live in the monorepo's packages/invariants-cel, not in the sdist",
+                allow_module_level=True)
 OUTCOMES = {"ok", "violation", "rule_error", "parse_error"}
 
 

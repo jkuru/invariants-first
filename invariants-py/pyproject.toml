@@ -11,7 +11,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{name = "Example Maintainer", email = "maintainer@example.com"}]   # dummy: see RELEASING.md
-dependencies = ["pyyaml>=6"]
+# the three libraries are distributions of their own (../packages), released with this one
+dependencies = ["pyyaml>=6", "invariants-cel==0.1.0", "invariants-scan==0.1.0", "invariants-schema-diff==0.1.0"]
 keywords = ["invariants", "contracts", "cel", "guards", "llm", "pytest"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -39,7 +40,7 @@ Changelog = "https://example.com/invariants-first/changelog"
 [project.optional-dependencies]
 pydantic = ["pydantic>=2"]
 fastapi = ["fastapi", "pydantic>=2", "httpx"]   # httpx: fastapi.testclient needs it
-cel = ["cel-expr-python>=0.1.4", "protobuf>=4.21"]
+cel = ["invariants-cel[cel]==0.1.0"]               # the cel-expr backend (cel-expr-python, protobuf)
 otel = ["opentelemetry-api>=1.20"]
 anthropic = ["anthropic"]                       # integrations.anthropic.AnthropicModel (imported lazily)
 schema = ["jsonschema>=4"]
@@ -64,6 +65,9 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.11"
 files = ["src/invariants"]
+# the workspace libraries, read from this checkout (an editable install of them reads the same files)
+mypy_path = ["../packages/invariants-cel/src", "../packages/invariants-scan/src",
+             "../packages/invariants-schema-diff/src"]
 warn_unused_ignores = true
 check_untyped_defs = true
 

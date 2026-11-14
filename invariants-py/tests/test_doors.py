@@ -8,7 +8,8 @@ import textwrap
 
 import pytest
 
-from invariants import doors, scan
+import invariants_scan as scan
+from invariants import doors
 from invariants.errors import LoadError
 from invariants.loader import expand_short_forms, schema_path
 from cli_support import run_inv, write_project

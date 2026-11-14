@@ -11,7 +11,7 @@ import pytest
 
 import fixround as fx
 import invariants as inv
-from invariants import cel
+import invariants_cel as cel
 from invariants.registry import observe
 from invariants.testing import make_checked, make_unbuilt
 from support import raises
@@ -379,7 +379,7 @@ def test_schema_fields_are_cached():
 def test_env_is_projected_once_for_every_clause(iso, monkeypatch):
     if "cel-expr" not in BACKENDS:
         pytest.skip("cel-expr not installed")
-    from invariants.cel import _engine
+    from invariants_cel import _engine
     r = inv.load({"rules": [{"id": "C", "status": "candidate", "bad": [
         {"when": "args.x > 1", "message": "a"}, {"when": "args.x > 2", "message": "b"},
         {"when": "args.x > 3", "message": "c"}]}]}, install=False, backend="cel-expr").rules["C"]

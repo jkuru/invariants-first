@@ -4,15 +4,18 @@ looked up through `__dict__`, `__getattribute__` or `inspect.getmembers` is a ge
 (R12-2); the [fastapi] extra brings httpx (R12-3); `inv scan` finds a src layout by itself (R12-5d)."""
 from __future__ import annotations
 
+import invariants_schema_diff.cel_sites
+import invariants_schema_diff.cel_canon
 import pathlib
 import textwrap
 import tomllib
 
 import pytest
 
-from invariants import cli, lock, scan
-from invariants import typecheck as tc
-from invariants.cel import subset
+import invariants_scan as scan
+from invariants import cli, lock
+from invariants_cel import typecheck as tc
+from invariants_cel import subset
 from cli_support import run_inv, write_project
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -56,8 +59,8 @@ def test_legitimate_tightenings_stay_stronger(old, new):
 def test_new_error_sites_are_described():
     ta = lock.canon_tree(subset.parse('args.region in ["xx"]'))
     tb = lock.canon_tree(subset.parse('args.region in ["xx", args.cfg.extra]'))
-    assert lock.cel_sites.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
-    assert lock.cel_sites.new_error_sites(ta, ta) == []
+    assert invariants_schema_diff.cel_sites.new_error_sites(ta, tb) == ["a read of args.cfg.extra"]
+    assert invariants_schema_diff.cel_sites.new_error_sites(ta, ta) == []
 
 
 def test_a_uint_factor_keeps_its_polarity_but_may_overflow():
@@ -184,7 +187,7 @@ def test_the_cookbook_runs_ci_sh_with_bash():
 # --- R12-5: docs and scan roots ----------------------------------------------------------------------------------
 def test_changelog_and_docstring_no_longer_trust_declared_int():
     assert "declared `int` at every enforcer" not in (ROOT / "CHANGELOG.md").read_text()
-    assert "declared types make int or uint" not in (lock.cel_canon._Canon.integral.__doc__ or "")
+    assert "declared types make int or uint" not in (invariants_schema_diff.cel_canon._Canon.integral.__doc__ or "")
 
 
 def test_readme_documents_path():

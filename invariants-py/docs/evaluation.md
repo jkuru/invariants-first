@@ -583,7 +583,7 @@ The harness ships in [evaluation/](../evaluation): the ground truth written befo
 (`GROUND_TRUTH.md`), the text edits and patches (`changes.py`, `patches/*.patch`), the runner
 (`run.py`), and the per-change result files of the published re-run (`published/`). The bulky
 per-run logs are not shipped; the runner writes them again. From `invariants-py`, in a venv with
-`pip install -e '.[dev,cel]'`:
+`pip install -e ../packages/invariants-cel -e ../packages/invariants-scan -e ../packages/invariants-schema-diff -e '.[dev,cel]'`:
 
 ```bash
 python evaluation/run.py                  # all 24 changes, about 5 minutes; P02 F12 for a subset

@@ -9,9 +9,9 @@ import pydantic
 import pytest
 
 import invariants as inv
-from invariants import cel
-from invariants.cel import _engine as ep
-from invariants.cel import subset
+import invariants_cel as cel
+from invariants_cel import _engine as ep
+from invariants_cel import subset
 from support import FIXTURES, RULES, raises
 
 ENGINES = [b for b in ("cel-expr",) if b in cel.available_backends()]

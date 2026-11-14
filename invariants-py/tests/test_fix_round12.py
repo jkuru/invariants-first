@@ -4,6 +4,7 @@ schema pins (a Literal alias counts). (Its raw-SQL checks were removed with medi
 is below the API.)"""
 from __future__ import annotations
 
+import invariants_schema_diff.changes
 import dataclasses
 import json
 import textwrap
@@ -13,8 +14,9 @@ import pydantic
 import pytest
 
 import invariants as inv
-from invariants import cli, lock as lockmod, scan
-from invariants.cel import subset
+import invariants_scan as scan
+from invariants import cli, lock as lockmod
+from invariants_cel import subset
 from cli_support import CLEAN, copy_app, run_inv, write_project
 
 
@@ -205,7 +207,7 @@ def test_pydantic_schema_pin_sees_a_literal_alias():
     a = lockmod.resolved_schema(_model(("acquired", "ceo_of")))
     b = lockmod.resolved_schema(_model(("acquired", "ceo_of", "founded_in")))
     assert a != b
-    diffs = lockmod.contracts._json_paths(a, b)
+    diffs = invariants_schema_diff.changes._json_paths(a, b)
     assert ("pydantic.properties.predicate.enum added", None, ["founded_in"]) in diffs
 
 

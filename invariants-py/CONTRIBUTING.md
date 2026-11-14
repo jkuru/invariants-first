@@ -25,7 +25,7 @@ Thank you for helping. This project is small and young, so issues and pull reque
 ```
 python -m venv .venv
 . .venv/bin/activate
-pip install -e '.[dev,cel]'
+pip install -e ../packages/invariants-cel -e ../packages/invariants-scan -e ../packages/invariants-schema-diff -e '.[dev,cel]'
 python -m pytest tests -q
 ```
 
@@ -43,7 +43,7 @@ PYTHON=$(command -v python) ../apps/support-agent/ci.sh
 
 ## CEL conformance cases
 
-The cases are YAML files under `tests/conformance/cel/`. A new case must pass on every backend. A known disagreement goes in `expected_failures.yaml` with a reason. Those entries run as strict xfails, so fixing the case means removing its entry.
+The cases are YAML files under `packages/invariants-cel/tests/conformance/cel/` (the CEL engine's own tests run them on the engine alone; `invariants-py/tests/test_cel_conformance.py` runs them through the evaluator). A new case must pass on every backend. A known disagreement goes in `expected_failures.yaml` with a reason. Those entries run as strict xfails, so fixing the case means removing its entry.
 
 ## Pull requests
 

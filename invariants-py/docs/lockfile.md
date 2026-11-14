@@ -217,7 +217,8 @@ These changes are marked **WEAKENED**:
 **Constraints the code already has.** A `pydantic` contract (or a pydantic model in a target's
 signature) is pinned as its JSON Schema, so its constraints are pinned too; so is a dataclass or
 TypedDict contract, and the schemas of an OpenAPI contract's operations.
-`invariants.lock.constraint_weakening` (in `invariants.lock.schema_diff`) marks a change **WEAKENED** when the schema may now accept more
+`invariants.lock.constraint_weakening` (from the invariants-schema-diff library,
+`invariants_schema_diff.schemas`) marks a change **WEAKENED** when the schema may now accept more
 input. That covers:
 
 - `maximum`, `exclusiveMaximum`, `maxLength`, `maxItems`, `maxProperties` or `maxContains` raised

@@ -246,7 +246,7 @@ def test_the_mcp_server_runs_inv_with_safe_path(tmp_path, monkeypatch):
 
 # --- 4. control characters from the tree are escaped ---------------------------------------------
 def test_plain_and_safe_output():
-    from invariants.scan.text import plain, safe_output
+    from invariants_scan.text import plain, safe_output
     assert plain("a\n::error::x\r\x1b[2J") == "a\\n::error::x\\r\\x1b[2J"
     assert safe_output("ok\n::error::pwn\n   ::warning::x\nfine :: here") == \
         "ok\n\\::error::pwn\n   \\::warning::x\nfine :: here"

@@ -22,6 +22,7 @@ the edge; see [Agent frameworks](#agent-frameworks-tool-calls-and-langgraph).
 ## Install and run
 
 ```
+pip install -e ../../packages/invariants-cel -e ../../packages/invariants-scan -e ../../packages/invariants-schema-diff   # the libraries it depends on
 pip install -e '../../invariants-py[pydantic,schema]'   # the library from this checkout (or pip install invariants-first)
 pip install -e '.[dev]'
 ./ci.sh                                                  # inv check, inv status, then pytest with ablation

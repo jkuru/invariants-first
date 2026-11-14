@@ -30,8 +30,8 @@ import pytest
 
 import invariants as inv
 import round11 as r11
-from invariants.cel import available_backends, get_backend
-from invariants.cel.errors import CelError
+from invariants_cel import available_backends, get_backend
+from invariants_cel.errors import CelError
 from invariants.integrations import pydantic as inv_pd
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]

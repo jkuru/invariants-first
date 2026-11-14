@@ -7,7 +7,8 @@ import dataclasses
 import pathlib
 from typing import Any, Iterable
 
-from ..scan import anywhere, iter_sources
+from invariants_scan import anywhere, iter_sources
+
 from .translate import Unsupported, _base_name, module_constants, negate, to_cel, truth_kind
 
 EXCLUDE = anywhere("tests", "test", "testing", "test_*.py", "*_test.py", "conftest.py", "examples", "docs",

@@ -4,8 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # Pick the interpreter: $PYTHON, else an activated venv, else a private .venv made on first run.
-# The private venv installs the library from this checkout when the example sits in
-# apps/ of the monorepo (else from the package index), then this app with its dev extras.
+# The private venv installs the library (and the three libraries it depends on, packages/) from this
+# checkout when the example sits in apps/ of the monorepo (else from the package index), then this app
+# with its dev extras.
 if [ -n "${PYTHON:-}" ]; then PY="$PYTHON"
 elif [ -n "${VIRTUAL_ENV:-}" ]; then PY="$VIRTUAL_ENV/bin/python"
 else
@@ -16,7 +17,9 @@ else
     echo "ci.sh: creating .venv from $BASE (set PYTHON to reuse an existing interpreter)" >&2
     "$BASE" -m venv --clear .venv
     if [ -f ../../invariants-py/pyproject.toml ] && [ -d ../../invariants-py/src/invariants ]; then
-      .venv/bin/python -m pip install -q --disable-pip-version-check -e "../../invariants-py[pydantic,schema]"
+      # the three libraries invariants-first depends on (packages/), then invariants-first itself
+      .venv/bin/python -m pip install -q --disable-pip-version-check -e ../../packages/invariants-cel \
+        -e ../../packages/invariants-scan -e ../../packages/invariants-schema-diff -e "../../invariants-py[pydantic,schema]"
     fi
     .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
     touch .venv/.ci-ready

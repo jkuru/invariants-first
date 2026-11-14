@@ -8,10 +8,13 @@ import dataclasses
 import pytest
 
 import invariants
-from invariants import _scan_hooks, _typeinfo, confinement, lock, typecheck
+from invariants_scan import hooks as _scan_hooks
+from invariants_cel import typeinfo as _typeinfo
+from invariants_cel import typecheck
+from invariants import confinement, lock
 from invariants.errors import LoadError
 from invariants.loader import _type_env, binding_problem, schemas
-from invariants.lock import cel_canon
+from invariants_schema_diff import cel_canon
 from invariants.registry import coverage
 
 
@@ -40,7 +43,7 @@ def test_the_package_wires_what_the_lower_layers_read() -> None:
 
 
 def test_the_scan_reads_the_confinement_root_through_its_hook(tmp_path, monkeypatch) -> None:
-    from invariants.scan import sources
+    from invariants_scan import sources
     seen = []
     monkeypatch.setattr(_scan_hooks, "confine_root", lambda: seen.append(1))
     list(sources.iter_sources([tmp_path], []))

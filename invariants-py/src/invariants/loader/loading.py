@@ -8,7 +8,8 @@ import logging
 import pathlib
 from typing import Any, ContextManager
 
-from .. import cel
+import invariants_cel as cel
+
 from ..errors import LoadError
 from ..model import FILE_FIELDS, PROVIDER_FIELDS, PROVIDER_OPTIONAL, SPECS, TARGET_FIELDS, Provider
 from ..providers import provider_names

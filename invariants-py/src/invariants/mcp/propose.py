@@ -51,7 +51,7 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
                 draft = pathlib.Path(d) / RULE_FILES[0]
                 draft.write_text(text, encoding="utf-8")
                 doc = project.read_document(draft)
-                from .. import scan as scanner
+                import invariants_scan as scanner
                 report = scanner.scan(doc, scan_roots, scan_exclude)
         except (LoadError, graphify.GraphifyError, project.Usage) as e:
             raise ToolError(str(e)) from e

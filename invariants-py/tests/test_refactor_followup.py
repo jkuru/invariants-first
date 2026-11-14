@@ -177,7 +177,7 @@ def test_the_stdlib_schema_reads_pydantic_field_bounds():
 def test_scan_star_import_exports_the_public_names_and_no_modules():
     import types
     ns: dict = {}
-    exec("from invariants.scan import *", ns)
+    exec("from invariants_scan import *", ns)
     names = {k for k in ns if k != "__builtins__"}
     assert not [k for k in names if isinstance(ns[k], types.ModuleType)]
     assert {"scan", "graph", "mediations", "to_sarif", "to_text", "Finding", "Report"} <= names

@@ -9,7 +9,9 @@ import pathlib
 import re
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-from .. import lock, scan as scanner, status_report
+import invariants_scan as scanner
+
+from .. import lock, status_report
 from ..confinement import confined
 from ..errors import CoverageError, LoadError
 from ..loader import read_document, schema_path

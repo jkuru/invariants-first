@@ -260,7 +260,10 @@ def test_console_script_and_no_new_dependency():
     import tomllib
     project = tomllib.loads((pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"]
     assert project["scripts"]["inv-mcp"] == "invariants.mcp:main"
-    assert project["dependencies"] == ["pyyaml>=6"]                  # the server is standard library only
+    # the server is standard library only: the core's one third-party dependency is PyYAML, the rest are
+    # the workspace's own libraries (packages/), standard library only themselves
+    assert project["dependencies"] == ["pyyaml>=6", "invariants-cel==0.1.0", "invariants-scan==0.1.0",
+                                       "invariants-schema-diff==0.1.0"]
 
 
 def test_main_rejects_a_missing_root(tmp_path):

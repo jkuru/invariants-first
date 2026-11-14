@@ -9,7 +9,8 @@ import pathlib
 import re
 from typing import Any, Iterator
 
-from .. import cel
+import invariants_cel as cel
+
 from ..confinement import confined
 from ..errors import LoadError
 from ..model import DEFAULT_NAMES, ENFORCER_FIELDS, EVALUATED, RULE_FIELDS, STATUS_RANK, VIEW_POINTS, Rule

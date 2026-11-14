@@ -34,7 +34,8 @@ import pytest
 
 import invariants as inv
 import round19 as r19
-from invariants import registry, scan, status_report
+import invariants_scan as scan
+from invariants import registry, status_report
 from invariants.integrations import asgi
 from invariants.integrations import pydantic as inv_pd
 from invariants.model import Outcome
