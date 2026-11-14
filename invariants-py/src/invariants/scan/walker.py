@@ -5,10 +5,13 @@ import ast
 from typing import Any, Callable
 
 from .astutil import (
+    CODE_ATTRS,
     _HARMLESS_DUNDERS,
     _computed_dict_writes,
     _dotted,
+    _comp_targets,
     _dunder,
+    _globals_of,
     _lit,
     _locals,
     _params,
@@ -278,8 +281,14 @@ class _Walker(_Inference):
     def _shadowed(self, scope: ast.AST, args: ast.arguments | None, walk: Callable[..., None], node: ast.AST,
                   *rest: Any) -> None:
         """Walk node, in the body of a nested function, lambda or class (scope), with its parameters
-        shadowing the owner's names and its own bindings typing the names it binds."""
-        shadow, self._shadow = self._shadow, self._shadow | set(_params(args) if args is not None else ())
+        shadowing the owner's names and its own bindings typing the names it binds. A name it declares
+        global is the module's name there, whatever the owner binds (rest is owner, local, me)."""
+        glob = _globals_of(scope)
+        if len(rest) == 3 and isinstance(rest[1], set):
+            # the scope's own bindings are local in it (fix round 27: the owner's locals no longer hold them)
+            rest = (rest[0], (rest[1] - glob) | (_locals(scope) if not isinstance(scope, ast.Lambda) else set()),
+                    rest[2])
+        shadow, self._shadow = self._shadow, (self._shadow | set(_params(args) if args is not None else ())) - glob
         scopes, self._scopes = self._scopes, (*self._scopes, scope)
         try:
             walk(node, *rest)
@@ -476,6 +485,8 @@ class _Walker(_Inference):
                     self._type_use(x)
         elif isinstance(node, ast.Subscript) and _dotted(node.value) and _generic(self._resolve(node.value, local, me)):
             self._type_use(node.slice)                        # `list[C]`, `Optional[C]`: a type, never called
+        if isinstance(node, _COMPREHENSIONS):
+            local = local | _comp_targets(node)                # `for x in xs` binds x in the comprehension only
         if isinstance(node, _COMPREHENSIONS) and self._class_scope is not None and not self._scopes:
             # in a class body, only a comprehension's first iterable sees the class's names
             self._expr(node.generators[0].iter, owner, local, me)
@@ -560,6 +571,9 @@ class _Walker(_Inference):
         if fq:
             self._site("patch", owner, node, fq)
             return
+        if node.attr in CODE_ATTRS:                            # f.__code__ = ... on a function it cannot name
+            self._site("attrpatch", owner, node, node.attr)
+            return
         if node.attr not in self.idx.short_names():
             return
         if isinstance(node.value, ast.Name) and me and node.value.id == me[0]:
@@ -587,16 +601,20 @@ class _Walker(_Inference):
                 self.edges.append(_Edge(owner, ref, getattr(at, "lineno", 0), getattr(at, "col_offset", 0), False))
             else:
                 self._site("ref", owner, at, ref)
-        if not refs and _dotted(node) and id(node) not in self._type_uses:
+        if _dotted(node) and id(node) not in self._type_uses:
             # a class used as a value is called by whoever holds it (its constructors run); a scanned module
-            # used as a value hands out every function it holds (fix round 26)
+            # used as a value hands out every function it holds (fix round 26); so does every other class or
+            # module the name may be bound to (fix round 27: an if/else import, an import in a function)
             fq = self._resolve(node, local, me)
-            if fq in self.idx.classes or (fq in self.idx.modules and at is node):
-                held = self._held_by(fq)
-                for ref in held:
-                    self._held_ref(owner, at, ref, fq)
-                if held:
-                    return
+            held_any = False
+            for v in dict.fromkeys([fq, *sorted(self._alternatives(node, local, me))]):
+                if v is not None and (v in self.idx.classes or (v in self.idx.modules and at is node)):
+                    held = self._held_by(v)
+                    for ref in held:
+                        self._held_ref(owner, at, ref, v)
+                    held_any = held_any or bool(held)
+            if held_any and not refs:
+                return
         if refs or not isinstance(node, ast.Attribute) or node.attr not in self.idx.short_names():
             return
         fq = self._resolve(node, local, me) if _dotted(node) else None
@@ -866,6 +884,11 @@ def _passes_through(fn: ast.FunctionDef) -> bool:
     p = fn.args.args[0].arg
     inner = [n for n in fn.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     names = {n.name for n in inner}
+    # a wrapper's own decorators are handed the wrapper (fix round 27): only functools.wraps(...) is known
+    # to give it back and keep it nowhere; `@register` or `@atexit.register` keeps it, and so the function
+    if any(not (isinstance(d, ast.Call) and _dotted(d.func) in ("functools.wraps", "wraps"))
+           for w in inner for d in w.decorator_list):
+        return False
     rets = _own(fn, ast.Return)
     if not rets or _own(fn, ast.Yield, ast.YieldFrom) or not all(
             isinstance(r.value, ast.Name) and (r.value.id == p or r.value.id in names) for r in rets):

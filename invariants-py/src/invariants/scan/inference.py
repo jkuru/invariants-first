@@ -56,6 +56,9 @@ class _Inference:
         # del Safe.save), so what `Safe().save` runs is not the scanned Safe.save
         self._untrusted_members: frozenset[tuple[str, str]] = frozenset() if raw else subverted_members(idx)
         self._rebound_classes: frozenset[str] = frozenset() if raw else rebound_class_names(idx, mod)
+        # names a function or class body imports as something the module scope (or another body) does not
+        # bind them to: the scan does not tell the scopes apart, so they resolve to nothing (fix round 27)
+        self._scoped_imports: frozenset[str] = frozenset() if raw else scoped_import_names(idx, mod)
         self._local_types: dict[str, dict[str, str]] = {}
         # the parameters of the nested functions and lambdas around the code being walked: their own
         # values, which a binding of the same name in the owner does not type
@@ -589,6 +592,12 @@ class _Inference:
     def _alternatives(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> frozenset[str]:
         """The other objects a module-level name may be bound to (alternatives()), for a plain name that is
         not a local, a nested function's parameter or self."""
+        if isinstance(node, ast.Attribute) and _dotted(node.value):
+            # `ops.go` on a scanned module that binds go to more than one object (fix round 27)
+            base = self._resolve(node.value, local, me)
+            if base in self.idx.modules:
+                return alternatives(self.idx, self.idx.modules[base]).get(node.attr, frozenset())
+            return frozenset()
         if not isinstance(node, ast.Name) or node.id in local or node.id in self._shadow or (me and node.id == me[0]) \
                 or (self._class_scope is not None and not self._scopes and node.id in self._class_scope):
             return frozenset()
@@ -625,7 +634,10 @@ class _Inference:
                 return self._class_scope[node.id]              # bound above in the class body
             if node.id in self._rebound_classes and not raw:
                 return None                                    # a class name bound again: which one is it?
-            hit = self.mod.aliases.get(node.id) or self.idx._star_lookup(self.mod, node.id, 0)
+            if node.id in self._scoped_imports and not raw:
+                return None                                    # imported as another object in some body
+            hit = self.mod.aliases.get(node.id) or self.idx._star_lookup(self.mod, node.id, 0) \
+                or self.mod.nested.get(node.id)                # an import in a function or class body
             if hit:
                 return self.idx.canon(hit)
             return f"builtins.{node.id}" if node.id in _BUILTINS else None
@@ -1023,7 +1035,15 @@ def alternatives(idx: _Index, mod: _Module) -> dict[str, frozenset[str]]:
     per = _ALTERNATIVES.setdefault(idx, {})
     if mod.name in per:
         return per[mod.name]
+    per[mod.name] = {}                                         # an import cycle sees nothing more here
     cands: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+
+    def imported(name: str, src: str, attr: str) -> None:
+        # what src binds attr to, and (fix round 27) every other object src may bind it to: `from ops
+        # import go` where ops binds go under if/else, or in a function that declares it global
+        cands[name].add(idx.canon(f"{src}.{attr}" if src else attr))
+        if src in idx.modules and src != mod.name:
+            cands[name].update(alternatives(idx, idx.modules[src]).get(attr, ()))
     for node in _walk_of(mod.tree, ast.Import, ast.ImportFrom):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -1033,13 +1053,14 @@ def alternatives(idx: _Index, mod: _Module) -> dict[str, frozenset[str]]:
             src = idx._absolute(mod, node)
             for a in node.names:
                 if a.name != "*":
-                    cands[a.asname or a.name].add(idx.canon(f"{src}.{a.name}" if src else a.name))
+                    imported(a.asname or a.name, src, a.name)
     for st in mod.tree.body:
         if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             cands[st.name].add(f"{mod.name}.{st.name}")
     for src in mod.star:                                       # a star import may rebind a name bound above
-        for name in _exported(idx, src) & set(cands):
-            cands[name].add(idx.canon(f"{src}.{name}"))
+        for name in _exported(idx, src):
+            if name in cands or (src in idx.modules and name in alternatives(idx, idx.modules[src])):
+                imported(name, src, name)
     scanned = {*idx.funcs, *idx.classes}
     per[mod.name] = out = {k: frozenset(v) for k, v in cands.items() if len(v) > 1 and v & scanned}
     return out
@@ -1066,10 +1087,62 @@ def rebound_class_names(idx: _Index, mod: _Module) -> frozenset[str]:
     per = _REBOUND.setdefault(idx, {})
     if mod.name not in per:
         raw = _Inference(idx, mod, raw=True)
+        binds = _module_binds(mod.tree)
+        values = idx.module_values(mod.name)
+
+        def own(n: str) -> str | None:                         # what the module itself binds n to, if a name
+            if n in mod.aliases:
+                return idx.canon(mod.aliases[n])
+            d = _dotted(values[n]) if n in values else None
+            return idx._follow(idx._name_in(mod.name, d)) if d else None
+        for src in mod.star:                                   # `from shadow import *` binds what shadow exports
+            # (a module the scan does not read may export any name: every class here is bound again); the
+            # same object bound here too (`from app.store import Repo` there and here) binds nothing new
+            binds.update([n for n in _exported(idx, src) if own(n) is None or idx.canon(f"{src}.{n}") != own(n)]
+                         if src in idx.modules else list(binds))
         per[mod.name] = frozenset(
-            name for name, n in _module_binds(mod.tree).items() if n > 1 and (
+            name for name, n in binds.items() if n > 1 and (
                 raw._resolve(ast.Name(name, ast.Load()), set(), None) in idx.classes
                 or f"{mod.name}.{name}" in idx.classes))
+    return per[mod.name]
+
+
+_SCOPED: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()
+
+
+def scoped_import_names(idx: _Index, mod: _Module) -> frozenset[str]:
+    """The names an import inside a function or class body binds to an object that the module scope binds
+    otherwise (`from store import Other as S` at the top, `from store import Store as S` in a function),
+    or that two such bodies bind to different objects. An import binds only the scope it is in, and the
+    scan resolves a plain name the same way in every scope of a module, so it cannot tell which one a use
+    sees: such a name resolves to nothing (calls through it still reach every object, see alternatives())."""
+    per = _SCOPED.setdefault(idx, {})
+    if mod.name not in per:
+        top = {id(n) for n in _own_nodes(mod.tree) if isinstance(n, (ast.Import, ast.ImportFrom))}
+        seen: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+        for node in _walk_of(mod.tree, ast.Import, ast.ImportFrom):
+            if id(node) in top or not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            for a in node.names:
+                if isinstance(node, ast.Import):
+                    name, what = (a.asname, idx.real(a.name)) if a.asname else (a.name.split(".")[0],) * 2
+                elif a.name != "*":
+                    src = idx._absolute(mod, node)
+                    name, what = a.asname or a.name, f"{src}.{a.name}" if src else a.name
+                else:
+                    continue
+                seen[name].add(idx.canon(what))
+        binds = _module_binds(mod.tree)
+        out = set()
+        for name, objs in seen.items():
+            here = mod.aliases.get(name) or idx._star_lookup(mod, name, 0)
+            if here is not None:
+                objs = objs | {idx.canon(here)}
+            elif binds[name]:
+                objs = objs | {"<a module-level value>"}       # S = make() at the top, S imported in a body
+            if len(objs) > 1:
+                out.add(name)
+        per[mod.name] = frozenset(out)
     return per[mod.name]
 
 
@@ -1085,6 +1158,8 @@ def _module_binds(tree: ast.Module) -> collections.Counter[str]:
             binds.update((a.asname or a.name).split(".")[0] for a in n.names if a.name != "*")
         elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and n.name:
             binds[n.name] += 1
+        elif isinstance(n, ast.MatchMapping) and n.rest:      # case {**rest}
+            binds[n.rest] += 1
     for n in _walk_of(tree, ast.Global):
         if isinstance(n, ast.Global):
             binds.update({x: 2 for x in n.names})

@@ -248,6 +248,22 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - A return annotation over an unannotated factory that visibly returns another class is not trusted,
   and a binding in a nested scope types that scope only. Parameter and field annotations stay trusted
   (a type checker checks them).
+- Names bind the scope they are in. An import in a function or class body is not a module attribute
+  (`from ops import go` sees the module's own `go`); a name a body imports as an object the module
+  scope (or another body) binds otherwise resolves to nothing, and calls and values through it reach
+  every object. A name a module binds to more than one object (if/else imports, a star import) is
+  each of them in its importers too (`from ops import go`, `ops.go`), classes used as values
+  included. A function's locals are its own scope's: a nested function's or lambda's parameters and
+  bindings, a comprehension's targets and a nested `global` / `nonlocal` no longer hide or retype the
+  enclosing function's names, and a match capture (`case x`, `[*x]`, `{**x}`) binds a local.
+- Methods are looked up along the C3 method resolution order (in `class D(B, C)`, an override in `C`
+  comes before what `B` inherits from a shared base). A class name rebound by a star import or a
+  `case {**name}` capture at module level is not trusted.
+- A scanned decorator whose wrapper is itself decorated by anything but `functools.wraps(...)` may
+  keep the function (it is used as a value). `setattr` / `delattr` of a dunder of a sink or door
+  (`setattr(door, "__code__", ...)`) is `forbidden/monkeypatch`, as the assignment was; a write of
+  `__code__`, `__defaults__` or `__kwdefaults__` on a function the scan cannot name is
+  `unresolved/unknown-receiver`.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

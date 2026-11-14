@@ -21,6 +21,10 @@ _HARMLESS_DUNDERS = frozenset({"__name__", "__qualname__", "__module__", "__doc_
                                "__dict__", "__defaults__", "__kwdefaults__", "__signature__", "__text_signature__"})
 
 
+# a function's attributes that decide what calling it runs: writing one on a sink or door replaces it
+CODE_ATTRS = frozenset({"__code__", "__defaults__", "__kwdefaults__"})
+
+
 def _dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
@@ -123,24 +127,47 @@ BINDERS = frozenset({ast.arguments, ast.Name, ast.FunctionDef, ast.AsyncFunction
 
 
 def _locals_of(fn: ast.AST) -> set[str]:
+    """fn's own bindings, less the names it declares global (a module name there). Fix round 27: only fn's
+    own scope; a nested function, lambda, class or comprehension binds its names there only (the walker
+    adds them while it walks that scope), so its parameter `go`, its `go = 1` or a comprehension's `for go
+    in xs` does not hide fn's own `go(...)`, and its `global x` / `nonlocal x` does not take x out of fn's
+    locals. A match capture (`case x`, `case [*x]`, `case {**x}`) binds a local."""
     names: set[str] = set()
     glob: set[str] = set()
-    for node in _under(fn):
-        if type(node) not in BINDERS:
+    comp = {id(n) for c in _scope_nodes(fn, nested_effects=False) if isinstance(c, _COMPS)
+            for g in c.generators for n in ast.walk(g.target)}
+    for node in _scope_nodes(fn, nested_effects=False):
+        if isinstance(node, _SCOPES):
+            if not isinstance(node, ast.Lambda):
+                names.add(node.name)
+            continue
+        if type(node) not in BINDERS or id(node) in comp:
             continue
         if isinstance(node, ast.arguments):
-            for a in [*node.posonlyargs, *node.args, *node.kwonlyargs, node.vararg, node.kwarg]:
-                if a is not None:
-                    names.add(a.arg)
+            names.update(_params(node))
         elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+        elif isinstance(node, ast.Global):
             glob.update(node.names)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
             names.add(node.name)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
-            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
     return names - glob
+
+
+_COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _comp_targets(node: ast.AST) -> set[str]:
+    """The names a comprehension's `for` targets bind, in the comprehension only."""
+    return {n.id for g in getattr(node, "generators", ()) for n in ast.walk(g.target) if isinstance(n, ast.Name)}
+
+
+def _globals_of(fn: ast.AST) -> frozenset[str]:
+    """The names one scope declares global: there, they are the module's names."""
+    return frozenset(n for node in _scope_nodes(fn, nested_effects=False) if isinstance(node, ast.Global)
+                     for n in node.names)
 
 
 def _params(args: ast.arguments) -> list[str]:

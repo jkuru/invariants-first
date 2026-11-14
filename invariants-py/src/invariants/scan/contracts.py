@@ -161,8 +161,11 @@ class _Module:
     root: pathlib.Path
     tree: ast.Module
     package: str
-    aliases: dict[str, str] = dataclasses.field(default_factory=dict)
+    aliases: dict[str, str] = dataclasses.field(default_factory=dict)       # module-scope imports and defs
     star: list[str] = dataclasses.field(default_factory=list)
+    # imports inside a function or class body: they bind there, not in the module (fix round 27); a name
+    # the module scope does not bind resolves through them, and alternatives() counts every binding
+    nested: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 class _OnPaths:
