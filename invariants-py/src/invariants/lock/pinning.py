@@ -13,10 +13,12 @@ import fnmatch
 import pathlib
 from typing import Any
 
+from invariants_schema_diff.changes import _is_ref, _plain, _sha, canonical
+
 from ..errors import LoadError
 from ..resolve import resolve
 from .contracts import (DOC_FIELDS, ENFORCER_DEFAULTS, FEEDBACK_DEFAULT, LOCK_VERSION, MEDIATION_DOC, PY_CONTRACTS,
-                        SCHEMA_CONTRACTS, _is_ref, _plain, _sha, canonical)
+                        SCHEMA_CONTRACTS)
 from .pin_contracts import contract_hash
 from .pin_signatures import _signature_pin
 from .pin_types import Schemas, _class_ref, resolved_schema
@@ -98,7 +100,7 @@ def scan_skip() -> list[str]:
     """The directories the scan always skips, as the lock pins them: each name in SKIP_DIRS, and `.*`
     for every dot-directory. The one place the pin reads the scan's built-in skip list from, so a
     library upgrade or change that skips more shows up in the lock (an added entry is WEAKENED)."""
-    from ..scan.sources import SKIPPED          # the scan's own value: one source of truth
+    from invariants_scan.sources import SKIPPED          # the scan's own value: one source of truth
     return sorted(SKIPPED)
 
 

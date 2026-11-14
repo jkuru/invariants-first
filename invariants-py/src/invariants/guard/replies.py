@@ -20,7 +20,8 @@ import typing
 import uuid
 from typing import Any
 
-from ..cel import CelError, values as cel_values
+from invariants_cel import CelError, values as cel_values
+
 from ..errors import ParseError
 from ..loader import closed_schema, literal_eq, schema_fields
 from ..registry import Registry, current
@@ -340,7 +341,7 @@ def parse(raw: Any, schema: Any, *, max_size: int | None = None) -> Any:
 def rule_view(reply: Any) -> Any:
     """What a rule reads as `reply`: the parsed reply itself (a dict, a dataclass instance, or the
     validated pydantic model instance, whose datetime, timedelta, UUID, Enum and nested fields are
-    mapped to CEL by cel/values.py exactly as arguments are)."""
+    mapped to CEL by invariants_cel/values.py exactly as arguments are)."""
     return reply
 
 

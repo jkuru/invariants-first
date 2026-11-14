@@ -7,7 +7,8 @@ import json
 import yaml
 
 from cli_support import run_inv, write_project
-from invariants import cli, scan
+import invariants_scan as scan
+from invariants import cli
 from invariants.registry import ablated_everywhere
 
 DOC = {"rules": [{"id": "R-9", "status": "enforce", "subject": {"target": "py:app.svc.door"}, "bad": "false",

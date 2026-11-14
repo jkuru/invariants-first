@@ -242,7 +242,7 @@ This creates a **one-way ratchet** (just like ArchUnit’s violation store):
 1. **Today’s code passes `inv check` immediately.**
 2. **Any new back door fails CI.**
 3. **Adding a new function to `allow:` is a weakening** ([lock/](invariants-py/src/invariants/lock/)) that `inv check` and `inv check --relock` refuse.
-4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan/](invariants-py/src/invariants/scan/)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
+4. **Once you fix `goodwill_refund` to call `BillingService.refund`, `inv check` fails with `missing/allow-unused`** ([scan/](packages/invariants-scan/src/invariants_scan/)) until you delete the dead entry from `allow:`. Thus, `allow:` can only ever shrink!
 
 ---
 
@@ -294,16 +294,16 @@ Because **no existing unit test calls `vip_refund_tool` with an over-refund!** U
 
 ## 3.2 Inside `scan/`: Building a Call Graph Without Importing Your Code
 
-When `inv scan` (or `inv check`) runs, [`scan/`](invariants-py/src/invariants/scan/) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
+When `inv scan` (or `inv check`) runs, [`scan/`](packages/invariants-scan/src/invariants_scan/) indexes every `.py` file under your source roots (skipping `tests/`, `migrations/`, and `alembic/` by default):
 
-1. **Pass 1 (`_Index.add_module` at [scan/](invariants-py/src/invariants/scan/)):**
+1. **Pass 1 (`_Index.add_module` at [scan/](packages/invariants-scan/src/invariants_scan/)):**
    - Parses each file into an `ast.Module`.
    - Records every `import` and `from ... import ...` alias (including relative imports and `from mod import *`).
    - Registers every function, async function, class, method, and return-type annotation in `idx.funcs` and `idx.classes`.
-   - Follows re-exports and class inheritance in `_Index.canon()` ([scan/](invariants-py/src/invariants/scan/)) so calling an inherited method on a subclass resolves to the canonical method definition.
-2. **Pass 2 (`_Walker` at [scan/](invariants-py/src/invariants/scan/)):**
+   - Follows re-exports and class inheritance in `_Index.canon()` ([scan/](packages/invariants-scan/src/invariants_scan/)) so calling an inherited method on a subclass resolves to the canonical method definition.
+2. **Pass 2 (`_Walker` at [scan/](packages/invariants-scan/src/invariants_scan/)):**
    - Walks every statement and expression inside each function (attributing nested lambdas, comprehensions, and closures to their enclosing top-level function or method `owner`).
-   - Emits two kinds of call edges (`_Edge` at [scan/](invariants-py/src/invariants/scan/)):
+   - Emits two kinds of call edges (`_Edge` at [scan/](packages/invariants-scan/src/invariants_scan/)):
      - **Proven (`inferred=False`):** The scanner knows the exact target function or receiver class.
      - **Name-matched (`inferred=True`):** A method call `.refund()` on a variable whose type the scanner cannot prove, when `.refund` matches the name of a known method.
 
@@ -313,19 +313,19 @@ When `inv scan` (or `inv check`) runs, [`scan/`](invariants-py/src/invariants/sc
 
 In object-oriented Python, sinks and doors are almost always methods on objects (`self.stripe.refund(...)`, `ctx.billing.refund(...)`, `Repo(session).add(...)`). How does `scan/` know which class `.refund()` belongs to without running the program?
 
-Look at `_Walker._receiver()` ([scan/](invariants-py/src/invariants/scan/)). It resolves a receiver to a proven class in **six exact cases**:
+Look at `_Walker._receiver()` ([scan/](packages/invariants-scan/src/invariants_scan/)). It resolves a receiver to a proven class in **six exact cases**:
 
 | # | Python Code Pattern | How `scan/` Resolves It | Exact or Subclass? |
 | :--- | :--- | :--- | :--- |
-| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan/](invariants-py/src/invariants/scan/)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
-| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan/](invariants-py/src/invariants/scan/)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
-| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan/](invariants-py/src/invariants/scan/)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
-| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan/](invariants-py/src/invariants/scan/)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
-| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan/](invariants-py/src/invariants/scan/)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
-| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan/](invariants-py/src/invariants/scan/)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
+| **1** | `StripeGateway().refund(...)` | `_constructed()` ([scan/](packages/invariants-scan/src/invariants_scan/)): Direct call to a scanned class constructor. | **Exact** (`exact=True`: no subclass override added) |
+| **2** | `gw = StripeGateway()`<br>`gw.refund(...)` | `_types_in()` ([scan/](packages/invariants-scan/src/invariants_scan/)): Every assignment to local variable `gw` in the function constructs the same class (handles tuple unpacking `a, b = X(), Y()` via `_pairs()`). | **Subclass-aware** |
+| **3** | `def f(gw: StripeGateway):`<br>`    gw.refund(...)` | `_class_named()` ([scan/](packages/invariants-scan/src/invariants_scan/)): Parameter type annotation, including string forward refs `"StripeGateway"`, `Optional[StripeGateway]`, and `StripeGateway \| None`. | **Subclass-aware** (adds overrides from subclasses via `_subclasses_overriding()`) |
+| **4** | `gw = get_gateway()`<br>`gw.refund(...)` | `_returned()` ([scan/](packages/invariants-scan/src/invariants_scan/)): `get_gateway` is a scanned function with return annotation `-> StripeGateway`, resolved in the module where `get_gateway` is defined! | **Subclass-aware** |
+| **5** | `self.stripe.refund(...)` | `_attr_types()` ([scan/](packages/invariants-scan/src/invariants_scan/)): Inspects class-level annotations (`stripe: StripeGateway` on dataclasses) and all `self.stripe = ...` assignments across all methods of `BillingService`. | **Subclass-aware** |
+| **6** | `ctx.billing.refund(...)` | Recursive `_receiver()` ([scan/](packages/invariants-scan/src/invariants_scan/)): First resolves `ctx` to `AgentContext`, then resolves `.billing` on `AgentContext` to `BillingService`, then resolves `.refund` to `BillingService.refund`! | **Subclass-aware** |
 
 > [!TIP]
-> **Why `_foreign_attrs()` ([scan/](invariants-py/src/invariants/scan/)) Is Such a Clever Safety Check:**
+> **Why `_foreign_attrs()` ([scan/](packages/invariants-scan/src/invariants_scan/)) Is Such a Clever Safety Check:**
 > What if some function outside `AgentContext` overwrites `ctx.billing = FakeBilling()` or calls `setattr(ctx, "billing", ...)`?
 > `_foreign_attrs()` scans the entire codebase for any attribute `.x` assigned from *outside* `self.x` (`obj.x = ...` or `setattr(obj, "x", ...)`). Any attribute modified from outside its owning class is added to `idx.foreign` and **never trusted** as a typed receiver!
 
@@ -333,7 +333,7 @@ Look at `_Walker._receiver()` ([scan/](invariants-py/src/invariants/scan/)). It 
 
 ## 3.4 How `allow:` Blocks Transit Bypasses and Monkeypatching
 
-Let’s look at how `_check_rule()` and `_paths()` ([scan/](invariants-py/src/invariants/scan/)) verify a door rule with `allow:`:
+Let’s look at how `_check_rule()` and `_paths()` ([scan/](packages/invariants-scan/src/invariants_scan/)) verify a door rule with `allow:`:
 
 ```yaml
   - id: STRIPE-GATEWAY-DOOR
@@ -346,7 +346,7 @@ Let’s look at how `_check_rule()` and `_paths()` ([scan/](invariants-py/src/in
 
 Suppose an AI coding agent tries to be sneaky. It sees that `goodwill_refund` is in `allow:`, so instead of calling `StripeGateway.refund` directly, the agent writes a new tool `sneaky_tool` that calls `goodwill_refund()`!
 
-Here is how `_paths()` ([scan/](invariants-py/src/invariants/scan/)) catches it:
+Here is how `_paths()` ([scan/](packages/invariants-scan/src/invariants_scan/)) catches it:
 1. First, `scan/` removes only `doors` (`BillingService.refund`) from the graph—**it does NOT remove `allowed` functions**.
 2. Next, `_paths()` runs a breadth-first search (BFS) from every entrypoint (`start`) to the `sink`, tracking a 2-tuple state:
    ```python
@@ -359,7 +359,7 @@ Here is how `_paths()` ([scan/](invariants-py/src/invariants/scan/)) catches it:
    ```
 
 And what if the agent edits `goodwill_refund` itself to monkeypatch `BillingService.refund` (`setattr(BillingService, "refund", ...)`) or unwrap its `@inv.guard` decorator (`BillingService.refund.__wrapped__`)?
-Look at [scan/](invariants-py/src/invariants/scan/):
+Look at [scan/](packages/invariants-scan/src/invariants_scan/):
 ```python
     for s in sites:
         if s.owner in allowed and s.what in ("ref", "attrcall", "getattr"):
@@ -449,7 +449,7 @@ In Invariant-First, rules are always written as **prohibitions (`bad`)**: a [Com
 
 Why CEL instead of Python `eval()`?
 1. **Guaranteed Termination & No Side Effects:** CEL has no `while` loops, no I/O, no mutation, and no `eval`/`exec`. Even comprehensions (`list.exists(x, ...)`, `list.all(x, ...)`) are bounded by an evaluation step budget (`10,000` AST nodes in [`cel/subset/cost.py`](invariants-py/src/invariants/cel/subset/cost.py)).
-2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](invariants-py/src/invariants/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
+2. **Load-Time Type Checking (`typecheck.py`):** At load time, [`typecheck.py`](packages/invariants-cel/src/invariants_cel/typecheck.py) checks every path in `bad` (`args.amount_cents`, `order.remaining_cents`) against your Python type annotations and Pydantic models. If you misspell `order.remaining_cent` (missing the `s`), **`inv validate` / `inv.load()` fails immediately at startup**, not in production when a customer requests a refund!
 3. **Two Pluggable Backends (`cel/`):**
    - `subset` (default): Zero-dependency stdlib evaluator (`7.1 µs` per call).
    - `cel-expr`: Google’s C++ CEL runtime (`9.6 µs` per call).
@@ -480,7 +480,7 @@ Look at how [`apps/pool-service/invariants.yaml`](apps/pool-service/invariants.y
 > **The IEEE-754 `NaN` Trap (And How `invariants` Defeats It):**
 > In standard floating-point math, `NaN < 0.0` is `false` and `NaN > 100.0` is **also `false`**!
 > If you write a prohibited state `bad: 'args.score < 0.0 || args.score > 100.0'`, and a buggy caller passes `score = float("nan")`, both comparisons return `false`, so a naive guard thinks `bad == false` and **lets `NaN` straight through!**
-> In [`cel/values.py`](invariants-py/src/invariants/cel/values.py), any `NaN` or `±Infinity` in an input, provider value, or arithmetic result (`0.0 / 0.0`) immediately raises a `CelError` $\rightarrow$ `Outcome("rule_error")`, which under `fail_closed` blocks the call! Similarly, `decimal.Decimal` (which loses money precision if converted to float) and timezone-naive `datetime`s are refused at load time with instructions to use integer cents and timezone-aware UTC datetimes.
+> In [`invariants_cel/values.py`](packages/invariants-cel/src/invariants_cel/values.py), any `NaN` or `±Infinity` in an input, provider value, or arithmetic result (`0.0 / 0.0`) immediately raises a `CelError` $\rightarrow$ `Outcome("rule_error")`, which under `fail_closed` blocks the call! Similarly, `decimal.Decimal` (which loses money precision if converted to float) and timezone-naive `datetime`s are refused at load time with instructions to use integer cents and timezone-aware UTC datetimes.
 
 ---
 

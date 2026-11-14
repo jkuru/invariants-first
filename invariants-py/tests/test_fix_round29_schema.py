@@ -21,15 +21,16 @@ the schema's draft.
 """
 from __future__ import annotations
 
+import invariants_schema_diff.changes
 import json
 import pathlib
 
 import pytest
 
 from invariants import lock as lockmod
-from invariants.lock import schema_diff
-from invariants.lock.contracts import _json_paths
-from invariants.lock.schema_diff import _schema_changes, constraint_weakening
+from invariants_schema_diff import schemas as schema_diff
+from invariants_schema_diff.changes import _json_paths
+from invariants_schema_diff.schemas import _schema_changes, constraint_weakening
 
 D4 = "http://json-schema.org/draft-04/schema#"
 D7 = "http://json-schema.org/draft-07/schema#"
@@ -257,7 +258,7 @@ def test_an_openapi_30_lock_taken_before_the_dialect_pin_repins_without_a_weaken
     new = _openapi_pin(tmp_path, spec)
     (digest, body), = new["schemas"].items()
     before = {k: v for k, v in body.items() if k != "dialect"}           # as an older lock pinned it
-    old_digest = lockmod.contracts._sha(lockmod.contracts.canonical(before))
+    old_digest = invariants_schema_diff.changes._sha(invariants_schema_diff.changes.canonical(before))
     contract = {k: v for k, v in new["contracts"]["api"].items() if k != "dialect"}
     old = {"contracts": {"api": json.loads(json.dumps(contract).replace(digest, old_digest))},
            "schemas": {old_digest: before}}

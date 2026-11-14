@@ -19,8 +19,8 @@ import textwrap
 
 import pytest
 
-from invariants import scan
-from invariants.scan.accept import site_sha
+import invariants_scan as scan
+from invariants_scan.accept import site_sha
 
 PAY = ("def send_to_gateway(c, a):\n    pass\nclass Repo(Exception):\n    def pay(self):\n"
        "        send_to_gateway(1, 2)\n"
@@ -208,5 +208,5 @@ def test_shared_entry_from_the_top_level_list_loads(tmp_path):
 def test_old_sha_hint_names_accept_weakening():
     import inspect
 
-    from invariants.scan import accept
+    from invariants_scan import accept
     assert "inv lock --accept-weakening" in inspect.getsource(accept)

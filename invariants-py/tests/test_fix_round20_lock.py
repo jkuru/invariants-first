@@ -25,7 +25,7 @@ import pytest
 
 from invariants import lock as lockmod
 from invariants.errors import LoadError
-from invariants.lock.contracts import _json_paths
+from invariants_schema_diff.changes import _json_paths
 from invariants.lock import pin_contracts
 from invariants.lock import pin_jsonschema
 

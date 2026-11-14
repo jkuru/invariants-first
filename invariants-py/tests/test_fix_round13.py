@@ -5,6 +5,7 @@ and pydantic fields (R10-3); lock version 3 with a content-addressed schema tabl
 no prose in pins (R10-6); per-key diffs, type-strict compares and malformed locks (R10-7)."""
 from __future__ import annotations
 
+import invariants_schema_diff.changes
 import dataclasses
 import hashlib
 import json
@@ -14,8 +15,9 @@ import typing
 import pydantic
 import pytest
 
-from invariants import lock as lockmod, scan
-from invariants.cel import subset
+import invariants_scan as scan
+from invariants import lock as lockmod
+from invariants_cel import subset
 from invariants.loader import schema_path
 from invariants import model
 from cli_support import CLEAN, copy_app, run_inv, write_project
@@ -379,7 +381,7 @@ def test_v3_layout_and_schema_table(app):
     for rule in lock["rules"].values():
         assert "status" not in rule["semantic"] and "applies_to" not in rule
     for digest, schema in lock["schemas"].items():
-        assert digest == lockmod.contracts._sha(lockmod.canonical(schema))          # content-addressed
+        assert digest == invariants_schema_diff.changes._sha(lockmod.canonical(schema))          # content-addressed
 
 
 def test_lock_text_is_deterministic_and_compact():
@@ -461,7 +463,7 @@ def test_one_and_true_differ():
     got = _rule({"model_policy": {"abstain": {"field": "c", "value": 1}}},
                 {"model_policy": {"abstain": {"field": "c", "value": True}}})
     assert [c.what for c in got] == ["model_policy.abstain.value"] and got[0].weakened
-    assert lockmod.contracts._json_paths({"v": 1}, {"v": True}) == [("v", 1, True)]
+    assert invariants_schema_diff.changes._json_paths({"v": 1}, {"v": True}) == [("v", 1, True)]
 
 
 @pytest.mark.parametrize("lock,msg", [

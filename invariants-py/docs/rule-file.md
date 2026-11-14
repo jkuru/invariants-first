@@ -175,7 +175,7 @@ not a lock: two concurrent callers can both pass it.
 ## Python to CEL types
 
 `bad` reads Python values through one mapping, the same on every backend and in the load-time type
-checker (`invariants/cel/values.py`; [cel.md](cel.md#python-to-cel-types) has the details):
+checker (`invariants_cel/values.py`, in the invariants-cel library; [cel.md](cel.md#python-to-cel-types) has the details):
 
 | Python value | CEL value |
 |---|---|

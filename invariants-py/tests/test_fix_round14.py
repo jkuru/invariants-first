@@ -6,15 +6,18 @@ helpers are seen by the scan (R11-4); `inv` imports this checkout's source ahead
 (R11-5); `--check` validates the v3 schemas table (R11-6); diff and residual-path nits (R11-7)."""
 from __future__ import annotations
 
+import invariants_schema_diff.changes
+import invariants_schema_diff.cel_mono
 import json
 import pathlib
 import textwrap
 
 import pytest
 
-from invariants import cli, lock as lockmod, scan
-from invariants import typecheck as tc
-from invariants.cel import subset
+import invariants_scan as scan
+from invariants import cli, lock as lockmod
+from invariants_cel import typecheck as tc
+from invariants_cel import subset
 from cli_support import run_inv, write_project
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -78,7 +81,7 @@ def test_a_uint_typed_field_is_non_negative():
     typer = lockmod.make_typer([{"args": tc.T({"map"}, fields={"u": tc.UINT, "n": tc.INT})}])
     u = lockmod.canon_tree(subset.parse("args.u"), typer)
     n = lockmod.canon_tree(subset.parse("args.n"), typer)
-    assert lockmod.cel_mono._nonneg(u, typer) and not lockmod.cel_mono._nonneg(n, typer)
+    assert invariants_schema_diff.cel_mono._nonneg(u, typer) and not invariants_schema_diff.cel_mono._nonneg(n, typer)
     # the polarity is decided, but since R12-1 a larger factor can overflow, so it is not "stronger"
     assert lockmod.compare_bad("args.u * 2 > 5", "args.u * 3 > 5", subset.parse, typer) == "unknown"
     assert lockmod.compare_bad("args.n * 2 > 5", "args.n * 3 > 5", subset.parse, typer) == "unknown"
@@ -387,7 +390,7 @@ def _tamper(root, fn):
 @pytest.mark.parametrize("fn,msg", [
     (lambda d: next(iter(d["schemas"].values())).__setitem__("x", 1), "is not the sha256 of its body"),
     (lambda d: d["schemas"].pop(next(iter(d["schemas"]))), "names no entry in the schemas table"),
-    (lambda d: d["schemas"].__setitem__(lockmod.contracts._sha(lockmod.canonical({"type": "string"})), {"type": "string"}),
+    (lambda d: d["schemas"].__setitem__(invariants_schema_diff.changes._sha(lockmod.canonical({"type": "string"})), {"type": "string"}),
      "no entry refers to it"),
 ])
 def test_check_validates_the_schemas_table(locked, fn, msg):

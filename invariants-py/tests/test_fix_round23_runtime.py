@@ -30,9 +30,9 @@ import pytest
 
 import invariants as inv
 import round23 as r23
-from invariants import cel
-from invariants.cel import available_backends, get_backend, values
-from invariants.cel.errors import CelError, CelSyntaxError
+import invariants_cel as cel
+from invariants_cel import available_backends, get_backend, values
+from invariants_cel.errors import CelError, CelSyntaxError
 from support import FIXTURES
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
@@ -99,7 +99,7 @@ def test_checks_after_an_early_exit_read_their_own_value(backend, expr):
 
 @needs_cel_expr
 def test_the_engine_defect_is_detected_and_the_slot_canaries_pass():
-    from invariants.cel import expr_python as ep
+    from invariants_cel import expr_python as ep
     be = get_backend("cel-expr")
     assert be._slots_ok is True                         # type: ignore[attr-defined]
     data = {"args": dict(ep.SLOT_DATA)}
@@ -134,7 +134,7 @@ def test_if_the_canaries_fail_a_clause_with_a_comprehension_and_a_check_is_refus
 
 @needs_cel_expr
 def test_a_clause_with_a_comprehension_prints_no_cel_bind():
-    from invariants.cel._engine import FrontEnd, has_comprehension
+    from invariants_cel._engine import FrontEnd, has_comprehension
     be = get_backend("cel-expr")
     src = "args.l.exists(x, x > 1) && args.a + " + " + ".join(["args.a"] * 20) + " > double(args.s)"
     front = FrontEnd(src)
@@ -269,7 +269,7 @@ def test_string_functions_refuse_an_operand_past_the_limit(backend, small_limit,
 
 
 def test_the_limit_is_set_by_the_environment_and_checked():
-    code = "from invariants.cel import values; print(values.string_limit())"
+    code = "from invariants_cel import values; print(values.string_limit())"
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), values.STRING_LIMIT_ENV: "1234"}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
     assert out.stdout.strip() == "1234"
@@ -292,7 +292,7 @@ def test_contains_on_cel_expr_is_linear():
 
 
 def test_the_subset_charges_string_scans_to_its_budget():
-    from invariants.cel.subset import SubsetBackend
+    from invariants_cel.subset import SubsetBackend
     p = SubsetBackend().compile("args.l.all(x, args.s.contains(x))")
     s = "a" * 900_000
     with pytest.raises(CelError, match="cost limit"):

@@ -31,11 +31,11 @@ import pytest
 
 import invariants as inv
 import round29rt as m
-from invariants import _typeinfo as ti
-from invariants import cel
-from invariants import typecheck as tc
-from invariants.cel import CelError, _regex
-from invariants.cel import values
+from invariants_cel import typeinfo as ti
+import invariants_cel as cel
+from invariants_cel import typecheck as tc
+from invariants_cel import CelError, _regex
+from invariants_cel import values
 from invariants.registry.coverage import rule_digest
 from invariants.testing import make_checked
 

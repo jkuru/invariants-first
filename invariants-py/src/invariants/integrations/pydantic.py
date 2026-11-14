@@ -18,7 +18,7 @@ model, so the core parse, retry, abstain and edge logic run unchanged:
   (and the loader refuses a rule that reads it);
 - the parsed reply is the validated model instance itself (`isinstance(c.value, Model)`): Enum
   members, datetimes, nested models, and fields declared Field(exclude=True). Rules read it
-  through cel/values.py like arguments, so a datetime field is a timestamp and a timedelta a
+  through invariants_cel/values.py like arguments, so a datetime field is a timestamp and a timedelta a
   duration; the loader types `reply` by the model's annotations. An edge re-validates the received
   instance (from its JSON form, strictly, as at parse) and hands its consumer the fresh copy, so a
   mutation of the received instance after the check never reaches the consumer;

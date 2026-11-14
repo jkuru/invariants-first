@@ -1041,22 +1041,45 @@ source code     ──► scan ──────► inv scan, inv check   (the 
 source code     ──► bootstrap, doors, graphify ──► inv init   (drafts the rule file, checked by the scan)
 ```
 
-The modules are under `invariants-py/src/invariants/`.
+The library is four distributions. `invariants-first` (import `invariants`, under
+`invariants-py/src/invariants/`) depends on three libraries of its own, each under `packages/` and
+usable alone (standard library only, and none imports `invariants`): `invariants-cel` (import
+`invariants_cel`: the CEL engines and the type check), `invariants-scan` (`invariants_scan`: the
+path-law scan) and `invariants-schema-diff` (`invariants_schema_diff`: is a schema or a CEL edit a
+weakening?), which depends on `invariants-cel`. `invariants.cel` (`inv.cel`) and `invariants.scan`
+re-export the public API of the first two, and `invariants.lock` re-exports the schema-diff names it
+uses (`constraint_weakening`, `compare_bad`, `Change`, ...).
 
 | Module | Does |
 |---|---|
-| `loader/`, `typecheck.py`, `schema/` | `inv.load` over the whole document (`loader.loading`): reads the rule file (`reading`), expands the short forms (`short_forms`), checks each rule's shape and policy (`shapes`, `policy`, `rules`), binds targets and contracts (`typebind`, `schemas`, `paths`), and refuses what cannot hold; `typecheck` type-checks every clause; `schema/invariants.schema.json` is the rule file's JSON Schema |
-| `model.py`, `resolve.py`, `errors.py`, `snapshot.py`, `_typeinfo.py` | the rule record constants and loaded-record dataclasses (`model`), `py:` target resolution (`resolve`), the exceptions (`errors`), the `old_self` copy (`snapshot`); `_typeinfo` (internal, not public API) reads Python annotations once for the type check, the loader's schemas and provider types, and the lock's pins: PEP 695 aliases, NewType, Annotated, Optional/Union, Literal, Enums, and dataclass, TypedDict and pydantic schema classes |
+| `loader/`, `schema/` | `inv.load` over the whole document (`loader.loading`): reads the rule file (`reading`), expands the short forms (`short_forms`), checks each rule's shape and policy (`shapes`, `policy`, `rules`), binds targets and contracts (`typebind`, `schemas`, `paths`), and refuses what cannot hold, with `invariants_cel.typecheck` type-checking every clause; `schema/invariants.schema.json` is the rule file's JSON Schema |
+| `model.py`, `resolve.py`, `errors.py`, `snapshot.py` | the rule record constants and loaded-record dataclasses (`model`), `py:` target resolution (`resolve`), the exceptions (`errors`), the `old_self` copy (`snapshot`) |
 | `registry/` | loaded rules, modes, standing and `verify` (the package itself), the current registry and the module-level calls (`context`), the event sink and hooks (`events`), ablation state (`ablation`), review stores (`reviews`), the process session (`session`), coverage checks (`coverage`) |
 | `guard/`, `providers.py`, `evaluate.py`, `operations.py` | the decorators (`guard.decorators`), the per-call core shared by sync and async (`guard.plan`), reply parsing and checked values (`guard.replies`, `guard.checked`), provider binding, the evaluator and the actions; the monitor and rule files shipped in a package (`operations`) |
-| `cel/` | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime, `expr_python`); `INV_CEL_BACKEND` picks one. The shared front end and engine helpers (`_engine`), the Python-to-CEL value mapping (`values`), the linear-time regex (`_regex`), the errors (`errors`); the subset is `subset.lexer`, `parser`, `tree` (static reads), `evaluator`, `operators`, `functions`, `convert`, `equality`, `data`, `catalog` (the function table), `cost` (the budget) and `program` (the backend) |
-| `scan/` | finding the sources (`sources`), the call graph (`indexer`, `inference`, `walker`, over `astutil`) and the path-law check (`reachability`, `checks`, `mediation`), reviewed `allow_unresolved` sites (`accept`), the shared types (`contracts`), with SARIF (`sarif`) and text (`text`) output; `_scan_hooks.py` gives it the ablation state and the confinement root, wired by the package, so `scan/` imports nothing else of `invariants` |
-| `lock/` | the pins (`pinning`, over `pin_types`, `pin_jsonschema`, `pin_signatures` and `pin_contracts`), the semantic diff and the weakening gate (`schema_diff`, `cel_mono` over `cel_canon` and `cel_sites`, `rule_diff`, composed in `lock`), over the shared tables in `contracts` |
+| `cel.py`, `scan.py` | `invariants.cel` and `invariants.scan`: the public API of `invariants_cel` and `invariants_scan`, re-exported |
+| `lock/` | the pins (`pinning`, over `pin_types`, `pin_jsonschema`, `pin_signatures` and `pin_contracts`), the semantic diff and the weakening gate (`rule_diff` over the schema-diff library, composed in `lock`), over the shared tables in `contracts` (`FIELD_POLICY`, `RANKS`, the lock's name and version) |
 | `bootstrap/`, `doors.py`, `graphify.py` | `inv init`: finding the laws (`bootstrap.finding`), translating them to CEL (`translate`), writing the draft (`writing`) |
 | `cli/`, `status_report.py` | the `inv` command: the parser (the package itself, and `__main__`), shared helpers (`common`), commands (`commands`), the child process that imports the app for validate, lock, check and init, so the process that decides on a weakening never does (`worker`, which runs `child`), `inv check`'s guard check read from the source in that deciding process (`static_guards`), the `--base` gate (`git_base`), the coding-agent hooks (`hooks`); `inv status` rows (`status_report`) |
 | `mcp/` | `inv mcp` and `inv-mcp`: a read-only MCP server over stdio for coding agents (`invariants-py/docs/agents.md`): the JSON-RPC session (`protocol`), argument confinement to `--root` (`confine`), the tools (`tools`, `propose`); `project.py` reads `[tool.invariants]` from `pyproject.toml` (import and scan roots) and holds the exit codes, shared by `cli/` and `mcp/` so the server never imports the CLI; `confinement.py` keeps the child that `check` and `status` run from importing a project module that resolves outside `--root` |
 | `pytest_plugin/`, `testing.py` | `--inv-rules`, `--inv-verify`, `--inv-ablate`, `--inv-ablate-lenient`, `--inv-report`, `--inv-report-json`: the options (`hooks`), the per-run state (`state`) and session (`session`), the ablation protocol (`ablation`, re-runs in `rerun`), the report (`report`), the fixtures (`fixtures`); test helpers that forge values (`testing`) |
 | `integrations/` | FastAPI (`fastapi`) and ASGI (`asgi`; `application/problem+json`), pydantic (`pydantic`: closed schemas, contracts), OpenTelemetry (`otel`: one span per evaluation), a bounded background exporter (`exporters`), Anthropic (`integrations.anthropic`: Claude, trace replay and recording for a model-call body; `invariants-py/docs/models.md`) |
+
+The three libraries, under `packages/<distribution>/src/<import name>/`:
+
+| Library | Does |
+|---|---|
+| `invariants_cel` (`invariants-cel`) | two CEL engines behind one parser: `subset` (the default, standard library only) and `cel-expr` (Google's C++ runtime, `expr_python`, the `[cel]` extra); `INV_CEL_BACKEND` picks one. The shared front end and engine helpers (`_engine`), the Python-to-CEL value mapping (`values`), the linear-time regex (`_regex`), the errors (`errors`); the subset is `subset.lexer`, `parser`, `tree` (static reads), `evaluator`, `operators`, `functions`, `convert`, `equality`, `data`, `catalog` (the function table), `cost` (the budget) and `program` (the backend). `typecheck` type-checks a clause against the declared Python types; `typeinfo` reads Python annotations once for the type check, the loader's schemas and provider types, and the lock's pins: PEP 695 aliases, NewType, Annotated, Optional/Union, Literal, Enums, and dataclass, TypedDict and pydantic schema classes |
+| `invariants_scan` (`invariants-scan`) | finding the sources (`sources`), the call graph (`indexer`, `inference`, `walker`, over `astutil`) and the path-law check (`reachability`, `checks`, `mediation`), reviewed `allow_unresolved` sites (`accept`), the shared types (`contracts`), with SARIF (`sarif`) and text (`text`) output; `hooks` gives it the ablation state and the confinement root, which `invariants` wires; `inv-scan` (`__main__`) runs it over a JSON rule document on its own |
+| `invariants_schema_diff` (`invariants-schema-diff`) | is an edit a weakening: of a JSON Schema (`schemas`: `constraint_weakening`, `schema_changes`) or of a CEL `bad` (`cel_mono` over `cel_canon` and `cel_sites`: `compare_bad`), with canonical JSON, `Change` and the leaf-level JSON diff (`changes`) |
+
+**Using one engine on its own.** Each library installs and runs without `invariants-first`, and
+none needs a rule file: `invariants_cel.get_backend().compile("args.amount > 100").evaluate(env)`
+evaluates a CEL condition over plain Python values, and `invariants_cel.typecheck.check_clause` checks
+one against the types a function's annotations declare; `invariants_scan.scan(doc, [root])` (or
+`inv-scan rules.json --root src`) checks the path laws of a JSON document of `mediation:` sections
+over a source tree; `invariants_schema_diff.schema_changes(old, new)` says which edits of a JSON Schema
+let it accept more input, and `compare_bad(old, new, invariants_cel.subset.parse)` whether a CEL
+condition now flags fewer cases. Each package's README has a five-minute example.
 
 ### 11.2 Commands
 
@@ -1171,6 +1194,7 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 | Path | Holds |
 |---|---|
 | `invariants-py/` | the library, its test suite (about 5,400 tests, run on both CEL engines) and its docs |
+| `packages/invariants-cel/`, `packages/invariants-scan/`, `packages/invariants-schema-diff/` | the three libraries the library is built on (the CEL engines and type check, the path-law scan, the schema and CEL weakening judges), each a distribution of its own with its tests and a README |
 | `invariants-py/docs/` | `start.md` (the ten-minute start), `rule-file.md` (every field), `concepts.md`, `scan.md`, `lockfile.md`, `api.md`, `cel.md`, `cookbook.md`, `models.md` (Claude, replay and recording: `integrations.anthropic`), `agents.md` (agent hooks and the `inv mcp` / `inv-mcp` server), `agent-frameworks.md` (native tool use and LangGraph), `evaluation.md`, `design-guide.md` (this handbook) |
 | `apps/support-agent/` | the tool-calling agent and its twelve defects |
 | `apps/pool-service/`, `apps/fact-pipeline/` | the other two apps |
@@ -1179,7 +1203,7 @@ A tool that hides its limits gets trusted where it should not be. These are the 
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e 'invariants-py[dev,cel]'
+pip install -e packages/invariants-cel -e packages/invariants-scan -e packages/invariants-schema-diff -e 'invariants-py[dev,cel]'
 cd invariants-py && python -m pytest tests -q && python -m mypy
 cd ../apps/support-agent && ./ci.sh
 ```

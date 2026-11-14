@@ -34,7 +34,7 @@ Adoption comes in two steps, and the first one changes no production code.
 ## 1. Draft and lock (2 minutes)
 
 ```bash
-pip install invariants-first        # a dev dependency; not on PyPI yet: pip install -e path/to/invariants-py
+pip install invariants-first        # a dev dependency; not on PyPI yet: pip install path/to/packages/invariants-* -e path/to/invariants-py
 cd your-project
 inv init
 ```

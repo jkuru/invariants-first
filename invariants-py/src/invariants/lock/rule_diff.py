@@ -8,14 +8,15 @@ import collections
 import json
 from typing import Any
 
-from ..scan import anywhere
-from .cel_canon import Typer, _clause_key, _disjuncts, _unique
-from .cel_mono import judge_bad
+from invariants_scan import anywhere
+from invariants_schema_diff.cel_canon import Typer, _clause_key, _disjuncts, _unique
+from invariants_schema_diff.cel_mono import judge_bad
+from invariants_schema_diff.changes import Change, _json_paths, same
+from invariants_schema_diff.schemas import (POS, _param_schema_changes, aligned_parameters, constraint_weakening,
+                                            parameter_flag_weakening, ref_polarity)
+
 from .contracts import (ANALYSED, COMPUTED, FIELD_POLICY, MORE_IS_WEAKER,
-                        NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, Change, _json_paths,
-                        policy, same)
-from .schema_diff import (POS, _param_schema_changes, aligned_parameters, constraint_weakening,
-                          parameter_flag_weakening, ref_polarity)
+                        NEUTRAL, NOTES, PIN, PRESENCE, PROSE, RANKED, RANKS, policy)
 
 # Test code and migrations are not production paths: by default the scan skips them (at any depth), so
 # a unit test that calls the sink directly is not a back door. [tool.invariants.scan] exclude replaces
@@ -43,7 +44,7 @@ def _bad_changes(where: str, old: Any, new: Any, typer: Typer | None = None) -> 
     """Clause by clause, on canonical trees. Whitespace, commuted operands, a disjunction split into
     clauses (or merged from them) and a repeated clause dropped are no change. A removed clause, or
     an edit that makes the rule match less, or one whose direction cannot be decided, is WEAKENED."""
-    from ..cel import subset
+    from invariants_cel import subset
     a, b = _clauses(old), _clauses(new)
     ka = [_clause_key(w, subset.parse, typer) for w, _ in a]
     kb = [_clause_key(w, subset.parse, typer) for w, _ in b]
@@ -129,7 +130,7 @@ def _label(c: tuple[str, str]) -> str:
 
 def _direction_change(where: str, label: str, old: Any, new: Any, w: str | None = None,
                       w2: str | None = None, typer: Typer | None = None) -> Change:
-    from ..cel import subset
+    from invariants_cel import subset
     direction, sites = judge_bad(old if w is None else w, new if w2 is None else w2, subset.parse, typer)
     if direction == "same":
         return Change(where, label, old, new, False, "the same condition after normalisation")
@@ -613,7 +614,7 @@ def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, 
             continue
         out.append(Change(where, shown(p), xv, yv, why is not None, why or ""))
     # a schema-table reference keeps the polarity of its place: a component named under `not` is
-    # judged the other way round (schema_diff._schema_changes)
+    # judged the other way round (invariants_schema_diff.schemas._schema_changes)
     refs += [(f"{where} {shown(p)}", p, da, db, ref_polarity(p, a, b) if kind == "contract" else POS)
              for p, da, db in found]
     return out

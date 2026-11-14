@@ -23,12 +23,13 @@ import yaml
 from cli_support import run_inv, write_project
 
 import invariants as inv
-from invariants import doors, scan
+import invariants_scan as scan
+from invariants import doors
 from invariants.errors import LoadError
 from invariants.loader import expand_short_forms, read_document
 from invariants.lock import changes, pinning
 from invariants.lock.rule_diff import _mediation_changes
-from invariants.scan import ScanConfigError
+from invariants_scan import ScanConfigError
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SUPPORT = REPO / "apps" / "support-agent"

@@ -21,7 +21,7 @@ from hypothesis import strategies as st
 
 import invariants as inv
 import round6 as r6
-from invariants.cel import get_backend
+from invariants_cel import get_backend
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 KINDS = list(r6.MODELS)
@@ -480,8 +480,10 @@ def test_publishing_checklist_and_placeholders_go_together():
     the owner settles the blockers and deletes the section (which the release workflow requires),
     [project.urls] exists and the SARIF URL is no longer the placeholder, and this test still passes."""
     releasing = (ROOT / "RELEASING.md").read_text()
-    pyproject = (ROOT / "pyproject.toml").read_text()
-    sarif = (ROOT / "src" / "invariants" / "scan" / "sarif.py").read_text()
+    # the four distributions' metadata (invariants-first and the three libraries under packages/)
+    pyproject = "\n".join((d / "pyproject.toml").read_text() for d in [ROOT, *sorted((ROOT.parent / "packages").iterdir())])
+    assert pyproject.count("[project.urls]") == 4 and pyproject.count("Example Maintainer") in (0, 4)
+    sarif = (ROOT.parent / "packages" / "invariants-scan" / "src" / "invariants_scan" / "sarif.py").read_text()
     assert "RELEASING.md" in (ROOT / "CHANGELOG.md").read_text()
     assert "[project.urls]" in pyproject and "informationUri" in sarif
     dummy = "example.com"                       # reserved for examples: never a real project's address

@@ -28,9 +28,9 @@ import fixround as fx
 from invariants.errors import LoadError
 from invariants.loader import read_document, schema_path
 from invariants.loader.policy import _abstain_in_schema, _restates_enum
-from invariants.lock.contracts import _json_paths
+from invariants_schema_diff.changes import _json_paths
 from invariants.lock.rule_diff import _rule_changes
-from invariants.lock.schema_diff import constraint_weakening
+from invariants_schema_diff.schemas import constraint_weakening
 
 M = "py:test_round33_lock"
 NO_FEEDBACK = {"format_retries": 0, "semantic_resamples": 0, "feedback": {"format": "none"}}

@@ -17,8 +17,8 @@ import pydantic
 import pytest
 import typing_extensions as te
 
-from invariants import _typeinfo as ti
-from invariants import typecheck as tc
+from invariants_cel import typeinfo as ti
+from invariants_cel import typecheck as tc
 from invariants.lock import pin_jsonschema, pin_signatures, pin_types
 
 Desc = Any          # frozenset of atoms ("int", "string", "record", ("list", Desc), ("map", Desc)), None: unknown

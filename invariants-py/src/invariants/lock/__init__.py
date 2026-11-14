@@ -31,11 +31,12 @@ rule-file field is judged. A field it does not classify, and any edit to a field
 `bad` reads (bind, a view, provider args, the subject, model_policy, an artifact), is a possible
 weakening.
 
-The package is staged: contracts (the shared tables, canonical JSON, Change), pinning (taking the
-pins: build, over pin_types, pin_jsonschema, pin_signatures and pin_contracts), schema_diff (is a
-schema change a weakening?), cel_mono (is a `bad` edit stronger or weaker? over cel_canon and
-cel_sites), rule_diff (one entry's changes) and this module, which composes them (changes, diff), reads,
-validates and writes the lock file.
+The package is staged: contracts (the shared tables), pinning (taking the pins: build, over pin_types,
+pin_jsonschema, pin_signatures and pin_contracts), rule_diff (one entry's changes) and this module,
+which composes them (changes, diff), reads, validates and writes the lock file. Judging a schema change
+(invariants_schema_diff.schemas: is it a weakening?) and a `bad` edit (invariants_schema_diff.cel_mono:
+stronger or weaker? over cel_canon and cel_sites), with canonical JSON and Change
+(invariants_schema_diff.changes), are the schema-diff library's.
 """
 from __future__ import annotations
 
@@ -43,14 +44,18 @@ import json
 import pathlib
 from typing import Any
 
+# the public names of the stages and of the schema-diff library they use, re-exported (with the private
+# ones this module composes)
+from invariants_schema_diff.cel_canon import Typer, canon_tree, clause_types, make_typer
+from invariants_schema_diff.cel_mono import compare_bad
+from invariants_schema_diff.changes import Change, _is_ref, _sha, canonical, same
+from invariants_schema_diff.schemas import _schema_changes, constraint_weakening
+
 from ..confinement import confined
 from ..errors import LoadError
-# the public names of the stages, re-exported (with the private ones this module composes)
-from .cel_canon import Typer, canon_tree, clause_types, make_typer
-from .cel_mono import compare_bad
 from .contracts import (ANALYSED, COMPUTED, FIELD_POLICY, LOCK_NAME, LOCK_VERSION, MORE_IS_WEAKER,
-                        NEUTRAL, PIN, PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, WEAKENING, Change,
-                        _is_ref, _sha, canonical, policy, same)
+                        NEUTRAL, PIN, PRESENCE, PROSE, PY_CONTRACTS, RANKED, RANKS, SCHEMA_CONTRACTS, WEAKENING,
+                        policy)
 from .pin_contracts import contract_hash
 from .pin_jsonschema import json_schema, stdlib_json_schema
 from .pin_signatures import signature_types
@@ -58,7 +63,6 @@ from .pin_types import Schemas, resolved_schema, strip_prose
 from .pinning import (build, expand_applies_to, imports_code, mediated, rule_semantics, scan_pin, scan_skip,
                       static_pins, with_static)
 from .rule_diff import DEFAULT_SCAN_EXCLUDE, _entry_changes, _rule_changes, _scan_changes
-from .schema_diff import _schema_changes, constraint_weakening
 
 DUMP_WIDTH = 128
 

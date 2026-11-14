@@ -44,7 +44,7 @@ UserId = typing.NewType("UserId", int)
 
 def test_newtype_is_pinned_as_its_supertype():
     from invariants.lock.pin_jsonschema import _json_type
-    from invariants._typeinfo import unalias
+    from invariants_cel.typeinfo import unalias
     assert unalias(UserId) is int
     assert _json_type(UserId, {}, 0) == {"type": "integer"}
 

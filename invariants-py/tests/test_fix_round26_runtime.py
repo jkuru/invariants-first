@@ -27,8 +27,8 @@ import pytest
 import invariants as inv
 import round26rt as r26
 
-from invariants.cel import available_backends, get_backend
-from invariants.cel.errors import CelError
+from invariants_cel import available_backends, get_backend
+from invariants_cel.errors import CelError
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 needs_cel_expr = pytest.mark.skipif("cel-expr" not in BACKENDS, reason="cel-expr not installed")
@@ -92,7 +92,7 @@ def test_bool_and_out_of_range_int_subclass_unchanged(backend):
 
 
 def test_uint_kept_in_the_exact_evaluation():
-    from invariants.cel.subset.data import Uint, _data
+    from invariants_cel.subset.data import Uint, _data
     assert type(_data(Uint(5))) is Uint
     assert type(_data(MyInt(5))) is int and type(_data(MyStr("a"))) is str
     assert type(_data(MyFloat(1.0))) is float and type(_data(MyBytes(b"a"))) is bytes
@@ -304,8 +304,8 @@ def test_the_pytest_report_counts_and_shows_abstains():
                                        ("timestamp('2020-01-01T00:00:00Z') in args.m", {})])
 def test_a_value_that_can_never_be_a_map_key_is_a_rule_error_on_the_subset(expr, env):
     """As cel-expr: `null in m` is no such overload, never a quiet false a bad clause would pass on."""
-    from invariants import cel
-    from invariants.cel import CelError
+    import invariants_cel as cel
+    from invariants_cel import CelError
     with pytest.raises(CelError):
         cel.get_backend("subset").compile(expr).evaluate({"args": {"m": {"a": 1}, **env}})
     assert cel.get_backend("subset").compile("'a' in args.m && 1.0 in {1: 'x'} && !(true in {1: 'x'})").evaluate(

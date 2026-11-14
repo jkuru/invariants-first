@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import cel
-from .. import typecheck as tc
+import invariants_cel as cel
+from invariants_cel import typecheck as tc
+
 from ..errors import LoadError
 from ..model import DEFAULT_NAMES, Rule
 from ..registry import Registry
@@ -75,6 +76,6 @@ def _typecheck(rule: Rule, reg: Registry, sources: list[tuple[str, str]]) -> Non
                 continue                                # the backend parsed it; leave it to the backend
             if getattr(reg, "backend_name", None) == "cel-expr" and any(
                     t.kinds and t.kinds & {"timestamp", "duration"} for t in read):
-                from ..cel.expr_python import NO_PROTOBUF, protobuf_available
+                from invariants_cel.expr_python import NO_PROTOBUF, protobuf_available
                 if not protobuf_available():
                     raise LoadError(f"{rule.id}: clause {msg!r} reads a datetime or timedelta, and {NO_PROTOBUF}")

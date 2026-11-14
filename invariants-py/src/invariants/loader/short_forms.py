@@ -23,8 +23,8 @@ def _check_accepts(rid: str, entries: Any, shared: str | None = None) -> None:
     naming the field as the rule spells it (allow_unresolved[0], not mediation.allow_unresolved[0]).
     shared: the place of one entry of the file's top-level allow_unresolved (`allow_unresolved[2]`),
     which its errors name instead."""
-    from ..scan import ScanConfigError
-    from ..scan.mediation import _accepts
+    from invariants_scan import ScanConfigError
+    from invariants_scan.mediation import _accepts
     try:
         _accepts(rid, entries)
     except ScanConfigError as e:

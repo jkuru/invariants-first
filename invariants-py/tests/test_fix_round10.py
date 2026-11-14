@@ -26,8 +26,8 @@ import pytest
 
 import invariants as inv
 import round10 as r10
-from invariants.cel import available_backends, get_backend
-from invariants.cel.errors import CelError
+from invariants_cel import available_backends, get_backend
+from invariants_cel.errors import CelError
 from invariants.integrations import pydantic as inv_pd
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
@@ -224,7 +224,7 @@ def test_timezone_from_data_is_checked_on_every_backend(backend, tz, want):
 
 
 def test_values_zone_raises_cel_error_only():
-    from invariants.cel import values
+    from invariants_cel import values
     for tz in ("+24:00", "+99:59", "-30:00"):
         with pytest.raises(CelError, match="unknown timezone"):
             values.zone(tz)
@@ -302,8 +302,8 @@ def test_reading_a_refused_field_or_a_whole_element_is_still_refused(backend, ba
 
 
 def test_engine_projection_skips_unread_fields():
-    from invariants.cel._engine import project
-    from invariants.cel.subset import ELEM, SIZE
+    from invariants_cel._engine import project
+    from invariants_cel.subset import ELEM, SIZE
     data = {"items": ITEMS, "m": MAP}
     assert project(data, frozenset({("items", ELEM, "qty")})) == {"items": [{"qty": 3}, {"qty": -1}]}
     assert project(data, frozenset({("items", SIZE)})) == {"items": [None, None]}

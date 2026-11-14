@@ -5,7 +5,7 @@ import dataclasses
 import inspect
 from typing import Any, Callable
 
-from .cel import Program
+from invariants_cel import Program
 
 DEFAULT_NAMES = frozenset({"args", "result", "reply", "self", "old_self"})
 PATH_ROOTS = DEFAULT_NAMES | {"provider"}

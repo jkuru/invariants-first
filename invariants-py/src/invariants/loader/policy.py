@@ -4,7 +4,8 @@ from __future__ import annotations
 import typing
 from typing import Any
 
-from .._typeinfo import strip
+from invariants_cel.typeinfo import strip
+
 from ..errors import LoadError
 from ..model import POLICY_FIELDS, Rule
 from ..registry import Registry

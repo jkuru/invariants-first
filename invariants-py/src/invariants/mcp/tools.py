@@ -29,7 +29,8 @@ def run_scan(root: pathlib.Path, rule_file: pathlib.Path, source_roots: Sequence
     """What `inv scan --format json` computes, with the roots and excludes it would use. For a rule file
     inside server_root, the walk is confined to it (as `check` is): a symlink under the roots that
     resolves outside is not followed, and is an unresolved finding naming only the link."""
-    from .. import project, scan as scanner
+    import invariants_scan as scanner
+    from .. import project
     from ..errors import LoadError
     try:
         doc = project.read_document(rule_file)

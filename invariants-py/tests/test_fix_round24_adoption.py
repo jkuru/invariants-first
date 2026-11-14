@@ -26,9 +26,9 @@ import textwrap
 import pytest
 from cli_support import write_project
 
-from invariants import scan
-from invariants.scan import astutil, reachability
-from invariants.scan.contracts import _Edge, _Fan
+import invariants_scan as scan
+from invariants_scan import astutil, reachability
+from invariants_scan.contracts import _Edge, _Fan
 
 PAYMENTS = """
     def send_to_gateway(charge_id, amount):

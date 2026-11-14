@@ -27,8 +27,8 @@ import pytest
 
 from invariants.errors import LoadError
 from invariants.lock import pinning
-from invariants.lock.contracts import _json_paths
-from invariants.lock.schema_diff import _param_schema_changes, constraint_weakening
+from invariants_schema_diff.changes import _json_paths
+from invariants_schema_diff.schemas import _param_schema_changes, constraint_weakening
 from invariants.lock import pin_jsonschema
 from invariants.lock import pin_signatures
 from invariants.lock import pin_types

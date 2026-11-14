@@ -10,7 +10,9 @@ import json
 import pathlib
 from typing import Any, Iterator, Sequence
 
-from .. import lock, scan as scanner
+import invariants_scan as scanner
+
+from .. import lock
 from ..errors import LoadError
 from ..loader import _type_env, load, read_document
 from ..registry import isolated

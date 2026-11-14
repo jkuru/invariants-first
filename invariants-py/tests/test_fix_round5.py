@@ -16,7 +16,7 @@ import invariants as inv
 import round4 as r4
 import round5 as r5
 from invariants import registry
-from invariants.cel import get_backend
+from invariants_cel import get_backend
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -147,7 +147,7 @@ def test_long_input_matches_on_the_full_re2_backends_gives_a_result():
 
 def test_long_input_matches_on_the_subset_is_a_bounded_cost_error():
     import time
-    from invariants.cel import subset
+    from invariants_cel import subset
     prog = subset.SubsetBackend().compile('s.matches("(a|b|c|d|e)*f")')
     start = time.perf_counter()
     with pytest.raises(inv.cel.CelError, match="cost limit exceeded"):

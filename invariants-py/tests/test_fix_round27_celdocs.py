@@ -28,9 +28,9 @@ from typing import Any
 import pytest
 
 import invariants as inv
-from invariants import cel
-from invariants.cel import _engine, available_backends, get_backend
-from invariants.cel.errors import CelError, CelSyntaxError
+import invariants_cel as cel
+from invariants_cel import _engine, available_backends, get_backend
+from invariants_cel.errors import CelError, CelSyntaxError
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 needs_cel_expr = pytest.mark.skipif("cel-expr" not in BACKENDS, reason="cel-expr not installed")
@@ -244,7 +244,7 @@ def test_docs_name_no_removed_mode_or_malformed_install():
     assert "pip install -e . invariants-first" not in start
     evaluation = (REPO / "invariants-py" / "docs" / "evaluation.md").read_text()
     assert "found with `--sql`" not in evaluation and "since removed" in evaluation
-    from invariants import scan
+    import invariants_scan as scan
     scan_md = (REPO / "invariants-py" / "docs" / "scan.md").read_text()
     lock_md = (REPO / "invariants-py" / "docs" / "lockfile.md").read_text()
     assert "`invariants.scan.SKIP_DIRS`" in scan_md and "`invariants.scan.SKIP_DIRS`" in lock_md
@@ -257,8 +257,7 @@ def test_the_design_guide_module_table_names_every_submodule():
     src = REPO / "invariants-py" / "src" / "invariants"
     guide = (REPO / "invariants-py" / "docs" / "design-guide.md").read_text()
     table = guide[guide.index("| Module | Does |"):guide.index("### 11.2 Commands")]
-    for pkg in ("loader", "registry", "guard", "cel", "cel/subset", "scan", "lock", "bootstrap", "cli", "mcp",
-                "pytest_plugin", "integrations"):
+    for pkg in ("loader", "registry", "guard", "lock", "bootstrap", "cli", "mcp", "pytest_plugin", "integrations"):
         for f in sorted((src / pkg).glob("*.py")):
             if f.stem in ("__init__", "__main__"):
                 continue
@@ -266,3 +265,13 @@ def test_the_design_guide_module_table_names_every_submodule():
     for f in sorted(src.glob("*.py")):
         if f.stem != "__init__":
             assert f"`{f.name}`" in table, f.name
+    # the three libraries (packages/), each a row of its own, with every module
+    for lib, dist in (("invariants_cel", "invariants-cel"), ("invariants_scan", "invariants-scan"),
+                      ("invariants_schema_diff", "invariants-schema-diff")):
+        row = next(line for line in table.splitlines() if line.startswith(f"| `{lib}` (`{dist}`) |"))
+        top = REPO / "packages" / dist / "src" / lib
+        for f in sorted(top.rglob("*.py")):
+            if f.stem in ("__init__", "__main__"):
+                continue
+            sub = f.parent.relative_to(top).as_posix()
+            assert f"`{f.stem}`" in row or f"`{sub}.{f.stem}`" in row, f"{lib}/{f.relative_to(top)}"

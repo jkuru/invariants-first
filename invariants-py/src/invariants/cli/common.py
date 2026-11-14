@@ -7,9 +7,11 @@ import pathlib
 import sys
 from typing import Callable
 
-from .. import lock, scan as scanner
+import invariants_scan as scanner
+from invariants_scan.text import safe_output
+
+from .. import lock
 from ..errors import LoadError
-from ..scan.text import safe_output
 
 # the exit codes, the usage error and the --site directories live with the project (invariants.project),
 # which the MCP server shares
@@ -38,6 +40,10 @@ def _rule_file(arg: str | None) -> pathlib.Path:
     raise Usage(f"no rule file given and none of {', '.join(DEFAULT_FILES)} in the current directory")
 
 
+# the library's own top-level packages: invariants and the three libraries it is built on
+_LIBRARY = frozenset({"invariants", "invariants_cel", "invariants_scan", "invariants_schema_diff"})
+
+
 def _importing(e: BaseException) -> tuple[str, bool] | None:
     """The app module whose import raised e (or what e was raised from), innermost first, and whether
     that module's own top-level code called inv.load(); None when e did not come from importing one."""
@@ -50,7 +56,7 @@ def _importing(e: BaseException) -> tuple[str, bool] | None:
             f = tb.tb_frame
             name = f.f_globals.get("__name__") or ""
             if (f.f_code.co_name == "<module>" and name not in ("__main__", "")
-                    and name != "invariants" and not name.startswith("invariants.")):
+                    and name.partition(".")[0] not in _LIBRARY):
                 callee = tb.tb_next.tb_frame if tb.tb_next is not None else None
                 found = (name, callee is not None and callee.f_code.co_name == "load"
                          and str(callee.f_globals.get("__name__", "")).startswith("invariants."))

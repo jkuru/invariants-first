@@ -29,8 +29,8 @@ import pathlib
 import re
 from typing import Any, Iterable
 
-from . import scan as scanner
-from .scan.contracts import extracted_on_paths
+import invariants_scan as scanner
+from invariants_scan.contracts import extracted_on_paths
 
 # Names that suggest an invariant someone cares about: money, quotas, approvals, inventory.
 IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit", "debit", "charge", "transfer",

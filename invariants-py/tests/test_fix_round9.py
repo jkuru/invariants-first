@@ -20,8 +20,8 @@ import pytest
 
 import invariants as inv
 import round9 as r9
-from invariants.cel import available_backends, get_backend
-from invariants.cel.errors import CelError
+from invariants_cel import available_backends, get_backend
+from invariants_cel.errors import CelError
 
 BACKENDS = [b for b in ("subset", "cel-expr") if b in available_backends()]
 UTC = dt.timezone.utc
@@ -190,7 +190,7 @@ def test_timestamp_text_from_data_uses_the_shared_parser(backend):
 def test_cel_expr_needs_protobuf_and_says_so(monkeypatch):
     if "cel-expr" not in BACKENDS:
         pytest.skip("cel-expr not installed")
-    from invariants.cel import expr_python
+    from invariants_cel import expr_python
 
     def missing() -> Any:
         raise ImportError("no protobuf")
@@ -262,7 +262,7 @@ def test_too_deep_for_cel_expr_is_a_clear_load_error():
 def test_cel_expr_text_stays_small():
     if "cel-expr" not in BACKENDS:
         pytest.skip("cel-expr not installed")
-    from invariants.cel._engine import FrontEnd
+    from invariants_cel._engine import FrontEnd
     be = get_backend("cel-expr")
     src = sum_of(50) + " > 1.0"
     text = FrontEnd(src).text_for(be._NATIVE, be._RENAME, be._FIN)  # type: ignore[attr-defined]

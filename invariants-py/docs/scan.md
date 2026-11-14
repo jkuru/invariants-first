@@ -3,7 +3,9 @@
 A guard only protects the paths that go through it. `inv scan` is a static, read-only call-graph
 check of path laws: every call path to a protected API (the *sink*, usually a repository method)
 passes an upper API (the *door*, usually a service method). The source is parsed with `ast`; it is
-never imported or run.
+never imported or run. The scan is the invariants-scan library (`invariants_scan`, under
+`packages/invariants-scan/` of the monorepo), which `invariants.scan` re-exports; on its own, its
+`inv-scan` command reads a JSON rule document in the long `mediation:` form (see its README).
 
 - [Mediation](#mediation)
 - [Findings](#findings)

@@ -11,14 +11,15 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from .cel import CelError
-from .cel.errors import raised
+from invariants_cel import CelError
+from invariants_cel.errors import raised
+
 from .errors import LoadError
 from .model import Rule
 from .providers import walk
 from .registry import Registry, current
 
-# Immutable values a snapshot keeps as they are. cel/values.py maps them when a clause reads them,
+# Immutable values a snapshot keeps as they are. invariants_cel/values.py maps them when a clause reads them,
 # exactly as it maps arguments: a datetime is a timestamp (a naive one is refused), a timedelta a
 # duration, a UUID a string, an Enum member its value, bytes bytes; a date, time or Decimal is
 # refused there with the conversion to make (CEL has no such type).

@@ -17,7 +17,8 @@ import pathlib
 import sys
 from typing import Any, Callable, Sequence
 
-from .. import scan as scanner
+import invariants_scan as scanner
+
 from ..errors import LoadError
 from ..loader import read_document
 from .commands import cmd_check, cmd_init, cmd_lock, cmd_mcp, cmd_scan, cmd_status, cmd_validate, cmd_verify

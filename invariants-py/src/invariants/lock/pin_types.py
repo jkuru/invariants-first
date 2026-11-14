@@ -8,9 +8,11 @@ import json
 import typing
 from typing import Any
 
-from .. import _typeinfo as ti
+from invariants_cel import typeinfo as ti
+from invariants_schema_diff.changes import MAX_DEPTH, _plain, _sha, canonical
+
 from ..errors import LoadError
-from .contracts import MAX_DEFS, MAX_DEPTH, _plain, _sha, canonical
+from .contracts import MAX_DEFS
 
 
 # --- schemas: stripping, content addressing --------------------------------------------------------
@@ -180,7 +182,7 @@ def resolved_schema(schema: Any, defs: dict[str, Any] | None = None, seen: set[i
 
 
 def class_shape(cls: type) -> ti.ClassShape:
-    """_typeinfo.class_shape, its TypeCheckError (an annotation that does not resolve) raised as the
+    """invariants_cel.typeinfo.class_shape, its TypeCheckError (an annotation that does not resolve) raised as the
     LoadError the lock reports, with the same message and cause."""
     try:
         return ti.class_shape(cls)

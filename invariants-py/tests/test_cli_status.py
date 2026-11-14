@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 
-from invariants import scan, status_report
+import invariants_scan as scan
+from invariants import status_report
 from cli_support import BYPASS, CLEAN, run_inv
 from support import RULES
 

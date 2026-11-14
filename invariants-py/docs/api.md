@@ -11,6 +11,7 @@ module's `__all__`.
 - [`invariants`](#invariants)
 - [Integrations](#integrations): [FastAPI](#invariantsintegrationsfastapi), [ASGI](#invariantsintegrationsasgi), [Pydantic](#invariantsintegrationspydantic), [OpenTelemetry](#invariantsintegrationsotel), [Buffered exporters](#invariantsintegrationsexporters), [Anthropic](#invariantsintegrationsanthropic)
 - [`invariants.testing`](#invariantstesting)
+- [The libraries](#the-libraries): `invariants_cel`, `invariants_scan`, `invariants_schema_diff`
 - [The pytest plugin](#the-pytest-plugin)
 - [The CLI](#the-cli)
 
@@ -177,7 +178,7 @@ Stacking `@inv.guard` with other decorators:
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `cel` | module | CEL adapter: the Backend protocol and backend selection. |
+| `cel` | module | The CEL engine, re-exported from the invariants-cel library (`invariants_cel`): the Backend protocol and backend selection. |
 | `CEL_BACKEND` | `str` | currently `'subset'` |
 | `__version__` | `str` | currently `'0.1.0'` |
 
@@ -371,6 +372,25 @@ llm = AnthropicModel(system="Answer with one JSON object.")      # or ReplayMode
 | `make_checked(cls: type[C], value: Any, verdict: str = 'ok', attempts: int = 1, rule: str \| None = None) -> C` | function | A cls instance carrying value and verdict, as inv.model_call would build it. A deliberate forgery for tests. |
 | `make_unbuilt(cls: type[C]) -> C` | function | A cls instance with no verdict or value at all (what object.__new__ gives). For edge tests. |
 | `capture(reg: Registry \| None = None) -> Iterator[list[dict[str, Any]]]` | function | Collect every event recorded in the block (in reg only, when given) into a list. For tests. |
+
+## The libraries
+
+`invariants-first` depends on three libraries of its own, each a distribution that can be used
+without it (standard library only; they are under `packages/` of the monorepo, each with a README and
+a five-minute example). These paths in `invariants` stay as they were, re-exported:
+
+| Path in `invariants` | Is |
+|---|---|
+| `invariants.cel` (`inv.cel`), with `invariants.cel.subset`, `set_string_limit`, `get_backend`, ... | `invariants_cel` (its `__all__`) |
+| `invariants.scan.scan`, `SKIP_DIRS`, `graph`, `mediations`, `to_sarif`, `to_text`, `Report`, `Finding`, ... | `invariants_scan` (its `__all__`) |
+| `invariants.lock.constraint_weakening`, `compare_bad`, `canon_tree`, `make_typer`, `clause_types`, `Change`, `canonical`, `same` | `invariants_schema_diff` |
+| `invariants.lock.FIELD_POLICY`, `RANKS`, `policy`, `LOCK_NAME`, `LOCK_VERSION`, `DEFAULT_SCAN_EXCLUDE` | the lock's own (`invariants.lock.contracts`, `rule_diff`) |
+
+| Distribution | Import | Main names |
+|---|---|---|
+| `invariants-cel` (extra `[cel]`: the cel-expr engine) | `invariants_cel` | `get_backend`, `available_backends`, `register_backend`, `Backend`, `Program`, `CelError`, `CelSyntaxError`, `subset`; `invariants_cel.typecheck` (`check_clause`, `signature_types`, `from_py`, `infer`, `T`, `TypeMismatch`), `invariants_cel.typeinfo` (annotation reading) |
+| `invariants-scan` | `invariants_scan` | `scan(doc, roots, exclude=())`, `graph`, `mediations`, `Report`, `Finding`, `Mediation`, `to_text`, `to_sarif`, `SKIP_DIRS`; `invariants_scan.hooks` (`ablated`, `reached`, `confine_root`: what a host wires); the `inv-scan` command over a JSON rule document |
+| `invariants-schema-diff` (depends on `invariants-cel`) | `invariants_schema_diff` | `schema_changes(old, new)`, `constraint_weakening`, `compare_bad(old, new, parse)`, `judge_bad`, `canon_tree`, `make_typer`, `new_error_sites`, `Change`, `canonical`, `same` |
 
 ## The pytest plugin
 

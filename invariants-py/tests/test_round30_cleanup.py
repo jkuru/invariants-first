@@ -32,9 +32,9 @@ import pytest
 
 import invariants as inv
 from cli_support import run_inv, write_project
-from invariants.cel.errors import CelSyntaxError
-from invariants.cel.subset import evaluate, parse
-from invariants.cel.subset.parser import MAX_NESTING, MAX_TREE_DEPTH
+from invariants_cel.errors import CelSyntaxError
+from invariants_cel.subset import evaluate, parse
+from invariants_cel.subset.parser import MAX_NESTING, MAX_TREE_DEPTH
 from invariants.errors import LoadError
 
 RULE = ('rules:\n  - id: R-1\n    bad: "{src}"\n'
@@ -94,13 +94,13 @@ def test_a_conditional_in_the_middle_of_a_conditional_needs_parentheses():
     (r"\101", "A"), (r"\12", "\n"), (r"\123", "S"), (r"\1234", "S4"), (r"\400", "Ā"), (r"\777", "ǿ"),
     (r"[\101-\103]", "B"), (r"\0", "\x00"), (r"\012", "\n"), (r"\08", "\x008")])
 def test_an_octal_escape_is_its_character(pattern, text):
-    from invariants.cel import _regex
+    from invariants_cel import _regex
     assert _regex.search(_regex.compile_pattern("^" + pattern + "$"), text, 10_000)[0] is True
 
 
 @pytest.mark.parametrize("pattern", [r"\1", r"\7", r"\8", r"\9", r"\18", r"[\1]", r"a\1"])
 def test_a_lone_digit_escape_is_refused_as_re2_refuses_it(pattern):
-    from invariants.cel import _regex
+    from invariants_cel import _regex
     with pytest.raises(_regex.RegexError, match="backreferences"):
         _regex.compile_pattern(pattern)
 
@@ -202,7 +202,7 @@ FORMATTED = ('import importlib\n\n\ndef resolve(cfg):\n    """Resolve.\n    Retu
 
 
 def test_a_reformatted_reflection_site_is_the_same_site_moved(tmp_path):
-    from invariants import scan
+    import invariants_scan as scan
     rule = {"rules": [{"id": "R", "mediation": {"sink": "py:payments.send_to_gateway", "door": ["py:payments.refund"],
                                                  "allow_unresolved": []}}]}
     root = write_project(tmp_path / "a", {"payments.py": PAY, "tools.py": TOOLS})
@@ -227,7 +227,7 @@ DOOR_RULE = {"rules": [{"id": "R", "mediation": {"sink": "py:payments.send_to_ga
 
 
 def _unwraps(tmp_path, files):
-    from invariants import scan
+    import invariants_scan as scan
     rep = scan.scan(DOOR_RULE, [write_project(tmp_path, {"payments.py": DECORATED, **files})])
     return [(f.code, f.file, f.line) for f in rep.findings if "unwrap" in f.code]
 

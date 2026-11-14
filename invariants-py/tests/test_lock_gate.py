@@ -2,6 +2,7 @@
 schemas the lock did not judge, tightenings it called weakenings, the agent hooks and pre-commit."""
 from __future__ import annotations
 
+import invariants_schema_diff.changes
 import dataclasses
 import enum
 import json
@@ -215,7 +216,7 @@ def test_removing_a_contract_is_a_weakening(rules, note):
 def _schema_diff(a, b):
     """The changes between two versions of one pinned pydantic schema used by a contract."""
     ea, eb = {"name": "m.M", "pydantic": a}, {"name": "m.M", "pydantic": b}
-    ka, kb = lockmod.contracts._sha(lockmod.canonical(ea)), lockmod.contracts._sha(lockmod.canonical(eb))
+    ka, kb = invariants_schema_diff.changes._sha(lockmod.canonical(ea)), invariants_schema_diff.changes._sha(lockmod.canonical(eb))
     old = _lock({"c": {"type": "pydantic", "ref": "m:M", "schema": {"$ref": ka}}}, schemas={ka: ea})
     new = _lock({"c": {"type": "pydantic", "ref": "m:M", "schema": {"$ref": kb}}}, schemas={kb: eb})
     return lockmod.changes(old, new)

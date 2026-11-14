@@ -15,7 +15,8 @@ import inspect
 import time
 from typing import Any, Callable, Generator, Iterator
 
-from ..cel import CelError
+from invariants_cel import CelError
+
 from ..errors import CoverageError, Escalation, ParseError
 from ..evaluate import aact, ablated, act, evaluate, report
 from ..model import Outcome, Rule

@@ -31,7 +31,7 @@ import pathlib
 import re
 from typing import Any
 
-from . import scan as scanner
+import invariants_scan as scanner
 
 DEFAULT_PATH = pathlib.Path("graphify-out") / "graph.json"
 CALL_RELATIONS = frozenset({"calls"})     # graphify 0.9: `uses` is a parameter type, not a call
