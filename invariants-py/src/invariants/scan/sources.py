@@ -6,12 +6,19 @@ It is left out of the scan only when, from every root that holds it, an exclude 
 or it lies in an always-skipped directory: adding a root never excludes more. In one directory, what
 Python imports wins (a package `ops/` over an extension module `ops.so` over `ops.py` over a sourceless
 `ops.pyc`); the code it shadows is noted. A module with no Python source (an extension module, a
-sourceless `.pyc`) cannot be read; it is noted too, never scanned as empty."""
+sourceless `.pyc`) cannot be read; it is noted too, never scanned as empty.
+
+A symlinked directory is followed, as Python's import system follows it: its files are named by the
+link's path (`pkg/admin -> ../.vendor/admin` gives `pkg.admin.tasks`), a link back into its own
+ancestry is not followed twice, and a target outside every root is still scanned and noted. A link
+inside an always-skipped directory is not followed (a virtualenv's `lib64`, pnpm's node_modules)."""
 from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import os
 import pathlib
+import zipfile
 from typing import Iterable, Iterator
 
 from .contracts import SKIP_DIRS
@@ -19,6 +26,7 @@ from .contracts import SKIP_DIRS
 # the directories the scan always skips, as the lock pins them: SKIP_DIRS and every dot-directory
 SKIPPED = (".*", *sorted(SKIP_DIRS))
 _NO_SOURCE = (".so", ".pyd", ".pyc")             # importable modules the scan cannot read
+_ARCHIVES = (".zip", ".egg", ".whl", ".pyz")    # zipimport reads these from sys.path
 _RANK = {"package": 0, "extension": 1, "source": 2, "bytecode": 3}   # what Python imports first, per directory
 
 
@@ -77,21 +85,77 @@ def _name(rel: pathlib.PurePath, stem: str) -> list[str]:
     return parts
 
 
-def _files(root: pathlib.Path) -> list[pathlib.Path]:
+@dataclasses.dataclass
+class Found:
+    """What a walk of the roots finds besides the importable files."""
+
+    # (root, link): a followed symlink to a directory (from _layout: only those outside every root)
+    outside: list[tuple[pathlib.Path, pathlib.Path]] = dataclasses.field(default_factory=list)
+    # (root, archive, the exclude glob that leaves it out from every root holding it, else None)
+    archives: list[tuple[pathlib.Path, pathlib.Path, str | None]] = dataclasses.field(default_factory=list)
+
+
+def _files(root: pathlib.Path, found: Found | None = None) -> list[pathlib.Path]:
+    """Every importable file under root, following symlinked directories (each target once per walk, never
+    one back into the link's own ancestry). A zip archive is collected into found."""
     if root.is_file():
         return [root]
-    return sorted(f for pat in ("*.py", *(f"*{s}" for s in _NO_SOURCE)) for f in root.rglob(pat) if f.is_file())
+    out: list[pathlib.Path] = []
+    entered: set[str] = set()
+
+    def walk(d: pathlib.Path, real: str, chain: frozenset[str], rel: tuple[str, ...]) -> None:
+        try:
+            entries = sorted(os.scandir(d), key=lambda e: e.name)
+        except OSError:
+            return
+        for e in entries:
+            p = d / e.name
+            try:
+                is_dir, link = e.is_dir(), e.is_symlink()
+            except OSError:
+                continue
+            if is_dir:
+                if not link:
+                    walk(p, os.path.join(real, e.name), chain | {real}, (*rel, e.name))
+                    continue
+                if any(x in SKIP_DIRS or x.startswith(".") for x in (*rel, e.name)):
+                    continue                          # a link in a skipped directory is not followed
+                target = os.path.realpath(p)
+                if target in chain or target == real or target in entered:
+                    continue                          # a cycle, or a target this walk already entered by a link
+                entered.add(target)
+                if found is not None:
+                    found.outside.append((root, p))
+                walk(p, target, chain | {real}, (*rel, e.name))
+            elif e.name.endswith((".py", *_NO_SOURCE)):
+                if p.is_file():
+                    out.append(p)
+            elif found is not None and e.name.endswith(_ARCHIVES) and p.is_file():
+                found.archives.append((root, p, None))
+    walk(root, str(root), frozenset(), ())
+    return sorted(out)
 
 
-def _layout(roots: Iterable[pathlib.Path], exclude: Iterable[str]) -> list[_Source]:
-    """Every importable file under the roots, once each, in root order then path order."""
+def holds_code(file: pathlib.Path) -> int:
+    """How many importable members (.py, .pyc, extension modules) a zip archive holds; 0 if not a zip."""
+    try:
+        with zipfile.ZipFile(file) as z:
+            return sum(1 for n in z.namelist() if n.endswith((".py", *_NO_SOURCE)))
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return 0
+
+
+def _layout(roots: Iterable[pathlib.Path], exclude: Iterable[str], found: Found | None = None) -> list[_Source]:
+    """Every importable file under the roots, once each, in root order then path order. With found, the
+    symlinks to directories outside every root and the archives in the roots are collected there."""
     exclude = list(exclude)
     roots = list(dict.fromkeys(r.resolve() for r in roots))
     held: dict[pathlib.Path, list[tuple[pathlib.Path, pathlib.PurePath]]] = {}
     order: list[tuple[pathlib.Path, pathlib.Path]] = []
+    walked = Found()
     for root in roots:
         base = root.parent if root.is_file() else root
-        for f in _files(root):
+        for f in _files(root, walked):
             if _form(f) is None:
                 continue
             if f not in held:
@@ -127,7 +191,81 @@ def _layout(roots: Iterable[pathlib.Path], exclude: Iterable[str]) -> list[_Sour
         out.append(_Source(name_base, f, ".".join(parts), pattern, skip is not None, form, aliases, long,
                            rank[name_base], partial, glob is not None))
     _shadow(out)
+    if found is not None:
+        dirs = [r for r in roots if r.is_dir()]
+        links: dict[pathlib.Path, pathlib.Path] = {}  # each link once, from the deepest root holding it
+        for r, link in walked.outside:
+            if not any(_inside(os.path.realpath(link), str(d)) for d in dirs) and (
+                    link not in links or len(r.parts) > len(links[link].parts)):
+                links[link] = r
+        found.outside += [(r, link) for link, r in links.items()]
+        seen: set[pathlib.Path] = set()
+        for r, arc, _ in walked.archives:             # named from the deepest root, like a module
+            if arc in seen:
+                continue
+            seen.add(arc)
+            homes = sorted((d for d in dirs if _inside(str(arc), str(d))), key=lambda d: -len(d.parts))
+            globs = [_excluded(arc.relative_to(d), exclude) if exclude else None for d in homes] or [None]
+            found.archives.append((homes[0] if homes else r, arc, globs[0] if all(globs) else None))
     return out
+
+
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+_SITE = ("site-packages", "dist-packages")
+
+
+def third_party(root: pathlib.Path, file: pathlib.Path,
+                cache: dict[pathlib.Path, pathlib.Path | None] | None = None) -> pathlib.Path | None:
+    """The directory a recognised third-party tree inside the root installs file's imports from, else None:
+    a virtualenv (a pyvenv.cfg above the file; its site-packages if the file is in one), a site-packages
+    holding distribution metadata (*.dist-info, *.egg-info), or a node package (node_modules/<pkg>/ with
+    its package.json). A hand-made `site-packages/` or `node_modules/` directory is none of these."""
+    if cache is None:
+        return _third_party(root, file)
+    if file.parent not in cache:
+        cache[file.parent] = _third_party(root, file)
+    return cache[file.parent]
+
+
+def _third_party(root: pathlib.Path, file: pathlib.Path) -> pathlib.Path | None:
+    rel = file.relative_to(root)
+    dirs = [root.joinpath(*rel.parts[:i]) for i in range(len(rel.parts) - 1, 0, -1)]   # nearest first
+    site = next((d for d in dirs if d.name in _SITE), None)
+    if site is not None and any(_listing(site, (".dist-info", ".egg-info"))):
+        return site
+    if any((d / "pyvenv.cfg").is_file() for d in dirs):
+        return site or next(d for d in dirs if (d / "pyvenv.cfg").is_file())
+    for d in dirs:
+        up = d.parent.parent if d.parent.name.startswith("@") else d.parent
+        if up.name == "node_modules" and (d / "package.json").is_file():
+            return d
+    return None
+
+
+def _listing(d: pathlib.Path, suffixes: tuple[str, ...]) -> Iterator[str]:
+    try:
+        yield from (n for n in os.listdir(d) if n.endswith(suffixes))
+    except OSError:
+        return
+
+
+def provides(base: pathlib.Path, file: pathlib.Path, top: str) -> bool:
+    """A directory from file's own up to base holds a top-level module or package named top: an import
+    of it from file finds that copy first."""
+    d = file.parent
+    while True:
+        if (d / f"{top}.py").is_file() or (d / top).is_dir() or any(
+                n.split(".")[0] == top for n in _listing(d, _NO_SOURCE)):
+            return True
+        if d == base or base not in d.parents:
+            return False
+        d = d.parent
 
 
 def _shadow(found: list[_Source]) -> None:

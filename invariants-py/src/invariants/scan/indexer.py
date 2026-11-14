@@ -5,6 +5,7 @@ import ast
 import builtins
 import collections
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -16,6 +17,12 @@ _BUILTINS = frozenset(dir(builtins))
 _KNOWN_BASE_MODULES = frozenset({*sys.stdlib_module_names, "typing_extensions"})
 _TYPE_ALIAS = getattr(ast, "TypeAlias", None)            # `type X = ...` (Python 3.12+)
 _NOWHERE = "<above the source roots>"                    # a relative import above every root: no module
+# where Python finds modules: a write sends later imports to code outside the roots
+_IMPORT_STATE = frozenset({"sys.path", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache"})
+_IMPORT_STATE_CALLS = frozenset({"importlib.invalidate_caches", "site.addsitedir", "zipimport.zipimporter",
+                                 "importlib.machinery.PathFinder.invalidate_caches"})
+_READS = frozenset({"index", "count", "copy", "get", "keys", "values", "items", "__contains__", "__len__",
+                    "__iter__", "__getitem__"})
 
 
 class _Index:
@@ -52,6 +59,14 @@ class _Index:
         self.skipped_files: list[tuple[pathlib.Path, pathlib.Path, str]] = []  # (root, file, its directory)
         self.skipped_imports: dict[pathlib.Path, list[tuple[int, str]]] = {}   # skipped file -> its imports
         self.notes: list[str] = []
+        # every module name a file under the roots has (scanned or not, any root's name, and each package
+        # above one), and which of them are packages: an import of anything else under them is unknown
+        self.files_named: set[str] = set()
+        self.module_files: set[str] = set()              # names with a file of their own (not namespace)
+        self.package_names: set[str] = set()
+        self.scanned_real: set[pathlib.Path] = set()     # the real path of every scanned module's file
+        self.skipped_words: re.Pattern[bytes] | None = None   # a word a skipped file reaching scanned code has
+        self.third_party: dict[pathlib.Path, pathlib.Path | None] = {}   # directory -> its third-party tree
 
     def short_names(self) -> set[str]:
         """The last name of every scanned function (`save` for app.repo.Repo.save): what a sink may be named."""
@@ -135,7 +150,9 @@ class _Index:
 
     def unresolved_imports(self) -> None:
         """A relative import in a scanned module that names no module under the roots (above the top of
-        every root, or a file that is not there) is a problem: its names would silently resolve to nothing."""
+        every root, or a file that is not there) is a problem: its names would silently resolve to nothing.
+        So is any import of a module a scanned package does not hold (`import pkg.admin` with no
+        pkg/admin under the roots): it is not third-party code, and what it runs is not read."""
         known = {*self.modules, *self.excluded, *self.no_source}
         heads = {".".join(m.split(".")[:i]) for m in known for i in range(1, m.count(".") + 1)}
 
@@ -144,7 +161,12 @@ class _Index:
             return r in known or r in heads
         for mod in self.modules.values():
             for node in ast.walk(mod.tree):
-                if not isinstance(node, ast.ImportFrom) or not node.level:
+                if isinstance(node, ast.Import):
+                    self._unknown_at(mod, node, next(filter(None, (self._unknown(a.name) for a in node.names)), None))
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if not node.level:
+                    self._unknown_at(mod, node, self._unknown_from(node.module or "", node))
                     continue
                 got = self._relative(mod, node)
                 text = "." * node.level + (node.module or "")
@@ -154,10 +176,91 @@ class _Index:
                         found(f"{got}.{a.name}" if got else a.name) for a in node.names if a.name != "*"):
                     why = f"from {text} import ... names no module under the source roots ({got or '.'})"
                 else:
+                    self._unknown_at(mod, node, self._unknown_from(self.real(got), node) if got else None)
                     continue
                 self.problems.append((mod.root, mod.file, node.lineno, "unresolved/relative-import",
                                       f"{why}: the names it imports are not followed, so calls through them "
                                       f"cannot be traced; fix the import or add the missing root"))
+
+    def _unknown(self, name: str) -> str | None:
+        """The first module along a dotted name that lies in a package under the roots but that no file
+        under the roots is (`pkg.admin` in `pkg.admin.tasks`), else None."""
+        parts = self.real(name).split(".")
+        for i in range(1, len(parts)):
+            parent, child = ".".join(parts[:i]), ".".join(parts[:i + 1])
+            if parent not in self.package_names:
+                return None
+            if child not in self.files_named:
+                return child
+        return None
+
+    def _unknown_from(self, src: str, node: ast.ImportFrom) -> str | None:
+        """_unknown() for `from src import a, b`: src itself, or a name that is neither a module under the
+        roots nor bound in src's own `__init__.py` (a namespace package binds nothing)."""
+        hit = self._unknown(src) if src else None
+        if hit or src not in self.package_names:
+            return hit
+        if src in self.module_files and src not in self.modules:
+            return None                                  # an excluded or unreadable package: its names are unknown
+        bound = self._bound(src) if src in self.modules else set()
+        if bound is None:
+            return None
+        return next((f"{src}.{a.name}" for a in node.names if a.name != "*"
+                     and f"{src}.{a.name}" not in self.files_named and a.name not in bound), None)
+
+    def _bound(self, module: str) -> set[str] | None:
+        """Every name a scanned module binds anywhere (an over-approximation), or None when it may bind
+        names the scan cannot list (a star import, a module __getattr__, a globals() write)."""
+        mod = self.modules[module]
+        if mod.star:
+            return None
+        out: set[str] = set()
+        for n in ast.walk(mod.tree):
+            if isinstance(n, ast.Name):
+                if n.id in ("globals", "vars", "setattr", "exec") and isinstance(n.ctx, ast.Load):
+                    return None
+                out.add(n.id)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(n.name)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                out.update((a.asname or a.name).split(".")[0] for a in n.names)
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                out.update(n.names)
+        return None if "__getattr__" in out else out
+
+    def _unknown_at(self, mod: _Module, node: ast.stmt, name: str | None) -> None:
+        if name is None:
+            return
+        parent = name.rpartition(".")[0]
+        self.problems.append((mod.root, mod.file, node.lineno, "unresolved/unknown-module",
+                              f"imports {name}, but no file under the source roots is {name} although {parent} "
+                              f"is a package there (a symlink to nothing, a file outside the roots, a module "
+                              f"made at build time): what it runs is not read, so calls through it cannot be "
+                              f"traced; add its source to the roots or fix the import"))
+
+    def import_path_writes(self) -> None:
+        """Scanned code that changes where Python finds modules (sys.path, sys.meta_path, sys.path_hooks,
+        sys.path_importer_cache, importlib.invalidate_caches, site.addsitedir, zipimport) is a problem: an
+        import after it may load code from outside the roots, such as a zip archive."""
+        for mod in self.modules.values():
+            for node in ast.walk(mod.tree):
+                what, line = None, getattr(node, "lineno", 1)
+                if isinstance(node, ast.Call):
+                    f = _full(mod, node.func) or ""
+                    owner, _, attr = f.rpartition(".")
+                    if f in _IMPORT_STATE_CALLS or (owner in _IMPORT_STATE and attr not in _READS):
+                        what = f"{f}()"
+                elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+                    targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+                    for t in targets:
+                        base = t.value if isinstance(t, ast.Subscript) else t
+                        if not isinstance(t, ast.Name) and (f := _full(mod, base) or "") in _IMPORT_STATE:
+                            what = f"a write of {f}"
+                if what:
+                    self.problems.append((mod.root, mod.file, line, "unresolved/reflection",
+                                          f"{what} changes where Python finds modules: an import after it may "
+                                          f"load code from outside the scanned roots (a zip archive, another "
+                                          f"directory), which the scan does not read; import from the roots"))
 
     def _defs(self, mod: _Module, body: list[ast.stmt], prefix: str, cls: str | None) -> None:
         for node in body:
@@ -403,6 +506,15 @@ class _Index:
                 binds.update((a.asname or a.name).split(".")[0] for a in n.names)
         self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
         return out
+
+
+def _full(mod: _Module, node: ast.AST) -> str | None:
+    """A dotted name as written in mod, its first part replaced by what mod imports under it."""
+    d = _dotted(node)
+    if d is None:
+        return None
+    head, _, rest = d.partition(".")
+    return ".".join(filter(None, [mod.aliases.get(head, head), rest]))
 
 
 # calls and decorators that only define things at import time (constants, dataclasses, typing, logging)

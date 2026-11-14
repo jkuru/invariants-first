@@ -86,6 +86,15 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `forbidden` (a bypass idiom: `getattr`, `__wrapped__`, monkeypatching, reflection), `unresolved`
   (never counted as a pass) and `missing`. Known back doors are frozen in `allow`; a new caller of
   one still fails. Output is text, JSON or SARIF 2.1.0.
+- The scan's file handling fails closed. Symlinked directories inside a root are followed, as
+  Python imports them (cycles cut; a target outside the roots is scanned and noted). An import of
+  a module a scanned package does not hold is `unresolved/unknown-module`, never third-party. A
+  file in an always-skipped directory (`build/`, a dot-directory, a hand-made `site-packages/`) that
+  imports any scanned module, or imports code it names at run time, is
+  `unresolved/skipped-importer`; only a recognised virtualenv or node package and exact copies of
+  scanned modules stay quiet. A zip archive holding Python code in a root is `unresolved/no-source`,
+  and scanned code that writes `sys.path`, `sys.meta_path` or `sys.path_hooks` is
+  `unresolved/reflection`.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.
