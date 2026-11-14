@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import ast
-
 from typing import Any, Callable
 
-from .astutil import _HARMLESS_DUNDERS, _dotted, _dunder, _lit, _locals, _params
+from .astutil import (
+    _HARMLESS_DUNDERS,
+    _computed_dict_writes,
+    _dotted,
+    _dunder,
+    _lit,
+    _locals,
+    _params,
+)
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Module, _Site
 from .indexer import _Index
 from .inference import _Inference
@@ -15,7 +22,28 @@ from .inference import _Inference
 _RUNS_DATA = frozenset({"pickle.loads", "pickle.load", "pickle.Unpickler", "_pickle.loads", "_pickle.load",
                         "_pickle.Unpickler", "shelve.open", "logging.config.fileConfig", "logging.config.listen",
                         "runpy.run_path", "runpy.run_module", "importlib.util.spec_from_file_location",
-                        "importlib.machinery.SourceFileLoader"})
+                        "importlib.machinery.SourceFileLoader",
+                        # they run code given as a string, or hand back objects found by name or by memory
+                        "string.Formatter", "code.InteractiveInterpreter", "code.InteractiveConsole",
+                        "code.interact", "timeit.main", "doctest.run_docstring_examples", "doctest.testmod",
+                        "doctest.testfile", "doctest.DocTestRunner", "doctest.DebugRunner", "doctest.DocTestSuite",
+                        "doctest.DocFileSuite", "doctest.debug", "doctest.debug_src", "doctest.debug_script",
+                        "trace.Trace", "gc.get_objects", "gc.get_referrers", "gc.get_referents",
+                        "inspect.getmodule", "sys._getframe", "inspect.currentframe", "inspect.stack",
+                        "inspect.trace", "inspect.getouterframes", "inspect.getinnerframes",
+                        "sys._current_frames"})
+# a frame's namespaces: `frame.f_globals["name"]` looks a name up (any frame, from anywhere)
+_FRAME_NAMESPACES = frozenset({"f_globals", "f_locals", "f_builtins"})
+# timeit runs its stmt and setup as code when they are strings
+_TIMEIT = frozenset({"timeit.timeit", "timeit.repeat", "timeit.Timer"})
+# subprocess runners: one whose command runs Python (sys.executable, "python ...", a .py file) runs code
+# the scan does not follow from this call
+_RUNNERS = frozenset({"subprocess.run", "subprocess.Popen", "subprocess.call", "subprocess.check_call",
+                      "subprocess.check_output", "subprocess.getoutput", "subprocess.getstatusoutput",
+                      "os.system", "os.popen", "os.posix_spawn", "os.posix_spawnp",
+                      "asyncio.create_subprocess_exec", "asyncio.create_subprocess_shell",
+                      *(f"os.exec{x}" for x in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")),
+                      *(f"os.spawn{x}" for x in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe"))})
 # a dotted name in a string, looked up (`pydoc.locate("pkg.mod.f")`): a getattr of it
 _NAME_LOOKUP = frozenset({"pydoc.locate", "pkgutil.resolve_name"})
 # reflective builtins and helpers taken as a value (`g = getattr`): calls through the name hide a lookup
@@ -35,6 +63,15 @@ class _Walker(_Inference):
 
     def run(self) -> None:
         self._body(self.mod.tree.body, f"{self.mod.name}.<module>", set(), None, self.mod.name)
+        self._dict_writes(self.mod.tree, f"{self.mod.name}.<module>", None, nested=False)
+
+    def _dict_writes(self, fn: ast.AST, owner: str, me: tuple[str, str] | None, nested: bool) -> None:
+        """Writes through `o.__dict__` (or a written alias of it) whose names the scan cannot read, on an
+        object other than a method's own self (whose attributes then go untyped): like a setattr with a
+        computed name, they may set any attribute, a sink's holder too."""
+        for node, obj in _computed_dict_writes(fn, nested):
+            if not (me and isinstance(obj, ast.Name) and obj.id == me[0]):
+                self._site("setattr", owner, node, f"{_dotted(obj) or 'an object'}.__dict__|")
 
     def _body(self, body: list[ast.stmt], owner: str, local: set[str], self_cls: tuple[str, str] | None,
               prefix: str) -> None:
@@ -50,6 +87,7 @@ class _Walker(_Inference):
                     me = (stmt.args.args[0].arg, func.cls)
                 for s in stmt.body:
                     self._node(s, fid, _locals(stmt), me)
+                self._dict_writes(stmt, fid, me, nested=True)
             elif isinstance(stmt, ast.ClassDef) and owner.endswith(".<module>") \
                     and f"{prefix}.{stmt.name}" in self.idx.classes:
                 for d in [*stmt.decorator_list, *stmt.bases, *[k.value for k in stmt.keywords]]:
@@ -81,17 +119,22 @@ class _Walker(_Inference):
             if isinstance(node, ast.AnnAssign) and child is node.annotation:
                 continue                                       # `h: Helper = x` names a type, runs nothing
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.body:
-                self._shadowed(node.args, self._node, child, owner, local, me)
+                self._shadowed(node, node.args, self._node, child, owner, local, me)
+            elif isinstance(node, ast.ClassDef) and child in node.body:
+                self._shadowed(node, None, self._node, child, owner, local, me)
             else:
                 self._node(child, owner, local, me)
 
-    def _shadowed(self, args: ast.arguments, walk: Callable[..., None], node: ast.AST, *rest: Any) -> None:
-        """Walk node, the body of a nested function or lambda, with its parameters shadowing the owner's names."""
-        shadow, self._shadow = self._shadow, self._shadow | set(_params(args))
+    def _shadowed(self, scope: ast.AST, args: ast.arguments | None, walk: Callable[..., None], node: ast.AST,
+                  *rest: Any) -> None:
+        """Walk node, in the body of a nested function, lambda or class (scope), with its parameters
+        shadowing the owner's names and its own bindings typing the names it binds."""
+        shadow, self._shadow = self._shadow, self._shadow | set(_params(args) if args is not None else ())
+        scopes, self._scopes = self._scopes, (*self._scopes, scope)
         try:
             walk(node, *rest)
         finally:
-            self._shadow = shadow
+            self._shadow, self._scopes = shadow, scopes
 
     def _unwrapped(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None, how: str = "") -> str:
         """The detail of a `x.__wrapped__` site: "x as written|the scanned function x is" (empty when the
@@ -254,7 +297,7 @@ class _Walker(_Inference):
         if isinstance(node, ast.Lambda):
             local = local | _locals(node)
             self._expr(node.args, owner, local, me)            # its defaults, in the enclosing scope
-            self._shadowed(node.args, self._expr, node.body, owner, local, me)
+            self._shadowed(node, node.args, self._expr, node.body, owner, local, me)
             return
         for child in ast.iter_child_nodes(node):
             if not (isinstance(node, ast.JoinedStr) and isinstance(child, ast.Constant)):
@@ -286,6 +329,8 @@ class _Walker(_Inference):
             self._site("reflection", owner, node, "__mro__")                     # C.__mro__: its classes as values
         elif isinstance(node, ast.Name) and node.id == "__builtins__":
             self._site("reflection", owner, node, "__builtins__")
+        elif isinstance(node, ast.Attribute) and node.attr in _FRAME_NAMESPACES:
+            self._site("reflection", owner, node, f"frame.{node.attr}")      # sys._getframe().f_globals
         if isinstance(node, ast.Attribute) and _dunder(node.attr) and node.attr not in _HARMLESS_DUNDERS \
                 and node.attr != "__wrapped__" and not (node.attr == "__call__" and id(node) in self._called):
             self._escapes(node.value, owner, local, me, node)                 # f.__call__, f.__get__,
@@ -330,14 +375,29 @@ class _Walker(_Inference):
         """node is used as a value (at the site at): the scanned functions it names escape ("ref"); `recv.m`
         on a receiver the scan cannot type, with m the name of a scanned function, may be one ("attrref")."""
         refs = self._value_refs(node, owner, local, me)
+        on_instance = at is node and isinstance(node, ast.Attribute) and not (
+            _dotted(node.value) and self._resolve(node.value, local, me) in self.idx.classes)
         for ref in refs:
-            self._site("ref", owner, at, ref)
+            if on_instance and self._property(ref):               # obj.prop runs the getter: a call
+                self.edges.append(_Edge(owner, ref, getattr(at, "lineno", 0), getattr(at, "col_offset", 0), False))
+            else:
+                self._site("ref", owner, at, ref)
         if refs or not isinstance(node, ast.Attribute) or node.attr not in self.idx.short_names():
             return
         fq = self._resolve(node, local, me) if _dotted(node) else None
         if (fq is None or self._via_function(node, local, me)) and self._typed(node, owner, local, me) == ([], None):
             self._site("attrref", owner, at, node.attr)
 
+
+    def _property(self, fid: str) -> bool:
+        """fid is a property getter (`@property`, `@functools.cached_property`), read where it is defined."""
+        f = self.idx.funcs.get(fid)
+        fn = f.node if f is not None else None
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or f is None or f.module not in self.idx.modules:
+            return False
+        home = self._home(f.module)
+        return any(_dotted(d) and home._resolve(d, set(), None) in ("builtins.property", "functools.cached_property")
+                   for d in fn.decorator_list)
 
     def _call(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         func = node.func
@@ -347,6 +407,12 @@ class _Walker(_Inference):
         if func is not node.func and not (fq and self._known_callee(fq)) and not (
                 isinstance(func, ast.Attribute) and (fq is None or self._typed(func, owner, local, me)[0])):
             func, fq = node.func, None                 # not a known function: an ordinary attribute call
+        for alt in self._alternatives(func, local, me):                # refund bound to _send as well
+            if alt != fq:
+                target = alt if alt in self.idx.funcs else \
+                    self.idx.method(alt, "__init__") if alt in self.idx.classes else None
+                if target:
+                    self.edges.append(_Edge(owner, target, node.lineno, node.col_offset, False))
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
             self._attr_builtin(node, fq, owner, local, me)
             return
@@ -358,6 +424,12 @@ class _Walker(_Inference):
             return
         if fq in _RUNS_DATA:
             self._site("reflection", owner, node, fq)
+            return
+        if fq in _TIMEIT and self._code_string(node, ("stmt", "setup"), 2, local, me):
+            self._site("reflection", owner, node, f"{fq} with a string statement")
+            return
+        if fq in _RUNNERS and self._runs_python(node, local, me):
+            self._site("reflection", owner, node, f"{fq} running Python")
             return
         if fq in _NAME_LOOKUP:
             self._name_lookup(node, fq, owner)
@@ -395,6 +467,27 @@ class _Walker(_Inference):
                 for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
                     self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True))
 
+    def _code_string(self, node: ast.Call, names: tuple[str, ...], positions: int, local: set[str],
+                     me: tuple[str, str] | None) -> bool:
+        """An argument (the first `positions` positional ones, or a keyword in names) that is not a lambda
+        or a scanned function: a string of code, or something that may be one."""
+        args = [*node.args[:positions], *[k.value for k in node.keywords if k.arg in names]]
+        return any(not (isinstance(a, ast.Lambda) or (_dotted(a) and self._resolve(a, local, me) in self.idx.funcs))
+                   for a in args)
+
+    def _runs_python(self, node: ast.Call, local: set[str], me: tuple[str, str] | None) -> bool:
+        """A subprocess command (its arguments, not env or cwd) that names sys.executable, or a string with
+        `python` in it or a `.py` file: it runs Python code the scan does not follow from here."""
+        parts = [*node.args, *[k.value for k in node.keywords if k.arg in ("args", "argv", "cmd", "command")]]
+        for p in parts:
+            for n in ast.walk(p):
+                if _dotted(n) and self._resolve(n, local, me) in ("sys.executable", "sys.orig_argv", "sys.argv"):
+                    return True
+                text = _lit(n)
+                if text is not None and ("python" in text.lower() or ".py" in text):
+                    return True
+        return False
+
     def _known_callee(self, fq: str) -> bool:
         """fq, called through `.__call__`, is still what a plain call to it is: a scanned function or class,
         a name in an excluded module, or a reflective builtin or helper (`getattr.__call__(o, "save")`)."""
@@ -410,6 +503,8 @@ class _Walker(_Inference):
         self._site(fq.split(".")[1], owner, node, f"{obj or '?'}|{lit if lit is not None else ''}")
         if lit is not None and obj and f"{obj}.{lit}" in _REFLECTIVE:       # getattr(builtins, "getattr")
             self._site("reflection", owner, node, f"{lit} looked up by name")
+        if lit in _FRAME_NAMESPACES:                                         # getattr(frame, "f_globals")
+            self._site("reflection", owner, node, f"frame.{lit}")
         if lit is not None and obj and fq == "builtins.getattr":     # a literal name is an edge
             if obj in self.idx.funcs and lit == "__call__":          # getattr(f, "__call__") is f
                 self.edges.append(_Edge(owner, obj, node.lineno, node.col_offset, False))

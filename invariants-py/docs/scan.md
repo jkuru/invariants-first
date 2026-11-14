@@ -40,6 +40,29 @@ PAY-1: fail (1 bypass)
 scanned 3 file(s), 5 function(s)
 ```
 
+### Functions used as values
+
+A function used as a value is an entrypoint: whoever holds the value can call it from anywhere. So
+a function that, called on its own, reaches the sink without passing a door, and that is taken as a
+value outside the doors, the sinks and the allowed functions, is reported where it escapes, as
+`unresolved/sink-escapes` with the path it would take. That includes a door's own helper: with
+`refund -> _send -> send_to_gateway`, `_send` is not an entrypoint while only `refund` calls it, but
+`threading.Thread(target=_send)`, `atexit.register(_send)`, `{"x": _send}`, `map(_send, ...)`,
+`functools.partial(_send, ...)`, `x = _send`, a default argument `cb=_send`, `return _send`,
+`staticmethod(_send)` in a class body, `Safe.go = _send`, `builtins.len = payments._send`, a bound
+method `f = Service()._persist` and any rebinding of a name to it (walrus, `for`, `with`, `match`, a
+comprehension, a lambda default, `nonlocal`, `global`) all are. A value made where the code has
+already passed a door (inside the door, or in a helper only a door reaches) is not reported, nor is a
+door or an unrelated function taken as a value. An allowed back door taken as a value outside
+`allow` is a new caller, so a `bypass` ([Allowed back doors](#allowed-back-doors)). The sink itself
+taken as a value is `unresolved/sink-escapes` at that site, as before.
+
+Names resolve by the object they are bound to, not by their spelling. A module-level name that its
+imports, top-level definitions and star imports bind to more than one object (`if ...: from payments
+import _send as refund` / `else: from payments import refund`, the same under try/except
+ImportError, or `from shadow import *` where `shadow` re-exports `_send` as `refund`) may be any of
+them: a call through it is an edge to each scanned one, so the `_send` binding is a `bypass`.
+
 ## Findings
 
 Findings have four kinds:
@@ -76,18 +99,39 @@ Annotations are trusted: a parameter annotated `repo: Repo` is taken to hold a `
 subclass), whatever a caller passes, because the scan cannot see every caller; a type checker is what
 catches `h(OtherRepo())` against `def h(repo: Repo)`. A return annotation is trusted the same way,
 except when the function's own body visibly returns an instance of another scanned class
-(`def get() -> Safe: return Repo()`): then the call gives no type and its method calls are
-name-matched.
+(`def get() -> Safe: return Repo()`), or returns the result of an unannotated scanned function that
+visibly does (`def get() -> Safe: return mk()` with `def mk(): return Repo()`, followed up to three
+calls deep; a type checker reads `mk()` as `Any` and would not flag it): then the call gives no type
+and its method calls are name-matched. What stays trusted, and so needs a type checker in CI: a
+parameter annotation (`def go(s: Safe)` called with a `Repo`), a dataclass field or `__init__`
+parameter given another class (`H(r=Repo())`, `dataclasses.replace(h, r=Repo())`), a return
+annotation over an expression the scan does not type (`-> Safe: return [Repo()][0]`), and a class
+annotation (`r: Safe`) over a value set in the class's own methods with a plain assignment.
+
+A name is typed by the bindings of the scope it is looked up in. A binding in a nested function,
+lambda or class types that scope only: `repo = Safe()` inside `def inner()` does not type a `repo`
+the enclosing function reads (a global, say), nor one a sibling function reads; a nested function
+that reads a name it does not bind sees the enclosing function's bindings; one that rebinds it
+(`nonlocal repo`) makes it untyped there.
 
 A class whose construction or identity the code can alter is not trusted at all: calls on its
 instances, on its name and through `self` in its methods are name-matched (unresolved), never an
 extracted edge to its own methods. That is a class (or a subclass of one) with a custom `__new__`
-(other than one whose every return is `super().__new__(cls, ...)` or `object.__new__(cls)`); with a
+(other than one whose every return is `super().__new__(cls, ...)` or `object.__new__(cls, ...)` on its
+first parameter, which it never rebinds: `def __new__(klass, *a, cls=Repo): return
+super().__new__(cls)` and `cls = Repo; return object.__new__(cls)` are not trusted); with a
 scanned metaclass that defines `__call__`, `__new__` (beyond handing on to `super()`/`type`),
-`__getattr__` or `__getattribute__`, or a metaclass the scan cannot see into; with a class decorator
-that may return another class (a scanned decorator must return its parameter, `@register("x")` a
-nested function that does; standard-library and third-party decorators such as `@dataclass` are
-trusted); whose module-level name is bound more than once (`Safe = Repo` after the class, an import
+`__getattr__` or `__getattribute__`, or a metaclass the scan cannot see into; with its own
+`__getattribute__` (every attribute of an instance comes from it; a `__getattr__` only answers for
+names the class lacks, which are name-matched anyway); a `typing.Protocol` (any class with the right
+methods satisfies it, and a type checker accepts any of them); one given a virtual subclass
+(`Safe.register(Repo)`, ABCMeta's `register`); with a class decorator that may return another class:
+only `@dataclasses.dataclass` (bare or called), `@functools.total_ordering`, `@typing.final`,
+`@typing.runtime_checkable`, `@typing.type_check_only`, `@enum.unique` and `@enum.verify(...)` are
+trusted from outside the scan, and a scanned decorator must return its first parameter and never
+rebind it (`def tidy(c): c = Repo; return c` is not trusted), `@register("x")` a nested function that
+does; any other decorator (third-party, a lambda, `functools.partial(...)`, any other call) may
+return another class; whose module-level name is bound more than once (`Safe = Repo` after the class, an import
 over it, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
 dunder or a computed name written on it (`Leaf.__bases__ = (...)`, `setattr(Safe, name, f)`) or the
 class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__`. A
@@ -98,7 +142,12 @@ function or a lambda is read where it is (an entrypoint, or the sink as a value)
 `x.__class__ = Other` on a local makes that local untyped; on `obj.attr`, that attribute; on anything
 the scan cannot place (or a `__bases__` write it cannot place), every class is distrusted. A
 reflective write of an attribute (`object.__setattr__(self, "r", v)`, `self.__dict__["r"] = v`,
-`self.__dict__.update(r=v)`) counts as setting it from outside, so `self.r` is never typed. A data
+`self.__dict__.update(r=v)` or `.update({"r": v})`) counts as setting it from outside, so `self.r` is
+never typed. A write through a method's own `self.__dict__` whose names the scan cannot read
+(`self.__dict__.update(kw)`, `self.__dict__[k] = v`, `self.__dict__ |= m`, or `d = self.__dict__` /
+`d = vars(self)` and then `d[...] = v`) leaves no attribute of that class (its bases and subclasses
+included) typed; the same write on another object (`obj.__dict__.update(m)`) is
+`unresolved/computed-attribute`, like `setattr(obj, name, v)`. A data
 attribute of a scanned module or class (`other.repo.save()` where `other.repo = Repo()`, or
 `Holder.r.save()`) is a value whose type the scan does not follow: its calls are name-matched.
 
@@ -123,7 +172,7 @@ then `async with svc.cm() as r`, or a parameter `svc: Service`). A with target t
 stays unresolved.
 
 Generic classes resolve like plain ones: `class ConcreteRepo(BaseRepo[T])` is a subclass of
-`BaseRepo` (`Generic[T]` and `Protocol` bases are ignored), so a call through a `BaseRepo` (or
+`BaseRepo` (`Generic[T]` bases are ignored; a `Protocol` class is not trusted, see above), so a call through a `BaseRepo` (or
 `BaseRepo[int]`) receiver also reaches `ConcreteRepo.save`. `super().save(x)` (or
 `super(Cls, self)`) in a method of class `C` is an extracted edge to the next `save` after `C` in the
 method resolution order, through the scanned classes, of `C` and of every scanned subclass of `C`:
@@ -169,8 +218,8 @@ function's `__dict__` is its metadata, except for `__wrapped__`: `door.__dict__[
 `door.__dict__.get("__wrapped__")`, or any other use of a scanned function's `__dict__` (a computed
 key, `.values()`, the dict itself) is `forbidden/unwrap`, as are `inspect.unwrap(door)` and
 `door.__closure__` (its cells hold the function the guard wraps); `obj.__dict__["__wrapped__"]` on an
-object the scan cannot name is an unwrap too. Another object's instance `__dict__` (`o.__dict__`,
-`self.__dict__.update(kw)`) stays harmless; a literal key in it that names a sink or door is
+object the scan cannot name is an unwrap too. Reading another object's instance `__dict__` stays
+harmless (writes through it are described above); a literal key in it that names a sink or door is
 `forbidden/getattr-sink` (`-door`), as `getattr(o, "save")` is.
 
 Names looked up from strings are lookups too. `pydoc.locate("pkg.mod.f")` and
@@ -182,7 +231,19 @@ the scan can read (a literal, or a module-level name bound once to one) each sca
 class it names is a call edge (so a `"()": "pkg.store.sink"` is a bypass); any other config, and
 `fileConfig`, `listen`, `pickle.loads` / `load` / `Unpickler` (a pickle names the functions it calls),
 `shelve.open`, `runpy.run_path` / `run_module` and `importlib.util.spec_from_file_location`, are
-`unresolved/reflection`. `copy.copy` and `copy.deepcopy` are not reported themselves: what a
+`unresolved/reflection`. So are the other ways to run code from a string or to find objects without
+naming them: `string.Formatter` (its `get_field` / `vformat` hand back `"{0.send_to_gateway}"`),
+`code.InteractiveInterpreter`, `code.InteractiveConsole` and `code.interact`, `timeit.timeit` /
+`repeat` / `Timer` with a `stmt` or `setup` that is not a function (a string is code), `timeit.main`,
+`doctest` runners (`testmod`, `testfile`, `run_docstring_examples`, `DocTestRunner`, the suites and
+`debug` helpers: docstrings are code the scan does not read), `trace.Trace`, `gc.get_objects` /
+`get_referrers` / `get_referents`, `inspect.getmodule`, the frame getters (`sys._getframe`,
+`inspect.currentframe`, `inspect.stack`, ...) and any read of a frame's `f_globals`, `f_locals` or
+`f_builtins` (so `from payments import send_to_gateway as s` then `sys._getframe().f_globals["s"]` is
+reported). A subprocess that runs Python (`subprocess.run`, `Popen`, `call`, `check_output`, ...,
+`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `asyncio.create_subprocess_*` with `sys.executable`,
+`sys.argv`, a string containing `python` or a `.py` path in its command) is `unresolved/reflection`:
+the child process runs code the scan does not follow from that call; other commands are not reported. `copy.copy` and `copy.deepcopy` are not reported themselves: what a
 `__reduce__` returns is (`pickle.loads` or the sink as a value, `getattr`, ...). Assigning a
 dunder of a sink or door (`door.__code__ = other.__code__`) is `forbidden/monkeypatch`. Reflective
 builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
@@ -211,7 +272,9 @@ asserts the rule's findings (or exit code 1 exactly), never `returncode != 0`. T
 chain from an entrypoint to the sink. An allowed function is not a door. A path to the sink is let
 through only when every function on it is in `allow`. So these are a `bypass`:
 
-- a new caller of an allowed function (a new script that calls `admin_goodwill`);
+- a new caller of an allowed function (a new script that calls `admin_goodwill`), including one that
+  takes it as a value (`g = admin_goodwill; g()`, `Thread(target=admin_goodwill)`): reported where
+  the value is taken;
 - new code that an allowed function calls and that reaches the sink.
 
 Inside an allowed function, the ways it reaches the sink are excused with it: a direct call, a
@@ -319,7 +382,10 @@ not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still
 - `inv scan` builds an approximate call graph. When a method call cannot be resolved, the scan
   reports it as unresolved, never as a bypass.
 - It does not follow calls through dependency injection containers, event buses, callbacks or
-  values it cannot type (see "Method calls" above).
+  values it cannot type (see "Method calls" above). A function that can reach a sink without a door
+  and is used as a value is reported where it escapes, not where the value is later called.
+- It trusts annotations a type checker would check (see "Method calls" above): run one in CI.
+- A child process or code given as a string is reported where it is started, never followed.
 - Callers outside the scanned roots are invisible to it.
 - It checks which function calls which. It does not read SQL or any other query text: what a
   repository does below its API is the implementation's business.
