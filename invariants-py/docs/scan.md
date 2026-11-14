@@ -53,15 +53,25 @@ mediation:
 The scan then checks each sink against its own doors (the sinks that share a set of doors are
 checked together): a path to `record_refund` that passes only `BillingService.cancel` is a `bypass`
 ("... reaches the sink without passing app.service.BillingService.refund"), where the list form lets
-it through. `door` is left out (or names exactly the doors the mapping lists), `allow` and
-`allow_unresolved` are rule-wide, a finding two sinks' checks give alike is reported once, and an
-`allow` entry is `missing/allow-unused` only when no sink's check uses it (a sink's check cannot judge
-an entry that is one of its own doors or sinks: such an entry is unused when every other check finds
-it unused). Because `allow` is rule-wide, an allowed back door frozen for one sink is let through to
-any sink of the mapping; split the rule when that matters. A sink is never its own door
+it through. `door` is left out (or names exactly the doors the mapping lists), `allow_unresolved` is
+rule-wide, and a finding two sinks' checks give alike is reported once. `allow` is a map there, from
+each allowed function to the sink or sinks it may reach without a door:
+
+```yaml
+  allow:
+    "py:app.admin.fix": ["py:app.repo.LedgerRepo.record_refund"]
+```
+
+A sink an entry lists is checked on its own, with only the entries that list it; so a path from
+`app.admin.fix` to `insert_credit` is a `bypass`, as from any other function, and a back door frozen
+for one sink is let through to no other. An entry is judged unused sink by sink: one that no longer
+reaches a sink it lists without a door is `missing/allow-unused` naming that sink ("delete
+...record_refund from its allow entry"). A plain list `allow` in a mapping rule is a scan error (a
+load error under `inv validate` and `inv check`) that shows the map form. A sink is never its own door
 (`{S: [S]}` is a load error, as is `S` in both `sink` and `door` in the list form). A path through one sink
 into another (`cancel_subscription` calling `record_refund`) is checked against the second sink's
-doors too. `--format json` gives the rule's `pairs` beside its `sinks` and `doors`.
+doors too. `--format json` gives the rule's `pairs` beside its `sinks` and `doors`, and `allow_to` (each
+entry with its sinks) beside `allow`.
 
 ### Functions used as values
 

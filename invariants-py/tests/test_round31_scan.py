@@ -151,7 +151,7 @@ def _mapped(tmp_path: pathlib.Path, routes: str) -> scan.Report:
     (tmp_path / "app" / "routes.py").write_text(routes)
     rule = {"rules": [{"id": "A", "mediation": {
         "sink": {"py:app.store.record_refund": "py:app.routes.refund", "py:app.store.cancel_sub": "py:app.routes.cancel"},
-        "allow": ["py:app.routes.cancel"]}}]}
+        "allow": {"py:app.routes.cancel": "py:app.store.record_refund"}}}]}   # round 32: a map
     return scan.scan(rule, [tmp_path])
 
 

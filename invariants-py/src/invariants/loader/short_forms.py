@@ -61,7 +61,14 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
     sink = raw.pop("sink") if paired else _py_list(rid, "sink", raw.pop("sink"))
     doors = _py_list(rid, "door", raw.pop("door")) if "door" in raw else []
     allow_raw = raw.pop("allow", None)
-    allow = _py_list(rid, "allow", allow_raw) if allow_raw not in (None, []) else []   # emptied: none left
+    allow: Any
+    if allow_raw is None or allow_raw == [] or allow_raw == {}:   # emptied: none left
+        allow = []
+    elif paired:                                       # each entry with the sinks it may reach (round 32)
+        from .shapes import _check_allow_map
+        allow = _check_allow_map(rid, allow_raw, list(sink), "allow")
+    else:
+        allow = _py_list(rid, "allow", allow_raw)
     new = {**(med or {}), "sink": sink if paired or len(sink) > 1 else sink[0]}
     if doors:
         new["door"] = doors if len(doors) > 1 else doors[0]

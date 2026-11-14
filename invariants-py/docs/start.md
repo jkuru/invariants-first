@@ -212,7 +212,13 @@ reach any write):
       "py:support_agent.repo.LedgerRepo.cancel_subscription": ["py:support_agent.service.BillingService.cancel"]
       "py:support_agent.repo.LedgerRepo.insert_credit": ["py:support_agent.service.BillingService.credit"]
       "py:support_agent.repo.LedgerRepo.record_refund": ["py:support_agent.service.BillingService.refund"]
+    allow:   # each back door may reach only the sinks it lists
+      "py:scripts.admin.fix": ["py:support_agent.repo.LedgerRepo.record_refund"]
 ```
+
+In such a rule `allow` maps each back door to the sinks it reaches today. It may keep writing those,
+and no other: if `scripts.admin.fix` starts writing `insert_credit` too, that is a back door, and
+listing `insert_credit` in its entry is a weakening the lock reports.
 
 A repository write that no door calls keeps every door, as in the list form. An unresolved site
 that several drafted rules see is drafted once, in a top-level `allow_unresolved` entry listing

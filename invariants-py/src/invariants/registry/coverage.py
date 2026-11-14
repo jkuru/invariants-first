@@ -218,7 +218,12 @@ def _mediation_problems(rule: Rule) -> list[str]:
     allow = med.get("allow") or []
     live = [a for a in ([allow] if isinstance(allow, str) else allow)
             if isinstance(a, str) and a not in residual and _resolves(a)]
-    if live:
+    if live and isinstance(allow, dict):               # round 32: each with the sinks it may reach
+        why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: "
+                   + ", ".join(f"{a} (to {', '.join(allow[a] if isinstance(allow[a], list) else [allow[a]])})"
+                               for a in live)
+                   + " (remove them, or declare each in mediation.residual_paths)")
+    elif live:
         why.append(f"mediation.allow keeps {len(live)} live back door(s) to the sink: {', '.join(live)} "
                    f"(remove them, or declare each in mediation.residual_paths)")
     return why

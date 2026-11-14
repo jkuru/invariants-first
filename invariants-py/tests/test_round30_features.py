@@ -100,12 +100,14 @@ def test_a_back_door_to_one_sink_is_reported_once(tmp_path):
     assert [(f.kind, f.path[0]) for f in rep.for_rule("LEDGER")] == [("bypass", "bill.rogue.purge")]
 
 
-def test_allow_stays_rule_wide_and_unused_only_when_no_sink_uses_it(tmp_path):
+def test_allow_maps_each_entry_to_its_sinks_and_unused_is_per_sink(tmp_path):
+    # round 32: allow in a map-form rule names the sinks each entry may reach (it was rule-wide)
     rogue = "from bill.store import LedgerRepo\n\ndef purge(r: LedgerRepo, c):\n    r.record_cancel(c)\n"
     root = _bill(tmp_path, **{"bill/rogue.py": rogue})
-    rep = _scan(root, dict(MAP_RULE, allow=["py:bill.rogue.purge"]))
-    assert rep.findings == [], rep.findings                  # used for record_cancel, not for the others
-    rep = _scan(root, dict(MAP_RULE, allow=["py:bill.rogue.purge", "py:bill.api.refund_tool"]))
+    rep = _scan(root, dict(MAP_RULE, allow={"py:bill.rogue.purge": S + "record_cancel"}))
+    assert rep.findings == [], rep.findings
+    rep = _scan(root, dict(MAP_RULE, allow={"py:bill.rogue.purge": S + "record_cancel",
+                                            "py:bill.api.refund_tool": S + "record_refund"}))
     assert [(f.code, f.owner) for f in rep.findings] == [("missing/allow-unused", "bill.api.refund_tool")]
 
 

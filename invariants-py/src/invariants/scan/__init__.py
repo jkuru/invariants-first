@@ -416,12 +416,10 @@ def _check_paired(idx: _Index, med: Mediation, edges: list[_Edge | _Fan], lines:
                   entries: list[str], on: _OnPaths, guarded: frozenset[str], report: Report) -> list[Finding]:
     """The findings of a rule whose mediation.sink maps each sink to its doors: each set of doors is checked
     with the sinks it may reach (Mediation.groups), so a path to a sink through another sink's door only is a
-    bypass. The same finding from two parts is one; an allow entry is unused when no part uses it; each
+    bypass. The same finding from two parts is one; an allow entry is judged in the part of each sink it lists; each
     part's inferred paths are hashed in its own door-free graph. Accepted findings go to report.accepted."""
     parts = [(sub, _check_rule(idx, sub, edges, sites, entries, on, guarded=guarded)) for sub in med.groups()]
-    judged = [_declared(idx, sub.rule, sub.allow, "allow", []) - _declared(idx, sub.rule, sub.sinks, "sink", [])
-              - _declared(idx, sub.rule, sub.doors, "door", []) for sub, _ in parts]
-    found = _merge_groups([got for _, got in parts], judged)
+    found = _merge_groups([got for _, got in parts])
     rest = [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                     str(r)) for r, f, line, code, msg in idx.problems]
     rest += _skipped_importers(idx, med)

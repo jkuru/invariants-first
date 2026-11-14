@@ -65,8 +65,17 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   py:BillingService.cancel}`). A door listed for one sink is no door for another, so a write moved
   into the wrong door (a refund record added inside `BillingService.cancel`) is a `bypass`; the list
   form keeps its meaning (any door reaches any sink). `door:` is then left out or names exactly the
-  doors the mapping lists; `allow` and `allow_unresolved` stay rule-wide. `inv status`, the MCP
+  doors the mapping lists; `allow_unresolved` stays rule-wide. `inv status`, the MCP
   `explain` and `propose_rules` tools and `inv scan --format json` (`pairs`) show the pairing.
+- With a sink mapping, `allow:` (and `mediation.allow`) maps each allowed function to the sink or
+  sinks it may reach without a door (`allow: {py:admin.fix: [py:store.record_refund]}`), each a sink
+  of the mapping. An entry excuses only the sinks it lists: a path from it to another sink is a
+  `bypass` (allow was rule-wide, so a back door frozen for one write could write any other and
+  pass). A plain list there is a `LoadError` showing the map form; list-form rules keep the list. An
+  entry, or one of its sinks, no longer reached without a door is `missing/allow-unused` naming the
+  sink. `inv init` drafts the map (each frozen back door with the sinks it reaches); `inv status`,
+  MCP `explain`, `propose_rules` and `inv scan --format json` (`allow_to`) show what each entry
+  excuses.
 - A top-level `allow_unresolved:` accepts one reviewed site under several path laws: each entry is
   `{at, code, sha, why, rules: [ID, ...]}`, every listed rule must exist and declare a sink (once
   each), and the entry is given to each of them, accepting its site once under each (unused under
@@ -198,7 +207,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 
 - A sink mapping is pinned as written and judged sink by sink: a door that may now reach a sink it
   could not (added to its list, or the list form replacing the mapping) is WEAKENED, a door taken
-  off a sink is a tightening, and the same doors per sink written another way is not a weakening. A
+  off a sink is a tightening, and the same doors per sink written another way is not a weakening.
+  Its `allow` map is judged entry by entry: a new entry, or a sink added to an entry, is WEAKENED;
+  removing either is a tightening (a plain list pinned earlier counts as every sink). A
   top-level `allow_unresolved` entry is pinned in each rule it lists: a new one, or a rule added to
   its `rules`, is WEAKENED for that rule, with the same multiset judgement per (rule, file, code, sha)
   as a rule's own entries; a rule taken out is a tightening.
@@ -481,8 +492,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - Rule checks (round 31): a sink that is its own door (`{S: [S]}`, or `S` in both `sink` and `door`)
   is a load error; a rule's own `allow_unresolved` entry that lists `rules` other rules do not hold
   is refused (an entry for several rules goes in the file's top-level `allow_unresolved`); with a
-  sink mapping, a stale `allow` entry that is a door of one sink is `missing/allow-unused` when every
-  other sink's check finds it unused. The hint for an `allow_unresolved` sha from an earlier inv
+  sink mapping, a stale `allow` entry that is a door of one sink is `missing/allow-unused` (since
+  round 32, for each sink it lists that it no longer reaches). The hint for an `allow_unresolved` sha from an earlier inv
   says that a person runs `inv lock --accept-weakening` after writing the new sha.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.

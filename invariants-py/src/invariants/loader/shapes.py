@@ -53,6 +53,17 @@ def _check_pairs(rid: str, sink: Any, where: str = "mediation.sink") -> None:
         raise LoadError(str(e)) from None
 
 
+def _check_allow_map(rid: str, allow: Any, sinks: list[str], where: str = "mediation.allow") -> dict[str, list[str]]:
+    """allow in a rule whose sink is a mapping (scan.mediation.allow_map_of), as a LoadError; the map with
+    each entry's sinks as a list."""
+    from ..scan import ScanConfigError
+    from ..scan.mediation import allow_map_of
+    try:
+        return allow_map_of(rid, allow, sinks, where)
+    except ScanConfigError as e:
+        raise LoadError(str(e)) from None
+
+
 def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     """Shapes of mediation (chokepoint, residual_paths, and the scan's sink, door, allow) and applies_to."""
     if "applies_to" in raw and not _strings(raw["applies_to"]):
@@ -66,10 +77,13 @@ def _check_mediation(rid: str, raw: dict[str, Any]) -> None:
     rp = med.get("residual_paths", [])
     if not isinstance(rp, list) or not all(isinstance(x, str) for x in rp):
         raise LoadError(f"{rid}: mediation.residual_paths must be a list of strings")
-    if isinstance(med.get("sink"), dict):              # each sink mapped to the doors that may reach it
+    paired = isinstance(med.get("sink"), dict)
+    if paired:                                         # each sink mapped to the doors that may reach it
         _check_pairs(rid, med["sink"])
+        if "allow" in med:                             # and each allowed function to its sinks (round 32)
+            _check_allow_map(rid, med["allow"], list(med["sink"]))
     for k in ("sink", "door", "allow"):
-        if k in med and not (k == "sink" and isinstance(med[k], dict)) and not _strings(med[k], "py:"):
+        if k in med and not (paired and k in ("sink", "allow")) and not _strings(med[k], "py:"):
             raise LoadError(f"{rid}: mediation.{k} must be a 'py:' path or a non-empty list of them")
     au = med.get("allow_unresolved")                   # reviewed unresolved sites; `inv scan` checks each entry
     if au is not None and not (isinstance(au, list) and all(isinstance(e, dict) for e in au)):

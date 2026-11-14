@@ -35,6 +35,8 @@
     "sinkPairs": {"type": "object", "minProperties": 1, "propertyNames": {"pattern": "^py:"}, "additionalProperties": {"$ref": "#/$defs/pyRefs"},
                   "description": "Each sink mapped to the door or doors that may reach it: a door listed for one sink is no door for another."},
     "sinks": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"$ref": "#/$defs/sinkPairs"}]},
+    "allowMap": {"type": "object", "propertyNames": {"pattern": "^py:"}, "additionalProperties": {"$ref": "#/$defs/pyRefs"},
+                 "description": "In a rule whose sink is a mapping: each allowed function mapped to the sink or sinks of the mapping it may reach without a door."},
     "path": {"type": "string", "pattern": "^(args|result|reply|self|old_self|provider)(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
     "nameMap": {"type": "object", "additionalProperties": {"$ref": "#/$defs/path"}},
     "target": {
@@ -127,8 +129,8 @@
         "door": {"$ref": "#/$defs/pyRefs",
                  "description": "Door rule: the function(s) every write to the sink must go through. Expands to mediation.door; checked by inv scan, nothing runs in production."},
         "sink": {"$ref": "#/$defs/sinks", "description": "Door rule: the function(s) that write, or a mapping from each to the door(s) that may reach it (then door: is left out or names the same doors). Expands to mediation.sink."},
-        "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"type": "null"}, {"type": "array", "maxItems": 0}],
-                  "description": "Door rule: known back doors, frozen (empty or null: none left). Each may keep its own path to the sink; a new caller that reaches the sink through one is still a back door. Adding one is a weakening."},
+        "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"$ref": "#/$defs/allowMap"}, {"type": "null"}, {"type": "array", "maxItems": 0}],
+                  "description": "Door rule: known back doors, frozen (empty or null: none left). Each may keep its own path to the sink; a new caller that reaches the sink through one is still a back door. Adding one is a weakening. When sink: is a mapping, allow maps each back door to the sink(s) it may reach (it excuses no other)."},
         "allow_unresolved": {"$ref": "#/$defs/allowUnresolved",
                              "description": "Door rule: unresolved findings a person reviewed and accepts, one site each. Expands to mediation.allow_unresolved. Adding or widening one is a weakening."},
         "rev": {"type": "integer"},
@@ -155,7 +157,7 @@
             "residual_paths": {"type": "array", "items": {"type": "string"}},
             "sink": {"$ref": "#/$defs/sinks"},
             "door": {"$ref": "#/$defs/pyRefs"},
-            "allow": {"$ref": "#/$defs/pyRefs"},
+            "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"$ref": "#/$defs/allowMap"}]},
             "allow_unresolved": {"$ref": "#/$defs/allowUnresolved"}
           }
         },

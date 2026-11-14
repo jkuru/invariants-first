@@ -70,10 +70,23 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   is checked against its own doors; a door may be listed for several sinks. `door:` is then left out,
   or names exactly the doors the mapping lists (any other value is a scan error, which `inv validate`
   reports); `subject.target` is no default door here, and `guard:` still makes the rule check the
-  guarded function's arguments. `allow` and `allow_unresolved` stay rule-wide: an `allow` entry is
-  unused only when no sink's check uses it, and a finding two sinks' checks give alike (a parse error,
-  one unresolved site) is reported once. The mapping needs at least one sink, each a `py:` path mapped
-  to a `py:` path or a non-empty list of them.
+  guarded function's arguments. A finding two sinks' checks give alike (a parse error, one unresolved
+  site) is reported once. The mapping needs at least one sink, each a `py:` path mapped to a `py:` path
+  or a non-empty list of them.
+
+  With a mapping, `allow` (and `mediation.allow`) maps each allowed function to the sink or sinks it
+  may reach without a door, a `py:` path or a non-empty list of them, each a sink of the mapping:
+
+  ```yaml
+    allow:
+      py:scripts.admin.fix: [py:support_agent.repo.LedgerRepo.record_refund]
+  ```
+
+  An entry excuses only the sinks it lists: a path from `scripts.admin.fix` to `insert_credit` is a
+  `bypass`, so a back door frozen for one write cannot start writing another. A plain list there is
+  a load error that shows the map form. An entry, or one of its sinks, that no longer reaches that
+  sink without a door is `missing/allow-unused` naming the sink. `allow_unresolved` stays rule-wide.
+  List-form rules keep the plain list.
 - With `guard:` as well, the guarded function is the door, and the rule also checks its arguments
   (give `bad`, and optionally `tests`). The rule then expands as the `guard:` form does: one
   decorator enforcer instead of the structure one, and `status` `enforce` with `tests` or `detect`
@@ -101,7 +114,9 @@ no door, and any `getattr`, `__wrapped__` or monkeypatch of a sink or door. A st
   more copy of that statement), one that drops its column, a new door, a removed sink, and removing
   the rule. With a sink mapping it judges sink by sink: a door that may now reach a sink it could not
   (added to that sink's list, or the list form replacing the mapping, since there every door reaches
-  every sink) is a weakening, and the same doors per sink written another way is not. A shared
+  every sink) is a weakening, and the same doors per sink written another way is not; it judges the
+  `allow` map entry by entry: a new entry, or a sink added to an entry, is a weakening, and removing
+  either a tightening (a plain list pinned before the map form counts as every sink). A shared
   `allow_unresolved` entry is pinned in each rule it lists: a new one, or a rule added to its
   `rules`, is a weakening for that rule. Deleting an `allow` or `allow_unresolved` entry, a door, a
   sink's door, or a rule from a shared entry's `rules` is a tightening.

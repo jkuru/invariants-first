@@ -214,6 +214,9 @@ class Door:
     # fix round 30: each sink -> its own doors, when the writes have different doors (drafted as a sink
     # mapping, so a write moved into another write's door is a bypass); None: one set of doors for all
     pairs: dict[str, list[str]] | None = None
+    # round 32: with pairs, each frozen back door -> the sinks it reaches without a door (drafted as the
+    # allow map); None with pairs: each in allow reaches every sink
+    allow_to: dict[str, list[str]] | None = None
 
     def rule(self) -> dict[str, Any]:
         if self.pairs is not None:
@@ -223,7 +226,10 @@ class Door:
             out = {"id": self.rid,
                    "door": [f"py:{d}" for d in self.doors] if len(self.doors) > 1 else f"py:{self.doors[0]}",
                    "sink": [f"py:{s}" for s in self.sinks] if len(self.sinks) > 1 else f"py:{self.sinks[0]}"}
-        if self.allow:
+        if self.allow and self.pairs is not None:
+            to = self.allow_to if self.allow_to is not None else {a: list(self.sinks) for a in self.allow}
+            out["allow"] = {f"py:{a}": [f"py:{s}" for s in to[a]] for a in self.allow}
+        elif self.allow:
             out["allow"] = [f"py:{a}" for a in self.allow]
         return out
 
@@ -427,6 +433,41 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     # a back door is frozen with the call chain that reaches it today: allow lets a path through only
     # when every function on it is allowed, so a new caller of a frozen back door is still caught
     keep = {*d.doors, *d.sinks}
+    if d.pairs is not None and len(d.sinks) > 1:
+        # round 32: frozen sink by sink, so each back door is drafted with the sinks it reaches (allow is a
+        # map there: an entry excuses only the sinks it lists)
+        to: dict[str, list[str]] = {}
+        for s in d.sinks:
+            sub = Door(d.rid, d.resource, list(d.pairs[s]), [s], [], pairs={s: d.pairs[s]})
+            sub_report = _check(sub, g, roots, exclude)
+            if any(f.kind != "unresolved" for f in sub_report.for_rule(d.rid)) \
+                    or extracted_on_paths(sub_report.on_paths, d.rid) - keep:
+                _freeze_rounds(sub, g, roots, exclude, progress, keep, sub_report)
+            for a in sub.allow:
+                to.setdefault(a, []).append(s)
+        d.allow, d.allow_to = sorted(to), to
+        report = _check(d, g, roots, exclude)
+    else:
+        report = _freeze_rounds(d, g, roots, exclude, progress, keep, report)
+    found = report.for_rule(d.rid)
+    d.unresolved = _unresolved(found)
+    if found and all(f.kind == "unresolved" for f in found):
+        d.active = False
+        d.why_inactive = (f"{len(found)} unresolved site(s) need review first: read each one; when it cannot "
+                          f"reach the sink, accept it in allow_unresolved (drafted below: write why), else fix "
+                          f"it; then uncomment the rule")
+    elif report.rule_result(d.rid) != "pass":
+        d.active = False
+        d.why_inactive = ("the scan still fails with the back doors frozen; review the findings by hand" if d.allow
+                          else "every finding is inside a door or sink, which allow cannot freeze; review the "
+                               "findings by hand")
+
+
+def _freeze_rounds(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[str], progress: Any,
+                   keep: set[str], report: scanner.Report) -> scanner.Report:
+    """Freeze in d.allow the functions on each door-free path, re-scan, and repeat until the rule passes
+    (at most MAX_FREEZE_ROUNDS); the last report."""
+    found = report.for_rule(d.rid)
     frozen: set[str] = set()
     for r in range(MAX_FREEZE_ROUNDS):
         if progress is not None:
@@ -446,17 +487,7 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
         if report.rule_result(d.rid) == "pass" or any(not f.owner for f in found if f.kind != "unresolved") \
                 or not d.allow:
             break
-    d.unresolved = _unresolved(found)
-    if found and all(f.kind == "unresolved" for f in found):
-        d.active = False
-        d.why_inactive = (f"{len(found)} unresolved site(s) need review first: read each one; when it cannot "
-                          f"reach the sink, accept it in allow_unresolved (drafted below: write why), else fix "
-                          f"it; then uncomment the rule")
-    elif report.rule_result(d.rid) != "pass":
-        d.active = False
-        d.why_inactive = ("the scan still fails with the back doors frozen; review the findings by hand" if d.allow
-                          else "every finding is inside a door or sink, which allow cannot freeze; review the "
-                               "findings by hand")
+    return report
 
 
 def _unresolved(found: list[scanner.Finding]) -> list[tuple[str, str, str, str]]:
@@ -493,7 +524,10 @@ def render(found: DoorsFound) -> list[str]:
             body = [f"- id: {r['id']}",
                     f"  door: {json.dumps(r['door']) if isinstance(r['door'], str) else _yaml_list(r['door'])}",
                     f"  sink: {json.dumps(r['sink']) if isinstance(r['sink'], str) else _yaml_list(r['sink'])}"]
-        if d.allow:
+        if d.allow and isinstance(r["allow"], dict):  # each back door with the sinks it reaches (round 32)
+            body.append("  allow:   # each back door may reach only the sinks it lists")
+            body += [f"    {json.dumps(a)}: {_yaml_list(ss)}" for a, ss in r["allow"].items()]
+        elif d.allow:
             body.append("  allow:")
             body += [f"    - {json.dumps(a)}" for a in r["allow"]]
         if d.unresolved:

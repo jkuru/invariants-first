@@ -210,7 +210,9 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         out.append(Change(where, "mediation.door", _as_list(a.get("door")) or None, _as_list(b.get("door")) or None,
                           weak, "more doors may reach the sink" if weak else ""))
     allow_a, allow_b = _as_list(a.get("allow")), _as_list(b.get("allow"))
-    if sorted(allow_a) != sorted(allow_b):
+    if isinstance(a.get("sink"), dict) or isinstance(b.get("sink"), dict):
+        out += _allow_map_changes(where, a, b, doors_a, doors_b)
+    elif sorted(allow_a) != sorted(allow_b):
         came = [x for x in allow_b if x not in allow_a]
         out.append(Change(where, "mediation.allow", allow_a or None, allow_b or None, bool(came),
                           f"a back door is now allowed: {', '.join(came)}" if came else ""))
@@ -222,6 +224,32 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
     for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow", "allow_unresolved"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
+    return out
+
+
+def _allow_to(med: dict[str, Any], doors: list[str]) -> dict[str, list[str]]:
+    """Each allowed function -> the sinks it may reach without a door: a map as written (round 32), or a
+    plain list (the list form, or a mapping pinned before round 32), in which each reaches every sink."""
+    allow = med.get("allow")
+    if isinstance(allow, dict):
+        return {str(k): _as_list(v) if isinstance(v, (str, list)) else [json.dumps(v)] for k, v in allow.items()}
+    return {x: list(_pairing(med, doors)) for x in _as_list(allow)}
+
+
+def _allow_map_changes(where: str, a: dict[str, Any], b: dict[str, Any], doors_a: list[str],
+                       doors_b: list[str]) -> list[Change]:
+    """allow in a rule with a sink mapping on either side (round 32), entry by entry: an entry added, or a
+    sink added to an entry, lets a back door reach a sink it could not reach before (WEAKENED); an entry or
+    a sink removed is a tightening; the same sinks written another way are no change."""
+    ta, tb = _allow_to(a, doors_a), _allow_to(b, doors_b)
+    out: list[Change] = []
+    for x in [*ta, *(k for k in tb if k not in ta)]:
+        old, new = ta.get(x, []), tb.get(x, [])
+        came = [s for s in new if s not in old]
+        if not came and not [s for s in old if s not in new]:
+            continue
+        out.append(Change(where, f"mediation.allow {x}", old or None, new or None, bool(came),
+                          f"a back door may now reach {', '.join(came)} without a door" if came else ""))
     return out
 
 

@@ -61,7 +61,8 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
         written = dr in found.doors.doors and dr.active
         door_rules.append({"id": dr.rid, "resource": dr.resource, "doors": dr.doors, "sinks": dr.sinks,
                            **({"pairs": dr.pairs} if dr.pairs is not None else {}),
-                           "callers": dr.callers, "allow": dr.allow, "back_doors": dr.back_doors,
+                           "callers": dr.callers, "allow": dr.allow,
+                           **({"allow_to": dr.allow_to} if dr.allow_to else {}), "back_doors": dr.back_doors,
                            "drafted": "rule" if written else ("commented out" if dr in found.doors.doors else
                                                               "beyond max_doors"),
                            "why_not_drafted": dr.why_inactive or ("" if dr in found.doors.doors else

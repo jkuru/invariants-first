@@ -181,6 +181,11 @@ These changes are marked **WEAKENED**:
   taken off a sink's list, or a move from the list form to a mapping, is a tightening, and the same
   doors per sink written another way (the other form, a reordered mapping, `door:` beside it) is a
   change that is not a weakening;
+- with a sink mapping, `allow` (a map from each back door to the sinks it may reach without a door)
+  judged entry by entry: a new entry, or a sink added to an entry, lets a back door reach a sink it
+  could not before (`mediation.allow py:app.admin.fix: [...] -> [...]  WEAKENED`); removing a sink
+  from an entry, or the entry, is a tightening. A plain list pinned before the map form counts as
+  each entry reaching every sink;
 - a `mediation.allow_unresolved` site (file, code, sha) named by more entries than before, compared
   as a multiset: a new site, or a second entry for a sha one entry named (each entry accepts one
   finding, and identical statements in one function share a sha), or more entries for it without a

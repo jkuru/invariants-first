@@ -99,16 +99,28 @@ class Mediation:
     # the door-to-sink pairing, when mediation.sink maps each sink to its doors (None: the list form, in
     # which any door may reach any sink); doors is then every door the mapping names
     pairs: dict[str, list[str]] | None = None
+    # round 32: with the mapping, each allowed function -> the sinks it may reach without a door (allow is
+    # then its keys); None: the list form, in which allow is rule-wide
+    allow_to: dict[str, list[str]] | None = None
 
     def groups(self) -> list[Mediation]:
         """What the scan checks one at a time: the rule itself (the list form), or one part per set of
-        doors (the mapping), holding the sinks that set may reach: a door of another sink is no door there."""
+        doors (the mapping), holding the sinks that set may reach: a door of another sink is no door there.
+        A sink an allow entry lists is a part of its own, given only the entries that list it (round 32):
+        an entry excuses no other sink, and is judged unused sink by sink."""
         if self.pairs is None:
             return [self]
-        by: dict[tuple[str, ...], list[str]] = {}
+        to = self.allow_to or {}
+        by: dict[tuple[tuple[str, ...], str | None], list[str]] = {}
         for s in self.sinks:
-            by.setdefault(tuple(dict.fromkeys(self.pairs[s])), []).append(s)
-        return [Mediation(self.rule, sinks, list(ds), self.allow) for ds, sinks in by.items()]
+            own = s if any(s in v for v in to.values()) else None
+            by.setdefault((tuple(dict.fromkeys(self.pairs[s])), own), []).append(s)
+        out = []
+        for (ds, own), sinks in by.items():
+            allowed = [a for a, v in to.items() if own in v]
+            out.append(Mediation(self.rule, sinks, list(ds), allowed,
+                                 allow_to={a: [own] for a in allowed} if own is not None else None))
+        return out
 
 
 @dataclasses.dataclass
@@ -160,7 +172,8 @@ class Report:
             "files": self.files, "functions": self.functions,
             "rules": {rid: {"result": self.rule_result(rid), "sinks": m.sinks, "doors": m.doors,
                             **({"pairs": m.pairs} if m.pairs is not None else {}),
-                            "allow": m.allow, "counts": self.counts(rid),
+                            "allow": m.allow, **({"allow_to": m.allow_to} if m.allow_to else {}),
+                            "counts": self.counts(rid),
                             **({"allow_unresolved": [a.as_dict() for a in m.accept]} if m.accept else {})}
                       for rid, m in self.scanned.items()},
             "not_scanned": self.not_scanned,

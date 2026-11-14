@@ -176,10 +176,13 @@ def _rule_summary(raw: dict[str, Any]) -> dict[str, Any]:
     pairs = {s: as_list(d) for s, d in sink.items()} if isinstance(sink, dict) else None
     if pairs is not None:                              # each sink with its own doors (fix round 30)
         door = list(dict.fromkeys(d for ds in pairs.values() for d in ds))
+    allow = med.get("allow")                           # round 32: each back door with the sinks it excuses
+    allow_to = {str(a): as_list(s) for a, s in allow.items()} if isinstance(allow, dict) else None
     return {"id": raw.get("id"), "status": raw.get("status"), "statement": raw.get("statement"),
             "subject": raw.get("subject"), "bad": raw.get("bad"), "sinks": as_list(sink),
             **({"pairs": pairs} if pairs is not None else {}),
-            "doors": as_list(door), "allow": as_list(med.get("allow")),
+            "doors": as_list(door), "allow": list(allow_to) if allow_to is not None else as_list(allow),
+            **({"allow_to": allow_to} if allow_to is not None else {}),
             "allow_unresolved": list(med.get("allow_unresolved") or raw.get("allow_unresolved") or []),
             "falsified_by": raw.get("falsified_by") or [], "kind": "path law" if med.get("sink") else "value law"}
 
@@ -239,7 +242,10 @@ def tool_explain(server_root: pathlib.Path, default_rules: pathlib.Path | None, 
                               + ("; each sink through its own doors only: " + "; ".join(
                                   f"{s} through {' or '.join(d)}" for s, d in rule["pairs"].items())
                                  if "pairs" in rule else "")
-                              + (f"; frozen back doors: {', '.join(rule['allow'])}" if rule["allow"] else "")
+                              + ("; frozen back doors, each for the sinks it lists only: " + "; ".join(
+                                  f"{a} to {', '.join(s)}" for a, s in rule["allow_to"].items())
+                                 if rule.get("allow_to") else
+                                 f"; frozen back doors: {', '.join(rule['allow'])}" if rule["allow"] else "")
                               + f". The scan says: {out['scan_result']}"
                               + (f" with {len(findings)} finding(s); explain each by its id." if findings else "."))
         if accepted:

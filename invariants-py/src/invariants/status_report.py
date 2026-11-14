@@ -91,6 +91,11 @@ def checks_text(rule: Rule) -> str:
     if isinstance(med.get("sink"), dict):              # each sink with its own doors (fix round 30)
         parts.append(", and ".join(f"every call to {s} goes through {_names(d)}" for s, d in med["sink"].items())
                      + " (a door of one sink is no door for another)")
+        allow = med.get("allow")                       # round 32: each back door with the sinks it excuses
+        if isinstance(allow, dict) and allow:
+            parts.append(", and ".join(f"{a} may reach {', '.join([s] if isinstance(s, str) else s)} without a "
+                                       f"door (a frozen back door, for the sinks it lists only)"
+                                       for a, s in allow.items()))
     elif med.get("sink"):
         door = med.get("door") or rule.target_key
         parts.append(f"every call to {_names(med['sink'])} goes through {_names(door)}")
