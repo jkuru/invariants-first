@@ -8,7 +8,9 @@ from typing import Any, Iterator, cast
 import pytest
 
 from ..errors import CoverageError
+from ..loader import read_document
 from ..registry import observe
+from ..registry.coverage import rule_digest
 from .report import _Report
 from .state import NO_RULES
 
@@ -17,9 +19,28 @@ class InvSession(_Report):
     """Per-run state of the plugin, registered as a plugin so its hooks run."""
 
     # --- hooks --------------------------------------------------------------------------------
+    @pytest.hookimpl(tryfirst=True)
     def pytest_sessionstart(self, session: pytest.Session) -> None:
+        if self.controller and self.ablate_on and not session.config.option.collectonly:
+            self.controller_checks()
         if self.counting:
             self._unobserve = observe(self.count)
+
+    def controller_checks(self) -> None:
+        """pytest-xdist controller, before any worker starts: the usage errors of --inv-ablate that a
+        worker would raise after collection (no rule file, a missing one, one with no rules) are
+        raised here, so the run exits 4 (a usage error), not 3 (a worker's INTERNALERROR). The rule
+        file is only read, not loaded: its python contracts may need the workers' collection."""
+        if self.rules_path is None:
+            raise pytest.UsageError(f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}")
+        if not self.rules_path.is_file():
+            raise pytest.UsageError(f"--inv-rules: {self.rules_path} does not exist")
+        try:
+            doc = read_document(self.rules_path)
+        except Exception:                      # the workers' load reports it, as without xdist
+            return
+        if isinstance(doc, dict) and not doc.get("rules"):
+            raise pytest.UsageError(f"--inv-ablate: {NO_RULES.format(root=self._shown_root())}")
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_collection_finish(self, session: pytest.Session) -> None:
@@ -27,6 +48,8 @@ class InvSession(_Report):
             self.install_default()
         reg = self.session_registry()
         self.statuses = {rid: r.status for rid, r in reg.rules.items()}
+        if self.ablate_on:
+            self.digests = {rid: rule_digest(r) for rid, r in reg.rules.items()}
         if self.ablate_on and not session.config.option.collectonly:
             self.plan_ablation(session, reg)
         if self.verify_on:

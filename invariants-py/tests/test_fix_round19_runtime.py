@@ -266,7 +266,8 @@ def test_status_never_reports_held_as_ablation_proven_without_ablation(reg):
     assert status_report.NO_ABLATION in row["reasons"]
     text = status_report.to_text({"rules": [row], "verify": {"passed": True, "problems": []}})
     assert status_report.UNPROVEN in text
-    caught = {"ablation": {"rules": {"R-1": [{"result": "caught"}]}}}
+    from invariants.registry.coverage import rule_digest
+    caught = {"ablation": {"rules": {"R-1": [{"result": "caught"}]}, "digests": {"R-1": rule_digest(reg.rules["R-1"])}}}
     proven = status_report.rule_status(reg, report, "R-1", caught)
     assert proven["standing"] == "held" and proven["ablation_proven"] is True and proven["reasons"] == []
     missed = status_report.rule_status(reg, report, "R-1", {"ablation": {"rules": {}}})

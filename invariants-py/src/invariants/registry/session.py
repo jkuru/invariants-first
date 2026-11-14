@@ -117,7 +117,9 @@ def note_decision(rule_id: str) -> None:
     """Note in the INV_DECISION_TRACE file that rule_id's enforcement decided something.
 
     A decision is a violation, a parse_error the enforcer acted on (a retry or a rejection, not a
-    detect-mode proceed), or a model call's abstain. The pytest plugin sets INV_DECISION_TRACE for a
+    detect-mode proceed), a model call's abstain, or an enforcing edge's refusal of a received
+    non-ok verdict (rule_error, abstain, a Checked inv.model_call did not build), acted on by
+    on_violation. The pytest plugin sets INV_DECISION_TRACE for a
     falsifier's control re-run: a falsifier whose rule never decided anything there passes whether
     or not the rule holds, so its failure under ablation proves nothing.
     """
@@ -126,4 +128,7 @@ def note_decision(rule_id: str) -> None:
 
 def is_decision(kind: str, event: dict[str, Any]) -> bool:
     """True for an event that is a decision of its rule (see note_decision)."""
-    return kind == "violation" or (kind in ("parse_error", "abstain") and event.get("action") not in (None, "proceed"))
+    action = event.get("action")
+    if event.get("refused") is True:            # by on_violation: reject, halt, route or escalate
+        return action not in (None, "proceed", "retry", "page")
+    return kind == "violation" or (kind in ("parse_error", "abstain") and action not in (None, "proceed"))

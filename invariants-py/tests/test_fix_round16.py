@@ -234,10 +234,13 @@ def test_a_chokepoint_must_name_a_function_of_the_rule(iso, chokepoint, bad):
 
 
 def test_missing_ablation_coverage_withholds_held(iso):
+    from invariants.registry.coverage import rule_digest
     med = {"chokepoint": "pf is the only door"}
+    inv.load(r16.guard_doc("G-P", "pf", "args.x > 5", mediation=med))
+    DIGEST = rule_digest(iso.rules["G-P"])
     for rows, bad in (([{"falsifier": "t", "result": "caught"}], False),
                       ([{"falsifier": "t", "result": "still passes"}], True), (None, True)):
-        ablation = {"ablation": {"rules": {"G-P": rows} if rows else {}}}
+        ablation = {"ablation": {"rules": {"G-P": rows} if rows else {}, "digests": {"G-P": DIGEST}}}
         why = standing_reasons(med, ablation=ablation)
         assert any("ablation" in w for w in why) is bad, why
 

@@ -70,7 +70,17 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   abstain never blocks: it is recorded (outcome `abstain`, action `proceed`) and the call returns
   verdict `abstain`, sync and async alike. A dataclass or pydantic reply field that a `Checked`
   attribute would shadow (`value`, `attempts`, `rule`, `verdict`, `_inv_*`, an attribute of the
-  subclass) is a `TypeError` at decoration.
+  subclass) is a `TypeError` at decoration, and so is a pydantic `@computed_field` or a property
+  (`property`, `functools.cached_property`) of the reply class with such a name.
+- `@inv.model_call` over a sync wrapper of an async def (a `functools.wraps` decorator without
+  `inspect.markcoroutinefunction`) awaits the body's coroutine: the decorated call returns a
+  coroutine that runs the model call asynchronously, as for an `async def` body. It used to parse
+  the coroutine as the reply (`parse_error: reply is not an object (got coroutine)`), retry it and
+  reject every call without ever awaiting the model. A body that returns another awaitable (a
+  `Future`, a `Task`) is a `TypeError`, never blamed on the model.
+- retry, resample and monitor events carry `start_ns` and `end_ns` (a retry or resample spans its
+  attempt; a monitor event its row), so their OpenTelemetry spans have real times, not zero-length
+  spans stamped when the exporter flushes.
 - `@inv.edge` on the consumer of a reply re-validates the schema and re-checks `bad` against state as
   it is now (`inv.Checked` is forgeable, so the edge never trusts it). A received verdict that is
   not ok is refused by `on_violation` as that outcome: a verdict `abstain` is outcome `abstain`
@@ -347,12 +357,23 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `--inv-ablate` (with `--inv-ablate-lenient`), `--inv-report` and `--inv-report-json`; fixtures
   `inv_registry`, `inv_ablated`, `inv_events` and `inv_scan`. With `--inv-ablate` or `--inv-verify`
   and no `--inv-rules` or `inv_rules`, it loads `invariants.yaml` (`.yml`, `.json`) from the rootdir;
-  `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run.
+  `--inv-ablate` with no rules loaded at all is a usage error (exit 4), never a green run; under
+  pytest-xdist too (the controller checks before any worker starts: it was exit 3, a worker's
+  INTERNALERROR).
+- `--inv-report-json` writes each rule's digest (`ablation.digests`: every field of the rule but its
+  prose, id, rev, status and evidence). `inv status --ablation` and `inv.standing(ablation=...)`
+  accept a rule's ablation results only from a report whose digest matches the rule as loaded now:
+  a report for another version of the rule (its `bad`, enforcers or `falsified_by` changed since)
+  or with no digest proves nothing (it used to say held, ablation proved it: yes).
 - `--inv-report` and `--inv-report-json` count the `abstain` outcome (a model call's abstain, below
   `enforce` or escalated at it, and an edge given a verdict `abstain`) next to the other four.
 - Ablation re-runs each rule's `falsified_by` tests with the rule off: a falsifier is caught only when
   its rule decided something on a control run and the ablated run fails; everything else is
-  reported as inconclusive with the reason. It works under pytest-xdist and reaches subprocesses
+  reported as inconclusive with the reason. An enforcing edge's refusal of a received verdict that
+  is not ok (`rule_error`, or a `Checked` `inv.model_call` did not build) is a decision of the rule
+  (its event carries `refused: true`), so a falsifier asserting that refusal is caught; it was
+  `inconclusive (rule_error, not violation)`, as was an escalated abstain next to any rule_error.
+  It works under pytest-xdist and reaches subprocesses
   through `INV_ABLATE`. `INV_ABLATE` is read when a guard asks, not when a registry is built, so the
   default registry (built at import) honours it as the loader's log says.
 
@@ -364,7 +385,10 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   `application/problem+json` responses (422 reject, 202 route or escalate, 500 halt, 503 a
   fail-closed rule error) whose bodies never echo values. A `Response` a guarded handler returns
   (`JSONResponse(..., status_code=404)`) is sent as it is, never validated into the response model
-  (it was a 500); a `post_effect` clause on `result` then is a `rule_error` its `on_error` decides.
+  (it was a 500). It is opaque to `post_effect` rules: a clause that reads `result` is a `rule_error`
+  ("the handler returned a Response") its `on_error` decides, never the Response's own attributes
+  read as response-model fields (`result.status_code`, `body`, `headers`, `media_type` read the
+  Response's).
 - `integrations.otel`: one span per evaluation. `integrations.exporters.BufferedExporter`: a
   bounded, background exporter; a start() racing the flusher's exit after a timed-out close()
   starts a new flusher instead of leaving the events queued next with none.

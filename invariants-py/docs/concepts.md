@@ -309,7 +309,9 @@ map, or a pydantic model with `extra='forbid'`):
   attribute of your `Checked` subclass would read the metadata instead of the reply (a judge's
   `verdict='deny'` read as the `Checked`'s `verdict` `ok`), so it is a `TypeError` when the function is
   decorated, naming the field: rename it (`reply_verdict`), or use a `{field: type}` schema, whose
-  reply is read by key (`checked.value['verdict']`).
+  reply is read by key (`checked.value['verdict']`). A pydantic `@computed_field` and a property
+  (`property`, `functools.cached_property`) of the reply class are read the same way, so one with
+  such a name is refused alike.
 - **Bad.** Then `bad` runs, and on a violation `on_violation` applies, after up to
   `semantic_resamples` fresh resamples. `compares_to: held_data` forces `semantic_resamples: 0`.
 - **Off, retired and ablated.** When the rule is retired, its `model_call` enforcer is in effective
@@ -387,8 +389,10 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   ablation caused it: the falsifier must pass on a control re-run without ablation, and on that
   control re-run the rule's enforcement must have decided something: a `violation` at a guard, an
   edge, a middleware or a monitor; at a model call a `violation`, a `parse_error` it retried or
-  rejected (not a detect-mode proceed), or an abstain it escalated (in process or in a subprocess,
-  through `INV_DECISION_TRACE`). The ablated re-run must reach the rule (a guard, an edge, a model
+  rejected (not a detect-mode proceed), or an abstain it escalated; at an enforcing edge also its
+  refusal of a received verdict that is not ok (`rule_error`, `parse_error`, `abstain`, or a
+  `Checked` `inv.model_call` did not build), by `on_violation` (in process or in a subprocess,
+  through `INV_DECISION_TRACE`). Such a refusal's event carries `refused: true`. The ablated re-run must reach the rule (a guard, an edge, a model
   call, a monitor or `inv scan` skipped it because it is ablated, in process or in a subprocess
   through `INV_ABLATE_TRACE`; calling `inv.is_ablated()` is asking, not reaching), and the falsifier
   must pass again on a second control re-run after the ablated one. Otherwise it is `inconclusive`.
@@ -407,8 +411,16 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   ablation; ...)`, and both name the session, package, module and class fixtures the test used. Neither
   counts as caught, so an `enforce` rule with no other falsifier fails the session. It is also
   `inconclusive (rule_error, not violation)` when, on the control re-run, the rule's in-process
-  evaluations gave `rule_error` and never `violation` or `parse_error`: the falsifier passed because
-  the rule could not be evaluated, not because it caught the bad state.
+  evaluations gave `rule_error` and never `violation`, `parse_error` or another decision (an edge's
+  refusal, an escalated abstain): the falsifier passed because the rule could not be evaluated, not
+  because it caught the bad state. An edge's refusal of a received `rule_error` verdict is a
+  decision, not this case.
+- **Which version of the rule.** `--inv-report-json` records each rule's digest
+  (`ablation.digests`: every field of the rule but its prose, `id`, `rev`, `status` and
+  `evidence`). `inv status --ablation` and `inv.standing(ablation=...)` take a rule's results only
+  from a report whose digest matches the rule as loaded now; a report written before its `bad`, an
+  enforcer or `falsified_by` changed (or one with no digest) proves nothing, so run
+  `pytest --inv-ablate --inv-report-json` again.
 - **Schema-held rules.** Ablating a rule enforced by `point: type` (a closed `Literal`, or
   `extra="forbid"`) does not relax `inv.parse`, so a parse-error falsifier still passes and
   `--inv-ablate` reports the guard as not load-bearing. Give such a rule an in-process enforcer too,
@@ -438,7 +450,9 @@ Ablation turns a rule off to prove that its falsifiers then fail.
   run is the only one reported as a test.
 - **pytest-xdist.** Under `-n N` each worker ablates the falsifiers it runs, and the controller
   merges the results (and the `--inv-verify` and `--inv-report` counts) through pytest-xdist's
-  worker output, so the summary and `--inv-report-json` are the same as in a single process.
+  worker output, so the summary and `--inv-report-json` are the same as in a single process. The
+  usage errors of `--inv-ablate` (no rule file, a missing one, one with no rules) are raised by the
+  controller before any worker starts: exit 4, as in a single process.
 
 ## Operations
 

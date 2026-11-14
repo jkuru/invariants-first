@@ -56,8 +56,9 @@ Key behaviours that the one-line docstrings leave out:
   and the list methods raise `TypeError`, through `.value` or through attribute forwarding.
 - Attribute reads on a `Checked` are forwarded to its value only for names the class does not have,
   so `@inv.model_call` refuses (`TypeError` at decoration) a dataclass or pydantic reply field named
-  `value`, `attempts`, `rule`, `verdict`, `_inv_*` or like an attribute of the `Checked` subclass:
-  `checked.verdict` is always the model-call verdict, never a reply field
+  `value`, `attempts`, `rule`, `verdict`, `_inv_*` or like an attribute of the `Checked` subclass,
+  and a pydantic `@computed_field` or a property (`property`, `functools.cached_property`) of the
+  reply class with such a name: `checked.verdict` is always the model-call verdict, never a reply field
   ([concepts.md](concepts.md#model-calls)).
 - Registries are context-local. `inv.ablated(id, scope="registry")` turns a rule off for every
   thread and task that uses the registry; see [concepts.md](concepts.md#ablation).
@@ -89,7 +90,11 @@ Stacking `@inv.guard` with other decorators:
   and when the call returns a coroutine its `post_effect` checks run on what the coroutine returns
   (the guarded call gives back a coroutine that awaits it first). A sync-path call that returns
   another awaitable (a `Future`, a `Task`) while `post_effect` checks are live is a `TypeError`:
-  guard the async def itself (`@inv.guard` below the wrapper).
+  guard the async def itself (`@inv.guard` below the wrapper). `@inv.model_call` over such a
+  wrapper does the same: when the body returns a coroutine, the decorated call returns a coroutine
+  that runs the whole model call asynchronously (each reply awaited, async providers awaited), as
+  for an `async def` body; a body that returns another awaitable is a `TypeError`, never parsed as
+  the model's reply.
 - **`@inv.edge`** hands its consumer exactly the re-checked value: the received `Checked` must be
   exactly the annotated class (a subclass is a `TypeError`), and a state is copied as a plain `dict`
   (from any dict, subclasses included) or as exactly the annotated dataclass or pydantic model (an
@@ -200,10 +205,12 @@ inv_fastapi.install(app, reject_status=422)        # guard exceptions become pro
 Rules bind to the handler's parameters as FastAPI parsed them, for example `args.order.quantity`
 or `args.region`. They bind to handler parameter names, not to OpenAPI JSON paths. A
 `post_effect` rule reads the response model as `result` (a returned dict is validated into it
-first). A `Response` the handler returns (`JSONResponse({...}, status_code=404)`) is sent as it is:
-a `post_effect` clause that reads a field of `result` then finds no such field, a `rule_error` that
-the enforcer's `on_error` decides (`fail_closed` answers 503, `fail_open_and_page` pages and sends
-the response). The HTTP status depends on the outcome:
+first). A `Response` the handler returns (`JSONResponse({...}, status_code=404)`) is sent as it is, and
+is opaque to `post_effect` rules: a clause that reads `result` is a `rule_error` ("the handler
+returned a Response") that the enforcer's `on_error` decides (`fail_closed` answers 503,
+`fail_open_and_page` pages and sends the response). Its own attributes are never read as
+response-model fields, so `result.status_code` on a model with a `status_code` field never reads
+the Response's `status_code` (nor `body`, `headers`, `media_type`, `charset` or `background`). The HTTP status depends on the outcome:
 
 | Outcome | Status |
 |---|---|
@@ -277,7 +284,8 @@ One span per evaluation, named `invariant.<point>`, with `invariant.*` attribute
 `rule_rev`, `outcome`, `mode`, `point`, `timing`, `action`, `attempts`). Clause messages and error
 text are not exported, since they can carry values. Needs the `otel` extra. A span runs from when
 the check began (the guard's check phase with its providers, a model call's first attempt, an edge
-call) to when the outcome was recorded (events carry `start_ns` and `end_ns`); a violation,
+call; a retry or resample event its attempt, a monitor event its row) to when the outcome was
+recorded (events carry `start_ns` and `end_ns`); a violation,
 rule_error or parse_error sets status ERROR.
 
 ```python
@@ -372,10 +380,10 @@ pytest --inv-rules invariants.yaml --inv-verify --inv-ablate --inv-report
 |---|---|
 | `--inv-rules PATH` | Loads the rule file after collection. You can also set it with the ini option `inv_rules` (relative to the ini file). With `--inv-ablate` or `--inv-verify` and neither given, it loads `invariants.yaml`, `invariants.yml` or `invariants.json` from pytest's rootdir. |
 | `--inv-verify` | Fails the session when a target lacks its guard. |
-| `--inv-ablate` | Re-runs each rule's `falsified_by` tests with the rule turned off in every registry and in `INV_ABLATE` (so subprocesses see it). A falsifier that still passes fails the session with "guard not load-bearing". With no rules loaded (no rule file found, and none loaded by the tests) it is a usage error (exit 4), not a pass. What counts as caught, and what is `inconclusive`, is in [concepts.md](concepts.md#ablation). |
+| `--inv-ablate` | Re-runs each rule's `falsified_by` tests with the rule turned off in every registry and in `INV_ABLATE` (so subprocesses see it). A falsifier that still passes fails the session with "guard not load-bearing". With no rules loaded (no rule file found, and none loaded by the tests) it is a usage error (exit 4), not a pass; under pytest-xdist the controller checks this before any worker starts (no rule file, a missing one, or one with no rules), so it is exit 4 there too. What counts as caught, and what is `inconclusive`, is in [concepts.md](concepts.md#ablation). |
 | `--inv-ablate-lenient` | With `--inv-ablate`, fail only on a falsifier that still passes. |
 | `--inv-report` | Prints per-rule reach, ok, violation, rule_error, parse_error and abstain counts (abstain: a model call's abstain, below `enforce` where it proceeds or escalated at it, and an edge given verdict `abstain`). |
-| `--inv-report-json PATH` | Writes the same counts as JSON. |
+| `--inv-report-json PATH` | Writes the same counts as JSON (with `--inv-ablate`, the ablation results and `ablation.digests`: each rule's digest, which `inv status --ablation` checks: a report for another version of a rule, or with no digest, does not prove it). |
 
 Fixtures:
 - `inv_registry` is a fresh registry that holds the session rules.

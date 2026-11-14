@@ -88,9 +88,18 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
     points: the enforcer points this guard evaluates (decorator, and middleware for HTTP handlers).
     Generator functions are refused: their effect runs lazily, after any check could see it.
     """
+    return _guard(keys, points, None)
+
+
+def _guard(keys: tuple[str, ...], points: tuple[str, ...],
+           seen: Callable[[Any], Any] | None) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """guard(), with seen: what post_effect rules read as result for the value the function
+    returned (an integration's view of it; None: the value itself). The caller always gets the
+    value itself."""
     bad_points = set(points) - GUARD_POINTS
     if bad_points or not points:
         raise ValueError(f"guard points must be from {sorted(GUARD_POINTS)}, got {list(points)}")
+    view: Callable[[Any], Any] = seen if seen is not None else (lambda r: r)
 
     def deco(fn: Callable[P, R]) -> Callable[P, R]:
         if (d := _descriptor(fn, deco)) is not None:
@@ -117,8 +126,8 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                 result = await afn(*a, **kw)
                 if "post_effect" in call.timings:
                     call.started["post_effect"] = time.time_ns()
-                    await aprefetch(call, "post_effect", result)
-                    await acheck(call, "post_effect", result)
+                    await aprefetch(call, "post_effect", view(result))
+                    await acheck(call, "post_effect", view(result))
                 return result
             wrapper: Any = awrapper
         else:
@@ -132,9 +141,9 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
                 result = fn(*a, **kw)
                 if "post_effect" in call.timings:
                     if type(result) not in _PLAIN_RESULTS and inspect.isawaitable(result):
-                        return _awaited_post(call, result, fn)
+                        return _awaited_post(call, result, fn, view)
                     call.started["post_effect"] = time.time_ns()
-                    check(call, "post_effect", result)
+                    check(call, "post_effect", view(result))
                 return result
             wrapper = swrapper
         wrapper.__inv_rules__, wrapper.__inv_kind__ = keys, "guard"
@@ -147,7 +156,7 @@ def guard(*keys: str, points: tuple[str, ...] = ("decorator",)) -> Callable[[Cal
 _PLAIN_RESULTS = frozenset({type(None), bool, int, float, str, bytes, list, tuple, dict})   # never awaitable
 
 
-def _awaited_post(call: Any, result: Any, fn: Any) -> Any:
+def _awaited_post(call: Any, result: Any, fn: Any, view: Callable[[Any], Any]) -> Any:
     """A sync-path guarded call whose function returned an awaitable (a sync wrapper over an async def,
     say: functools.wraps without inspect.markcoroutinefunction). Its post_effect checks must see what
     the awaitable gives, not the awaitable: a coroutine is returned as a coroutine that awaits it and
@@ -162,8 +171,8 @@ def _awaited_post(call: Any, result: Any, fn: Any) -> Any:
     async def post() -> Any:
         got = await result
         call.started["post_effect"] = time.time_ns()
-        await aprefetch(call, "post_effect", got)
-        await acheck(call, "post_effect", got)
+        await aprefetch(call, "post_effect", view(got))
+        await acheck(call, "post_effect", view(got))
         return got
     return post()
 
@@ -249,11 +258,21 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
                 run = _ModelRun(rule_id, schema, refined, sig, a, kw)
                 if run.passive:
                     ca, ckw = run.call_args()
-                    return run.passive_result(fn(*ca, **ckw))
+                    raw = fn(*ca, **ckw)
+                    if _awaitable(raw, fn):
+                        return _apassive(run, raw)
+                    return run.passive_result(raw)
                 steps = run.steps(prefetch=False)    # the retry loop (plan.py); this only calls
                 want, v = next(steps)
+                first = True
                 while want != "finish":
                     got = fn(*v[0], **v[1]) if want == "call" else run.reg.hand_off(v)
+                    if first and _awaitable(got, fn):
+                        # a sync wrapper over an async def: nothing has been judged yet; drive the
+                        # run asynchronously (as an async def would be), awaiting this first reply
+                        steps.close()
+                        return _adrive(run, fn, got)
+                    first = False
                     want, v = steps.send(got)
                 return run.finish(*v)
             wrapper = swrapper
@@ -263,6 +282,44 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
         WRAPPED.add(wrapper)
         return wrapper
     return deco
+
+
+def _awaitable(raw: Any, fn: Any) -> bool:
+    """True when a sync-path model call body returned a coroutine (a sync wrapper over an async def,
+    say: functools.wraps without inspect.markcoroutinefunction): its reply is what the coroutine
+    gives, never the coroutine. Any other awaitable (a Future, a Task) is a TypeError: never parsed
+    as the model's reply, never retried or counted as the model's parse_error."""
+    if type(raw) in _PLAIN_RESULTS or not inspect.isawaitable(raw):
+        return False
+    if not inspect.iscoroutine(raw):
+        raise TypeError(f"@inv.model_call on {getattr(fn, '__qualname__', fn)!r}: the body returned a "
+                        f"{type(raw).__name__}, an awaitable that is not a coroutine, not the model's reply; "
+                        f"return the reply, or make the body an async def")
+    return True
+
+
+async def _apassive(run: _ModelRun, raw: Any) -> Any:
+    return run.passive_result(await raw)
+
+
+async def _adrive(run: _ModelRun, fn: Any, first: Any) -> Any:
+    """The async run of a model call whose sync-path body returned the coroutine first: each reply
+    is awaited and async providers are awaited, as for an async def body."""
+    steps = run.steps(prefetch=True)
+    want, v = next(steps)                    # ("call", ...): its reply is the first coroutine
+    got: Any = await first
+    want, v = steps.send(got)
+    while want != "finish":
+        if want == "call":
+            got = fn(*v[0], **v[1])
+            if inspect.isawaitable(got) and type(got) not in _PLAIN_RESULTS:
+                got = await got
+        elif want == "prefetch":
+            got = await run.aprefetch(v)
+        else:
+            got = await run.reg.ahand_off(v)
+        want, v = steps.send(got)
+    return await run.afinish(*v)
 
 
 def _refined(fn: Any, sig: inspect.Signature, returns: Any, rule_id: str) -> Any:
