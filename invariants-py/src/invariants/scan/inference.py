@@ -6,7 +6,16 @@ import collections
 import dataclasses
 import weakref
 
-from .astutil import _attr_writes, _dotted, _own_nodes, _pairs, _single_types
+from .astutil import (
+    _attr_writes,
+    _computed_dict_writes,
+    _dotted,
+    _own_nodes,
+    _pairs,
+    _scope_binds,
+    _scope_nodes,
+    _single_types,
+)
 from .contracts import _Module
 from .indexer import _BUILTINS, _Index
 
@@ -42,6 +51,10 @@ class _Inference:
         # the parameters of the nested functions and lambdas around the code being walked: their own
         # values, which a binding of the same name in the owner does not type
         self._shadow: frozenset[str] = frozenset()
+        # the nested functions, lambdas and classes around the code being walked (innermost last): a name
+        # is typed by the bindings of the scope it is looked up in, never by another scope's
+        self._scopes: tuple[ast.AST, ...] = ()
+        self._scope_names: dict[int, set[str]] = {}
 
     def _class_named(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None,
                      depth: int = 0) -> str | None:
@@ -157,13 +170,30 @@ class _Inference:
 
     def _returns_other(self, fn: ast.FunctionDef | ast.AsyncFunctionDef, cls: str) -> bool:
         """fn, annotated to return cls, visibly returns an instance of a scanned class that is neither cls
-        nor a subclass of it: the annotation is not what it returns."""
+        nor a subclass of it: the annotation is not what it returns. A return of a call to an unannotated
+        scanned function counts what that function visibly returns, up to three calls deep (a type checker
+        reads an unannotated function as returning Any, so it would not flag `-> Safe: return mk()`)."""
+        return any(got in self.idx.classes and got != cls and cls not in self.idx.mro(got)
+                   for got in self._visible_returns(fn, 0))
+
+    def _visible_returns(self, fn: ast.FunctionDef | ast.AsyncFunctionDef, depth: int) -> set[str | None]:
+        """The classes fn's returns are visibly built as (Cls(...), an annotated factory), following calls
+        to unannotated scanned functions, read where each is defined, to a bounded depth."""
+        out: set[str | None] = set()
         for node in _own_nodes(fn):
-            if isinstance(node, ast.Return) and node.value is not None:
-                got = self._made(node.value, set(), None)
-                if got in self.idx.classes and got != cls and cls not in self.idx.mro(got):
-                    return True
-        return False
+            if not (isinstance(node, ast.Return) and node.value is not None):
+                continue
+            v = node.value.value if isinstance(node.value, ast.Await) else node.value
+            got = self._made(v, set(), None)
+            if got is None and depth < 3 and isinstance(v, ast.Call) and _dotted(v.func):
+                fq = self._resolve(v.func, set(), None)
+                f = self.idx.funcs.get(fq or "")
+                if f is not None and isinstance(f.node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and f.node.returns is None and f.module in self.idx.modules:
+                    out |= self._home(f.module)._visible_returns(f.node, depth + 1)
+                    continue
+            out.add(got)
+        return out
 
     def _made(self, node: ast.AST | None, local: set[str], me: tuple[str, str] | None) -> str | None:
         """The class a value is built as: Cls(...) or a call to a function annotated to return Cls."""
@@ -233,6 +263,7 @@ class _Inference:
         bindings (to a fixed point, so nested with blocks chain). What fn binds, wherever it is asked: no
         nested function's parameters shadow its names here (the result is cached)."""
         shadow, self._shadow = self._shadow, frozenset()
+        scopes, self._scopes = self._scopes, ()
         try:
             b = _Bound()
             self._param_types(fn, local, me, b)
@@ -242,7 +273,7 @@ class _Inference:
                 self._entered_late(owner, local, me, b)
             return _single_types(b.seen)
         finally:
-            self._shadow = shadow
+            self._shadow, self._scopes = shadow, scopes
 
     def _param_types(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None, b: _Bound) -> None:
         """fn's parameters: an annotated one is its class, *args and **kwargs are unknown."""
@@ -260,7 +291,7 @@ class _Inference:
     def _assigned(self, fn: ast.AST, local: set[str], me: tuple[str, str] | None, owner: str | None,
                   b: _Bound) -> None:
         """The plain bindings in fn: `x = Cls(...)`, `x: Cls = ...`, `with Session() as x`."""
-        for node in ast.walk(fn):
+        for node in _scope_nodes(fn):
             if isinstance(node, ast.Assign):
                 for t, v in _pairs(node):
                     if isinstance(t, ast.Name):
@@ -376,6 +407,15 @@ class _Inference:
         if isinstance(node, ast.Name) and fn is not None and node.id in local:
             if node.id in self._shadow:
                 return None
+            scope = self._binding_scope(node.id, fn)
+            if scope is None:
+                return None                                   # bound only in a scope that does not enclose it
+            if scope is not fn:
+                key = f"{owner}@{id(scope)}"
+                if key not in self._local_types:
+                    self._local_types[key] = self._types_in(scope, local, me)
+                got = self._local_types[key].get(node.id)
+                return (got, False) if got else None
             if owner not in self._local_types:
                 self._local_types[owner] = self._types_in(fn, local, me, owner)
             got = self._local_types[owner].get(node.id)
@@ -385,18 +425,47 @@ class _Inference:
                 base: tuple[str, bool] | None = None if me[1] in self._untrusted else (me[1], False)
             else:                                             # ctx.billing.refund(): ctx's class, then billing's
                 base = self._receiver(node.value, owner, local, me)
-            if base is None or base[0] not in self.idx.classes or node.attr in self._foreign_attrs():
+            if base is None or base[0] not in self.idx.classes or node.attr in self._foreign_attrs() \
+                    or self._dict_written(base[0]):
                 return None
             got = self._attr_types(base[0]).get(node.attr)
             return (got, False) if got else None
         return None
 
+    def _binding_scope(self, name: str, fn: ast.AST) -> ast.AST | None:
+        """The scope a name used in the code being walked is looked up in: the innermost of the nested
+        functions, lambdas and classes around it that binds it (a class body only when the name is used
+        directly in it), else the owner fn when fn binds it, else None (a global, or a name bound only in
+        a nested scope that does not enclose this code)."""
+        for i in range(len(self._scopes) - 1, -1, -1):
+            s = self._scopes[i]
+            if isinstance(s, ast.ClassDef) and i != len(self._scopes) - 1:
+                continue                                       # a class body does not enclose its methods
+            if name in self._binds(s):
+                return s
+        return fn if name in self._binds(fn) else None
+
+    def _binds(self, scope: ast.AST) -> set[str]:
+        got = self._scope_names.get(id(scope))
+        if got is None:
+            got = self._scope_names[id(scope)] = _scope_binds(scope)
+        return got
+
     def _foreign_attrs(self) -> set[str]:
         """Attribute names some code sets from outside the object (`obj.x = ...`, `setattr(obj, "x", ...)`):
         such an attribute can hold anything, so it is never given a type."""
         if self.idx.foreign is None:
-            self.idx.foreign = set().union(*(_set_from_outside(mod.tree) for mod in self.idx.modules.values()))
+            self.idx.foreign = set().union(*(_set_from_outside(self.idx, mod) for mod in self.idx.modules.values()))
         return self.idx.foreign
+
+    def _dict_written(self, cls: str) -> bool:
+        """A method of cls, of a base or of a subclass (self may be any of them) writes names the scan cannot
+        read into its own `self.__dict__` (`self.__dict__.update(kw)`, `d = self.__dict__; d[k] = v`): no
+        attribute of self has a type."""
+        marked = _DICT_WRITTEN.get(self.idx)
+        if marked is None:
+            marked = _DICT_WRITTEN[self.idx] = frozenset(x[:-2] for x in self._foreign_attrs() if x.endswith(":*"))
+        return bool(marked) and any(c in marked for c in [*(self.idx.mro(cls) or [cls]), *self.idx.subclasses(cls)])
 
     def _super_methods(self, node: ast.Attribute, local: set[str], me: tuple[str, str] | None) -> list[str] | None:
         """super().m (or super(Cls, self).m) inside a method of class C: the next m after Cls in the method
@@ -472,11 +541,19 @@ class _Inference:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return []
         fq = self._resolve(node, local, me) if _dotted(node) else None
+        alts = [a for a in self._alternatives(node, local, me) if a != fq and a in self.idx.funcs]
         if fq and fq in self.idx.funcs:
-            return [fq]
+            return [fq, *alts]
         if isinstance(node, ast.Attribute) and (fq is None or self._via_function(node, local, me)):
             return self._typed(node, owner, local, me)[0]
-        return []
+        return alts
+
+    def _alternatives(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> frozenset[str]:
+        """The other objects a module-level name may be bound to (alternatives()), for a plain name that is
+        not a local, a nested function's parameter or self."""
+        if not isinstance(node, ast.Name) or node.id in local or node.id in self._shadow or (me and node.id == me[0]):
+            return frozenset()
+        return alternatives(self.idx, self.mod).get(node.id, frozenset())
 
     def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
         out = []
@@ -564,6 +641,9 @@ class _Inference:
         return fq if fq and (fq in self.idx.modules or fq in self.idx.classes) else None
 
 
+_DICT_WRITTEN: weakref.WeakKeyDictionary[_Index, frozenset[str]] = weakref.WeakKeyDictionary()
+
+
 @dataclasses.dataclass
 class _Bound:
     """What _types_in collects in one function: every class each name is bound to (None: unknown), the
@@ -577,7 +657,7 @@ class _Bound:
 def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
     """Any other binding in fn is unknown: for, walrus, unpacking, a nested def or class, an import,
     `except E as x`, a match capture, global and nonlocal."""
-    for node in ast.walk(fn):
+    for node in _scope_nodes(fn):
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in b.handled:
             b.seen[node.id].add(None)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not fn:
@@ -597,10 +677,14 @@ def _unknown_bindings(fn: ast.AST, b: _Bound) -> None:
                 b.seen[obj.id].add(None)                       # x.__class__ = Other: x is no longer typed
 
 
-def _set_from_outside(tree: ast.Module) -> set[str]:
-    """The attribute names code in one module sets on an object other than a method's own self."""
+def _set_from_outside(idx: _Index, mod: _Module) -> set[str]:
+    """The attribute names code in one module sets on an object other than a method's own self, and
+    "<class>:*" for a class whose method writes names the scan cannot read into self.__dict__."""
+    tree = mod.tree
     methods = {id(m) for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for m in c.body
                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    owners = {id(idx.funcs[m].node): cid for cid, info in idx.classes.items() if info["module"] == mod.name
+              for m in info["methods"].values()}
     out: set[str] = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
@@ -611,6 +695,9 @@ def _set_from_outside(tree: ast.Module) -> set[str]:
                  and fn.args.args else None)
         for node in _own_nodes(fn):
             out |= _attrs_set(node, first)
+        for _, obj in _computed_dict_writes(fn):
+            if isinstance(obj, ast.Name) and obj.id == first and id(fn) in owners:
+                out.add(f"{owners[id(fn)]}:*")              # self.__dict__.update(kw): any attribute
     return out
 
 
@@ -637,6 +724,14 @@ _DATA_DUNDERS = frozenset({"__doc__", "__module__", "__qualname__", "__name__", 
                            "__signature__", "__text_signature__", "__slots__", "__match_args__"})
 # metaclass methods that decide what calling the class, or looking a name up on it, gives
 _META_HOOKS = ("__call__", "__new__", "__getattr__", "__getattribute__")
+# class decorators known to hand back the class they are given (or one built from the same body, with the
+# same methods); any other decorator, or a decorator expression the scan cannot name (a call of anything
+# else, a lambda, functools.partial(...), a subscript), may return another class
+_KEEPS_CLASS = frozenset({"dataclasses.dataclass", "functools.total_ordering", "typing.final",
+                          "typing_extensions.final", "enum.unique", "typing.runtime_checkable",
+                          "typing_extensions.runtime_checkable", "typing.type_check_only"})
+_PROTOCOL = frozenset({"typing.Protocol", "typing_extensions.Protocol"})
+_KEEPS_CLASS_CALLED = frozenset({"dataclasses.dataclass", "enum.verify"})   # @dataclass(frozen=True)
 
 
 def subverted(idx: _Index) -> frozenset[str]:
@@ -706,6 +801,15 @@ class _Subversions:
                     (_dotted(b.value if isinstance(b, ast.Subscript) else b) or ".").split(".")[0] in rebound
                     for b in info["bases"]):
                 self.found.add(cid)
+            # a Protocol is any class with the right methods, and a type checker accepts any of them where
+            # it is annotated: its own methods say nothing about what runs
+            if info["module"] == self.mod.name and set(self.idx.bases(cid)) & _PROTOCOL:
+                self.found.add(cid)
+        for node in ast.walk(self.mod.tree):                   # Safe.register(Repo): a virtual subclass
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "register" \
+                    and node.args and (fq := self._fq(node.func.value)) in self.idx.classes \
+                    and self.idx.method(fq, "register") is None:     # ABCMeta's register, not its own
+                self.found.add(fq)
         self._writes(self.mod.tree, {})
         return self.everything
 
@@ -715,6 +819,11 @@ class _Subversions:
                     and st.name == "__new__"), None)
         if new is not None and not _returns_made(new, "__new__"):
             return True
+        # every attribute of an instance comes from its own __getattribute__ (a __getattr__ only answers for
+        # names the class lacks, which the scan never resolves to a method)
+        if any(isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and st.name == "__getattribute__"
+               for st in node.body):
+            return True                                       # its instances' attributes come from that hook
         for k in node.keywords:
             if k.arg == "metaclass" and not self._plain_meta(k.value):
                 return True
@@ -743,9 +852,11 @@ class _Subversions:
                    for c in self.idx.mro(fq) or [fq] for b in self.idx._base_names(c))
 
     def _keeps_class(self, d: ast.expr) -> bool:
-        """A class decorator that returns the class it is given: a standard-library or third-party one, or
-        a scanned function every return of which gives back its parameter (`@register`), or a factory
-        whose every return is such a nested function (`@register("name")`)."""
+        """A class decorator that returns the class it is given: one of the known standard-library ones
+        (`@dataclass`, `@dataclass(...)`, `@functools.total_ordering`, ...), a scanned function every
+        return of which gives back its parameter, never rebound (`@register`), or a scanned factory whose
+        every return is such a nested function (`@register("name")`). Any other decorator (third-party,
+        excluded, a lambda, `functools.partial(...)`) may return another class."""
         f = d.func if isinstance(d, ast.Call) else d
         fq = self._fq(f)
         if fq in self.idx.funcs:
@@ -753,7 +864,7 @@ class _Subversions:
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return False
             return _factory_of_identity(fn) if isinstance(d, ast.Call) else _returns_param(fn)
-        return self._foreign(fq)
+        return fq in (_KEEPS_CLASS_CALLED if isinstance(d, ast.Call) else _KEEPS_CLASS)
 
     def _writes(self, node: ast.AST, me: dict[str, str]) -> None:
         """Writes that alter a class, walked with the enclosing methods' first parameters (me: name -> class)."""
@@ -804,6 +915,52 @@ class _Subversions:
 
 
 _REBOUND: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()
+_ALTERNATIVES: weakref.WeakKeyDictionary[_Index, dict[str, dict[str, frozenset[str]]]] = weakref.WeakKeyDictionary()
+
+
+def alternatives(idx: _Index, mod: _Module) -> dict[str, frozenset[str]]:
+    """Names in mod that its imports, top-level defs and star imports bind to more than one object, at least
+    one of them a scanned function or class: `if x: from payments import _send as refund / else: from
+    payments import refund`, try/except ImportError, or `from shadow import *` re-exporting another
+    function under a name the module imports. The scan resolves such a name to one of them; a call or a
+    value use of it may be any, so each scanned one counts (by the object, not by the local name)."""
+    per = _ALTERNATIVES.setdefault(idx, {})
+    if mod.name in per:
+        return per[mod.name]
+    cands: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
+    for node in ast.walk(mod.tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    cands[a.asname].add(idx.canon(idx.real(a.name)))
+        elif isinstance(node, ast.ImportFrom):
+            src = idx._absolute(mod, node)
+            for a in node.names:
+                if a.name != "*":
+                    cands[a.asname or a.name].add(idx.canon(f"{src}.{a.name}" if src else a.name))
+    for st in mod.tree.body:
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            cands[st.name].add(f"{mod.name}.{st.name}")
+    for src in mod.star:                                       # a star import may rebind a name bound above
+        for name in _exported(idx, src) & set(cands):
+            cands[name].add(idx.canon(f"{src}.{name}"))
+    scanned = {*idx.funcs, *idx.classes}
+    per[mod.name] = out = {k: frozenset(v) for k, v in cands.items() if len(v) > 1 and v & scanned}
+    return out
+
+
+def _exported(idx: _Index, src: str) -> set[str]:
+    """The names `from src import *` binds: src's `__all__` when it is a literal list or tuple, else its
+    public names (imports and definitions)."""
+    mod = idx.modules.get(src)
+    if mod is None:
+        return set()
+    for st in mod.tree.body:
+        if isinstance(st, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in st.targets) \
+                and isinstance(st.value, (ast.List, ast.Tuple)):
+            return {x for e in st.value.elts if (x := e.value if isinstance(e, ast.Constant) else None)
+                    and isinstance(x, str)}
+    return {n for n in mod.aliases if not n.startswith("_")}
 
 
 def rebound_class_names(idx: _Index, mod: _Module) -> frozenset[str]:
@@ -840,9 +997,13 @@ def _module_binds(tree: ast.Module) -> collections.Counter[str]:
 
 def _returns_made(fn: ast.AST, hook: str) -> bool:
     """Every return of a `__new__` (or metaclass `__call__`) is `super().<hook>(...)` or `X.<hook>(cls, ...)`
-    on its own first parameter: it gives what the class would have made anyway."""
+    on its own first parameter, which fn never rebinds: it gives what the class would have made anyway. A
+    `__new__` must pass that first parameter on (`super().__new__(cls)`, not a keyword default `cls=Repo`),
+    and a `super(...)` with arguments must name it."""
     args = getattr(fn, "args", None)
     first = args.args[0].arg if isinstance(args, ast.arguments) and args.args else None
+    if first is None or _rebinds(fn, first):
+        return False
     for node in _own_nodes(fn):
         if isinstance(node, (ast.Yield, ast.YieldFrom)):
             return False
@@ -850,11 +1011,33 @@ def _returns_made(fn: ast.AST, hook: str) -> bool:
             v = node.value
             if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == hook):
                 return False
-            sup = isinstance(v.func.value, ast.Call) and _dotted(v.func.value.func) == "super"
-            own = bool(v.args) and isinstance(v.args[0], ast.Name) and v.args[0].id == first
-            if not (sup or own):
+            passes = bool(v.args) and isinstance(v.args[0], ast.Name) and v.args[0].id == first
+            sup = v.func.value
+            if isinstance(sup, ast.Call) and _dotted(sup.func) == "super":
+                if sup.args and not (len(sup.args) == 2 and isinstance(sup.args[1], ast.Name)
+                                     and sup.args[1].id == first):
+                    return False                              # super(Safe, Repo).__new__(...)
+                if hook == "__new__" and not passes:
+                    return False                              # super().__new__(other)
+            elif not passes:
                 return False
     return True
+
+
+def _rebinds(fn: ast.AST, name: str) -> bool:
+    """fn (or a function nested in it) binds name again: an assignment, a for/with/except/match target,
+    `del`, an import, or a nonlocal/global declaration of it."""
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return True
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            return True
+        if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name == name:
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                (a.asname or a.name).split(".")[0] == name for a in node.names):
+            return True
+    return False
 
 
 def _returns_param(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -862,6 +1045,8 @@ def _returns_param(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     if not fn.args.args or isinstance(fn, ast.AsyncFunctionDef):
         return False
     first = fn.args.args[0].arg
+    if _rebinds(fn, first):
+        return False                                          # c = Repo; return c
     rets = [n for n in _own_nodes(fn) if isinstance(n, ast.Return)]
     return bool(rets) and all(isinstance(r.value, ast.Name) and r.value.id == first for r in rets) and \
         not any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in _own_nodes(fn))

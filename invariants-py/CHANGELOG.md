@@ -95,6 +95,23 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   scanned modules stay quiet. A zip archive holding Python code in a root is `unresolved/no-source`,
   and scanned code that writes `sys.path`, `sys.meta_path` or `sys.path_hooks` is
   `unresolved/reflection`.
+
+- A function used as a value is an entrypoint: one that can reach a sink without passing a door (a
+  door's own helper included) and is taken as a value outside the doors and allowed functions (a
+  thread target, a callback, a dict entry, an alias, a bound method) is reported where it escapes; an
+  allowed back door taken as a value is a new caller, a `bypass`. A name bound to several functions
+  (a conditional import, a star import re-exporting another one) calls each of them.
+- A class's inferred type is trusted only when its identity cannot be altered: known
+  identity-preserving decorators (`@dataclass`, `@functools.total_ordering`, ...) and scanned ones that
+  hand back their parameter unchanged, a `__new__` that passes on its own first parameter, no
+  `__getattribute__` of its own, not a `Protocol`, no virtual subclass. Writes through `__dict__` it
+  cannot name, an alias of it included, untype the attributes or are reported.
+- Code run from strings or found without a name is `unresolved`: `string.Formatter`, `code`
+  interpreters, `timeit` with string statements, `doctest`, `trace`, `gc` object walks, frame
+  `f_globals` / `f_locals`, `inspect.getmodule`, and subprocesses that run Python.
+- A return annotation over an unannotated factory that visibly returns another class is not trusted,
+  and a binding in a nested scope types that scope only. Parameter and field annotations stay trusted
+  (a type checker checks them).
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

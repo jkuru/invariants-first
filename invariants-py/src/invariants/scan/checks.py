@@ -47,16 +47,18 @@ _MISSING = {"sink": "sink {} is not defined in the scanned code",
 
 
 def _check_rule(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[_Site],
-                entries: list[str], on_paths: set[str] | None = None) -> list[Finding]:
+                entries: list[str], on_paths: set[str] | None = None, every_escape: bool = False) -> list[Finding]:
     """The findings for one rule. on_paths, when given, collects every function on a path that reaches the
-    sink without the door, from every entrypoint (findings show one path per call site)."""
+    sink without the door, from every entrypoint (findings show one path per call site). every_escape:
+    report a function used as a value even when the path search already reports its paths."""
     rid, out = med.rule, []
     for root, file, line, err in idx.parse_errors:
         out.append(Finding("unresolved", rid, "unresolved/parse-error", f"cannot parse: {err}",
                            file.relative_to(root).as_posix(), line, 1, str(root)))
     t = _Targets(_declared(idx, rid, med.sinks, "sink", out), _declared(idx, rid, med.doors, "door", out),
                  _declared(idx, rid, med.allow, "allow", out))
-    paths = _bypasses(idx, rid, edges, entries, t, on_paths)
+    paths = _bypasses(idx, rid, edges, entries, t, on_paths) + _escapes(idx, rid, edges, sites, entries, t, on_paths,
+                                                                     every_escape)
     out += paths + _one_per_site(paths, _Idioms(idx, rid, edges, sites, entries, t).findings(sites))
     if t.allowed:
         out += _unused_allows(idx, med, edges, sites, entries, t)
@@ -113,6 +115,66 @@ def _bypasses(idx: _Index, rid: str, edges: list[_Edge], entries: list[str], t: 
             out.append(_finding(idx, rid, kind, "unresolved/inferred-path" if inferred_ok else "bypass",
                                 f"{' -> '.join(names)} reaches the sink without passing {door_txt}{via}",
                                 last.caller, last.line, last.col, names))
+    return out
+
+
+def _escapes(idx: _Index, rid: str, edges: list[_Edge], sites: list[_Site], entries: list[str], t: _Targets,
+             on_paths: set[str] | None, every_escape: bool = False) -> list[Finding]:
+    """1b. a function used as a value is an entrypoint: whoever holds the value can call it from anywhere. A
+    function taken as a value (a thread target, a callback, a dict entry, an alias, a bound method) where
+    the value is made on a path that has not passed a door, outside the sinks, doors and allowed
+    functions, that reaches the sink without passing a door when called, is reported where it escapes.
+    That counts a door's own helper (refund -> _send -> sink): called on its own, _send skips the door. An
+    allowed back door taken as a value outside allow is a new caller: a bypass. (The sink itself as a value
+    is reported at the site, as unresolved/sink-escapes; a door as a value passes the door when called.)"""
+    live = t.sinks - t.doors
+    trusted = t.sinks | t.doors | t.allowed
+    refs = [s for s in sites if s.what == "ref" and s.owner not in trusted and s.detail in idx.funcs
+            and idx.funcs[s.detail].node is not None and s.detail not in t.sinks and s.detail not in t.doors]
+    if not live or not refs:
+        return []
+    succ = _door_free(edges, t)
+    # where a value can be made without passing a door: reached from an entrypoint over calls (name-matched
+    # ones too) and over other escapes (`def get(): return _send`, itself taken as a value)
+    reach_succ: dict[str, list[_Edge]] = collections.defaultdict(list, {k: list(v) for k, v in succ.items()})
+    for s in refs:
+        reach_succ[s.owner].append(_Edge(s.owner, s.detail, s.line, s.col, False))
+    free = _reach([e for e in entries if e not in t.sinks and e not in t.doors],
+                  [e for es in reach_succ.values() for e in es], t.sinks | t.doors)
+    # a function already reached over extracted calls from an entrypoint outside allow, without a door:
+    # every path it has to the sink is reported by the path search already (as a bypass)
+    covered = set() if every_escape else _reach(
+        [e for e in entries if e not in trusted], [e for es in succ.values() for e in es if not e.inferred],
+        t.sinks | t.doors)
+    door_txt = ", ".join(sorted(t.doors)) or "(no door found)"
+    out: list[Finding] = []
+    seen: set[tuple[str, int, int]] = set()
+    for s in refs:
+        if s.owner not in free or s.detail in covered or (s.owner, s.line, s.col) in seen:
+            continue
+        found = None
+        for inferred_ok in (False, True):
+            found = next(_paths(s.detail, live, succ, inferred_ok), None)
+            if found is not None:
+                break
+        if found is None:
+            continue
+        seen.add((s.owner, s.line, s.col))
+        names = [s.owner, *found[0]]
+        if on_paths is not None:
+            on_paths.update(names)
+        via = " (through a name-matched call on an unknown receiver)" if inferred_ok else ""
+        if s.detail in t.allowed:
+            out.append(_finding(idx, rid, "bypass", "bypass",
+                                f"takes the allowed back door {s.detail} as a value outside allow, a new caller: "
+                                f"{' -> '.join(names)} reaches the sink without passing {door_txt}{via}",
+                                s.owner, s.line, s.col, names))
+        else:
+            out.append(_finding(idx, rid, "unresolved", "unresolved/sink-escapes",
+                                f"{s.detail} is used as a value here, and called it reaches the sink without "
+                                f"passing {door_txt} ({' -> '.join(names[1:])}{via}): whoever holds the value "
+                                f"can call it, and the scan cannot trace those calls; call it through the "
+                                f"door, or keep it inside the door", s.owner, s.line, s.col, names))
     return out
 
 
@@ -281,7 +343,9 @@ def _unused_allows(idx: _Index, med: Mediation, edges: list[_Edge], sites: list[
     """3. an allowed back door that is no longer one: its entry would let a regression through unseen.
     An entry is in use when the scan without allow reports something in it or on a path through it."""
     on: set[str] = set()
-    bare = _check_rule(idx, Mediation(med.rule, med.sinks, med.doors), edges, sites, entries, on)
+    # every escape counts: an allowed function that takes another as a value is in use (deleting it from
+    # allow would make that value a new caller)
+    bare = _check_rule(idx, Mediation(med.rule, med.sinks, med.doors), edges, sites, entries, on, every_escape=True)
     used = {f.owner for f in bare if f.owner} | {n for f in bare for n in f.path} | on
     return [_finding(idx, med.rule, "missing", "missing/allow-unused",
                      f"allowed back door {a} no longer reaches the sink without the door; delete it from "
