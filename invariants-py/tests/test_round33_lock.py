@@ -244,3 +244,13 @@ def test_the_schema_path_matches_the_loader(path, ok):
 def test_the_schema_provider_args_are_dotted_names(arg, ok):
     doc = {"spec": "invariant/v0.1", "providers": {"p": {"type": "int", "from": "py:m.p", "args": {"a": arg}}}}
     assert (not _schema_errors(doc)) is ok
+
+
+def test_an_unknown_subject_key_is_a_load_error():
+    import invariants as inv
+    import pytest as _pt
+    from invariants.errors import LoadError
+    with inv.isolated():
+        with _pt.raises(LoadError, match=r"subject.*targets.*target"):
+            inv.load({"rules": [{"id": "R-1", "status": "detect", "subject": {"targets": "py:json.dumps"},
+                                 "bad": "false", "enforcers": [{"point": "monitor", "mode": "detect"}]}]})

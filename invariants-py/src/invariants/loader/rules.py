@@ -88,6 +88,9 @@ def _check_functions(rid: str, source: str, eng: cel.Backend) -> None:
             raise LoadError(f"{rid}: bad calls {why}, so every evaluation would be a rule_error")
 
 
+SUBJECT_FIELDS = frozenset({"target", "contract", "operation"})
+
+
 def _check_rule_fields(rid: str, raw: Any) -> None:
     """The rule's own fields: known, id, subject, status and bad present."""
     if isinstance(raw, dict) and "effects" in raw:
@@ -104,6 +107,8 @@ def _check_rule_fields(rid: str, raw: Any) -> None:
     if subject is not None and not isinstance(subject, dict):
         raise LoadError(f"{rid}: subject must be a mapping (subject: {{target: 'py:module.function'}}), "
                         f"got {subject!r}")
+    if isinstance(subject, dict):
+        _check_fields(subject, SUBJECT_FIELDS, f"{rid}: subject")
     if subject is not None and "target" in subject and not (isinstance(subject["target"], str)
                                                             and subject["target"].startswith("py:")):
         raise LoadError(f"{rid}: subject.target must be a 'py:module.function' string, got {subject['target']!r}")
