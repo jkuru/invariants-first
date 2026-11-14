@@ -9,7 +9,7 @@ import pathlib
 
 from .astutil import CODE_ATTRS, _dotted
 from .contracts import SKIP_DIRS, Finding, Mediation, _Edge, _Fan, _OnPaths, _Site
-from .indexer import _Index
+from .indexer import _Index, _shadow_text
 from .reachability import _Call, _can_reach, _Pass, _reach, _search_order, door_only
 
 
@@ -78,9 +78,26 @@ def _check_rule(idx: _Index, med: Mediation, edges: list[_Call], sites: list[_Si
                  _declared(idx, rid, med.allow, "allow", out))
     paths = _bypasses(idx, rid, edges, entries, t, on_paths) + _escapes(idx, rid, edges, sites, entries, t, on_paths,
                                                                      every_escape)
-    out += paths + _one_per_site(paths, _Idioms(idx, rid, edges, sites, entries, t, guarded).findings(sites))
+    idioms = _Idioms(idx, rid, edges, sites, entries, t, guarded)
+    out += paths + _one_per_site(paths, idioms.findings(sites)) + _shadow_findings(idx, rid, idioms)
     if t.allowed:
         out += _unused_allows(idx, med, edges, sites, entries, t, guarded)
+    return out
+
+
+def _shadow_findings(idx: _Index, rid: str, idioms: _Idioms) -> list[Finding]:
+    """A standard-library import that the importing file's own directory shadows (idx.shadows; fix round
+    29), under this rule when that directory's module holds a sink, door or allowed function of it, or code
+    that can reach its sink without a door: calls through the import may be that code."""
+    out = []
+    for mod, line, name, pkg in idx.shadows:
+        held = idx.shadow_held.get(pkg)
+        if held is None:
+            held = idx.shadow_held[pkg] = frozenset(f for f in idx.funcs if f.startswith(pkg + "."))
+        if held & idioms.trusted or held & idioms._reaches():
+            out.append(Finding("unresolved", rid, "unresolved/unknown-module",
+                               _shadow_text(name, "a standard-library module", pkg.rpartition(".")[0]),
+                               mod.file.relative_to(mod.root).as_posix(), line, 1, str(mod.root)))
     return out
 
 
@@ -152,7 +169,12 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
             and s.detail in idx.funcs
             and idx.funcs[s.detail].node is not None and s.detail not in t.sinks and s.detail not in t.doors
             and not (s.recv == "own" and s.detail in t.allowed)]
-    if not live or not refs:
+    # fix round 29: `.m` taken as a value on a receiver the scan cannot type (`Thread(target=r.pay)`,
+    # `f = e.pay`) may be any scanned function named m, as a call of it may be (the sink's own name is
+    # reported at the site, as unresolved/sink-escapes)
+    sink_names = {x.rsplit(".", 1)[1] for x in t.sinks}
+    named = [s for s in sites if s.what == "attrref" and s.owner not in trusted and s.detail not in sink_names]
+    if not live or not (refs or named):
         return []
     succ = t.door_free(edges)
     passes = t.passes(edges)
@@ -161,6 +183,9 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
     reach_succ: dict[str, list[_Call]] = collections.defaultdict(list, {k: list(v) for k, v in succ.items()})
     for s in refs:
         reach_succ[s.owner].append(_Edge(s.owner, s.detail, s.line, s.col, False))
+    for s in named:
+        if fan := idx.fan(s.detail):
+            reach_succ[s.owner].append(_Fan(s.owner, fan, s.line, s.col))
     free = _reach([e for e in entries if e not in t.sinks and e not in t.doors],
                   [e for es in reach_succ.values() for e in es], t.sinks | t.doors)
     # a function already reached over extracted calls from an entrypoint outside allow, without a door:
@@ -197,6 +222,35 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
                                 f"passing {door_txt} ({' -> '.join(names[1:])}{via}): whoever holds the value "
                                 f"can call it, and the scan cannot trace those calls; call it through the "
                                 f"door, or keep it inside the door", s.owner, s.line, s.col, names))
+    via_name: dict[str, tuple[list[str], bool] | None] = {}
+    for s in named:
+        if s.owner not in free or (s.owner, s.line, s.col) in seen:
+            continue
+        hit = None
+        for m in idx.fan(s.detail):
+            if m in t.sinks or m in t.doors or m in covered:
+                continue
+            if m not in via_name:
+                via_name[m] = None
+                for inferred_ok, ps in zip((False, True), passes):
+                    if (got := next(ps.paths(m), None)) is not None:
+                        via_name[m] = (got[0], inferred_ok)
+                        break
+            if (hit := via_name[m]) is not None:
+                break
+        if hit is None:
+            continue
+        seen.add((s.owner, s.line, s.col))
+        names = [s.owner, *hit[0]]
+        if on_paths is not None:
+            on_paths.update(names)
+        via = " (through a name-matched call on an unknown receiver)" if hit[1] else ""
+        out.append(_finding(idx, rid, "unresolved", "unresolved/sink-escapes",
+                            f".{s.detail} on a receiver the scan cannot resolve is used as a value here and may be "
+                            f"{names[1]}, which called reaches the sink without passing {door_txt} "
+                            f"({' -> '.join(names[1:])}{via}): whoever holds the value can call it, and the scan "
+                            f"cannot trace those calls; call it through the door, or keep it inside the door",
+                            s.owner, s.line, s.col, names))
     return out
 
 

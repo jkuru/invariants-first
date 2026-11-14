@@ -366,7 +366,8 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   longer excuses a new module-level sink call or sink value in that file.
 - Fewer false findings: writing a door's `__doc__`, `__name__`, `__qualname__`, `__module__` or
   `__annotations__` is not a monkeypatch; a computed `setattr` on a plain class the scan sees whole
-  (no property, descriptor or `__setattr__` in its family) is narrowed like a computed `getattr`; an
+  (no property, descriptor or `__setattr__` in its family) is narrowed like a computed `getattr` (fix
+  round 29: only when its name cannot be `__class__`); an
   unwrap of an unknown object is reported only when a decorated function (or a method named
   `__wrapped__`) can reach the sink, and an unknown `fn.__closure__` read is `unresolved/unwrap`, not
   `forbidden/unwrap`. The sha ignores black's magic trailing comma (not a one-element tuple's), so the
@@ -376,6 +377,19 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   sites apart, and lists the unresolved ones for review as drafted `allow_unresolved` entries (an
   empty `why` the rule file refuses until a reviewer writes it) instead of dropping the draft. A
   relative import naming no module is reported under the indexed package name.
+- Fix round 29 (false passes from an independent review). A method taken as a value on a receiver the
+  scan cannot type (`Thread(target=r.pay)`, `ex.submit(e.pay)`, `f = e.pay`) may be any scanned
+  function of that name: `unresolved/sink-escapes` when one reaches the sink without a door (it was
+  reported only when the name was the sink's). A computed `setattr` may set `__class__`: on a method's
+  self it distrusts the class as `self.__class__ = ...` does, on `obj.attr` or a module-level singleton
+  it untypes them, and it is narrowed only when its name is a dataclass field's or what a
+  `__setattr__` or `__setstate__` passes on (`for k, v in d.items(): setattr(self, k, v)` is reported
+  again). `self.x` bound by a for / async for / with / comprehension target is untyped, a module-level
+  singleton rebound by a match capture or `except E as x` is untyped, and a method that rebinds its
+  first parameter (`self = Repo()`, `for self in`, `except E as self`, `self += x`, `cls = Repo`) no
+  longer types it as the class. An import the importing file's own directory also holds, shadowing a
+  top-level module (under every rule) or a standard-library module (under a rule that module's code
+  bears on), is `unresolved/unknown-module`.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv status` reports each rule's standing with its reasons.

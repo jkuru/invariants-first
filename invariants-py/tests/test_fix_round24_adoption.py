@@ -288,11 +288,12 @@ def test_reflection_is_not_narrowed_by_what_a_module_imports(tmp_path):
 
 
 def test_a_computed_setattr_is_still_reported(tmp_path):
-    # fix round 28: a computed setattr on a plain class the scan sees whole is narrowed like a getattr; one
-    # on a class with a property (code that runs on a set) is still reported
+    # fix round 28 narrowed a computed setattr on a plain class the scan sees whole like a getattr; fix round
+    # 29: its name may be __class__, which retypes self, so it is reported (test_fix_round29_scan); one on a
+    # class with a property (code that runs on a set) is reported too
     body = DISPATCH.replace("getattr(self, verb)()", "1") + "        def put(self, k, v):\n            setattr(self, k, v)\n"
     rep = scan.scan(DOC, [_project(tmp_path / "plain", {"web.py": body})])
-    assert _computed(rep) == [], rep.findings
+    assert [f.message.split(" ")[0] for f in _computed(rep)] == ["setattr"], rep.findings
     prop = body + "        @property\n        def size(self):\n            return 0\n"
     rep = scan.scan(DOC, [_project(tmp_path / "prop", {"web.py": prop})])
     assert [f.message.split(" ")[0] for f in _computed(rep)] == ["setattr"], rep.findings

@@ -55,7 +55,10 @@ comprehension, a lambda default, `nonlocal`, `global`) all are. A value made whe
 already passed a door (inside the door, or in a helper only a door reaches) is not reported, nor is a
 door or an unrelated function taken as a value. An allowed back door taken as a value outside
 `allow` is a new caller, so a `bypass` ([Allowed back doors](#allowed-back-doors)). The sink itself
-taken as a value is `unresolved/sink-escapes` at that site, as before.
+taken as a value is `unresolved/sink-escapes` at that site, as before. A method taken as a value on a
+receiver the scan cannot type (`Thread(target=r.pay)`, `ex.submit(e.pay)`, `f = e.pay`, `run(e.pay)`)
+may be any scanned function of that name, as a call of it may be: when one of them reaches the sink
+without passing a door, the site is `unresolved/sink-escapes`, naming it and its path.
 
 Some values are not written as a name being read:
 
@@ -231,7 +234,10 @@ return another class; whose module-level name is bound more than once (`Safe = R
 over it, a star import that exports another `Safe` (any star import of a module the scan does not read), a `case
 {**Safe}` capture, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
 dunder or a computed name written on it (`Leaf.__bases__ = (...)`, `setattr(Safe, name, f)`) or the
-class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__`. A
+class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__` or
+call a computed setattr on self (below). A method that rebinds its first parameter anywhere (`self =
+other`, `for self in`, a walrus, `with ... as self`, `case self`, unpacking, `except E as self`, `self
++= x`, `cls = Repo`) has no `self` of its class: the name is a plain local there. A
 method replaced or deleted on a class (`Safe.save = len`, `del Safe.save`, `setattr(Safe, "save", v)`,
 `self.save = v`) distrusts that method only, on the class and the subclasses that inherit it:
 `Safe().save()` is name-matched, `Safe().other()` stays typed; a replacement that is a scanned
@@ -250,8 +256,11 @@ attribute of a scanned module or class (`other.repo.save()` where `other.repo = 
 one exception is a module-level name bound exactly once, to a call of a scanned class
 (`settings = Settings()`), in a module whose every name the scan can list (no star import, no
 `globals()`, `vars()`, `setattr` or `exec`, no module `__getattr__`), and that no code anywhere sets
-as an attribute (`ops.settings = x` on any object): it is exactly that class, read in its module or
-imported (`from ops import settings`, `ops.settings`). A write the scan cannot name (a computed
+as an attribute (`ops.settings = x` on any object) or retypes (`settings.__class__ = x`, a computed
+`setattr(settings, k, v)`): it is exactly that class, read in its module or imported (`from ops import
+settings`, `ops.settings`). A match capture (`case settings:`, `case Repo() as settings`, `case
+[settings]`, `case {**settings}`) or `except E as settings` at module level binds it again, like an
+assignment. A write the scan cannot name (a computed
 `setattr(ops, name, v)`, `ops.__dict__[k] = v`, `sys.modules[...]`) is reported on its own.
 
 A call to a scanned function annotated to return a scanned class types its result too:
@@ -295,7 +304,9 @@ and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or 
 annotation types `self.repo` the same way. An attribute is resolved in the module that defines the class. An
 attribute that any code sets from outside its object (`obj.x = ...` in a function that is not one
 of that object's methods, or `setattr(obj, "x", ...)`) is never typed: calls through it stay
-name-matched, so they are unresolved.
+name-matched, so they are unresolved. Nor is one a method binds through a target the scan does not pair
+with a value: `for self.repo in ...`, `async for`, `with cm() as self.repo`, a comprehension's
+`for self.repo in ...`.
 
 A receiver known to be a builtin container (a dict, set or list literal or comprehension, `dict()`,
 `set()`, `list()`, or a parameter annotated `dict[...]`, `set[...]`, `list[...]`) calls the
@@ -433,17 +444,30 @@ can return and why none of it reaches the sink around a door.
   `getattr(sys, attr)[key]` are reflection the scan reports only when it can name them. The scan cannot
   list a foreign module's attributes without importing it, so no object outside the scan is narrowed.
 
-A computed `setattr` on a receiver of the same kind is narrowed by the same proof (the family seen
-whole, nothing in it named like a sink or door or able to reach the sink), when in addition no code
-runs on a set: no class in the family defines `__setattr__`, `__delattr__`, a descriptor's `__set__`
-or `__delete__`, or `__set_name__`, has a decorated method (a property or another descriptor), or a
-class attribute made by a call other than `dataclasses.field()`. Then the name set can only bind an
-instance attribute, which retypes nothing the rule checks: a method it shadows cannot reach the sink,
+A computed `setattr` may set `__class__`, which retypes the object: `setattr(self, k, v)` (or
+`object.__setattr__(self, k, v)`, `self.__setattr__(k, v)`) in a method distrusts the class as
+`self.__class__ = ...` does (calls on its instances are name-matched, and no computed getattr or
+setattr on them is narrowed); on `obj.attr` it makes that attribute untyped, on a local or parameter
+that name, on a module-level singleton that singleton. A `__dict__` write never changes the class. Three
+names are known not to be `__class__`: a dataclass field's (`setattr(o, f.name, v)` in `for f in
+dataclasses.fields(x):`, with `fields` imported from dataclasses and no scanned class annotating a
+dunder name), the name parameter a `__setattr__` passes on (`object.__setattr__(self, name, value)`,
+whose name a write elsewhere chose and which is judged there), and each key of the state a
+`__setstate__` restores (`for k, v in state.items(): setattr(self, k, v)`: pickle and copy pass the
+state `__getstate__` or the instance `__dict__` gave, whose keys are attribute names; unless scanned
+code calls or takes `__setstate__` itself).
+
+Such a setattr on a receiver of the same kind as a narrowed computed getattr is narrowed by the same
+proof (the family seen whole, nothing in it named like a sink or door or able to reach the sink), when
+in addition no code runs on a set: no class in the family defines `__setattr__`, `__delattr__`, a
+descriptor's `__set__` or `__delete__`, or `__set_name__`, has a decorated method (a property or
+another descriptor), or a class attribute made by a call other than `dataclasses.field()`. Then the
+set can only bind an instance attribute named by a field: a method it shadows cannot reach the sink,
 and a value stored there was taken as a value where it was made (`for f in fields(self):
 setattr(self, f.name, getattr(other, f.name))` on a plain dataclass passes). Any other computed
-`setattr`, and every computed `delattr`, is still reported: the name may be `__class__` (which
-retypes the object) or an attribute the scan uses to type calls (`self.repo`). A computed `hasattr`
-only asks and is never reported.
+`setattr` (`for k, v in d.items(): setattr(self, k, v)`), and every computed `delattr`, is still
+reported: the name may be `__class__` or an attribute the scan uses to type calls (`self.repo`). A
+computed `hasattr` only asks and is never reported.
 
 Reading only the names of a namespace (`globals().keys()`, `name in globals()`, `vars(m).keys()`,
 `m.__dict__.keys()`, `len(...)`) gives strings, never a value: it is not reflection.
@@ -693,7 +717,16 @@ kept as one record for every method of that name, however many there are.
   module or package there, holding the names a from-import takes, and not the package the importing
   file is in (`from django import forms` in `lib/extra/django/fields.py` is the installed django). A
   unique match is that module; several (`a/fleet/store.py` and `b/fleet/store.py`) are
-  `unresolved/unknown-module`; none is third-party code.
+  `unresolved/unknown-module`; none is third-party code. When the importing file's own directory holds
+  the module and it is also a top-level module under the roots (`import fleet.store` in `cli/main.py`
+  with both `fleet/store.py` and `cli/fleet/store.py`) or a standard-library module (`import json`
+  beside `cli/json.py`), which one Python imports depends on how the program starts (`python
+  cli/main.py` puts `cli/` first on `sys.path`, `python -m cli.main` does not): the import is
+  `unresolved/unknown-module` (shadowed). A top-level one is reported under every rule; a
+  standard-library one under a rule when the directory's module holds a sink, door or allowed function
+  of it, or code that reaches its sink without a door (a package's own `types.py` beside `import types`
+  is common and harmless otherwise). A builtin or frozen module (`sys`, `os`, `abc`) is found before
+  `sys.path` and is never shadowed.
 - **An unknown submodule of a scanned package is not third-party.** An import of a module under a
   package the roots hold that no file under the roots is (`import pkg.admin.tasks` with no
   `pkg/admin`, a dangling symlink, `from pkg import admin` where `pkg/__init__.py` binds no `admin`,
