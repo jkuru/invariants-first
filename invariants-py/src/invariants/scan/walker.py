@@ -13,7 +13,7 @@ from .astutil import (
     _locals,
     _params,
 )
-from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Module, _Site
+from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Fan, _Module, _Site
 from .indexer import _Index
 from .inference import _Inference
 
@@ -57,7 +57,7 @@ class _Walker(_Inference):
 
     def __init__(self, idx: _Index, mod: _Module) -> None:
         super().__init__(idx, mod)
-        self.edges: list[_Edge] = []
+        self.edges: list[_Edge | _Fan] = []
         self.sites: list[_Site] = []
         self._called: set[int] = set()                        # ids of call targets: a call, not a value
 
@@ -69,7 +69,7 @@ class _Walker(_Inference):
         """Writes through `o.__dict__` (or a written alias of it) whose names the scan cannot read, on an
         object other than a method's own self (whose attributes then go untyped): like a setattr with a
         computed name, they may set any attribute, a sink's holder too."""
-        for node, obj in _computed_dict_writes(fn, nested):
+        for node, obj in _computed_dict_writes(fn, nested, self.mod.tree):
             if not (me and isinstance(obj, ast.Name) and obj.id == me[0]):
                 self._site("setattr", owner, node, f"{_dotted(obj) or 'an object'}.__dict__|")
 
@@ -85,8 +85,9 @@ class _Walker(_Inference):
                 me = None
                 if func.cls and stmt.args.args and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list):
                     me = (stmt.args.args[0].arg, func.cls)
+                names = _locals(stmt)                  # once per function, not per statement
                 for s in stmt.body:
-                    self._node(s, fid, _locals(stmt), me)
+                    self._node(s, fid, names, me)
                 self._dict_writes(stmt, fid, me, nested=True)
             elif isinstance(stmt, ast.ClassDef) and owner.endswith(".<module>") \
                     and f"{prefix}.{stmt.name}" in self.idx.classes:
@@ -464,8 +465,8 @@ class _Walker(_Inference):
                 self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False))
             if not hits and container is None:          # d.update() on a dict is the dict's own method
                 self._site("attrcall", owner, func, func.attr)
-                for m in sorted(self.idx.methods_by_name.get(func.attr, ())):
-                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True))
+                if fan := self.idx.fan(func.attr):         # an inferred edge to each method of that name
+                    self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset))
 
     def _code_string(self, node: ast.Call, names: tuple[str, ...], positions: int, local: set[str],
                      me: tuple[str, str] | None) -> bool:
@@ -523,9 +524,8 @@ class _Walker(_Inference):
             hits, container = self._typed(ast.Attribute(node.args[0], lit, ast.Load()), owner, local, me)
             for m in hits:
                 self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, False, via_getattr=True))
-            if not hits and container is None:
-                for m in sorted(self.idx.methods_by_name.get(lit, ())):
-                    self.edges.append(_Edge(owner, m, node.lineno, node.col_offset, True, via_getattr=True))
+            if not hits and container is None and (fan := self.idx.fan(lit)):
+                self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
 
     def _name_lookup(self, node: ast.Call, fq: str, owner: str) -> None:
         """pydoc.locate("pkg.mod.f"), pkgutil.resolve_name("pkg.mod:f"): a getattr of the name the string

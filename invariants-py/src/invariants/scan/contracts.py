@@ -5,7 +5,10 @@ import ast
 import collections
 import dataclasses
 import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, Iterable
+
+if TYPE_CHECKING:
+    from .reachability import _Pass
 
 KINDS = ("bypass", "forbidden", "unresolved", "missing")
 SKIP_DIRS = frozenset({"__pycache__", "node_modules", "site-packages", "build", "dist", "venv"})
@@ -56,8 +59,8 @@ class Report:
     files: int = 0
     functions: int = 0
     # per rule: every function on a path that reaches the sink without the door, from any entrypoint
-    # (a finding shows one path per call site; `inv init` freezes all of them)
-    on_paths: dict[str, set[str]] = dataclasses.field(default_factory=dict)
+    # (a finding shows one path per call site; `inv init` freezes all of them); worked out when read
+    on_paths: dict[str, set[str]] = dataclasses.field(default_factory=lambda: _LazyOnPaths())
     # fix round 23 (files and roots): files per always-skipped directory name, and notes on the roots and
     # excludes (an exclude glob that matches a file from some of its roots only); shown, never findings
     skipped: dict[str, int] = dataclasses.field(default_factory=dict)
@@ -123,7 +126,57 @@ class _Module:
     star: list[str] = dataclasses.field(default_factory=list)
 
 
-@dataclasses.dataclass
+class _OnPaths:
+    """The functions on a path that reaches the sink without the door, for one rule: those a finding
+    shows are known as the checks run; the rest come from the path searches, run only when asked."""
+
+    def __init__(self) -> None:
+        self.known: set[str] = set()
+        self._later: list[Callable[[str | None], set[str]]] = []
+
+    def update(self, names: Iterable[str]) -> None:
+        self.known.update(names)
+
+    def defer(self, passes: list[_Pass], starts: list[str], allowed: set[str]) -> None:
+        from .reachability import _every_path_node
+        self._later.append(lambda only: _every_path_node(passes, starts, allowed, only))
+
+    def __contains__(self, name: object) -> bool:
+        if name in self.known:
+            return True
+        if not isinstance(name, str):
+            return False
+        for later in self._later:
+            self.known |= later(name)
+            if name in self.known:
+                return True
+        return False
+
+    def all(self) -> set[str]:
+        for later in self._later:
+            self.known |= later(None)
+        self._later = []
+        return self.known
+
+
+class _LazyOnPaths(dict[str, Any]):
+    """Report.on_paths: rule -> its on-path functions (a set), each worked out on first read."""
+
+    def __getitem__(self, rule: str) -> Any:
+        got = dict.__getitem__(self, rule)
+        return got.all() if isinstance(got, _OnPaths) else got
+
+    def get(self, rule: str, default: Any = None) -> Any:
+        return self[rule] if rule in self else default
+
+    def items(self) -> Any:
+        return {k: self[k] for k in self}.items()
+
+    def values(self) -> Any:
+        return {k: self[k] for k in self}.values()
+
+
+@dataclasses.dataclass(slots=True)
 class _Edge:
     caller: str
     callee: str
@@ -133,7 +186,24 @@ class _Edge:
     via_getattr: bool = False    # getattr(obj, "literal"): reported as forbidden when it names the sink
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
+class _Fan:
+    """A name-matched call on an unknown receiver (`x.save()`), kept as one record: it stands for an
+    inferred edge to each of its callees, in this order (every scanned method of that name; the tuple is
+    shared by every call of the name)."""
+
+    caller: str
+    callees: tuple[str, ...]
+    line: int
+    col: int
+    via_getattr: bool = False
+    inferred: bool = True
+
+    def edges(self) -> list[_Edge]:
+        return [_Edge(self.caller, c, self.line, self.col, True, self.via_getattr) for c in self.callees]
+
+
+@dataclasses.dataclass(slots=True)
 class _Site:
     """Something the second pass saw at one place, for the per-rule checks."""
 

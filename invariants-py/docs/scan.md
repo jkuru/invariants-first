@@ -342,6 +342,12 @@ blocks an agent's edit of `[tool.invariants]`.
 not scanned, so a scan inside a falsifier is ablated too. A scan-only rule still needs a `bad` and a
 `structure` enforcer.
 
+A scan that runs past 5 seconds prints a progress line on stderr now and then (`inv scan: following
+calls in module 812/2169 (10 s)`); stdout, the report, is unchanged, and `INV_PROGRESS=0` turns it off.
+The cost grows with the code, not with the number of entrypoints: each rule runs one path search
+(from the first entrypoint that reaches each call into a sink), and a call on an unknown receiver is
+kept as one record for every method of that name, however many there are.
+
 ### Files and roots
 
 - **One name per file, every root's name resolves.** A file several roots hold (the default roots

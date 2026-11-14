@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any
 
-from .astutil import _dotted
+from .astutil import DEFS, IMPORTS, _dotted, _number, _walk_of
 from .contracts import _Func, _Module
 
 _BUILTINS = frozenset(dir(builtins))
@@ -41,6 +41,10 @@ class _Index:
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
         self._subs: dict[str, list[str]] | None = None     # class -> its scanned subclasses (subclasses)
         self._short: set[str] | None = None                # the last name of every scanned function
+        self._bases: dict[str, list[str | None]] = {}      # class -> _base_names (once the index is built)
+        self._methods: dict[tuple[str, str], str | None] = {}   # (class, name) -> method()
+        self._mros: dict[tuple[str, bool], list[str] | None] = {}  # (class, strict) -> its C3 order
+        self._fans: dict[str, tuple[str, ...]] = {}         # name -> every scanned method of that name, sorted
         self.excluded: dict[str, tuple[str, str]] = {}   # excluded module -> (root-relative file, its glob)
         self.excluded_files: dict[str, pathlib.Path] = {}  # excluded module -> its file (read only for classes)
         self._excluded_bases: list[tuple[str, set[str]]] | None = None   # (class, its base names), lazily
@@ -67,6 +71,14 @@ class _Index:
         self.scanned_real: set[pathlib.Path] = set()     # the real path of every scanned module's file
         self.skipped_words: re.Pattern[bytes] | None = None   # a word a skipped file reaching scanned code has
         self.third_party: dict[pathlib.Path, pathlib.Path | None] = {}   # directory -> its third-party tree
+
+    def fan(self, name: str) -> tuple[str, ...]:
+        """Every scanned method named name, sorted: what a call of .name on an unknown receiver may be (one
+        tuple per name, shared by every such call)."""
+        got = self._fans.get(name)
+        if got is None:
+            got = self._fans[name] = tuple(sorted(self.methods_by_name.get(name, ())))
+        return got
 
     def short_names(self) -> set[str]:
         """The last name of every scanned function (`save` for app.repo.Repo.save): what a sink may be named."""
@@ -111,10 +123,14 @@ class _Index:
             self.parse_errors.append((root, file, getattr(e, "lineno", 0) or 0, str(e)))
             return
         package = name if file.name == "__init__.py" else name.rpartition(".")[0]
+        _number(tree)
         mod = _Module(name, file, root, tree, package)
         self.modules[name] = mod
+        self._bases.clear()                            # a new module may change what a base name names
+        self._methods.clear()
+        self._mros.clear()
         self.funcs[f"{name}.<module>"] = _Func(f"{name}.<module>", name, file, root, 1, 0, None)
-        for node in ast.walk(tree):
+        for node in _walk_of(tree, *IMPORTS):
             if isinstance(node, ast.Import):
                 for a in node.names:
                     if a.asname:
@@ -160,7 +176,7 @@ class _Index:
             r = self.real(name)
             return r in known or r in heads
         for mod in self.modules.values():
-            for node in ast.walk(mod.tree):
+            for node in _walk_of(mod.tree, *IMPORTS):
                 if isinstance(node, ast.Import):
                     self._unknown_at(mod, node, next(filter(None, (self._unknown(a.name) for a in node.names)), None))
                 if not isinstance(node, ast.ImportFrom):
@@ -215,7 +231,7 @@ class _Index:
         if mod.star:
             return None
         out: set[str] = set()
-        for n in ast.walk(mod.tree):
+        for n in _walk_of(mod.tree, ast.Name, *DEFS, *IMPORTS, ast.Global, ast.Nonlocal):
             if isinstance(n, ast.Name):
                 if n.id in ("globals", "vars", "setattr", "exec") and isinstance(n.ctx, ast.Load):
                     return None
@@ -243,7 +259,7 @@ class _Index:
         sys.path_importer_cache, importlib.invalidate_caches, site.addsitedir, zipimport) is a problem: an
         import after it may load code from outside the roots, such as a zip archive."""
         for mod in self.modules.values():
-            for node in ast.walk(mod.tree):
+            for node in _walk_of(mod.tree, ast.Call, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete):
                 what, line = None, getattr(node, "lineno", 1)
                 if isinstance(node, ast.Call):
                     f = _full(mod, node.func) or ""
@@ -318,7 +334,11 @@ class _Index:
 
     def method(self, cls: str, name: str, seen: set[str] | None = None) -> str | None:
         """A method by name on cls or its project-local bases."""
-        seen = seen or set()
+        if seen is None:
+            key = (cls, name)
+            if key not in self._methods:
+                self._methods[key] = self.method(cls, name, set())
+            return self._methods[key]
         if cls in seen or cls not in self.classes:
             return None
         seen.add(cls)
@@ -338,6 +358,12 @@ class _Index:
 
     def _base_names(self, cls: str) -> list[str | None]:
         """bases(), with None for a base that is not a plain name (a call, `*bases`, a getattr())."""
+        got = self._bases.get(cls)
+        if got is None:
+            got = self._bases[cls] = self._base_names_of(cls)
+        return got
+
+    def _base_names_of(self, cls: str) -> list[str | None]:
         info = self.classes[cls]
         out: list[str | None] = []
         for b in info["bases"]:
@@ -429,11 +455,17 @@ class _Index:
     def mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
         """The method resolution order of a class through the scanned classes (C3; bases the scan does
         not see are left out; depth first where C3 finds no consistent order)."""
-        return self._c3(cls, seen, strict=False) or []
+        if seen:
+            return self._c3(cls, seen, strict=False) or []
+        if (cls, False) not in self._mros:
+            self._mros[(cls, False)] = self._c3(cls, seen, strict=False)
+        return self._mros[(cls, False)] or []
 
     def strict_mro(self, cls: str) -> list[str] | None:
         """mro(), or None when the scanned classes give no consistent C3 order (or inherit in a cycle)."""
-        return self._c3(cls, frozenset(), strict=True)
+        if (cls, True) not in self._mros:
+            self._mros[(cls, True)] = self._c3(cls, frozenset(), strict=True)
+        return self._mros[(cls, True)]
 
     def _c3(self, cls: str, seen: frozenset[str], strict: bool) -> list[str] | None:
         if cls not in self.classes:
@@ -495,7 +527,7 @@ class _Index:
             elif _TYPE_ALIAS is not None and isinstance(st, _TYPE_ALIAS) and isinstance(st.name, ast.Name):
                 found[st.name.id] = st.value
         binds: collections.Counter[str] = collections.Counter()
-        for n in ast.walk(tree):
+        for n in _walk_of(tree, ast.Name, *DEFS, ast.Global, ast.Nonlocal, *IMPORTS):
             if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
                 binds[n.id] += 1
             elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):

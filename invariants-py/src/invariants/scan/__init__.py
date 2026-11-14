@@ -19,17 +19,20 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import os
 import pathlib
 import re
+import sys
+import time
 from typing import Any, Iterable, Iterator
 
 from .checks import _canon_py, _check_rule
 from .contracts import (DYNAMIC_IMPORT, KINDS, REFLECTION, SKIP_DIRS, Finding, Mediation, Report, ScanConfigError,
-                        _Edge, _Module, _Site)
+                        _Edge, _Fan, _Module, _OnPaths, _Site)
 from .astutil import _dotted
 from .indexer import _Index
 from .mediation import _mediation, _not_scanned
-from .reachability import _entrypoints, door_only
+from .reachability import _entrypoints, _flat, door_only
 from .sarif import to_sarif
 from .sources import (SKIPPED, Found, _layout, _skipped, _Source, anywhere, holds_code, iter_sources, provides,
                       third_party)
@@ -64,22 +67,64 @@ class Graph:
     """The scan's view of the code: functions, call edges, sites, entrypoints."""
 
     idx: _Index
-    edges: list[_Edge]
+    calls: list[_Edge | _Fan]            # the call records; a name-matched call is one _Fan
     sites: list[_Site]
     entries: list[str]
+
+    @property
+    def edges(self) -> _Edges:
+        """Every call edge, a name-matched call as one inferred edge per method it may be (made as read)."""
+        return _Edges(self.calls)
 
     def functions(self) -> list[str]:
         return sorted(f for f, fn in self.idx.funcs.items() if fn.node is not None)
 
+
+class _Edges:
+    """The edges of a list of call records, in order, made one at a time as they are read."""
+
+    def __init__(self, calls: list[_Edge | _Fan]) -> None:
+        self._calls = calls
+
+    def __iter__(self) -> Iterator[_Edge]:
+        return _flat(self._calls)
+
+    def __len__(self) -> int:
+        return sum(len(c.callees) if isinstance(c, _Fan) else 1 for c in self._calls)
+
+
+
+class _Progress:
+    """A line on stderr now and then while a long scan runs: nothing in the first PROGRESS_AFTER seconds
+    (a normal scan says nothing), then at most one line every PROGRESS_EVERY seconds. INV_PROGRESS=0
+    turns it off; stdout (the report) is never touched."""
+
+    AFTER = 5.0
+    EVERY = 5.0
+
+    def __init__(self) -> None:
+        self.start = self.last = time.monotonic()
+        self.on = os.environ.get("INV_PROGRESS", "1") != "0"
+
+    def __call__(self, what: str, done: int, total: int) -> None:
+        if not self.on:
+            return
+        now = time.monotonic()
+        if now - self.start < self.AFTER or now - self.last < self.EVERY:
+            return
+        self.last = now
+        print(f"inv scan: {what} {done}/{total} ({now - self.start:.0f} s)", file=sys.stderr, flush=True)
 
 
 _NO_SOURCE_WHY = {"extension": "<an extension module, with no Python source the scan can read>",
                   "bytecode": "<a compiled .pyc with no Python source the scan can read>"}
 
 
-def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str]) -> _Index:
+def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
+           progress: _Progress | None = None) -> _Index:
     """The first pass over the roots: scanned modules indexed, excluded ones noted (not read)."""
     idx = _Index()
+    progress = progress or _Progress()
     skipped: list[_Source] = []
     walked = Found()
     found = _layout((pathlib.Path(r) for r in roots), exclude, walked)
@@ -99,7 +144,8 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str]) -> _Inde
             for a in s.aliases:
                 if a not in names:
                     idx.module_alias.setdefault(a, s.name)
-    for s in found:
+    for k, s in enumerate(found):
+        progress("reading files", k, len(found))
         rel = s.file.relative_to(s.root).as_posix()
         if s.shadowed_by is not None:
             _shadowed(idx, s)
@@ -272,10 +318,12 @@ def _shadowed(idx: _Index, s: _Source) -> None:
 
 def graph(roots: Iterable[str | pathlib.Path], exclude: Iterable[str] = ()) -> Graph:
     """Index and walk the source roots once (no imports); scan() and `inv init` read the result."""
-    idx = _index(roots, exclude)
-    edges: list[_Edge] = []
+    progress = _Progress()
+    idx = _index(roots, exclude, progress)
+    edges: list[_Edge | _Fan] = []
     sites: list[_Site] = []
-    for mod in idx.modules.values():
+    for k, mod in enumerate(idx.modules.values()):
+        progress("following calls in module", k, len(idx.modules))
         w = _Walker(idx, mod)
         w.run()
         edges += w.edges
@@ -288,15 +336,18 @@ def scan(doc: dict[str, Any], roots: Iterable[str | pathlib.Path], exclude: Iter
     """Scan the source roots (minus exclude globs) against every rule that declares mediation.sink."""
     scanned, skipped = mediations(doc)
     g = g or graph(roots, exclude)
-    idx, edges, sites = g.idx, g.edges, g.sites
+    idx, edges, sites = g.idx, g.calls, g.sites
     report = Report([], scanned, skipped, files=len(idx.modules) + len(idx.parse_errors),
                     functions=sum(1 for f in idx.funcs.values() if f.node is not None))
     report.skipped = dict(sorted(idx.skipped_dirs.items()))
     report.notes = list(idx.notes)
     entries = g.entries
-    for med in scanned.values():
-        report.on_paths[med.rule] = set()
-        report.findings += _check_rule(idx, med, edges, sites, entries, report.on_paths[med.rule])
+    progress = _Progress()
+    for k, med in enumerate(scanned.values()):
+        progress("checking rule", k, len(scanned))
+        on = _OnPaths()                                # worked out when read (inv init), not here
+        dict[str, Any].__setitem__(report.on_paths, med.rule, on)
+        report.findings += _check_rule(idx, med, edges, sites, entries, on)
         report.findings += [Finding("unresolved", med.rule, code, msg, f.relative_to(r).as_posix(), line, 1,
                                     str(r)) for r, f, line, code, msg in idx.problems]
         report.findings += _skipped_importers(idx, med)

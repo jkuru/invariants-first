@@ -95,6 +95,12 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   scanned modules stay quiet. A zip archive holding Python code in a root is `unresolved/no-source`,
   and scanned code that writes `sys.path`, `sys.meta_path` or `sys.path_hooks` is
   `unresolved/reflection`.
+- The scan runs on large trees with the same results: one path search per rule instead of one per
+  entrypoint, a name-matched call kept as one record instead of one edge per method of that name,
+  and each module's tree walked once for the passes that only collect from it. SQLAlchemy (239k
+  lines) scans in 3 s instead of 16 s; PyTorch (1M lines; it did not finish in 18 minutes before) in
+  20 s and 1.6 GB; transformers in 30 s and 1.6 GB (18 GB before). A scan that runs past 5 seconds
+  prints a progress line on stderr (`INV_PROGRESS=0` turns it off).
 
 - A function used as a value is an entrypoint: one that can reach a sink without passing a door (a
   door's own helper included) and is taken as a value outside the doors and allowed functions (a
