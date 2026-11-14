@@ -31,7 +31,7 @@ from .astutil import (
     _walk_of,
 )
 from .contracts import _Module
-from .indexer import _BUILTINS, _Index
+from .indexer import _BUILTINS, _class_scope_nodes, _Index
 
 # builtin containers, as receivers: their own methods (d.update(), s.add()) are not a scanned sink
 _CONTAINERS = {"builtins.dict": "builtins.dict", "typing.Dict": "builtins.dict", "builtins.set": "builtins.set",
@@ -420,20 +420,36 @@ class _Inference:
         self.idx.attr_seen[cls] = {}                           # guards a cycle
         seen: dict[str, set[str | None]] = collections.defaultdict(set)
         cnode = self.idx.classes[cls].get("node")
+        # the names the class body binds itself (`Safe = Repo` above `r = Safe()`)
+        body = getattr(cnode, "body", [])
+        scoped = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        body_names = {st.name for st in body if isinstance(st, scoped)} | {
+            n.id for st in body if not isinstance(st, scoped)
+            for n in _class_scope_nodes(st) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         for st in getattr(cnode, "body", []):                  # class-level `billing: BillingService` (dataclasses)
             if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
                 ann = self._class_named(st.annotation, set(), None)
-                seen[st.target.id].add(ann if st.value is None else self._made(st.value, set(), None))
+                seen[st.target.id].add(ann if st.value is None else self._made(st.value, body_names, None))
+            elif isinstance(st, ast.Assign) and not isinstance(st.value, ast.Constant):
+                # fix round 33: a class attribute `r = Repo()` is what self.r reads until an instance sets it (a
+                # constant default, `r = None`, has no scanned method to call)
+                for t in st.targets:
+                    for x in ast.walk(t):
+                        if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Store):
+                            seen[x.id].add(self._made(st.value, body_names, None) if x is t else None)
             elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
                     _dotted(d) and self._resolve(d, set(), None) in _PROPERTY for d in st.decorator_list):
                 # @property def repo(self) -> Repo: self.repo reads it
                 seen[st.name].add(self._class_named(st.returns, set(), None) if st.returns is not None else None)
         for fid in self.idx.classes[cls]["methods"].values():
             fn = self.idx.funcs[fid].node
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _positional(fn):
                 continue
-            me_name = fn.args.args[0].arg
+            me_name = _positional(fn)[0].arg
             params = self._types_in(fn, set(), (me_name, cls), fid)
+            # fix round 33: a name the method (or a scope in it) binds is not the module's (`Safe = Repo`, a
+            # parameter `Safe=Repo`): `self.r = Safe()` there is not typed by the module-level Safe
+            bound = _bound_under(fn) - {me_name}
             for node in _under(fn):
                 # fix round 29: a for / async for / with-as / comprehension target binds what the scan does not
                 # pair with a value (`for self.repo in repos`, `with cm() as self.repo`): unknown
@@ -447,7 +463,7 @@ class _Inference:
                     [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
                 for t, v in pairs:
                     if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == me_name:
-                        got = self._made(v, set(), None) or (
+                        got = self._made(v, bound, None) or (
                             params.get(v.id) if isinstance(v, ast.Name) else None)
                         seen[t.attr].add(got if not isinstance(node, ast.AugAssign) else None)
                     elif isinstance(t, (ast.Tuple, ast.List, ast.Starred)):
@@ -819,8 +835,8 @@ def _set_from_outside(idx: _Index, mod: _Module) -> set[str]:
     for fn in _walk_of(tree, ast.FunctionDef, ast.AsyncFunctionDef, ast.Module):
         # only a method's first parameter is the object itself (self); in a plain function,
         # `ctx.repo = other` sets another object's attribute
-        first = (fn.args.args[0].arg if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and id(fn) in methods
-                 and fn.args.args else None)
+        first = (_positional(fn)[0].arg if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and id(fn) in methods
+                 and _positional(fn) else None)
         for node in _own_under(fn):
             if isinstance(node, WRITES):
                 out |= _attrs_set(node, first, fields)
@@ -907,10 +923,10 @@ def _plain_named_sets(idx: _Index, mod: _Module) -> frozenset[int]:
                             and k.value.id == var:
                         out.add(id(n))
     for fn in _walk_of(mod.tree, ast.FunctionDef, ast.AsyncFunctionDef):
-        if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(fn.args.args) >= 2) \
-                or fn.name not in ("__setattr__", "__setstate__") or _rebinds(fn, fn.args.args[1].arg):
+        if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(_positional(fn)) >= 2) \
+                or fn.name not in ("__setattr__", "__setstate__") or _rebinds(fn, _positional(fn)[1].arg):
             continue
-        p = fn.args.args[1].arg
+        p = _positional(fn)[1].arg
         if fn.name == "__setattr__":
             # a __setattr__ that passes its own name on (`object.__setattr__(self, name, value)`): the name
             # is what a write elsewhere set, and that write is judged where it is
@@ -961,8 +977,8 @@ def _explicit_setstate(idx: _Index) -> bool:
 
 # ---- classes whose construction or identity the code can alter: their inferred types are not trusted ----
 
-_SUBVERTED: weakref.WeakKeyDictionary[_Index, tuple[frozenset[str], frozenset[tuple[str, str]]]] = \
-    weakref.WeakKeyDictionary()
+_SUBVERTED: weakref.WeakKeyDictionary[_Index, tuple[frozenset[str], frozenset[tuple[str, str]],
+                                                     dict[str, frozenset[str]]]] = weakref.WeakKeyDictionary()
 # dunders a class carries as data: writing one does not change what the class makes or looks up
 _DATA_DUNDERS = frozenset({"__doc__", "__module__", "__qualname__", "__name__", "__annotations__",
                            "__signature__", "__text_signature__", "__slots__", "__match_args__"})
@@ -996,23 +1012,39 @@ def subverted_members(idx: _Index) -> frozenset[tuple[str, str]]:
     and its subclasses: `Safe.save = len`, `del Safe.save` (Safe().save is then a base's save),
     `setattr(Safe, "save", v)`, `self.save = v` in a method; a subclass with its own save is not changed.
     A replacement that is a scanned function
-    or a lambda is not one: its code is read where it is (an entrypoint, or the sink as a value)."""
+    or a lambda is not one: its code is read where it is (an entrypoint, or the sink as a value), and a
+    call of the method may run it (replaced_members)."""
     return _subversions(idx)[1]
 
 
-def _subversions(idx: _Index) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+def replaced_members(idx: _Index) -> dict[str, frozenset[str]]:
+    """fix round 33: each scanned method code replaces with a scanned function (`Helper.run = _send`,
+    `setattr(Helper, "run", _send)`, `self.run = _send`, `type(self).run = _send`), and what replaces it:
+    a call the scan resolves to the method may run the replacement instead (the walker adds a name-matched
+    edge from the method to it, so the method stays typed and the replacement keeps its own callers)."""
+    return _subversions(idx)[2]
+
+
+def _subversions(idx: _Index) -> tuple[frozenset[str], frozenset[tuple[str, str]], dict[str, frozenset[str]]]:
     got = _SUBVERTED.get(idx)
     if got is None:
         direct: set[str] = set()
         members: set[tuple[str, str]] = set()
+        replaced: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
         everything = False
         for mod in idx.modules.values():
-            everything |= _Subversions(idx, mod, direct, members).run()
+            everything |= _Subversions(idx, mod, direct, members, replaced).run()
         classes = frozenset(idx.classes) if everything else \
             frozenset(direct | {s for c in direct for s in idx.subclasses(c)})
         # a subclass that defines (or inherits from elsewhere) its own m is not changed by a write on c
+        by: dict[str, set[str]] = collections.defaultdict(set)
+        for (c, m), fakes in replaced.items():          # the method a call on c (or a subclass) resolves to
+            for s in [c, *idx.subclasses(c)]:
+                if (hit := idx.method(s, m)) is not None and hit not in fakes:
+                    by[hit] |= fakes
         got = classes, frozenset({(s, m) for c, m in members for s in [c, *idx.subclasses(c)]
-                                  if s == c or idx.method(s, m) == idx.method(c, m)})
+                                  if s == c or idx.method(s, m) == idx.method(c, m)}), \
+            {k: frozenset(v) for k, v in by.items()}
         _SUBVERTED[idx] = got
     return got
 
@@ -1020,8 +1052,10 @@ def _subversions(idx: _Index) -> tuple[frozenset[str], frozenset[tuple[str, str]
 class _Subversions:
     """The classes one module subverts (into `found`); run() is True when it subverts one it cannot place."""
 
-    def __init__(self, idx: _Index, mod: _Module, found: set[str], members: set[tuple[str, str]]) -> None:
+    def __init__(self, idx: _Index, mod: _Module, found: set[str], members: set[tuple[str, str]],
+                 replaced: dict[tuple[str, str], set[str]] | None = None) -> None:
         self.idx, self.mod, self.found, self.members = idx, mod, found, members
+        self.replaced = replaced if replaced is not None else collections.defaultdict(set)
         self.inf = _Inference(idx, mod, raw=True)
         self.tops = {m.split(".")[0] for m in idx.modules}
         self.everything = False
@@ -1133,7 +1167,7 @@ class _Subversions:
             inner = me
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cls = self.methods.get(id(child))
-                inner = {**me, child.args.args[0].arg: cls} if cls and child.args.args else me
+                inner = {**me, _positional(child)[0].arg: cls} if cls and _positional(child) else me
             elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
                 for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
                     self.values[id(t)] = child.value
@@ -1153,7 +1187,7 @@ class _Subversions:
             inner = me
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cls = self.methods.get(id(child))
-                inner = {**me, child.args.args[0].arg: cls} if cls and child.args.args else me
+                inner = {**me, _positional(child)[0].arg: cls} if cls and _positional(child) else me
             elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
                 for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
                     self.values[id(t)] = child.value
@@ -1165,9 +1199,17 @@ class _Subversions:
             self._writes(child, inner)
 
     def _write(self, obj: ast.expr, name: str | None, me: dict[str, str], value: ast.expr | None = None,
-               retypes: bool = False) -> None:
-        cls = me.get(obj.id) if isinstance(obj, ast.Name) else None
-        fq = cls or self._fq(obj)
+               retypes: bool = False, on: str | None = None) -> None:
+        of = _class_of(obj) if on is None and name and not name.startswith("__") else None
+        if of is not None and name:
+            # fix round 33: `type(x).m = v`, `x.__class__.m = v` write on x's class: self's in a method, else
+            # any class with a method m (the scan does not type x here)
+            home = me.get(of.id) if isinstance(of, ast.Name) else None
+            for c in [home] if home else sorted(self.idx.owners_by_name.get(name, ())):
+                self._write(obj, name, me, value, retypes, on=c)
+            return
+        cls = me.get(obj.id) if isinstance(obj, ast.Name) and on is None else None
+        fq = on or cls or self._fq(obj)
         if cls and name is None and retypes:
             self.found.add(cls)          # fix round 29: setattr(self, k, v) may set self.__class__, as assigning it does
             return
@@ -1179,7 +1221,11 @@ class _Subversions:
             return                                             # a local or attribute: untyped where it is
         if fq in self.idx.classes and name and not name.startswith("__") and (
                 isinstance(value, ast.Lambda) or (value is not None and self._fq(value) in self.idx.funcs)):
-            return          # Repo.save = fake: a function the scan reads (an entrypoint, or the sink as a value)
+            # Repo.save = fake: a function the scan reads (an entrypoint, or the sink as a value); fix round 33:
+            # a call of Repo.save may run fake (a lambda is an entrypoint of its own: the walker's _own_caller)
+            if not isinstance(value, ast.Lambda):
+                self.replaced[(fq, name)].add(self._fq(value) or "")
+            return
         if fq in self.idx.classes:
             # a dunder that shapes the class (Leaf.__bases__ = ...) or a computed name, written on the
             # class: the class; a method of it (or an override in a subclass), written on the class or on
@@ -1197,6 +1243,42 @@ class _Subversions:
                     self.found.add(cid)
         elif name == "__bases__" and fq is None:
             self.everything = True                             # x.__bases__ = ...: which class?
+
+
+def _bound_under(node: ast.AST) -> set[str]:
+    """Every name bound anywhere under node, nested scopes and parameters included (an over-approximation),
+    but for an import (a body's import resolves as the module's nested imports do): once per node."""
+    got: set[str] | None = node.__dict__.get("_inv_bound")
+    if got is not None:
+        return got
+    out: set[str] = node.__dict__.setdefault("_inv_bound", set())
+    for n in _under(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            out.add(n.id)
+        elif isinstance(n, ast.arg):
+            out.add(n.arg)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not node:
+            out.add(n.name)
+        elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and n.name:
+            out.add(n.name)
+        elif isinstance(n, ast.MatchMapping) and n.rest:
+            out.add(n.rest)
+    return out
+
+
+def _positional(fn: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.arg]:
+    """fn's positional parameters, positional-only ones first (fix round 33: `def m(self, /, x)` has a self)."""
+    return [*fn.args.posonlyargs, *fn.args.args]
+
+
+def _class_of(node: ast.AST) -> ast.expr | None:
+    """x in `type(x)` or `x.__class__`: an expression for x's class."""
+    if isinstance(node, ast.Call) and _dotted(node.func) in ("type", "builtins.type") and len(node.args) == 1 \
+            and not node.keywords:
+        return node.args[0]
+    if isinstance(node, ast.Attribute) and node.attr == "__class__":
+        return node.value
+    return None
 
 
 _REBOUND: weakref.WeakKeyDictionary[_Index, dict[str, frozenset[str]]] = weakref.WeakKeyDictionary()
@@ -1387,7 +1469,8 @@ def _returns_made(fn: ast.AST, hook: str) -> bool:
     `__new__` must pass that first parameter on (`super().__new__(cls)`, not a keyword default `cls=Repo`),
     and a `super(...)` with arguments must name it."""
     args = getattr(fn, "args", None)
-    first = args.args[0].arg if isinstance(args, ast.arguments) and args.args else None
+    first = [*args.posonlyargs, *args.args][0].arg if isinstance(args, ast.arguments) and (
+        args.posonlyargs or args.args) else None
     if first is None or _rebinds(fn, first):
         return False
     for node in _own_nodes(fn):
@@ -1428,9 +1511,9 @@ def _rebinds(fn: ast.AST, name: str) -> bool:
 
 def _returns_param(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Every return of fn gives back its first parameter (a decorator that registers the class)."""
-    if not fn.args.args or isinstance(fn, ast.AsyncFunctionDef):
+    if not _positional(fn) or isinstance(fn, ast.AsyncFunctionDef):
         return False
-    first = fn.args.args[0].arg
+    first = _positional(fn)[0].arg
     if _rebinds(fn, first):
         return False                                          # c = Repo; return c
     rets = [n for n in _own_nodes(fn) if isinstance(n, ast.Return)]

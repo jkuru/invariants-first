@@ -86,7 +86,23 @@ value outside the doors, the sinks and the allowed functions, is reported where 
 method `f = Service()._persist` and any rebinding of a name to it (walrus, `for`, `with`, `match`, a
 comprehension, a lambda default, `nonlocal`, `global`) all are. A value made where the code has
 already passed a door (inside the door, or in a helper only a door reaches) is not reported, nor is a
-door or an unrelated function taken as a value. An allowed back door taken as a value outside
+door or an unrelated function taken as a value.
+
+A function, lambda or class defined inside another function is that function's code while it stays
+there: `def refund(): def inner(): ...; inner()` (a nested helper only called by name where it is
+defined, under no decorator that may keep it) and `(lambda: ...)()` are the door's own code. One that may
+run from elsewhere is a caller of its own, an entrypoint, named `<owner>.<name>` (`payments.refund.<inner>`,
+`payments.refund.<lambda:12:11>` by line and column): one that is returned, stored (`CB.append(inner)`,
+`self.cb = inner`), passed (`Thread(target=inner)`, `map(lambda x: ..., xs)`), given to a decorator that
+may keep it (`@atexit.register`), read as a value in any other way (`nonlocal inner` included), any
+lambda not called where it is written, a nested class (its instances may leave), and any of these bound in a
+module or class body outside a plain `def` (under `if`, `try`). What such a callable calls is checked as a
+path of its own: `def refund(): def inner(): send_to_gateway(...); return inner` is a `bypass` through
+`payments.refund.<inner>`, since `refund()()` reaches the sink after the door has returned; the same holds
+in an allowed function, whose allow entry does not cover it. The enclosing function keeps a name-matched
+edge to it, so what it reaches through the callable is unchanged. A wrapper a door decorator returns
+(`def door(f): @wraps(f) def w(*a): ...; return w`) is such a callable too: when the wrapper is where the
+check runs, name it as a door (`py:payments.door.<w>`). An allowed back door taken as a value outside
 `allow` is a new caller, so a `bypass` ([Allowed back doors](#allowed-back-doors)). The sink itself
 taken as a value is `unresolved/sink-escapes` at that site, as before. A method taken as a value on a
 receiver the scan cannot type (`Thread(target=r.pay)`, `ex.submit(e.pay)`, `f = e.pay`, `run(e.pay)`)
@@ -245,6 +261,17 @@ that reads a name it does not bind sees the enclosing function's bindings; one t
 (its parameters, `go = 1`, `for go in xs`) is local to it only, so it does not hide the enclosing
 function's own `go(...)`; a nested `global go` makes `go` the module's name inside that scope only. A
 match capture (`case repo`, `case [*repo]`, `case {**repo}`, `case Repo() as repo`) binds a local.
+A nested function or lambda whose own parameter (or binding) is named like the method's first parameter
+(`lambda self: self.save()`) has its own `self`, not the method's. A lambda's defaults and a comprehension's
+first iterable are evaluated in the enclosing scope, before the lambda's parameters or the comprehension's
+targets bind: `lambda go=go: ...` and `[1 for go in go()]` read the enclosing `go`. A method's first
+parameter is its self (or cls) also when it is positional-only (`def save(self, /, x)`).
+
+`self.attr` is typed from every binding of it the class makes: in its methods (`self.r = Repo()`), as a
+class annotation (`r: Safe`), and as a class attribute (`r = Repo()`, which `self.r` reads until an
+instance sets its own; a constant such as `r = None` has no method to call and does not count). A class
+named where the method or the class body binds that name itself (`Safe = Repo; self.r = Safe()`, a
+parameter `Safe=Repo`) gives no type.
 
 A class whose construction or identity the code can alter is not trusted at all: calls on its
 instances, on its name and through `self` in its methods are name-matched (unresolved), never an
@@ -275,7 +302,13 @@ other`, `for self in`, a walrus, `with ... as self`, `case self`, unpacking, `ex
 method replaced or deleted on a class (`Safe.save = len`, `del Safe.save`, `setattr(Safe, "save", v)`,
 `self.save = v`) distrusts that method only, on the class and the subclasses that inherit it:
 `Safe().save()` is name-matched, `Safe().other()` stays typed; a replacement that is a scanned
-function or a lambda is read where it is (an entrypoint, or the sink as a value). A
+function or a lambda is read where it is (an entrypoint, or the sink as a value), and a call of the
+method may run it: `Helper.run = _send` (or `setattr(Helper, "run", _send)`, `self.run = _send`) adds a
+name-matched edge from `Helper.run` to `_send`, so `Helper().run()` reaching the sink through `_send` is
+`unresolved/inferred-path` even when the replacement is installed inside a door. A write through the
+object's class (`type(x).save = v`, `x.__class__.save = v`, `type(self).save = v`) is a write on x's class
+(or a subclass of it): over a sink or a door it is `forbidden/monkeypatch`, and it distrusts the method
+as a write on the class does (where the scan cannot type x, every class with a method of that name). A
 `x.__class__ = Other` on a local makes that local untyped; on `obj.attr`, that attribute; on anything
 the scan cannot place (or a `__bases__` write it cannot place), every class is distrusted. A
 reflective write of an attribute (`object.__setattr__(self, "r", v)`, `self.__dict__["r"] = v`,

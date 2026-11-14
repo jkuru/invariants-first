@@ -531,6 +531,23 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   sink mapping, a stale `allow` entry that is a door of one sink is `missing/allow-unused` (since
   round 32, for each sink it lists that it no longer reaches). The hint for an `allow_unresolved` sha from an earlier inv
   says that a person runs `inv lock --accept-weakening` after writing the new sha.
+- Nested code (round 33): a function, lambda or class defined inside a door or an allowed function
+  was the door's own code, so `def refund(): def inner(): send_to_gateway(...); return inner` let
+  `refund()()` reach the sink with no finding. A nested callable that may run from elsewhere (returned,
+  stored, passed, under a decorator that may keep it, read as a value, any lambda not called where it
+  is written, any nested class) is now an entrypoint of its own, `<owner>.<name>` (or
+  `<owner>.<lambda:line:col>`), whose paths are checked like any function's; a nested helper only
+  called by name where it is defined stays its owner's code. A wrapper a door decorator returns can be
+  named as a door (`py:pkg.door.<w>`).
+- Replaced methods (round 33): a call the scan resolves to a method that code replaces with a scanned
+  function (`Helper.run = _send`, `setattr(Helper, "run", _send)`, `self.run = _send`) may run the
+  replacement (a name-matched edge), and `type(x).m = v` / `x.__class__.m = v` writes on x's class:
+  `forbidden/monkeypatch` over a sink or door, and the method is distrusted.
+- Scoping (round 33): a positional-only first parameter (`def m(self, /)`) is the method's self; a
+  nested lambda's or function's own `self` parameter is not the method's; a lambda's defaults and a
+  comprehension's first iterable are read in the enclosing scope; `self.attr` is typed from class
+  attributes (`r = Repo()`) too, and a class named where the method or class body rebinds that name
+  (`Safe = Repo`, a parameter `Safe=Repo`) gives no type.
 - `inv verify` imports the app and checks that every target carries its guard and every guard
   names a rule.
 - `inv check`'s guards step took the child's `inv verify` verdict as it was, and the child imports
