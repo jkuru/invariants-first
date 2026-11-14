@@ -205,7 +205,9 @@ def test_name_matched_path_is_unresolved_not_bypass(tmp_path):
 
 def test_unknown_receiver_with_sink_name_is_unresolved(tmp_path):
     r = _scan(tmp_path, {"app/x.py": "def f(thing):\n    thing.write(None, 1)\n"})
-    assert [f.code for f in r.findings] == ["unresolved/unknown-receiver"]
+    # the sink is a module function, which a call on an unknown receiver may be (fix round 26): the path
+    # through it is the one finding at that call
+    assert [f.code for f in r.findings] == ["unresolved/inferred-path"]
 
 
 def test_cycle_unreachable_from_roots_still_checked(tmp_path):

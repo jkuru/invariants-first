@@ -57,6 +57,61 @@ door or an unrelated function taken as a value. An allowed back door taken as a 
 `allow` is a new caller, so a `bypass` ([Allowed back doors](#allowed-back-doors)). The sink itself
 taken as a value is `unresolved/sink-escapes` at that site, as before.
 
+Some values are not written as a name being read (fix round 26):
+
+- **A decorator is handed the function.** `@app.post("/x")`, `@atexit.register`, `@hooks.register`
+  (which appends it to a list someone later iterates) and any decorator the scan does not know may keep
+  the function and call it from anywhere, so the function is used as a value at its `def`. A route
+  that does not reach the sink is quiet, and a route is an entrypoint anyway (a framework calls it); an
+  allowed back door is not a new caller of itself through its own decorator. Decorators that hand back
+  the function or a wrapper that calls it, and keep it nowhere else, are not a value: `property`,
+  `staticmethod`, `classmethod`, `functools.cached_property` / `lru_cache` / `cache` / `wraps(...)` /
+  `singledispatch`, `abc.abstractmethod`, `typing.overload` / `final` / `override`,
+  `contextlib.contextmanager` / `asynccontextmanager`, an inv guard (`@inv.guard`, `@inv.model_call`,
+  `@inv.edge`), and a scanned decorator whose first parameter is only returned, or only called (or
+  given to `functools.wraps`) by a nested wrapper it returns (`@deco(...)`: a factory returning such a
+  decorator). A property setter or deleter (`@total.setter`) runs on an assignment, so it is a value
+  too, and a property read on a receiver the scan cannot type (`led.total`) is a name-matched call of
+  every getter of that name. A class decorator other than the identity-preserving ones (see "Method
+  calls") is handed the class: its constructors are used as values.
+- **A dunder is an entrypoint.** Python calls `__add__`, `__iadd__`, `__getitem__`, `__call__`,
+  `__enter__`, `__len__`, `__str__`, `__format__`, `__contains__`, `__eq__`, `__iter__`, `__getattr__`,
+  `__del__` and every other `__name__` method from syntax the scan does not read as a call (`a + b`,
+  `x[k]`, `with`, `len(x)`, an f-string, `in`), so a dunder method (or a module-level `__getattr__`) is
+  used as a value where it is defined: a door that also calls `b.__add__(x)` does not hide `Box() + x`
+  elsewhere. `__init__`, `__new__` and `__post_init__` are not: they run where the class is called,
+  and each call of a class is an edge to all three (and to its metaclass's `__call__`). When the sink
+  itself is a dunder (or is decorated by a decorator that may keep it), it is `unresolved/sink-escapes`
+  at its definition: its implicit calls cannot be traced.
+- **A class body is a scope.** A name used in a class body is looked up among the names bound above it
+  in the body first (as Python does), then in the module. `post = record` (and `run = helper`, a
+  module function) in a class body is a method alias: `Ledger().post(x)` calls `record`, a subclass's
+  alias overrides the method, and a dunder alias (`__iadd__ = record`) is an entrypoint like a dunder
+  def. Any other class-body use of a method is a value: `HANDLERS = {"post": record}`, `total =
+  property(record)`, `go = staticmethod(record)`. A comprehension in a class body sees the class's
+  names in its first iterable only. A class-body import (`import payments`) binds a class attribute to
+  a module, function or class: a value.
+- **A module is a value too.** A scanned module used as a value (`BACKENDS = {"stripe":
+  stripe_backend}`, `m = payments`, `call(payments)`, `self.mod = payments`, `(json, payments)[i]`)
+  hands out every function it holds, its submodules' and what it re-exports (the sink too), and the
+  constructors of its classes: each is used as a value there ("the module payments, which holds
+  payments._send, is used as a value here"). Reading or writing an attribute of it
+  (`payments.refund(x)`, `payments.LIMIT = 3`, `getattr(payments, "x")`) is not using the module as a
+  value. A module the scan never sees as a value still reaches calls on a receiver it cannot type:
+  `m._send()` there is a name-matched call of every method and every module-level function named
+  `_send` (and `m.Sender(...)` of the constructors of every class named `Sender`), as are the names an
+  `operator.attrgetter` or `methodcaller` looks up.
+- **A class is a value too.** A scanned class used as a value (`Thread(target=Sender)`, `{"x": Sender}`,
+  `self.op = Sender`, `Depends(Repo)`) is called by whoever holds it: its constructors are used as
+  values. A class only tested or inherited is not: `isinstance(x, C)`, `issubclass`, `super(C, self)`,
+  `cast(C, x)`, a base, `except C`, `case C()`, `x is C`, `list[C]` / `Optional[C]` (not
+  `Annotated[C, ...]`, whose metadata a framework may call). Another instance of an object's class is
+  a call of that class: `type(x)(...)`, `x.__class__(...)`, `dataclasses.replace(x, ...)` and
+  `copy.copy(x)` (which runs `__new__`) are edges to the constructors of x's class (and its
+  subclasses', unless x was built here), or, when the scan cannot type x, name-matched edges to every
+  class's. `C.__subclasses__()` (any class's, `object`'s too) hands out classes the scan cannot name:
+  `unresolved/reflection`.
+
 Names resolve by the object they are bound to, not by their spelling. A module-level name that its
 imports, top-level definitions and star imports bind to more than one object (`if ...: from payments
 import _send as refund` / `else: from payments import refund`, the same under try/except
@@ -161,7 +216,13 @@ never typed. A write through a method's own `self.__dict__` whose names the scan
 included) typed; the same write on another object (`obj.__dict__.update(m)`) is
 `unresolved/computed-attribute`, like `setattr(obj, name, v)`. A data
 attribute of a scanned module or class (`other.repo.save()` where `other.repo = Repo()`, or
-`Holder.r.save()`) is a value whose type the scan does not follow: its calls are name-matched.
+`Holder.r.save()`) is a value whose type the scan does not follow: its calls are name-matched. The
+one exception (fix round 26) is a module-level name bound exactly once, to a call of a scanned class
+(`settings = Settings()`), in a module whose every name the scan can list (no star import, no
+`globals()`, `vars()`, `setattr` or `exec`, no module `__getattr__`), and that no code anywhere sets
+as an attribute (`ops.settings = x` on any object): it is exactly that class, read in its module or
+imported (`from ops import settings`, `ops.settings`). A write the scan cannot name (a computed
+`setattr(ops, name, v)`, `ops.__dict__[k] = v`, `sys.modules[...]`) is reported on its own.
 
 A call to a scanned function annotated to return a scanned class types its result too:
 `get_repo().add(...)`, or `r = get_repo()` then `r.add(...)`, where `def get_repo() -> Repo`
@@ -290,8 +351,17 @@ can return and why none of it reaches the sink around a door.
   A getattr on it returns an attribute found through the method resolution order of x's class, which
   is C or (unless x was built here as `C(...)`, or is the class itself) any scanned subclass of C. It is
   not reported when that whole family is seen and harmless:
-  - every class in it, and every base of theirs, is a scanned class or a standard-library or
-    third-party one (a computed base, an excluded or unknown project class: reported); none is
+  - every class in it, and every base of theirs, is a scanned class or one of the plain classes
+    outside the scan (fix round 26): the builtin types and exceptions, `abc.ABC`, `enum.Enum` and its
+    family, `typing.NamedTuple`, `typing.Generic`, `typing.Protocol` (not trusted anyway) and
+    pydantic's `BaseModel`, with a metaclass of `type`, `ABCMeta` or `EnumType` only. Any other base
+    outside the scan may forward a name it lacks to another object (`tempfile._TemporaryFileWrapper`
+    answers every name from the file it wraps: `getattr(Wrapper(Repo(), ...), name)` is
+    `Repo().<name>`), so it is reported, the standard library and third-party packages alike (a
+    computed base, an excluded or unknown project class: reported too). None of the plain ones answers
+    a name with anything but what the family declares or stores: `EnumType.__getattr__` gives members
+    (instances of the class itself), and `BaseModel.__getattr__` a private attribute declared in the
+    class body or an extra field, a value someone stored, as an instance attribute is. None is
     subverted (its identity may change, see "Method calls"), subclassed in excluded code, made by a
     scanned metaclass, or has its own `__getattr__` / `__getattribute__` (then any name answers);
   - its class bodies hold only definitions, assignments, imports and expressions (an `if`/`try` block
@@ -310,11 +380,15 @@ can return and why none of it reaches the sink around a door.
 
   A third-party base (traitlets, tornado, pydantic) may call back into methods of the family: those
   are the methods checked above.
-- **x is an object outside the scanned code** (`getattr(logging, level)`, `getattr(litellm, name)`): what
-  it returns is that package's own attribute, as a literal `logging.INFO` is; the scan treats the
-  standard library and third-party packages the same everywhere. The last condition above applies.
-  (An import of a module the roots lack under a scanned package is `unresolved/unknown-module` on its
-  own.)
+- **x is an object outside the scanned code** (`getattr(logging, level)`, `getattr(litellm, name)`):
+  reported (fix round 26; round 25 narrowed it). A module's attributes include every module it imports
+  (`logging.sys`, `logging.os`, `logging.atexit`), every submodule anything has imported
+  (`logging.config` once any code imports it, whose `dictConfig` calls the names its strings give),
+  its `__builtins__` (the builtins namespace: `eval`, `getattr`) and its `__loader__`; a third-party
+  package may re-export anything. So `getattr(logging, name)` can hand back `sys.modules`, and
+  `getattr(builtins, "get" + "attr")`, `getattr(operator, fn)`, `getattr(importlib, fn)` and
+  `getattr(sys, attr)[key]` are reflection the scan reports only when it can name them. The scan cannot
+  list a foreign module's attributes without importing it, so no object outside the scan is narrowed.
 
 A computed `setattr` / `delattr` is still reported: the name may be `__class__` (which retypes the
 object) or an attribute the scan uses to type calls (`self.repo`), and the scan types through both.
@@ -555,6 +629,11 @@ kept as one record for every method of that name, however many there are.
   values it cannot type (see "Method calls" above). A function that can reach a sink without a door
   and is used as a value is reported where it escapes, not where the value is later called.
 - It trusts annotations a type checker would check (see "Method calls" above): run one in CI.
+- An object outside the scanned code is opaque: a value it hands back is not followed. A literal
+  attribute chain through a foreign module (`logging.sys.modules[name]`) or a reflective module passed
+  as a value (`f(sys)`, then `m.modules[name]` there) is not recognised as `sys.modules`, and a
+  framework calling a method by name (pydantic's `model_post_init`, a tornado handler's `get`) is not
+  an edge: such a method is an entrypoint only when nothing in the scanned code calls it.
 - A child process or code given as a string is reported where it is started, never followed.
 - Callers outside the scanned roots are invisible to it.
 - It checks which function calls which. It does not read SQL or any other query text: what a

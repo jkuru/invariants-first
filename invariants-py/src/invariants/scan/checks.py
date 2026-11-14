@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import collections
 import dataclasses
 import pathlib
@@ -143,8 +144,11 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
     is reported at the site, as unresolved/sink-escapes; a door as a value passes the door when called.)"""
     live = t.sinks - t.doors
     trusted = t.sinks | t.doors | t.allowed
+    # a function used as a value by its own definition (a decorator that may keep it, a dunder name) is an
+    # entrypoint; an allowed back door is frozen as one, so that is no new caller
     refs = [s for s in sites if s.what == "ref" and s.owner not in trusted and s.detail in idx.funcs
-            and idx.funcs[s.detail].node is not None and s.detail not in t.sinks and s.detail not in t.doors]
+            and idx.funcs[s.detail].node is not None and s.detail not in t.sinks and s.detail not in t.doors
+            and not (s.recv == "own" and s.detail in t.allowed)]
     if not live or not refs:
         return []
     succ = t.door_free(edges)
@@ -186,11 +190,22 @@ def _escapes(idx: _Index, rid: str, edges: list[_Call], sites: list[_Site], entr
                                 s.owner, s.line, s.col, names))
         else:
             out.append(_finding(idx, rid, "unresolved", "unresolved/sink-escapes",
-                                f"{s.detail} is used as a value here, and called it reaches the sink without "
+                                f"{_as_value(s)} is used as a value here, and called it reaches the sink without "
                                 f"passing {door_txt} ({' -> '.join(names[1:])}{via}): whoever holds the value "
                                 f"can call it, and the scan cannot trace those calls; call it through the "
                                 f"door, or keep it inside the door", s.owner, s.line, s.col, names))
     return out
+
+
+def _as_value(s: _Site) -> str:
+    """What an escape site takes as a value: the function, or the module or class holding it (fix round 26),
+    or the function as its own decorator's or a dunder's argument."""
+    if s.recv == "own":
+        return f"{s.detail} (handed to a decorator that may keep it, or a dunder Python calls implicitly)"
+    if s.recv.startswith(("module:", "class:")):
+        kind, _, name = s.recv.partition(":")
+        return f"the {kind} {name}, which holds {s.detail},"
+    return s.detail
 
 
 def _door_free(edges: list[_Call], t: _Targets) -> dict[str, list[_Call]]:
@@ -301,7 +316,11 @@ class _Idioms:
             return False
         if s.recv:
             return self._class_safe(s.recv.rstrip("!"), s.recv.endswith("!"))
-        return _outside(self.idx, obj)
+        # fix round 26: never on an object outside the scanned code. A module's attributes include every module
+        # it imports (`logging.sys`, `logging.os`, `logging.config` once anything imports it), its
+        # `__builtins__` and `__loader__`, and a package may re-export anything: getattr(m, name) can hand back
+        # `eval`, `sys.modules` or `importlib`, which the scan reports only when it can name them
+        return False
 
     def _hidden_values(self) -> bool:
         """A function that can reach the sink without a door (or the sink) is taken as a value inside a door,
@@ -381,8 +400,11 @@ class _Idioms:
             shown, fn, how, ext = (s.detail.split("|") + ["", "", ""])[:4]   # how: inspect.unwrap(f), ...
             return self._unwrap(s, fn, how or f"{shown or 'an object'}.__wrapped__", ext == "outside")
         if s.what == "ref" and s.detail in self.t.sinks:
+            how = "is used as a value" if not s.recv else \
+                "is decorated or named so that Python calls it implicitly (an entrypoint)" if s.recv == "own" else \
+                f"is held by {s.recv.partition(':')[2]}, used as a value here"
             return self._found("unresolved", "unresolved/sink-escapes",
-                               f"the sink {s.detail} is used as a value, so calls through it cannot be traced", s)
+                               f"the sink {s.detail} {how}, so calls through it cannot be traced", s)
         if s.what == "attrpatch" and s.detail in self.sink_names:
             return self._found("unresolved", "unresolved/unknown-receiver",
                                f"assigns or deletes .{s.detail} on a receiver the scan cannot resolve, which may "
@@ -459,6 +481,23 @@ def _outside(idx: _Index, fq: str) -> bool:
     return idx.outside(fq)
 
 
+# fix round 26: the classes outside the scan a narrowed family may inherit: none has a __getattr__ (or
+# __getattribute__) that answers a name the class lacks with something other than what the family stored or
+# declared, nor calls anything by name. The builtin types and exceptions, ABC, the Enum family (EnumType's
+# class-level __getattr__ gives members only, instances of the class itself), NamedTuple, Generic and Protocol
+# (a Protocol is not trusted anyway), and pydantic's BaseModel, whose __getattr__ gives a private attribute
+# declared in the class body (a scanned descriptor's __get__ counts below) or an extra field: a value someone
+# stored, as an instance attribute is (a function stored there was used as a value where it was stored).
+_PLAIN_BASES = frozenset({
+    *(f"builtins.{n}" for n, v in vars(builtins).items() if isinstance(v, type) and (
+        issubclass(v, BaseException) or n in ("object", "str", "int", "float", "complex", "bool", "bytes",
+                                              "bytearray", "dict", "list", "tuple", "set", "frozenset"))),
+    "abc.ABC", *(f"enum.{n}" for n in ("Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "ReprEnum")),
+    *(f"{m}.{n}" for m in ("typing", "typing_extensions") for n in ("Generic", "NamedTuple", "Protocol")),
+    "pydantic.BaseModel", "pydantic.main.BaseModel"})
+# metaclasses that make classes as type does (EnumType's __getattr__ gives members only)
+_PLAIN_METAS = frozenset({"builtins.type", "abc.ABCMeta", "enum.EnumMeta", "enum.EnumType"})
+
 _CLASS_BODY = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign, ast.AugAssign,
                ast.Expr, ast.Pass, ast.Import, ast.ImportFrom)
 
@@ -485,6 +524,35 @@ def _made_by(idx: _Index, home: object, func: ast.AST) -> set[str] | None:
         return None
     if made is not None:
         out.update(m for m in (idx.method(made, n) for n in ("__init__", "__new__", "__call__", "__get__")) if m)
+    return out
+
+
+def _held(idx: _Index, fq: str) -> set[str]:
+    """What a value naming fq runs when called or read: a scanned function, a class's constructors, or a
+    scanned module's functions and constructors."""
+    if fq in idx.funcs and idx.funcs[fq].node is not None:
+        return {fq}
+    if fq in idx.classes:
+        return set(idx.constructors(fq))
+    if fq in idx.modules:
+        return set(idx.module_members(fq))
+    return set()
+
+
+def _stored(idx: _Index, home: object, cls: str) -> set[str]:
+    """What the methods of cls store on self by name (`self.op = payments.Sender`, `self.mod = payments`,
+    `self.cb = helper`): what getattr(self, name) may hand back, and so run."""
+    out: set[str] = set()
+    for fid in idx.classes[cls]["methods"].values():
+        fn = idx.funcs[fid].node
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or idx.funcs[fid].cls != cls:
+            continue
+        for n in ast.walk(fn):
+            pairs = [(t, n.value) for t in n.targets] if isinstance(n, ast.Assign) else \
+                [(n.target, n.value)] if isinstance(n, ast.AnnAssign) and n.value is not None else []
+            for t, v in pairs:
+                if isinstance(t, ast.Attribute) and _dotted(v):
+                    out |= _held(idx, home._resolve(v, set(), None) or "")  # type: ignore[attr-defined]
     return out
 
 
@@ -515,13 +583,15 @@ def _family_safe(idx: _Index, cls: str, exact: bool, guarded_names: set[str], re
         info = idx.classes[c]
         home = _Inference(idx, idx.modules[info["module"]])
         for b in idx._base_names(c):
-            if b is None or (b not in idx.classes and not _outside(idx, b)):
+            # fix round 26: a base outside the scan only when it is known to answer no name it lacks and to
+            # call nothing by name (a tempfile wrapper forwards __getattr__ to the object it wraps)
+            if b is None or (b not in idx.classes and b not in _PLAIN_BASES):
                 return False
         node = info["node"]
         for kw in node.keywords:
             if kw.arg == "metaclass":
                 fq = home._resolve(kw.value, set(), None) if _dotted(kw.value) else None
-                if fq is None or not _outside(idx, fq):
+                if fq is None or fq not in _PLAIN_METAS:
                     return False
         methods = info["methods"]
         if "__getattr__" in methods or "__getattribute__" in methods:
@@ -539,10 +609,13 @@ def _family_safe(idx: _Index, cls: str, exact: bool, guarded_names: set[str], re
                         return False
                     members |= got
             if isinstance(st, ast.ClassDef):
-                inner = f"{c}.{st.name}"
-                members.update(m for m in (idx.method(inner, "__init__"), idx.method(inner, "__new__")) if m)
+                members.update(idx.constructors(f"{c}.{st.name}"))
             elif isinstance(st, (ast.Import, ast.ImportFrom)):
                 names.update((a.asname or a.name).split(".")[0] for a in st.names)
+                for a in st.names:                     # a class attribute bound to a module, class or function
+                    src = idx._absolute(idx.modules[info["module"]], st) if isinstance(st, ast.ImportFrom) else ""
+                    full = f"{src}.{a.name}" if src else a.name if a.asname else a.name.split(".")[0]
+                    members.update(_held(idx, idx.canon(idx.real(full))))
             targets = st.targets if isinstance(st, ast.Assign) else [st.target] \
                 if isinstance(st, (ast.AnnAssign, ast.AugAssign)) else []
             for t in targets:
@@ -553,7 +626,10 @@ def _family_safe(idx: _Index, cls: str, exact: bool, guarded_names: set[str], re
                 if got is None:
                     return False
                 members |= got
+            elif value is not None and _dotted(value):  # x = payments.Sender: what the class attribute holds
+                members.update(_held(idx, home._resolve(value, set(), None) or ""))
         names.update(home._attr_seen(c))
+        members.update(_stored(idx, home, c))
     if names & guarded_names:
         return False
     return not (members & reach)

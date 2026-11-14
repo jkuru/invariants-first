@@ -14,8 +14,23 @@ from .astutil import (
     _params,
 )
 from .contracts import DYNAMIC_IMPORT, REFLECTION, _Edge, _Fan, _Module, _Site
-from .indexer import _Index
-from .inference import _Inference
+from .indexer import _class_scope_nodes, _Index
+from .inference import _Inference, _rebinds
+
+# fix round 26: the methods that run where their class is called (an edge from each call of the class)
+_CONSTRUCTORS = frozenset({"__init__", "__new__", "__post_init__"})
+# decorators that hand back what they decorate (or a wrapper that calls it) and keep it nowhere else
+_KEEPS = frozenset({"builtins.property", "builtins.staticmethod", "builtins.classmethod", "functools.cached_property",
+                    "functools.lru_cache", "functools.cache", "functools.singledispatch",
+                    "functools.singledispatchmethod", "functools.total_ordering", "abc.abstractmethod",
+                    "abc.abstractproperty", "abc.abstractclassmethod", "abc.abstractstaticmethod",
+                    "contextlib.contextmanager", "contextlib.asynccontextmanager", "dataclasses.dataclass",
+                    "enum.unique", *(f"{m}.{n}" for m in ("typing", "typing_extensions")
+                                     for n in ("overload", "final", "override", "no_type_check",
+                                               "runtime_checkable", "type_check_only"))})
+_KEEPS_CALLED = frozenset({"functools.wraps", "functools.lru_cache", "dataclasses.dataclass", "enum.verify"})
+_INV_GUARDS = frozenset({"guard", "model_call", "edge"})       # an inv guard wraps it (scan._guarded)
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 # calls that run code the scan cannot read or look a callable up from data (a pickle names its
 # functions by module and name): unresolved/reflection
@@ -62,6 +77,7 @@ class _Walker(_Inference):
         self.edges: list[_Edge | _Fan] = []
         self.sites: list[_Site] = []
         self._called: set[int] = set()                        # ids of call targets: a call, not a value
+        self._type_uses: set[int] = set()                     # ids of names only tested or inherited (_type_use)
 
     def run(self) -> None:
         self._body(self.mod.tree.body, f"{self.mod.name}.<module>", set(), None, self.mod.name)
@@ -77,6 +93,7 @@ class _Walker(_Inference):
 
     def _body(self, body: list[ast.stmt], owner: str, local: set[str], self_cls: tuple[str, str] | None,
               prefix: str) -> None:
+        scope = self._class_scope                      # the class body being walked (None: the module body)
         for stmt in body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and f"{prefix}.{stmt.name}" in self.idx.funcs \
                     and owner.endswith(".<module>"):
@@ -84,25 +101,155 @@ class _Walker(_Inference):
                 for d in [*stmt.decorator_list, *stmt.args.defaults, *[k for k in stmt.args.kw_defaults if k]]:
                     self._expr(d, owner, local, self_cls)
                 func = self.idx.funcs[fid]
+                self._defined(stmt, fid, func.cls, owner, local, self_cls)
                 me = None
                 if func.cls and stmt.args.args and not any(_dotted(d) == "staticmethod" for d in stmt.decorator_list):
                     me = (stmt.args.args[0].arg, func.cls)
                 names = _locals(stmt)                  # once per function, not per statement
-                for s in stmt.body:
-                    self._node(s, fid, names, me)
+                self._class_scope = None               # a method body does not see the class body's names
+                try:
+                    for s in stmt.body:
+                        self._node(s, fid, names, me)
+                finally:
+                    self._class_scope = scope
                 self._dict_writes(stmt, fid, me, nested=True)
+                if scope is not None:
+                    scope[stmt.name] = fid
             elif isinstance(stmt, ast.ClassDef) and owner.endswith(".<module>") \
                     and f"{prefix}.{stmt.name}" in self.idx.classes:
+                cid = f"{prefix}.{stmt.name}"
+                for b in stmt.bases:                   # a base is inherited, not called
+                    self._type_use(b)
                 for d in [*stmt.decorator_list, *stmt.bases, *[k.value for k in stmt.keywords]]:
                     self._expr(d, owner, local, self_cls)
-                self._body(stmt.body, owner, local, self_cls, f"{prefix}.{stmt.name}")
+                if not all(self._keeps_value(d, local, self_cls) for d in stmt.decorator_list):
+                    for c in self.idx.constructors(cid):   # the decorator is handed the class: a value
+                        self._own_ref(owner, stmt, c)
+                self._class_scope = {}
+                try:
+                    self._body(stmt.body, owner, local, self_cls, cid)
+                finally:
+                    self._class_scope = scope
+                if scope is not None:
+                    scope[stmt.name] = cid
+            elif scope is not None:
+                self._class_stmt(stmt, owner, local, self_cls, prefix, scope)
             else:
                 self._node(stmt, owner, local, self_cls)
+
+    def _defined(self, stmt: ast.FunctionDef | ast.AsyncFunctionDef, fid: str, cls: str | None, owner: str,
+                 local: set[str], me: tuple[str, str] | None) -> None:
+        """A def of a scanned function: handed to a decorator that may keep it (a registry, a route, atexit), it
+        is used as a value there; bound to a dunder name, Python calls it from syntax (`a + b`, `x[k]`, `with`,
+        `len()`, a format, a module `__getattr__`), so it is an entrypoint: used as a value where it is
+        defined. A constructor (`__init__`, `__new__`, `__post_init__`) runs where its class is called."""
+        kept = not all(self._keeps_value(d, local, me) for d in stmt.decorator_list)
+        if kept or (_dunder(stmt.name) and not (cls and stmt.name in _CONSTRUCTORS)):
+            self._own_ref(owner, stmt, fid)
+
+    def _own_ref(self, owner: str, stmt: ast.AST, fid: str) -> None:
+        """fid used as a value by its own definition (its decorator, or a dunder name Python calls it by): an
+        entrypoint, which an allowed back door already is (recv "own" says so)."""
+        self._site("ref", owner, stmt, fid)
+        self.sites[-1].recv = "own"
+
+    def _class_stmt(self, stmt: ast.stmt, owner: str, local: set[str], me: tuple[str, str] | None, cls: str,
+                    scope: dict[str, str | None]) -> None:
+        """A class-body statement other than a scanned def or class: `name = <function>` aliases it as a method
+        (a dunder alias makes it an entrypoint, as a dunder def does); an import binds a class attribute to a
+        module, function or class, a value; any other binding is a class-level value."""
+        target = None
+        if isinstance(stmt, ast.Assign) and all(isinstance(t, ast.Name) for t in stmt.targets) \
+                and (d := _dotted(stmt.value)) and not self._alternatives(stmt.value, local, me):
+            target = self.idx.alias_target(self.mod.name, d, scope)
+        if target is not None and target in self.idx.funcs and isinstance(stmt, ast.Assign):
+            for name in [t.id for t in stmt.targets if isinstance(t, ast.Name)]:
+                scope[name] = target
+                if _dunder(name) and name not in _CONSTRUCTORS:
+                    self._own_ref(owner, stmt, target)
+            return
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            self._node(stmt, owner, local, me)
+            for a in stmt.names:
+                if a.name == "*":
+                    continue
+                full = a.name if isinstance(stmt, ast.Import) and a.asname else \
+                    a.name.split(".")[0] if isinstance(stmt, ast.Import) else \
+                    f"{self.idx._absolute(self.mod, stmt)}.{a.name}"
+                hit = self.idx.canon(self.idx.real(full))
+                for ref in self._held_by(hit):
+                    self._held_ref(owner, stmt, ref, hit)
+                scope[(a.asname or a.name).split(".")[0]] = None
+            return
+        self._node(stmt, owner, local, me)
+        for n in _class_scope_nodes(stmt):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)) and not (
+                    isinstance(stmt, ast.AnnAssign) and stmt.value is None):
+                scope[n.id] = None
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                scope.update({(a.asname or a.name).split(".")[0]: None for a in n.names})
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not stmt:
+                scope[n.name] = None
+
+    def _held_ref(self, owner: str, at: ast.AST, ref: str, value: str) -> None:
+        """ref used as a value because value (a module or class that holds it) is: recv says which."""
+        self._site("ref", owner, at, ref)
+        if value != ref:
+            self.sites[-1].recv = f"{'module' if value in self.idx.modules else 'class'}:{value}"
+
+    def _held_by(self, fq: str) -> list[str]:
+        """What calling (or reading the functions of) a value naming fq can run: a scanned function, a scanned
+        class's constructors, or a scanned module's functions and constructors."""
+        if fq in self.idx.funcs and self.idx.funcs[fq].node is not None:
+            return [fq]
+        if fq in self.idx.classes:
+            return list(self.idx.constructors(fq))
+        if fq in self.idx.modules:
+            return list(self.idx.module_members(fq))
+        return []
+
+    def _keeps_value(self, d: ast.expr, local: set[str], me: tuple[str, str] | None) -> bool:
+        """The decorator d hands back what it decorates, or a wrapper around it, without keeping it anywhere
+        else: a known standard-library one (property, staticmethod, functools.lru_cache, contextmanager, ...),
+        an inv guard, or a scanned decorator whose parameter is only returned or called by a nested wrapper it
+        returns (`@register` that appends it to a list keeps it). Anything else (a route `@app.post(...)`,
+        `@atexit.register`, a third-party decorator) may keep it: the function is used as a value there."""
+        f = d.func if isinstance(d, ast.Call) else d
+        fq = self._resolve(f, local, me) if _dotted(f) else None
+        if fq is None:
+            return False
+        if fq in self.idx.funcs:
+            fn = self.idx.funcs[fq].node
+            if not isinstance(fn, ast.FunctionDef):
+                return False
+            return _factory_passes(fn) if isinstance(d, ast.Call) else _passes_through(fn)
+        if fq.split(".")[0] == "invariants" and fq.rpartition(".")[2] in _INV_GUARDS:
+            return True
+        return fq in (_KEEPS_CALLED if isinstance(d, ast.Call) else _KEEPS)
+
+    def _type_use(self, node: ast.AST) -> None:
+        """node names a type where it is only tested or inherited, never called (`isinstance(x, C)`, a base,
+        `except C`, `case C()`, `x is C`, `dict[str, C]`): a class or module there is not used as a value."""
+        if isinstance(node, (ast.Tuple, ast.List)):
+            for e in node.elts:
+                self._type_use(e)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            self._type_use(node.left)
+            self._type_use(node.right)
+        elif isinstance(node, ast.Subscript):
+            self._type_use(node.value)
+            self._type_use(node.slice)
+        elif isinstance(node, (ast.Name, ast.Attribute)):
+            self._type_uses.add(id(node))
 
     def _node(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         if isinstance(node, ast.expr):
             self._expr(node, owner, local, me)
             return
+        if isinstance(node, ast.ExceptHandler) and node.type is not None:
+            self._type_use(node.type)                          # `except C`: matched, not called
+        elif isinstance(node, ast.MatchClass):
+            self._type_use(node.cls)                           # `case C()`: matched, not called
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             src = self.idx._absolute(self.mod, node)
             if ex := self.idx.excluded_module(src):           # its names are unknown to the scan
@@ -230,7 +377,8 @@ class _Walker(_Inference):
                 self._site("wrapped", owner, node,
                            self._unwrapped(x.value, local, me, "{}.__dict__ (which holds __wrapped__)"))
         elif kind == "foreign":
-            if lit is None or f"{ns}.{lit}" in _REFLECTIVE or f"{ns}.{lit}" == "builtins.hasattr":
+            if lit is None or f"{ns}.{lit}" in _REFLECTIVE or f"{ns}.{lit}" == "builtins.hasattr" \
+                    or lit in ("__subclasses__", "__mro__"):
                 self._site("reflection", owner, node, f"{ns}.{x.attr}")
         elif kind == "globals":
             self._site("reflection", owner, node, "__globals__")
@@ -316,10 +464,31 @@ class _Walker(_Inference):
             return
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
             self._rebound(node, owner, local, me)
+            self._type_use(node.value)                     # `store.write = x` sets an attribute of store
         if isinstance(node, ast.Lambda):
             local = local | _locals(node)
             self._expr(node.args, owner, local, me)            # its defaults, in the enclosing scope
             self._shadowed(node, node.args, self._expr, node.body, owner, local, me)
+            return
+        if isinstance(node, ast.Compare):
+            for x in [node.left, *node.comparators]:          # `x is C`, `type(x) == C`: compared, not called
+                if isinstance(x, (ast.Name, ast.Attribute)):
+                    self._type_use(x)
+        elif isinstance(node, ast.Subscript) and _dotted(node.value) and _generic(self._resolve(node.value, local, me)):
+            self._type_use(node.slice)                        # `list[C]`, `Optional[C]`: a type, never called
+        if isinstance(node, _COMPREHENSIONS) and self._class_scope is not None and not self._scopes:
+            # in a class body, only a comprehension's first iterable sees the class's names
+            self._expr(node.generators[0].iter, owner, local, me)
+            scope, self._class_scope = self._class_scope, None
+            try:
+                for child in ast.iter_child_nodes(node):
+                    if child is not node.generators[0]:
+                        self._expr(child, owner, local, me)
+                gen = node.generators[0]
+                for child in [gen.target, *gen.ifs]:
+                    self._expr(child, owner, local, me)
+            finally:
+                self._class_scope = scope
             return
         for child in ast.iter_child_nodes(node):
             if not (isinstance(node, ast.JoinedStr) and isinstance(child, ast.Constant)):
@@ -328,11 +497,23 @@ class _Walker(_Inference):
     def _call_expr(self, node: ast.Call, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
         """A call: its edge or site, then what it is called on and its arguments."""
         self._called.add(id(node.func))
+        fq = self._resolve(node.func, local, me) if _dotted(node.func) else None
+        if fq in ("builtins.isinstance", "builtins.issubclass"):
+            for a in node.args:                            # tested, not called
+                self._type_use(a)
+        elif fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr",
+                    "inspect.getattr_static", "builtins.vars", "builtins.dir") and node.args:
+            self._type_use(node.args[0])                   # a lookup on it: a site of its own (_attr_builtin)
+        elif fq in ("builtins.super", "typing.cast", "typing_extensions.cast"):
+            for a in node.args[:2 if fq == "builtins.super" else 1]:
+                self._type_use(a)
         self._call(node, owner, local, me)
         if not _dotted(node.func):
             self._expr(node.func, owner, local, me)
         elif isinstance(node.func, ast.Attribute) and node.func.attr == "__wrapped__":
             self._site("wrapped", owner, node.func, self._unwrapped(node.func.value, local, me))
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "__subclasses__":
+            self._site("reflection", owner, node.func, "__subclasses__")   # `object.__subclasses__()`: any class
         elif isinstance(node.func, ast.Attribute) and _dunder(node.func.attr) \
                 and node.func.attr not in ("__call__", *_HARMLESS_DUNDERS):
             self._escapes(node.func.value, owner, local, me, node.func)           # f.__get__(o)(...): f
@@ -349,6 +530,8 @@ class _Walker(_Inference):
         elif isinstance(node, ast.Attribute) and node.attr == "__mro__" and not (
                 _dotted(node.value) and (v := self._resolve(node.value, local, me)) and self._outside(v)):
             self._site("reflection", owner, node, "__mro__")                     # C.__mro__: its classes as values
+        elif isinstance(node, ast.Attribute) and node.attr == "__subclasses__":
+            self._site("reflection", owner, node, "__subclasses__")   # every subclass, object's: any class
         elif isinstance(node, ast.Name) and node.id == "__builtins__":
             self._site("reflection", owner, node, "__builtins__")
         elif isinstance(node, ast.Attribute) and node.attr in _FRAME_NAMESPACES:
@@ -404,11 +587,31 @@ class _Walker(_Inference):
                 self.edges.append(_Edge(owner, ref, getattr(at, "lineno", 0), getattr(at, "col_offset", 0), False))
             else:
                 self._site("ref", owner, at, ref)
+        if not refs and _dotted(node) and id(node) not in self._type_uses:
+            # a class used as a value is called by whoever holds it (its constructors run); a scanned module
+            # used as a value hands out every function it holds (fix round 26)
+            fq = self._resolve(node, local, me)
+            if fq in self.idx.classes or (fq in self.idx.modules and at is node):
+                held = self._held_by(fq)
+                for ref in held:
+                    self._held_ref(owner, at, ref, fq)
+                if held:
+                    return
         if refs or not isinstance(node, ast.Attribute) or node.attr not in self.idx.short_names():
             return
         fq = self._resolve(node, local, me) if _dotted(node) else None
         if (fq is None or self._via_function(node, local, me)) and self._typed(node, owner, local, me) == ([], None):
             self._site("attrref", owner, at, node.attr)
+            if at is node and (props := self._getters(node.attr)):   # obj.total may run a property getter
+                self.edges.append(_Fan(owner, props, getattr(at, "lineno", 0), getattr(at, "col_offset", 0)))
+
+    def _getters(self, name: str) -> tuple[str, ...]:
+        """Every scanned property getter named name (what `obj.name` on an unknown receiver may run)."""
+        got = self.idx.getters.get(name)
+        if got is None:
+            got = self.idx.getters[name] = tuple(m for m in sorted(self.idx.methods_by_name.get(name, ()))
+                                                 if self._property(m))
+        return got
 
 
     def _property(self, fid: str) -> bool:
@@ -431,10 +634,10 @@ class _Walker(_Inference):
             func, fq = node.func, None                 # not a known function: an ordinary attribute call
         for alt in sorted(self._alternatives(func, local, me)):        # refund bound to _send as well
             if alt != fq:
-                target = alt if alt in self.idx.funcs else \
-                    self.idx.method(alt, "__init__") if alt in self.idx.classes else None
-                if target:
+                for target in [alt] if alt in self.idx.funcs else self.idx.constructors(alt) \
+                        if alt in self.idx.classes else []:
                     self.edges.append(_Edge(owner, target, node.lineno, node.col_offset, False))
+        self._remade(node, fq, owner, local, me)
         if fq in ("builtins.getattr", "builtins.setattr", "builtins.delattr", "builtins.hasattr") and node.args:
             self._attr_builtin(node, fq, owner, local, me)
             return
@@ -477,8 +680,7 @@ class _Walker(_Inference):
         elif fq and (ex := self.idx.excluded_module(fq)):
             self._site("excluded", owner, node, f"{fq}|{ex}|call")
         elif fq and fq in self.idx.classes:
-            init = self.idx.method(fq, "__init__")
-            if init:
+            for init in self.idx.constructors(fq):     # __init__, __new__, __post_init__, a metaclass __call__
                 self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
         elif isinstance(func, ast.Attribute) and (fq is None or self._via_function(func, local, me)):
             hits, container = self._typed(func, owner, local, me)
@@ -488,6 +690,29 @@ class _Walker(_Inference):
                 self._site("attrcall", owner, func, func.attr)
                 if fan := self.idx.fan(func.attr):         # an inferred edge to each method of that name
                     self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset))
+
+    def _remade(self, node: ast.Call, fq: str | None, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        """A call that builds another instance of an object's class: `type(x)(...)`, `x.__class__(...)`,
+        `dataclasses.replace(x, ...)`, `copy.copy(x)` (which runs `__new__`). The constructors of x's class
+        (and of its subclasses, unless x was built here), or, when the scan cannot type x, of any class."""
+        f = node.func
+        if isinstance(f, ast.Call) and len(f.args) == 1 and _dotted(f.func) and \
+                self._resolve(f.func, local, me) == "builtins.type":
+            x: ast.AST = f.args[0]
+        elif isinstance(f, ast.Attribute) and f.attr == "__class__":
+            x = f.value
+        elif fq in ("dataclasses.replace", "copy.copy", "copy.deepcopy") and node.args:
+            x = node.args[0]
+        else:
+            return
+        rcv = (me[1], False) if me and isinstance(x, ast.Name) and x.id == me[0] else \
+            self._receiver(x, owner, local, me)
+        if rcv is not None and rcv[0] in self.idx.classes and rcv[0] not in self._untrusted:
+            for c in [rcv[0], *([] if rcv[1] else self.idx.subclasses(rcv[0]))]:
+                for init in self.idx.constructors(c):
+                    self.edges.append(_Edge(owner, init, node.lineno, node.col_offset, False))
+        elif ctors := self.idx.all_constructors():
+            self.edges.append(_Fan(owner, ctors, node.lineno, node.col_offset))
 
     def _code_string(self, node: ast.Call, names: tuple[str, ...], positions: int, local: set[str],
                      me: tuple[str, str] | None) -> bool:
@@ -529,6 +754,8 @@ class _Walker(_Inference):
             self._site("reflection", owner, node, f"{lit} looked up by name")
         if lit in _FRAME_NAMESPACES:                                         # getattr(frame, "f_globals")
             self._site("reflection", owner, node, f"frame.{lit}")
+        if lit in ("__subclasses__", "__mro__"):                            # getattr(object, "__subclasses__")
+            self._site("reflection", owner, node, lit)
         if lit is not None and obj and fq == "builtins.getattr":     # a literal name is an edge
             if obj in self.idx.funcs and lit == "__call__":          # getattr(f, "__call__") is f
                 self.edges.append(_Edge(owner, obj, node.lineno, node.col_offset, False))
@@ -558,8 +785,9 @@ class _Walker(_Inference):
             return obj[5:] if obj[5:] in self.idx.classes else ""
         if obj in self.idx.classes:
             return f"{obj}!"
-        if obj is not None and obj not in self.idx.funcs:   # a module, a foreign name, a data attribute
-            return ""
+        if obj is not None and obj not in self.idx.funcs and not (
+                self._data_attr(obj) and self._module_instance(arg, local, me)):
+            return ""                                    # a module, a foreign name, an untyped data attribute
         rcv = self._receiver(arg, owner, local, me)
         if rcv is None or rcv[0] not in self.idx.classes:
             return ""
@@ -593,11 +821,13 @@ class _Walker(_Inference):
             if not t or not all(p.isidentifier() for p in t.split(".")):
                 continue
             hit = self.idx.canon(t)
-            target = hit if hit in self.idx.funcs else \
-                self.idx.method(hit, "__init__") if hit in self.idx.classes else None
-            if target:
+            targets = [hit] if hit in self.idx.funcs else list(self.idx.constructors(hit)) \
+                if hit in self.idx.classes else []
+            for target in targets:
                 self.edges.append(_Edge(owner, target, node.lineno, node.col_offset, False))
-            elif ex := self.idx.excluded_module(hit):
+            if targets:
+                continue
+            if ex := self.idx.excluded_module(hit):
                 self._site("excluded", owner, node, f"{hit}|{ex}|call")
 
     def _attr_lookup(self, node: ast.Call, fq: str, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
@@ -611,5 +841,72 @@ class _Walker(_Inference):
             self._site("getattr", owner, node, f"{how}|")
         else:
             self._site("getattr", owner, node, f"{how}|{'|'.join(lits)}")
+        for lit in lits:                       # on whatever it is applied to: each function of that name
+            for part in lit.split(".") if fq == "operator.attrgetter" else [lit]:
+                if fan := self.idx.fan(part):
+                    self.edges.append(_Fan(owner, fan, node.lineno, node.col_offset, via_getattr=True))
         for a in [*node.args, *[k.value for k in node.keywords]]:
             self._expr(a, owner, local, me)
+
+
+def _generic(fq: str | None) -> bool:
+    """fq is a generic type whose subscript names types only (`list[C]`, `typing.Optional[C]`); not
+    `Annotated[C, Depends()]`, whose metadata a framework may call."""
+    return fq is not None and (fq in ("builtins.list", "builtins.dict", "builtins.set", "builtins.frozenset",
+                                      "builtins.tuple", "builtins.type") or (
+        fq.startswith(("typing.", "typing_extensions.", "collections.abc.")) and not fq.endswith(".Annotated")))
+
+
+def _passes_through(fn: ast.FunctionDef) -> bool:
+    """A scanned decorator that keeps nothing: every return gives back its first parameter or a function
+    defined in it, the parameter is never rebound, and every other use of it is a call (or functools.wraps of
+    it) inside such a nested wrapper, which is only returned (`HOOKS.append(f); return f` keeps it)."""
+    if not fn.args.args or _rebinds(fn, fn.args.args[0].arg):
+        return False
+    p = fn.args.args[0].arg
+    inner = [n for n in fn.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    names = {n.name for n in inner}
+    rets = _own(fn, ast.Return)
+    if not rets or _own(fn, ast.Yield, ast.YieldFrom) or not all(
+            isinstance(r.value, ast.Name) and (r.value.id == p or r.value.id in names) for r in rets):
+        return False
+    returned = {id(r.value) for r in rets}
+    in_wrapper = {id(x) for w in inner for x in ast.walk(w)}
+    parent = {id(c): n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
+    for n in ast.walk(fn):
+        if not (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)) or id(n) in returned:
+            continue
+        if n.id in names:
+            return False                                  # the wrapper itself handed somewhere else
+        if n.id != p:
+            continue
+        up = parent.get(id(n))
+        called = isinstance(up, ast.Call) and up.func is n
+        wrapped = isinstance(up, ast.Call) and n in up.args and _dotted(up.func) in ("functools.wraps", "wraps")
+        if not (called or wrapped) or id(n) not in in_wrapper:
+            return False
+    return True
+
+
+def _factory_passes(fn: ast.FunctionDef) -> bool:
+    """`@deco(...)`: every return of the factory is a decorator defined in it that keeps nothing, and is
+    used nowhere else."""
+    inner = {n.name: n for n in fn.body if isinstance(n, ast.FunctionDef)}
+    rets = _own(fn, ast.Return)
+    uses = sum(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in inner for n in ast.walk(fn))
+    return bool(rets) and uses == len(rets) and all(
+        isinstance(r, ast.Return) and isinstance(r.value, ast.Name) and r.value.id in inner
+        and _passes_through(inner[r.value.id]) for r in rets)
+
+
+def _own(fn: ast.AST, *kinds: type) -> list[Any]:
+    """The nodes of those kinds in fn itself, not in the functions, lambdas or classes defined in it."""
+    out: list[Any] = []
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, kinds):
+            out.append(n)
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(n))
+    return out

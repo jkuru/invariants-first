@@ -44,7 +44,11 @@ class _Inference:
     """Type queries in one module: what a name, receiver or annotation is."""
 
     def __init__(self, idx: _Index, mod: _Module, raw: bool = False) -> None:
+        idx.link()                                            # class-body aliases are methods
         self.idx, self.mod = idx, mod
+        # the class body being walked: each name bound above in it -> the function it is (a def or an alias),
+        # or None (another class-level value); None when the code walked is not directly in a class body
+        self._class_scope: dict[str, str | None] | None = None
         # raw: names resolve as written, trusting every class (only to find the classes not to trust)
         self._raw = raw
         self._untrusted: frozenset[str] = frozenset() if raw else subverted(idx)
@@ -408,6 +412,9 @@ class _Inference:
         made = self._returned(node, local, me) or self._chained(node, owner, local, me)
         if made:
             return made, False
+        held = self._module_instance(node, local, me)
+        if held:
+            return held, True
         fn = self.idx.funcs[owner].node if owner in self.idx.funcs else None
         if isinstance(node, ast.Name) and fn is not None and node.id in local:
             if node.id in self._shadow:
@@ -436,6 +443,32 @@ class _Inference:
             got = self._attr_types(base[0]).get(node.attr)
             return (got, False) if got else None
         return None
+
+    def _module_instance(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> str | None:
+        """A module-level name bound exactly once, to a scanned class's constructor (`settings = Settings()`),
+        read here or imported (`from ops import settings`, `ops.settings`): exactly that class. Not when the
+        module may bind names the scan cannot list (a star import, globals(), vars(), setattr, exec, a module
+        __getattr__), nor when any code sets an attribute of that name on any object (`ops.settings = x`)."""
+        if isinstance(node, ast.Name):
+            if node.id in local or node.id in self._shadow or (me and node.id == me[0]) or (
+                    self._class_scope is not None and not self._scopes and node.id in self._class_scope):
+                return None
+            fq = self._resolve(node, local, me)
+            if fq is None:
+                fq = f"{self.mod.name}.{node.id}"
+        elif isinstance(node, ast.Attribute) and _dotted(node):
+            fq = self._resolve(node, local, me)
+        else:
+            return None
+        if fq is None or fq.startswith("self:"):
+            return None
+        module, _, name = fq.rpartition(".")
+        if module not in self.idx.modules or (value := self.idx.module_values(module).get(name)) is None:
+            return None
+        cls = self._home(module)._constructed(value, set(), None)
+        if cls not in self.idx.classes or name in self._foreign_attrs() or not _lists_names(self.idx, module):
+            return None
+        return cls
 
     def _binding_scope(self, name: str, fn: ast.AST) -> ast.AST | None:
         """The scope a name used in the code being walked is looked up in: the innermost of the nested
@@ -556,14 +589,16 @@ class _Inference:
     def _alternatives(self, node: ast.AST, local: set[str], me: tuple[str, str] | None) -> frozenset[str]:
         """The other objects a module-level name may be bound to (alternatives()), for a plain name that is
         not a local, a nested function's parameter or self."""
-        if not isinstance(node, ast.Name) or node.id in local or node.id in self._shadow or (me and node.id == me[0]):
+        if not isinstance(node, ast.Name) or node.id in local or node.id in self._shadow or (me and node.id == me[0]) \
+                or (self._class_scope is not None and not self._scopes and node.id in self._class_scope):
             return frozenset()
         return alternatives(self.idx, self.mod).get(node.id, frozenset())
 
     def _subclasses_overriding(self, cls: str, name: str) -> list[str]:
         out = []
         # only the classes that define a method of that name (the index by name), not every class
-        for c in {self.idx.funcs[m].cls for m in self.idx.methods_by_name.get(name, ())}:
+        self.idx.link()
+        for c in sorted(self.idx.owners_by_name.get(name, ())):     # a def or a class-body alias of it
             info = self.idx.classes.get(c) if c is not None else None
             if c is not None and info is not None and c != cls and name in info["methods"] \
                     and self._inherits(c, cls, set()):
@@ -586,6 +621,8 @@ class _Inference:
                 return f"self:{me[1]}"
             if node.id in local:
                 return None
+            if self._class_scope is not None and not self._scopes and node.id in self._class_scope:
+                return self._class_scope[node.id]              # bound above in the class body
             if node.id in self._rebound_classes and not raw:
                 return None                                    # a class name bound again: which one is it?
             hit = self.mod.aliases.get(node.id) or self.idx._star_lookup(self.mod, node.id, 0)
@@ -651,6 +688,16 @@ class _Inference:
 
 _WRITE_TYPES = frozenset(WRITES)
 _DICT_WRITTEN: weakref.WeakKeyDictionary[_Index, frozenset[str]] = weakref.WeakKeyDictionary()
+_LISTS_NAMES: weakref.WeakKeyDictionary[_Index, dict[str, bool]] = weakref.WeakKeyDictionary()
+
+
+def _lists_names(idx: _Index, module: str) -> bool:
+    """The scan can list every name the module binds (no star import, globals(), vars(), setattr, exec or
+    module __getattr__), so a name bound once there is bound once."""
+    per = _LISTS_NAMES.setdefault(idx, {})
+    if module not in per:
+        per[module] = idx._bound(module) is not None
+    return per[module]
 
 
 @dataclasses.dataclass
@@ -837,6 +884,10 @@ class _Subversions:
         if any(isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and st.name == "__getattribute__"
                for st in node.body):
             return True                                       # its instances' attributes come from that hook
+        if any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id in ("__new__", "__getattribute__")
+               for st in node.body if not isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+               for n in ast.walk(st)):
+            return True                                       # `__new__ = make`: a hook bound by assignment
         for k in node.keywords:
             if k.arg == "metaclass" and not self._plain_meta(k.value):
                 return True

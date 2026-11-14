@@ -163,13 +163,37 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   (`--accept-weakening`); fewer is a tightening. The SARIF fingerprint is `invSite/v2`.
 - Narrowing the scan can prove: a `getattr` with a computed name on an instance (or the class) of a
   class whose whole family the scan sees, where no attribute is named like a sink or door and none
-  can reach a sink without a door, or on an object outside the scanned code (`getattr(logging,
-  level)`), is not reported; reading only a namespace's names (`globals().keys()`, `name in
-  globals()`) is not reflection. Reflection elsewhere is still reported wherever it is (a module
-  that imports nothing can still be handed the sink). On jupyter_server's session door this, with
-  the unwrap change below, took 1 forbidden and 19 unresolved findings to 13 unresolved; on
-  google-adk's credential door 2 forbidden and 76 unresolved to 69 unresolved (besides 258
-  imports of `google.*` packages the roots lack).
+  can reach a sink without a door, and each base outside the scan is a plain one (the builtin types
+  and exceptions, `abc.ABC`, the `Enum` family, `NamedTuple`, `Generic`, pydantic's `BaseModel`), is
+  not reported; reading only a namespace's names (`globals().keys()`, `name in globals()`) is not
+  reflection. Reflection elsewhere is still reported wherever it is (a module that imports nothing
+  can still be handed the sink). A `getattr` with a computed name on a module or object outside the
+  scan (`getattr(logging, level)`, `getattr(builtins, name)`) is reported: a module's attributes
+  include the modules it imports (`logging.sys`, `logging.os`), its `__builtins__` and `__loader__`.
+  On jupyter_server's session door this, with the unwrap change below, took 1 forbidden and 19
+  unresolved findings to 17 unresolved (4 on tornado and traitlets bases); on google-adk's credential
+  door 2 forbidden and 76 unresolved to 77 unresolved (8 on `logging`, `litellm` and
+  `google.genai`; besides 258 imports of `google.*` packages the roots lack).
+- Values the scan did not see as values (fix round 26). A class-body alias of a method (`post =
+  record`) is that method under another name, a name used in a class body is looked up in the class
+  first, and any other class-body use of a method (`{"post": record}`, `property(record)`) is a value.
+  A dunder method or alias (other than `__init__`, `__new__`, `__post_init__`) is called by Python from
+  syntax (`a + b`, `x[k]`, `with`, `len()`, a format), so it is an entrypoint even when the door calls
+  it too. A decorator that may keep the function (`@app.post(...)`, `@atexit.register`, a registry
+  that appends it) is handed it as a value; known wrappers (`property`, `functools.lru_cache`,
+  `contextmanager`, inv guards, a scanned decorator that only returns its argument or a wrapper
+  calling it) are not, and an allowed route is not a new caller of itself. A scanned module used as a
+  value (`{"stripe": stripe_backend}`, `m = payments`, `self.mod = payments`, a class-body `import
+  payments`) hands out its functions, and a call on a receiver the scan cannot type may be a module's
+  function as well as a method. A class used as a value (`Thread(target=Sender)`, `self.op = Sender`)
+  runs its constructors when called (not when it is only tested: `isinstance`, a base, `except`,
+  `case`, a generic); a call of a class runs its `__new__`, `__post_init__` and metaclass `__call__`
+  too, and `type(x)(...)`, `x.__class__(...)`, `copy.copy(x)` and `dataclasses.replace(x)` run the
+  constructors of x's class (any class when x is untyped). A property read on an unknown receiver may
+  run a getter of that name; `operator.attrgetter`/`methodcaller` names are followed like a getattr's;
+  `__subclasses__` is reflection. A module-level name bound once to a scanned class's constructor
+  (`settings = Settings()`) is typed where the module lists all its names and no code sets it from
+  outside.
 - `forbidden/unwrap` ("calls a guarded function without its guard") is reported only when what is
   unwrapped can be a guarded door (a door or target of a rule, or a function with an inv guard);
   any other unwrap that bears on the rule is `unresolved/unwrap`, and `hasattr(f, "__wrapped__")` or
