@@ -7,7 +7,7 @@ import collections
 import dataclasses
 import pathlib
 
-from .astutil import _dotted
+from .astutil import CODE_ATTRS, _dotted
 from .contracts import SKIP_DIRS, Finding, Mediation, _Edge, _Fan, _OnPaths, _Site
 from .indexer import _Index
 from .reachability import _Call, _can_reach, _Pass, _reach, _search_order, door_only
@@ -366,6 +366,13 @@ class _Idioms:
         if s.what in ("setattr", "delattr") and lit in self.guarded_names:
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"{s.what} on {lit!r} replaces the sink or door at run time", s)
+        if s.what in ("setattr", "delattr") and lit.startswith("__") and obj in self.trusted and obj in self.idx.funcs:
+            return self._found("forbidden", "forbidden/monkeypatch",    # setattr(door, "__code__", ...)
+                               f"{s.what} on {lit!r} of {obj} replaces what the sink or door runs at run time", s)
+        if s.what in ("setattr", "delattr") and lit in CODE_ATTRS and obj.startswith("?"):
+            return self._found("unresolved", "unresolved/unknown-receiver",
+                               f"{s.what} on {lit!r} of a function the scan cannot name may replace what the "
+                               f"sink or a door runs at run time", s)
         if not lit and s.what == "getattr" and obj not in ("?attrgetter", "?methodcaller") and self._narrowed(s, obj):
             return None                                # provably cannot reach the sink (docs/scan.md)
         if not lit and s.what != "hasattr":
@@ -405,6 +412,10 @@ class _Idioms:
                 f"is held by {s.recv.partition(':')[2]}, used as a value here"
             return self._found("unresolved", "unresolved/sink-escapes",
                                f"the sink {s.detail} {how}, so calls through it cannot be traced", s)
+        if s.what == "attrpatch" and s.detail in CODE_ATTRS:
+            return self._found("unresolved", "unresolved/unknown-receiver",
+                               f"assigns or deletes .{s.detail} on a function the scan cannot name, which may "
+                               f"replace what the sink or a door runs at run time", s)
         if s.what == "attrpatch" and s.detail in self.sink_names:
             return self._found("unresolved", "unresolved/unknown-receiver",
                                f"assigns or deletes .{s.detail} on a receiver the scan cannot resolve, which may "

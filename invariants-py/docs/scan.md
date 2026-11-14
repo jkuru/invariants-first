@@ -69,8 +69,9 @@ Some values are not written as a name being read:
   `singledispatch`, `abc.abstractmethod`, `typing.overload` / `final` / `override`,
   `contextlib.contextmanager` / `asynccontextmanager`, an inv guard (`@inv.guard`, `@inv.model_call`,
   `@inv.edge`), and a scanned decorator whose first parameter is only returned, or only called (or
-  given to `functools.wraps`) by a nested wrapper it returns (`@deco(...)`: a factory returning such a
-  decorator). A property setter or deleter (`@total.setter`) runs on an assignment, so it is a value
+  given to `functools.wraps`) by a nested wrapper it returns that has no decorator but
+  `functools.wraps(...)` (a `@register` on the wrapper keeps it; `@deco(...)`: a factory returning
+  such a decorator). A property setter or deleter (`@total.setter`) runs on an assignment, so it is a value
   too, and a property read on a receiver the scan cannot type (`led.total`) is a name-matched call of
   every getter of that name. A class decorator other than the identity-preserving ones (see "Method
   calls") is handed the class: its constructors are used as values.
@@ -116,7 +117,13 @@ Names resolve by the object they are bound to, not by their spelling. A module-l
 imports, top-level definitions and star imports bind to more than one object (`if ...: from payments
 import _send as refund` / `else: from payments import refund`, the same under try/except
 ImportError, or `from shadow import *` where `shadow` re-exports `_send` as `refund`) may be any of
-them: a call through it is an edge to each scanned one, so the `_send` binding is a `bypass`.
+them: a call through it is an edge to each scanned one, so the `_send` binding is a `bypass`. So is
+a call in another module that imports the name (`from ops import refund`, `ops.refund(x)`), and each
+class such a name may be is used as a value where the name is. An import binds the scope it is in:
+one inside a function or class body is not an attribute of the module (`from ops import go` gets the
+module-level `go`, whatever a function in `ops` imports as `go`). A name that a body imports as an
+object the module scope, or another body, binds it to otherwise is not typed anywhere in the module
+(`S().save()` is name-matched), and a call or value through it reaches every one of them.
 
 ## Findings
 
@@ -179,7 +186,10 @@ A name is typed by the bindings of the scope it is looked up in. A binding in a 
 lambda or class types that scope only: `repo = Safe()` inside `def inner()` does not type a `repo`
 the enclosing function reads (a global, say), nor one a sibling function reads; a nested function
 that reads a name it does not bind sees the enclosing function's bindings; one that rebinds it
-(`nonlocal repo`) makes it untyped there.
+(`nonlocal repo`) makes it untyped there. What a nested function, lambda, class or comprehension binds
+(its parameters, `go = 1`, `for go in xs`) is local to it only, so it does not hide the enclosing
+function's own `go(...)`; a nested `global go` makes `go` the module's name inside that scope only. A
+match capture (`case repo`, `case [*repo]`, `case {**repo}`, `case Repo() as repo`) binds a local.
 
 A class whose construction or identity the code can alter is not trusted at all: calls on its
 instances, on its name and through `self` in its methods are name-matched (unresolved), never an
@@ -199,7 +209,8 @@ trusted from outside the scan, and a scanned decorator must return its first par
 rebind it (`def tidy(c): c = Repo; return c` is not trusted), `@register("x")` a nested function that
 does; any other decorator (third-party, a lambda, `functools.partial(...)`, any other call) may
 return another class; whose module-level name is bound more than once (`Safe = Repo` after the class, an import
-over it, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
+over it, a star import that exports another `Safe` (any star import of a module the scan does not read), a `case
+{**Safe}` capture, `global Safe` in a function: the name then resolves to nothing, as a runtime value); with a
 dunder or a computed name written on it (`Leaf.__bases__ = (...)`, `setattr(Safe, name, f)`) or the
 class itself rebound from outside (`ops.Safe = Repo`); or whose methods assign `self.__class__`. A
 method replaced or deleted on a class (`Safe.save = len`, `del Safe.save`, `setattr(Safe, "save", v)`,
@@ -254,7 +265,9 @@ method resolution order, through the scanned classes, of `C` and of every scanne
 these orders has a base the scan cannot see (a call such as `pick()`, a `getattr()`, `*bases`, an
 unresolved name, a third-party or excluded class; builtin and standard-library bases are known), or a
 class in an excluded module subclasses `C` or one of its subclasses, the call is name-matched
-(unresolved). A module-level alias bound once (`B = SinkRepo`) is resolved to its class, as a base.
+(unresolved). A module-level alias bound once (`B = SinkRepo`) is resolved to its class, as a base. A method is
+looked up as Python looks it up, along the C3 order: in `class D(B, C)` where `B` and `C` both
+subclass `A`, `D().m()` is `C.m` when `C` overrides `m`, not the `A.m` that `B` inherits.
 
 Receiver types also follow attribute chains. In `ctx.billing.refund()`, where `ctx: AgentContext`
 and `AgentContext` sets `self.billing = BillingService(...)` in its methods (or declares
@@ -319,7 +332,10 @@ reported). A subprocess that runs Python (`subprocess.run`, `Popen`, `call`, `ch
 `sys.argv`, a string containing `python` or a `.py` path in its command) is `unresolved/reflection`:
 the child process runs code the scan does not follow from that call; other commands are not reported. `copy.copy` and `copy.deepcopy` are not reported themselves: what a
 `__reduce__` returns is (`pickle.loads` or the sink as a value, `getattr`, ...). Assigning a
-dunder of a sink or door (`door.__code__ = other.__code__`) is `forbidden/monkeypatch`. Reflective
+dunder of a sink or door (`door.__code__ = other.__code__`, `setattr(door, "__code__", c)`,
+`delattr(door, "__defaults__")`) is `forbidden/monkeypatch`; writing `__code__`, `__defaults__` or
+`__kwdefaults__` on a function the scan cannot name (`f = door; f.__code__ = c`, a parameter) is
+`unresolved/unknown-receiver`. Reflective
 builtins taken as a value (`g = getattr`, then `g(obj, name)()`; also `setattr`, `eval`, `vars`,
 `importlib.import_module`, `operator.methodcaller`, `pickle.loads`, `pydoc.locate`, `inspect.unwrap`)
 are `unresolved/reflection`, and an import alias

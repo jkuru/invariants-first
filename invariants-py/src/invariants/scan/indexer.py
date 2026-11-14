@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Any
 
-from .astutil import DEFS, IMPORTS, _dotted, _number, _walk_of
+from .astutil import DEFS, IMPORTS, _dotted, _number, _own_nodes, _walk_of
 from .contracts import _Func, _Module
 
 _BUILTINS = frozenset(dir(builtins))
@@ -178,21 +178,25 @@ class _Index:
         self._linked = False
         self._class_names = None
         self.funcs[f"{name}.<module>"] = _Func(f"{name}.<module>", name, file, root, 1, 0, None)
+        # an import binds the scope it is in: one in a function or class body is not a module attribute
+        # (`from ops import go` sees the module's own go), so it may not shadow a module-scope binding
+        top_level = {id(n) for n in _own_nodes(tree) if isinstance(n, IMPORTS)}
         for node in _walk_of(tree, *IMPORTS):
+            into = mod.aliases if id(node) in top_level else mod.nested
             if isinstance(node, ast.Import):
                 for a in node.names:
                     if a.asname:
-                        mod.aliases[a.asname] = self.real(a.name)
+                        into[a.asname] = self.real(a.name)
                     else:
                         top = a.name.split(".")[0]
-                        mod.aliases[top] = top
+                        into[top] = top
             elif isinstance(node, ast.ImportFrom):
                 src = self._absolute(mod, node)
                 for a in node.names:
                     if a.name == "*":
                         mod.star.append(src)
                     else:
-                        mod.aliases[a.asname or a.name] = f"{src}.{a.name}" if src else a.name
+                        into[a.asname or a.name] = f"{src}.{a.name}" if src else a.name
         self._defs(mod, tree.body, prefix=name, cls=None)
 
     def _absolute(self, mod: _Module, node: ast.ImportFrom) -> str:
@@ -555,25 +559,16 @@ class _Index:
                     return hit
         return None
 
-    def method(self, cls: str, name: str, seen: set[str] | None = None) -> str | None:
-        """A method by name on cls or its project-local bases."""
-        if seen is None:
-            self.link()
-            key = (cls, name)
-            if key not in self._methods:
-                self._methods[key] = self.method(cls, name, set())
-            return self._methods[key]
-        if cls in seen or cls not in self.classes:
-            return None
-        seen.add(cls)
-        info = self.classes[cls]
-        if name in info["methods"]:
-            return info["methods"][name]
-        for fq in self.bases(cls):
-            hit = self.method(fq, name, seen)
-            if hit:
-                return hit
-        return None
+    def method(self, cls: str, name: str) -> str | None:
+        """A method by name on cls or its project-local bases: the first along cls's method resolution order
+        (C3, as Python looks it up; fix round 27: not depth first, so in `class D(B, C)` with B and C both
+        subclasses of A, C's override comes before A's method that B inherits)."""
+        self.link()
+        key = (cls, name)
+        if key not in self._methods:
+            self._methods[key] = next((self.classes[c]["methods"][name] for c in (self.mro(cls) or [cls])
+                                       if c in self.classes and name in self.classes[c]["methods"]), None)
+        return self._methods[key]
 
     def bases(self, cls: str) -> list[str]:
         """The canonical names of a class's bases, as written (`Base[T]`, a generic base, is Base; a
@@ -600,7 +595,7 @@ class _Index:
         mod = self.modules[module]
         head, _, rest = dotted.partition(".")
         here = f"{mod.name}.{head}"
-        first = mod.aliases.get(head) or (
+        first = mod.aliases.get(head) or mod.nested.get(head) or (
             f"builtins.{head}" if head in _BUILTINS and here not in self.classes else here)
         return self.canon(".".join(filter(None, [first, rest])))
 
@@ -812,7 +807,7 @@ def _full(mod: _Module, node: ast.AST) -> str | None:
     if d is None:
         return None
     head, _, rest = d.partition(".")
-    return ".".join(filter(None, [mod.aliases.get(head, head), rest]))
+    return ".".join(filter(None, [mod.aliases.get(head) or mod.nested.get(head, head), rest]))
 
 
 # calls and decorators that only define things at import time (constants, dataclasses, typing, logging)

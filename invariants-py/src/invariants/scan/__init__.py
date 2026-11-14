@@ -415,7 +415,7 @@ def _guarded(idx: _Index, doc: dict[str, Any]) -> frozenset[str]:
     homes: dict[str, _Inference] = {}
     # only a module that imports from invariants (or star-imports) can name an inv guard
     may = {m for m, mod in idx.modules.items() if mod.star or any(
-        v.split(".")[0] == "invariants" for v in mod.aliases.values())}
+        v.split(".")[0] == "invariants" for v in [*mod.aliases.values(), *mod.nested.values()])}
     for fid, f in idx.funcs.items():
         node = f.node
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.decorator_list or fid in out \
