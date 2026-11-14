@@ -7,6 +7,8 @@ or event loops of its own.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import copy
 import dataclasses
 import inspect
@@ -152,8 +154,17 @@ async def acheck(call: _Call, timing: str, result: Any = None) -> None:
 
 
 # --- @inv.model_call ----------------------------------------------------------------------------
+# What an integration keeps for one model_call invocation (a chat model's current conversation): the
+# run's own dict while the run drives its body, None outside any model call. A model call nested in a
+# body (the same chat model asked something else first) has its own, and the outer one's is back when
+# it returns, so the outer run's feedback continues the outer conversation.
+RUN_STATE: contextvars.ContextVar[dict[Any, Any] | None] = contextvars.ContextVar("invariants_model_run",
+                                                                                 default=None)
+
+
 class _ModelRun:
-    """The state of one model_call invocation: parse -> abstain -> bad, with bounded retries.
+    """The state of one model_call invocation: parse -> abstain -> bad, with bounded retries (format
+    retries and semantic resamples only at effective enforce: below it the model is called once).
 
     A rule that is retired, whose model_call enforcer is in effective mode off, or that is ablated
     is passive: the model is called once and its reply parsed into the closed schema, and nothing
@@ -162,7 +173,7 @@ class _ModelRun:
 
     __slots__ = ("started", "reg", "providers", "rule", "i", "enf", "passive", "sig", "bound", "schema",
                  "refined", "base", "fb", "prov", "fmt_left", "sem_left", "ab", "record", "feedback", "fed_back",
-                 "attempt_started")
+                 "attempt_started", "state")
 
     def __init__(self, rule_id: str, schema: Any, refined: Any, sig: inspect.Signature,
                  a: tuple[Any, ...], kw: dict[str, Any]) -> None:
@@ -194,6 +205,16 @@ class _ModelRun:
         self.feedback: str | None = None               # the full text sent to the model as inv_feedback
         self.fed_back: str | None = None               # what the attempt record says was sent (value-free)
         self.attempt_started = self.started            # when the current attempt's model call began
+        self.state: dict[Any, Any] = {}                # RUN_STATE while this run drives its body
+
+    @contextlib.contextmanager
+    def scope(self) -> Iterator[None]:
+        """RUN_STATE is this run's state within the block (set and reset in one context)."""
+        token = RUN_STATE.set(self.state)
+        try:
+            yield
+        finally:
+            RUN_STATE.reset(token)
 
     def call_args(self) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """(args, kwargs) for the next model call, with inv_feedback set when declared."""
@@ -232,7 +253,9 @@ class _ModelRun:
             self.record.append({"attempt": len(self.record) + 1, "outcome": "parse_error", "error": told,
                                 "fed_back": self.fed_back})
             out = Outcome("parse_error", rule.id, error=told)
-            if self.fmt_left:
+            # below effective enforce (detect, a candidate or contested rule, a demoted one) one model call:
+            # no retry and no feedback; the parse_error is recorded and the call goes on (as an abstain does)
+            if self.fmt_left and reg.mode(rule, self.enf) == "enforce":
                 self.fmt_left -= 1
                 send = self.fb.get("format", "parser_error") == "parser_error"
                 self.feedback = e.feedback if send else None      # the model sees the full text

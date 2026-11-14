@@ -72,8 +72,11 @@ one. The feedback turn reads `That reply could not be used: <feedback>` and asks
 JSON object (`feedback_template=` changes it). The assistant turn is sent back as the content blocks
 the API returned, thinking blocks included, so a follow-up turn is valid for a model that reasons.
 
-The current conversation is context-local (a `contextvar`), per model object: each thread and each
-asyncio task keeps its own, and a new invocation starts fresh. Call the model from the body itself,
+The current conversation belongs to the model_call invocation whose body is running, per model
+object: a model call nested in the body (another `@inv.model_call` the body calls first, on the same
+model) has its own, and the outer invocation's feedback continues the outer conversation. Outside a
+model call it is context-local (a `contextvar`): each thread and each asyncio task keeps its own,
+and a new invocation starts fresh. Call the model from the body itself,
 not from a worker thread the body starts. A feedback text with no conversation to continue, or for
 another prompt than the one the conversation opened with, raises `ConversationError`.
 

@@ -47,7 +47,7 @@ def resolve(target: str, what: str = "target") -> Any:
         obj = getattr(obj, p)
         have = f"{have}.{p}"
     if top is not None and len(parts) > i:
-        _module_inside(obj, have, f"{what} {target}", top)
+        _ends_inside(obj, have, f"{what} {target}", top)
     return obj
 
 
@@ -80,7 +80,7 @@ def resolve_ref(ref: str, what: str, public: bool = False) -> Any:
         obj = getattr(obj, part)
         have = f"{have}.{part}"
     if top is not None and have != mod_name:
-        _module_inside(obj, have, what, top)
+        _ends_inside(obj, have, what, top)
     return obj
 
 
@@ -105,10 +105,36 @@ def _stays_inside(obj: Any, have: str, what: str, top: pathlib.Path) -> None:
                         f"references to; the attribute path is not followed through it")
 
 
-def _module_inside(obj: Any, have: str, what: str, top: pathlib.Path) -> None:
-    """Under confinement, an attribute path that ends at a module ends at one inside the root."""
-    if inspect.ismodule(obj):
+# values with no state of their own worth confining (and that small-int and string caching would make
+# identical to some outside module's attribute)
+_SCALARS = (type(None), bool, int, float, complex, str, bytes)
+
+
+def _ends_inside(obj: Any, have: str, what: str, top: pathlib.Path) -> None:
+    """Under confinement, where an attribute path ends (one hop or more) is the project's: a module,
+    class or function defined inside the root (not `os`, `os.getcwd`, a class of an installed
+    package), and any other object not one a module loaded from outside the root holds (`os.environ`,
+    `sys.modules`, imported into a project module as `from os import environ`). An object the
+    project's code built (a dict, a FastAPI app) has no file of its own, and passes."""
+    if inspect.ismodule(obj) or inspect.isclass(obj) or inspect.isroutine(obj):
         _stays_inside(obj, have, what, top)
+    elif not isinstance(obj, _SCALARS) and _held_outside(obj, top):
+        raise LoadError(f"{what}: {have} is an object of a module outside {top}, the --root `inv mcp` "
+                        f"confines references to; not used")
+
+
+def _held_outside(obj: Any, top: pathlib.Path) -> bool:
+    """obj is an attribute of a module loaded from outside top (the standard library, an installed package)."""
+    for mod in list(sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if isinstance(f, str) and inside(f, top):
+            continue
+        try:
+            if any(v is obj for v in list(vars(mod).values())):
+                return True
+        except TypeError:                                # a module stand-in without a __dict__
+            continue
+    return False
 
 
 def _is_this_module(e: ModuleNotFoundError, name: str) -> bool:

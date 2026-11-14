@@ -119,10 +119,11 @@ def test_detect_mode_verdict_refused_by_enforcing_edge(reg):
     assert c is not None and c.verdict == "violation" and e is not None
 
 
-def test_detect_mode_exhausted_parse_returns_parse_error_verdict(reg):
+def test_detect_mode_parse_error_is_one_call_with_parse_error_verdict(reg):
+    # below enforce there are no format retries: the model is called once, the call goes on
     with inv.using(load_variant(lambda d: rule(d, "R-7")["enforcers"][0].update(mode="detect"))):
         c, _ = model("x", "y", "z")
-    assert c is not None and c.verdict == "parse_error" and c.value == "z"
+    assert c is not None and c.verdict == "parse_error" and c.value == "x" and c.attempts == 1
 
 
 def test_off_mode_skips_the_rule_and_the_edge_still_checks(reg):

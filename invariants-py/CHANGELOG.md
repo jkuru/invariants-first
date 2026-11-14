@@ -78,7 +78,9 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
 - `@inv.guard("ID")` checks a target's rules before (`pre_effect`) or after (`post_effect`) the
   call, sync or async; outcomes are `ok`, `violation`, `rule_error` and `parse_error`, a rule error
   is never a violation, and `on_error` decides it. Errors (`Rejected`, `Halted`, `Escalation`,
-  `Routed`) never carry the values a rule read.
+  `Routed`) never carry the values a rule read: `.bound` is the sorted names the rule bound
+  (`("args",)`), and `.outcome` holds no values (`.outcome.bound` is `None`). The values go only to
+  the review a route or escalate opens (the `Handoff`). `.bound` used to be the values themselves.
 - `@inv.model_call` parses a model reply into a closed schema (a dataclass, a `{field: type}` map or
   a pydantic model with `extra="forbid"`), retries a format failure with the parser's message,
   resamples a reply that breaks a rule without showing the model the rule (never when the rule
@@ -88,7 +90,13 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   decision for `--inv-ablate`) before it opens the review and raises `Escalation` (whose `outcome`
   is that abstain). Below effective `enforce` (detect, a candidate rule) an
   abstain never blocks: it is recorded (outcome `abstain`, action `proceed`) and the call returns
-  verdict `abstain`, sync and async alike. A dataclass or pydantic reply field that a `Checked`
+  verdict `abstain`, sync and async alike. Format retries and semantic resamples run only at
+  effective `enforce` too: below it a reply that does not parse is one model call, with no retry and
+  no feedback; its `parse_error` is recorded (action `proceed`) and the call returns verdict
+  `parse_error` (format retries used to run in every mode). A bare `list`, `dict`, `tuple`, `set` or
+  `frozenset` schema field is read like `Any`: a NaN or Infinity anywhere in it is a `parse_error`,
+  and the reply holds a deep copy (it used to keep the value handed over, unchecked, so a change
+  made to it after the check was seen). A dataclass or pydantic reply field that a `Checked`
   attribute would shadow (`value`, `attempts`, `rule`, `verdict`, `_inv_*`, an attribute of the
   subclass) is a `TypeError` at decoration, and so is a pydantic `@computed_field` or a property
   (`property`, `functools.cached_property`) of the reply class with such a name.
@@ -119,6 +127,18 @@ What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML; the 
   runs async). A model call over a sync wrapper of an async def still runs async.
 - `JsonlReviews` writes an int too long for decimal text as `"<int 0x...>"`, so a value's size never
   stops a review from opening.
+- A provider argument that is unhashable (a list) is cached for the call by the identity of the very
+  object, kept alive while the cache is: another argument made later at the same address never reads
+  the first one's value (the cache keyed on a bare `id()`).
+- An `integrations.anthropic` model's current conversation belongs to the model_call invocation whose
+  body is running: a model call nested in the body (the same model asked something else first) has
+  its own, and the outer call's feedback continues the outer conversation (the nested call used to
+  replace it, so the feedback went to the wrong conversation or raised `ConversationError`).
+- `inv.verify()` checks a guarded rule without `subject.target` against every guard point it has an
+  enforcer at: a plain `@inv.guard` (decorator point only) on a rule that also has a `middleware`
+  enforcer is miswired (it passed, and the middleware enforcer was never evaluated), as it already
+  was for a rule's target. `integrations.fastapi.verify_routes()` checks the same of each route's
+  handler.
 - Providers are read at the enforcer's timing; `old_self` rules compare a target's state before and
   after the call.
 - Registries: `inv.load()` installs a rule file in the current registry; `inv.isolated()`,

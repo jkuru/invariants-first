@@ -34,10 +34,13 @@ def _edge_problem(rule: Rule, w: Any) -> str | None:
 
 def _targetless_problems(reg: Registry, rule: Rule, w: Any) -> list[str]:
     """A guard on a rule without subject.target: the load-time binding checks, against the function
-    the guard wraps (the only target there is)."""
+    the guard wraps (the only target there is), and the guard evaluates every guard point (decorator,
+    middleware) the rule has an enforcer at: one it does not is never evaluated there."""
     from ..loader import binding_problem
     points = set(getattr(w, "__inv_points__", ("decorator",)))
     out = []
+    if getattr(w, "__inv_kind__", "") == "guard" and (missing := _unevaluated(rule, points)):
+        out.append(f"{rule.id}: the guard on {w.__qualname__} does not evaluate point {', '.join(missing)}")
     for i, e in enumerate(rule.enforcers):
         if e.get("point") in points:
             try:
@@ -47,6 +50,12 @@ def _targetless_problems(reg: Registry, rule: Rule, w: Any) -> list[str]:
             if why:
                 out.append(why)
     return out
+
+
+def _unevaluated(rule: Rule, points: Iterable[str]) -> list[str]:
+    """The guard points (decorator, middleware) rule has an enforcer at that a guard evaluating points
+    does not evaluate."""
+    return sorted({str(e.get("point")) for e in rule.enforcers} & GUARD_POINTS - set(points))
 
 
 def _resolves(key: str) -> bool:

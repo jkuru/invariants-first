@@ -237,44 +237,46 @@ def model_call(rule_id: str, schema: Any, *, returns: Any = None) -> Any:
             @functools.wraps(fn)
             async def awrapper(*a: Any, **kw: Any) -> Any:
                 run = _ModelRun(rule_id, schema, refined, sig, a, kw)
-                if run.passive:
-                    ca, ckw = run.call_args()
-                    return run.passive_result(await fn(*ca, **ckw))
-                steps = run.steps(prefetch=True)     # the retry loop (plan.py); this only calls and awaits
-                want, v = next(steps)
-                while want != "finish":
-                    if want == "call":
-                        got = await fn(*v[0], **v[1])
-                    elif want == "prefetch":
-                        got = await run.aprefetch(v)
-                    else:
-                        got = await run.reg.ahand_off(v)
-                    want, v = steps.send(got)
-                return await run.afinish(*v)
+                with run.scope():
+                    if run.passive:
+                        ca, ckw = run.call_args()
+                        return run.passive_result(await fn(*ca, **ckw))
+                    steps = run.steps(prefetch=True)     # the retry loop (plan.py); this only calls and awaits
+                    want, v = next(steps)
+                    while want != "finish":
+                        if want == "call":
+                            got = await fn(*v[0], **v[1])
+                        elif want == "prefetch":
+                            got = await run.aprefetch(v)
+                        else:
+                            got = await run.reg.ahand_off(v)
+                        want, v = steps.send(got)
+                    return await run.afinish(*v)
             wrapper: Any = awrapper
         else:
             @functools.wraps(fn)
             def swrapper(*a: Any, **kw: Any) -> Any:
                 run = _ModelRun(rule_id, schema, refined, sig, a, kw)
-                if run.passive:
-                    ca, ckw = run.call_args()
-                    raw = fn(*ca, **ckw)
-                    if _awaitable(raw, fn):
-                        return _apassive(run, raw)
-                    return run.passive_result(raw)
-                steps = run.steps(prefetch=False)    # the retry loop (plan.py); this only calls
-                want, v = next(steps)
-                first = True
-                while want != "finish":
-                    got = fn(*v[0], **v[1]) if want == "call" else run.reg.hand_off(v)
-                    if first and _awaitable(got, fn):
-                        # a sync wrapper over an async def: nothing has been judged yet; drive the
-                        # run asynchronously (as an async def would be), awaiting this first reply
-                        steps.close()
-                        return _adrive(run, fn, got)
-                    first = False
-                    want, v = steps.send(got)
-                return run.finish(*v)
+                with run.scope():
+                    if run.passive:
+                        ca, ckw = run.call_args()
+                        raw = fn(*ca, **ckw)
+                        if _awaitable(raw, fn):
+                            return _apassive(run, raw)
+                        return run.passive_result(raw)
+                    steps = run.steps(prefetch=False)    # the retry loop (plan.py); this only calls
+                    want, v = next(steps)
+                    first = True
+                    while want != "finish":
+                        got = fn(*v[0], **v[1]) if want == "call" else run.reg.hand_off(v)
+                        if first and _awaitable(got, fn):
+                            # a sync wrapper over an async def: nothing has been judged yet; drive the
+                            # run asynchronously (as an async def would be), awaiting this first reply
+                            steps.close()
+                            return _adrive(run, fn, got)
+                        first = False
+                        want, v = steps.send(got)
+                    return run.finish(*v)
             wrapper = swrapper
 
         wrapper.__inv_rules__, wrapper.__inv_kind__ = (rule_id,), "model_call"
@@ -299,27 +301,29 @@ def _awaitable(raw: Any, fn: Any) -> bool:
 
 
 async def _apassive(run: _ModelRun, raw: Any) -> Any:
-    return run.passive_result(await raw)
+    with run.scope():
+        return run.passive_result(await raw)
 
 
 async def _adrive(run: _ModelRun, fn: Any, first: Any) -> Any:
     """The async run of a model call whose sync-path body returned the coroutine first: each reply
     is awaited and async providers are awaited, as for an async def body."""
-    steps = run.steps(prefetch=True)
-    want, v = next(steps)                    # ("call", ...): its reply is the first coroutine
-    got: Any = await first
-    want, v = steps.send(got)
-    while want != "finish":
-        if want == "call":
-            got = fn(*v[0], **v[1])
-            if inspect.isawaitable(got) and type(got) not in _PLAIN_RESULTS:
-                got = await got
-        elif want == "prefetch":
-            got = await run.aprefetch(v)
-        else:
-            got = await run.reg.ahand_off(v)
+    with run.scope():
+        steps = run.steps(prefetch=True)
+        want, v = next(steps)                    # ("call", ...): its reply is the first coroutine
+        got: Any = await first
         want, v = steps.send(got)
-    return await run.afinish(*v)
+        while want != "finish":
+            if want == "call":
+                got = fn(*v[0], **v[1])
+                if inspect.isawaitable(got) and type(got) not in _PLAIN_RESULTS:
+                    got = await got
+            elif want == "prefetch":
+                got = await run.aprefetch(v)
+            else:
+                got = await run.reg.ahand_off(v)
+            want, v = steps.send(got)
+        return await run.afinish(*v)
 
 
 def _refined(fn: Any, sig: inspect.Signature, returns: Any, rule_id: str) -> Any:
