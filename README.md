@@ -95,4 +95,6 @@ python -m pytest tests -q
 ../apps/pool-service/ci.sh && ../apps/fact-pipeline/ci.sh && ../apps/support-agent/ci.sh
 ```
 
-Licensed under Apache-2.0; see [`LICENSE`](LICENSE) (each package carries the same file).
+Built by Claude, Gemini and Jerry Kuru.
+
+Licensed under Apache-2.0; see [`LICENSE`](LICENSE) (each package carries the same file) and [`NOTICE`](NOTICE).

@@ -522,6 +522,10 @@ with a model. Each app's model runs on a deterministic fake by default; `APP_MOD
 trace (the committed traces are hand-written), Claude, or a recording
 ([docs/models.md](docs/models.md)). Each is a standalone project whose `ci.sh` runs every check.
 
+## Credits
+
+Built by Claude, Gemini and Jerry Kuru.
+
 ## Contributing
 
 `pip install -e ../packages/invariants-cel -e ../packages/invariants-scan -e ../packages/invariants-schema-diff -e '.[dev,cel]'`, then run the suite on each CEL backend

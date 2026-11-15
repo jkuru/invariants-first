@@ -14,6 +14,8 @@ description: "Presentation for 11/18 — value laws, path laws, runtime defense-
 
 *Presentation — Nov 18, 2026*
 
+Built by Claude, Gemini and Jerry Kuru
+
 <!--
 Speaker Notes (0:00 - 1:00):
 - Open with the title and thesis immediately: invariants-first is a one-way ratchet for API rules.

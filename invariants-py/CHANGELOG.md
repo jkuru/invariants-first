@@ -12,7 +12,7 @@ PyPI trusted publishing) is not settled yet: see "Before publishing" in
 
 The publishing metadata holds dummy values on `example.com` (`[project.urls]`, the SARIF
 `informationUri`); the release workflow refuses to upload while any remains. The authors are
-settled: Claude, Gemini and Jerry, by name only, in all four `pyproject.toml`.
+settled: Claude, Gemini and Jerry Kuru, by name only, in all four `pyproject.toml`.
 
 What 0.1.0 ships, for Python 3.11 to 3.14. The core depends only on PyYAML and the three libraries
 below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-expr engine, now

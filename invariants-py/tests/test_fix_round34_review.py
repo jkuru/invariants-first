@@ -15,7 +15,7 @@ packages/invariants-cel/tests/test_fix_round34_cel.py; this file has the others.
 3d. A pydantic model's @computed_field was readable by name (`p.z`) but missing from the model read
    whole (size(), ==, in, the macros), on both backends: _fields read model_fields only. A record
    is now the map of its fields and computed fields, as model_dump() has them.
-4. The authors are settled (Claude, Gemini, Jerry; names only); the URLs are still example.com
+4. The authors are settled (Claude, Gemini, Jerry Kuru; names only); the URLs are still example.com
    dummies, and the release guard still refuses on them, without relying on any email address.
 """
 from __future__ import annotations
@@ -175,7 +175,7 @@ def test_a_computed_field_that_raises_is_a_rule_error(backend):
 # ---- 4. release metadata -------------------------------------------------------------------------------
 
 PYPROJECTS = [ROOT / "pyproject.toml", *sorted((REPO / "packages").glob("*/pyproject.toml"))]
-AUTHORS = [{"name": "Claude"}, {"name": "Gemini"}, {"name": "Jerry"}]
+AUTHORS = [{"name": "Claude"}, {"name": "Gemini"}, {"name": "Jerry Kuru"}]
 
 
 def test_the_authors_are_the_owners_choice_names_only():

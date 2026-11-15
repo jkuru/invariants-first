@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{name = "Claude"}, {name = "Gemini"}, {name = "Jerry"}]
+authors = [{name = "Claude"}, {name = "Gemini"}, {name = "Jerry Kuru"}]
 # the three libraries are distributions of their own (../packages), released with this one
 dependencies = ["pyyaml>=6", "invariants-cel==0.1.0", "invariants-scan==0.1.0", "invariants-schema-diff==0.1.0"]
 keywords = ["invariants", "contracts", "cel", "guards", "llm", "pytest"]

@@ -63,8 +63,8 @@ while this section exists or any `example.com` value remains in `pyproject.toml`
       `https://example.com/invariants-first` (in `packages/invariants-scan/src/invariants_scan/sarif.py`); set it to the
       project URL.
 - [x] **Authors.** Settled by the owner: `authors` in `[project]` (all four `pyproject.toml`) is
-      `[{name = "Claude"}, {name = "Gemini"}, {name = "Jerry"}]`, names only, with no email address
-      (Jerry built it). Add `maintainers` only if the owner names them. The `LICENSE` appendix's
+      `[{name = "Claude"}, {name = "Gemini"}, {name = "Jerry Kuru"}]`, names only, with no email address
+      (Jerry Kuru built it with Claude and Gemini). Add `maintainers` only if the owner names them. The `LICENSE` appendix's
       copyright line is the Apache template and needs no change, but a `NOTICE` file may name the
       copyright holder.
 - [ ] **PyPI trusted publishing.** Create the four projects on PyPI (and TestPyPI), register this
