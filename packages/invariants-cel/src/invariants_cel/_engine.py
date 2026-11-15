@@ -71,7 +71,7 @@ _KINDS: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), k)
     (r'no value with name "([A-Za-z_][A-Za-z0-9_.]*)"', "undeclared reference"),
     (r"index\b", "index out of range"),
     (r"(?:applying )?select\b|field selection", "field selection on a value that has no fields"),
-    (r"integer overflow|(?:[a-z0-9]+ )?out of (?:int64 |uint64 )?range|[a-z0-9]+ overflow", "value out of range"),
+    (r"integer overflow|(?:[a-z0-9]+ ){0,2}out of (?:int64 |uint64 )?range|[a-z0-9]+ overflow", "value out of range"),
     (r"cannot convert|type conversion error|[a-z]+\(\): cannot convert", "conversion failed"),
     (r"non-finite number", "non-finite number (NaN or Infinity)"),
 ))
@@ -226,9 +226,15 @@ def mark_finite(n: Node, inside: bool = False) -> Node:
         return ("fin_double", m[3][0])
     if m[0] == "call" and m[1] in ("double", "int") and m[2] is None:
         return ("fin", m)       # int(): its result is checked for an int past 2^53 (see expr_python)
-    if m[0] == "call" and m[1] == "uint" and m[2] is None and len(m[3]) == 1 and m[3][0][0] != "lit":
+    if m[0] == "call" and m[1] == "uint" and m[2] is None and len(m[3]) == 1 and not _uint_literal(m[3][0]):
         return ("fin", m)       # uint() of a value (5u is a literal: its text is checked statically)
     return m
+
+
+def _uint_literal(x: Node) -> bool:
+    """True for the argument of a uint literal (5u parses as uint(5)): an int literal. uint("9007199254740993")
+    has a literal argument too, but a string's value is known only once converted (fix round 35)."""
+    return x[0] == "lit" and type(x[1]) is int
 
 
 TEXT_FUNCS = ("contains", "startsWith", "endsWith", "matches")    # the string-size limit applies (values.py)
@@ -245,7 +251,7 @@ def has_comprehension(n: Node) -> bool:
 def needs_finite(n: Node) -> bool:
     """True if the tree has arithmetic, a double() or int() call, or a uint() call on a value."""
     if (n[0] == "bin" and n[1] in ARITH) or (n[0] == "call" and n[1] in ("double", "int")) \
-            or (n[0] == "call" and n[1] == "uint" and len(n[3]) == 1 and n[3][0][0] != "lit"):
+            or (n[0] == "call" and n[1] == "uint" and len(n[3]) == 1 and not _uint_literal(n[3][0])):
         return True
     return any(needs_finite(c) for c in subset.kids(n))
 
@@ -385,7 +391,7 @@ def unparse(n: Node, rename: Mapping[str, str], fin: Mapping[str, str] | None = 
                 return fin[name].format(u(s), u(t))
 
             def checked(x: Node, key: str = "text") -> str:   # matches(): the engine's, on checked operands
-                return u(x) if _is_text(x) else fin.get(key, fin["text"]).format(u(x))
+                return fin.get(key, fin["text"]).format(u(x))  # (a literal too, as on the subset: fix round 35)
             return f"{checked(s)}.{name}({checked(t, 'pattern')})"
         if name == "inv.unique_by":
             lst, var, body = args[0], args[1], args[2]
@@ -434,30 +440,82 @@ _MAX_DEPTH = 64
 
 def _fields(o: Any) -> dict[str, Any] | None:
     """Public data fields of a non-mapping object, or None if it is not record-like. A pydantic
-    model's are its fields and then its computed fields (@computed_field), as model_dump() has them."""
+    model's are its fields, then its computed fields (@computed_field) and its extra fields
+    (extra="allow"), as model_dump() has them; a dataclass's are its fields; a plain object's are its
+    instance attributes and slots (its class's and its bases'). Each then has its public @propertys,
+    which a rule reads by name (_step) too: so `o.y` and `size(o)` in one clause read the same record
+    on every backend (fix round 35: cel-expr, which converts o whole for size(), had no o.y)."""
     if dataclasses.is_dataclass(o) and not isinstance(o, type):
-        return {f.name: getattr(o, f.name) for f in dataclasses.fields(o) if not f.name.startswith("_")}
+        return _with_properties(o, {f.name: getattr(o, f.name) for f in dataclasses.fields(o)
+                                    if not f.name.startswith("_")})
     mf = getattr(type(o), "model_fields", None)
     if isinstance(mf, dict):
         model = {k: getattr(o, k) for k in mf if not k.startswith("_")}
         computed = getattr(type(o), "model_computed_fields", None)
         for k in computed if isinstance(computed, dict) else ():
             if not k.startswith("_"):
-                try:
-                    model[k] = getattr(o, k)
-                except Exception as e:      # a computed field that fails is an evaluation error
-                    raise raised(f"reading {k!r}", e) from e
-        return model
+                model[k] = _read(o, k)
+        extra = getattr(o, "__pydantic_extra__", None)      # extra="allow": model_dump() has them too
+        for k, v in extra.items() if isinstance(extra, dict) else ():
+            if isinstance(k, str) and not k.startswith("_") and k not in model:
+                model[k] = v
+        return _with_properties(o, model)
     if values.listlike(o):              # a sequence or iterable is never the map of its attributes
         raise values.listlike_error(o)
     out: dict[str, Any] = {}
     for k, v in getattr(o, "__dict__", {}).items():
         if not k.startswith("_") and not callable(v):
             out[k] = v
-    for k in getattr(type(o), "__slots__", ()):
-        if not k.startswith("_") and hasattr(o, k) and not callable(getattr(o, k)):
+    for k in _slots(type(o)):
+        if not k.startswith("_") and k not in out and hasattr(o, k) and not callable(getattr(o, k)):
             out[k] = getattr(o, k)
+    out = _with_properties(o, out)
     return out if (out or hasattr(o, "__dict__") or hasattr(type(o), "__slots__")) else None
+
+
+def _read(o: Any, k: str) -> Any:
+    try:
+        return getattr(o, k)
+    except Exception as e:              # a computed field or property that fails is an evaluation error
+        raise raised(f"reading {k!r}", e) from e
+
+
+def _slots(cls: type) -> list[str]:
+    """The slot names of cls and its bases (a __slots__ that is one string is one slot: fix round 35)."""
+    out: list[str] = []
+    for c in getattr(cls, "__mro__", (cls,)):
+        s = c.__dict__.get("__slots__", ())
+        out.extend([s] if isinstance(s, str) else s)
+    return out
+
+
+_PROPERTIES: dict[type, tuple[str, ...]] = {}
+
+
+def _properties(cls: type) -> tuple[str, ...]:
+    """The public @property names of cls and its bases, never pydantic's BaseModel API
+    (values.api_names: model_extra, model_fields_set, ...). Cached per class."""
+    got = _PROPERTIES.get(cls)
+    if got is None:
+        api = values.api_names(cls)
+        names: dict[str, None] = {}
+        for c in reversed(getattr(cls, "__mro__", (cls,))):
+            for k, v in vars(c).items():
+                if isinstance(v, property) and not k.startswith("_") and k not in api:
+                    names[k] = None
+        got = tuple(names)
+        if len(_PROPERTIES) < 4096:
+            _PROPERTIES[cls] = got
+    return got
+
+
+def _with_properties(o: Any, out: dict[str, Any]) -> dict[str, Any]:
+    for k in _properties(type(o)):
+        if k not in out:
+            v = _read(o, k)
+            if not callable(v):
+                out[k] = v
+    return out
 
 
 Leaf = Callable[[Any], Any]

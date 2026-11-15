@@ -281,12 +281,31 @@ def parse_timestamp(s: str) -> datetime.datetime:
     frac = (frac or "").ljust(9, "0")
     if frac[6:] != "000":
         raise CelError("timestamp(): sub-microsecond precision is not supported")
+    if om is not None and int(om) >= 60:       # RFC 3339: an offset's minutes are 00 to 59 (fix round 35)
+        raise CelError("timestamp(): out of range or not a valid date and time")
     try:
         tz = UTC if z else datetime.timezone((-1 if sign == "-" else 1)
                                              * datetime.timedelta(hours=int(oh), minutes=int(om)))
         return timestamp(datetime.datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec), int(frac[:6]), tz))
     except (ValueError, OverflowError):
         raise CelError("timestamp(): out of range or not a valid date and time") from None
+
+
+# A duration part's number, past its leading and trailing zeros: a whole part longer than any in CEL's
+# range (21 digits of ns) is out of range, and a fraction longer than _DUR_FRACTION digits is finer
+# than a microsecond. Python refuses to read a number of more than 4,300 digits at all (a ValueError,
+# not a CelError: fix round 35), so neither is ever read.
+_DUR_WHOLE, _DUR_FRACTION = 21, 30
+
+
+def _duration_number(text: str) -> fractions.Fraction:
+    whole, _, part = text.partition(".")
+    whole, part = whole.lstrip("0"), part.rstrip("0")
+    if len(whole) > _DUR_WHOLE:
+        raise CelError("duration out of range")
+    if len(part) > _DUR_FRACTION:
+        raise CelError("duration(): sub-microsecond precision is not supported")
+    return fractions.Fraction(f"{whole or '0'}.{part or '0'}")
 
 
 def parse_duration(s: str) -> datetime.timedelta:
@@ -299,7 +318,7 @@ def parse_duration(s: str) -> datetime.timedelta:
         m = _DUR_PART.match(body, pos)
         if not m:
             raise CelError("duration(): not a duration (e.g. '1h30m', '90s', '1.5s')")
-        total += fractions.Fraction(m.group(1)) * _UNIT_NS[m.group(2)]
+        total += _duration_number(m.group(1)) * _UNIT_NS[m.group(2)]
         pos = m.end()
     if pos == 0:
         raise CelError("duration(): not a duration (e.g. '1h30m', '90s', '1.5s')")

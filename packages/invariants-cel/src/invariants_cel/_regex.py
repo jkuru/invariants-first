@@ -170,6 +170,7 @@ _POSIX: dict[str, Pred] = {
     "punct": lambda c: ("!" <= c <= "~") and not c.isalnum(), "space": lambda c: c in " \t\n\r\f\v",
     "xdigit": lambda c: c in "0123456789abcdefABCDEF",
 }
+_HEX = frozenset("0123456789abcdefABCDEF")
 _SIMPLE_ESC = {"a": "\a", "f": "\f", "t": "\t", "n": "\n", "r": "\r", "v": "\v"}
 
 
@@ -177,10 +178,18 @@ def _not(p: Pred) -> Pred:
     return lambda c: not p(c)
 
 
+# RE2's general categories (it has no Cn and no LC); any other one- or two-letter name in these
+# letters is no class RE2 has (\p{Lx}), not one the subset leaves to RE2, such as a script (fix round 35).
+_CATEGORIES = frozenset("C Cc Cf Co Cs L Ll Lm Lo Lt Lu M Mc Me Mn N Nd Nl No P Pc Pd Pe Pf Pi Po Ps "
+                        "S Sc Sk Sm So Z Zl Zp Zs".split())
+
+
 def _category(name: str) -> Pred:
     if name == "Any":
         return lambda c: True
-    if not (1 <= len(name) <= 2 and name[0] in "LMNPSZC"):
+    if name not in _CATEGORIES:
+        if len(name) <= 1 or (len(name) == 2 and name[0] in "LMNPSZC") or not name.isalnum():
+            raise RegexError(f"invalid Unicode class \\p{{{name}}}")
         raise RegexError(f"unsupported Unicode class \\p{{{name}}} (general categories only)")
     return lambda c: unicodedata.category(c).startswith(name)
 
@@ -435,7 +444,7 @@ class _Parser:
             else:
                 name = self.take()
             neg = name.startswith("^")
-            return ("char", _group(_category(name.lstrip("^")), (c == "P") != neg, self.flags["i"]))
+            return ("char", _group(_category(name[1:] if neg else name), (c == "P") != neg, self.flags["i"]))
         if c == "x":
             if self.peek() == "{":
                 end = self.s.find("}", self.i)
@@ -443,7 +452,9 @@ class _Parser:
             else:
                 digits = self.s[self.i:self.i + 2]
                 self.i += 2
-            try:
+            try:            # hex digits only: int() would also take '+41', ' 41' and '4_1' (fix round 35)
+                if not digits or not set(digits) <= _HEX:
+                    raise ValueError(digits)
                 cp = int(digits, 16)
                 ch = chr(cp)
             except (ValueError, OverflowError):

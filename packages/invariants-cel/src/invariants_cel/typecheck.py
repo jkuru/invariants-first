@@ -46,6 +46,8 @@ _CROSS = {(x, y) for x in NUMERIC for y in NUMERIC}
 _ORDER_OK = _CROSS | {("string", "string"), ("bool", "bool"), ("bytes", "bytes"),
                       ("timestamp", "timestamp"), ("duration", "duration")}
 _EQ_OK = {(k, k) for k in _KINDS} | {(k, "null") for k in _KINDS} | {("null", k) for k in _KINDS} | _CROSS
+_MAP_KEYS = frozenset({"int", "uint", "bool", "string"})      # CEL map keys (never double or null)
+_KEY_OK = {(a, b) for a, b in _EQ_OK if "null" not in (a, b)}    # x in map: x a key (null in m has no overload)
 # (op, left kind, right kind) -> result kind, for every arithmetic overload CEL has
 _ARITH: dict[tuple[str, str, str], str] = {
     **{(op, k, k): k for op in ("+", "-", "*", "/") for k in NUMERIC},
@@ -104,7 +106,7 @@ class T:
             raise TypeMismatch(f"no field {name!r} on the {{field: type}} schema "
                                f"(fields: {', '.join(sorted(self.fields)) or 'none'})")
         if self.py is not None:
-            hints = _hints(self.py)
+            hints = _record_hints(self.py)
             if name in hints and name not in values.api_names(self.py):
                 return from_py(hints[name])
             known = _field_names(self.py) if self.kinds is not None else None
@@ -132,6 +134,18 @@ def _hints(obj: Any) -> dict[str, Any]:
         return typing.get_type_hints(obj)
     except Exception:
         return {}
+
+
+def _record_hints(py: Any) -> dict[str, Any]:
+    """A record type's field annotations, and for a pydantic model its @computed_fields' return types
+    (read by name, and read whole as model_dump() has them: _engine._fields; fix round 35)."""
+    hints = _hints(py)
+    computed = getattr(py, "model_computed_fields", None) if ti.is_pydantic_model(py) else None
+    for k, info in computed.items() if isinstance(computed, dict) else ():
+        rt = getattr(info, "return_type", None)
+        if k not in hints and rt is not None and type(rt).__name__ != "PydanticUndefinedType":
+            hints[k] = rt
+    return hints
 
 
 def _field_names(py: Any) -> frozenset[str] | None:
@@ -315,7 +329,7 @@ def infer(n: Node, env: dict[str, T]) -> T:
     if k == "map":
         val: T | None = None
         for a, b in n[1]:
-            infer(a, env)
+            _need(a, infer(a, env), set(_MAP_KEYS), "a map key")     # {1.5: x} and {null: x} have no overload
             t = infer(b, env)
             val = t if val is None else merge(val, t)
         return T({"map"}, elem=val or DYN)
@@ -324,6 +338,7 @@ def infer(n: Node, env: dict[str, T]) -> T:
     if k == "idx":
         base = infer(n[1], env)
         infer(n[2], env)
+        _need(n[1], base, {"list", "map"}, "[] (an index)")         # 5[0] has no overload
         if base.kinds is not None and base.kinds <= {"list", "map"} and base.elem is not None:
             return base.elem
         return DYN
@@ -351,7 +366,7 @@ def infer(n: Node, env: dict[str, T]) -> T:
             if b.kinds == frozenset({"list"}) and b.elem is not None:   # x in list: x == some element
                 _pair("in", n, a, b.elem, _EQ_OK)
             elif b.kinds == frozenset({"map"}) and b.py is None:        # map keys: int, uint, bool, string
-                _pair("in", n, a, T({"int", "uint", "bool", "string"}), _EQ_OK)
+                _pair("in", n, a, T(_MAP_KEYS), _KEY_OK)
             return BOOL
         if op in ("<", "<=", ">", ">="):
             _pair(op, n, a, b, _ORDER_OK)
@@ -446,6 +461,7 @@ def _infer_call(n: Node, env: dict[str, T]) -> T:
         kinds = {"timestamp", "duration"} if name in _DURATION_GETTERS else {"timestamp"}
         _need(tgt, recv, kinds, f"{name}()")
         if len(args) == 1:
+            _need(tgt, recv, {"timestamp"}, f"{name}() with a timezone")    # duration.getHours("UTC"): none
             _need(args[0], vals[0], {"string"}, f"{name}() timezone")
             if args[0][0] == "lit" and isinstance(args[0][1], str):
                 try:
@@ -469,7 +485,7 @@ def refused_in(t: T, _depth: int = 0, _seen: frozenset[int] = frozenset()) -> tu
         parts.append((f".{k}", ft))
     if t.py is not None and id(t.py) not in _seen:
         _seen = _seen | {id(t.py)}
-        for k, ann in _hints(t.py).items():
+        for k, ann in _record_hints(t.py).items():
             if not k.startswith("_") and typing.get_origin(ann) is not typing.ClassVar:
                 parts.append((f".{k}", from_py(ann)))
     for where, sub in parts:
