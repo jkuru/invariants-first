@@ -61,7 +61,7 @@ Each has a test; the CI ones copy the app, make the change and run `inv check` i
 | # | Defect | Caught by | Test |
 |---|---|---|---|
 | 1 | a new tool calls `StripeGateway.refund` directly (through the context, or a fresh gateway) | `inv check`: bypass | `test_ci_defects.py::test_d1_*` |
-| 2 | `StripeGateway.refund` put in the `TOOLS` registry | `inv check`: the sink used as a value | `test_d2_*` |
+| 2 | `StripeGateway.refund` put in the `TOOLS` registry | `inv check --base main`: the sink used as a value, a new unresolved site (it warns without a base, and fails with `--strict-scan`) | `test_d2_*` |
 | 3 | the refund cap raised from 50,000 to 500,000 | `inv check`: schema lock, WEAKENED | `test_d3_*` |
 | 4 | `semantic_resamples` raised from 1 to 5 | `inv check`: lock, WEAKENED | `test_d4_*` |
 | 5 | a new tool routed through the legacy back door in `allow` | `inv check`: bypass (an allowed back door is not a door); allowing it too is a weakening | `test_d5_*` |

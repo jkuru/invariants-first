@@ -404,9 +404,10 @@ module. Reads (`select`, `get`) and `commit` do not count as writes.
 finds in `allow`, with each back door's whole call chain. If the rule still fails (a write made from
 module-level code, say), the rule is written commented out, with the reason.
 
-**4. Rank and write.** It writes at most five rules (`--max-doors N` changes that, `--no-doors`
-skips this step), putting first the ones whose names suggest money, quotas, approvals or inventory
-(`refund`, `balance`, `ledger`, `quota`, `approval`, `order`, `stock` ...). The rest are listed in
+**4. Rank and write.** It writes at most three rules (`--max-doors N` changes that, `--no-doors`
+skips this step), putting first the ones whose sinks are external gateways or clients (`StripeGateway`,
+an HTTP client) or whose names suggest money, quotas, approvals or inventory (`refund`, `balance`,
+`ledger`, `quota`, `approval`, `order`, `stock` ...), and last the ones dominated by unresolved sites. The rest are listed in
 the file as comments.
 
 Because every proposed rule has already been through the real scan, the file `inv init` writes

@@ -251,8 +251,16 @@ assignment, or a `@property` annotated `-> Repo`), `super().save()`, or a subcla
 `getattr(repo, "save")`, on the sink passed as a value (`add_task(repo.save)`), on code that assigns
 over a sink or the class or module that holds it, on `sys.modules` lookups, and on `__wrapped__`.
 Each call site is its own finding, so two direct calls in one script are two lines. A call on a receiver the scan can't be sure of (an
-unannotated parameter, say) is reported as unresolved, which also fails: the scan never guesses that
-a path is safe. Reads through the repository and unit tests that call it directly are not back doors.
+unannotated parameter, say) is reported as unresolved: the scan never guesses that a path is safe.
+
+The check has two tiers. A bypass, a forbidden idiom or a missing sink or door **blocks**. An
+unresolved site is **advisory**: `inv check` prints it as a `WARN` line and passes. With `--base main`
+it is diff-first: an unresolved site already on `main` warns (`[on main]`), and one the change adds
+blocks (`[new since main]`), so legacy code needs no `allow_unresolved` entries, while an agent's new
+dynamic call into a sink still fails. If the base can't be read (a shallow clone without it), every
+unresolved site blocks; check out with `fetch-depth: 0`. A rule with `strict: true`, or
+`inv check --strict-scan`, makes every unresolved site block until a person accepts it, as for a
+regulated sink. Reads through the repository and unit tests that call it directly are not back doors.
 The scan skips `tests/`, `test_*.py`, `*_test.py`, `conftest.py` and migrations (`migrations/`,
 `alembic/`), at any depth. To skip more, add globs to `[tool.invariants.scan] extend_exclude` in
 `pyproject.toml` (the defaults stay); `exclude` replaces the default list instead, so it must
@@ -281,8 +289,13 @@ sits between them and the write, even when one route calls it, else the caller m
 through. On the full-stack FastAPI template this still writes no door rule, correctly: its routes
 call `crud` and write through the session themselves, so there is no layer to lock yet.
 
-At most five door rules are written, money, quota and approval names first (`--max-doors N` changes
-it); the rest are listed in the file. `--no-doors` skips this step.
+At most three door rules are written (`--max-doors N` changes it), external gateways and clients
+(`StripeGateway`, an HTTP client) and money, quota and approval names first, and rules dominated by
+unresolved sites last; the rest are listed in the file. Each rule lists at most five back doors and
+five unresolved sites, then how many more (`inv scan` lists them all). Start with the one to three
+sinks an agent must never reach directly: payment gateways, ledger writes, destructive admin actions,
+tool executors. `inv init --strict-scan` also drafts an `allow_unresolved` entry for each unresolved
+site, for a rule you will make `strict`. `--no-doors` skips this step.
 
 **Graphify (optional).** If the project has a Graphify
 graph at `graphify-out/graph.json`, `inv init` reads it as JSON (`--graph PATH` or `--graphify PATH`
@@ -650,7 +663,10 @@ change.
   the caller most other functions go through. Check each rule, and check that what `allow` calls a
   back door really is one.
 - **The scan is static.** It does not follow calls through dependency injection containers, event
-  buses or callbacks. Where it can't tell, it reports unresolved instead of passing.
+  buses or callbacks. Where it can't tell, it reports unresolved instead of passing. The run-time
+  door check covers that gap on the code your tests run: `pytest --inv-doors` wraps each rule's sinks
+  so that a sink reached without one of its doors (through `getattr`, a container, a callback) fails
+  the session ([concepts.md](concepts.md#run-time-door-check)).
 - **Validators are code, so they aren't pinned.** A pydantic `@field_validator` or `@model_validator`
   isn't part of the JSON Schema. `inv init` notes each model that has validators. To protect one,
   write it as a guard rule.

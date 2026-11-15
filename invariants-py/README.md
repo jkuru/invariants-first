@@ -429,7 +429,7 @@ Details: [docs/api.md](docs/api.md#integrations).
 | Command | What it does |
 |---|---|
 | `inv init [--root DIR] [--exclude GLOB] [--no-lock] [--graphify GRAPH] [--max-doors N]` | Drafts `invariants.yaml` from the laws the code already has (pydantic constraints, service-to-repository doors, function preconditions with module constants), then locks it. Reads a [Graphify](https://github.com/Graphify-Labs/graphify) `graphify-out/graph.json` when there is one, for doors its naming heuristics miss; the scan still checks each. [More](docs/start.md) |
-| `inv check [--relock [--fail-on-repin]] [--base REF [--accept-weakening]]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base` also fails on a weakening since REF unless a reviewer passes `--accept-weakening` (or sets `INV_ALLOW_WEAKENING=1`), and fails closed when REF or its lock cannot be compared. Accepted `allow_unresolved` sites are listed under the scan line. |
+| `inv check [--relock [--fail-on-repin]] [--base REF [--accept-weakening]]` | `validate`, `lock --check`, `verify` and `scan` with one exit code. `--relock` re-pins when nothing weakens (`--fail-on-repin` then exits 1 so the new lock is staged); `--base` also fails on a weakening since REF unless a reviewer passes `--accept-weakening` (or sets `INV_ALLOW_WEAKENING=1`), and fails closed when REF or its lock cannot be compared. A bypass or forbidden finding fails the scan step; an unresolved site warns, unless the change adds it since `--base` or the rule is `strict` (`--strict-scan` for all). `--metrics FILE` logs the alarm counts for a trial ([docs/trial.md](docs/trial.md)). Accepted `allow_unresolved` sites are listed under the scan line. |
 | `inv hook [rulefile] pretool\|stop` | Claude Code hooks: block accepting a weakening, a direct edit of `invariants.lock` or of `[tool.invariants]`, a command that rewrites either without naming it (a script or pytest conftest whose text names it, `git apply`, `patch`, `git checkout REF -- .`, `git merge`/`switch` to a commit that changes it) and an edit of `.claude/settings.json`; refuse to finish while `inv check` fails. [More](docs/start.md#4-make-the-check-unskippable-5-minutes) |
 | `inv validate` | JSON Schema plus every load-time check (targets, providers, types, functions per CEL backend). |
 | `inv lock [--check] [--accept-weakening]` | Pins what each rule's meaning depends on; refuses a weakening unless accepted. [More](docs/lockfile.md) |
@@ -466,7 +466,9 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
   an annotated parameter, a factory annotated `-> Repo`, `self.x` set in `__init__`, an attribute chain such as `ctx.billing` on a
   typed `ctx`, never an attribute some code sets from outside); it does not follow dependency injection
   containers, event buses or callbacks, and it cannot see callers outside the scanned roots. An
-  unresolved call is reported as unresolved, never as a pass. [docs/scan.md](docs/scan.md#limitations)
+  unresolved call is reported as unresolved, never as a pass: `inv check` warns on one already on the
+  base branch and fails on one a change adds (diff-first), and `pytest --inv-doors` checks every sink
+  at run time on the paths the tests run. [docs/scan.md](docs/scan.md#limitations)
 - **Door discovery is a heuristic.** It finds repositories by name (Repo, Store, Gateway, DAO, `repo`,
   `store`, `db` modules) and by the writes in their bodies, and prefers service-layer callers as
   doors; a Graphify graph adds doors between communities. Review what `inv init` proposes;
@@ -508,6 +510,7 @@ cost on every call. The method and the per-operation costs are in [docs/cel.md](
 | [Cookbook](docs/cookbook.md) | 10 runnable recipes |
 | [Agents](docs/agents.md) | the agentic flow (understand, propose, verify, approve, lock) and the `inv mcp` / `inv-mcp` server |
 | [Models](docs/models.md) | `integrations.anthropic`: Claude in a model-call body, trace replay and recording |
+| [Trial](docs/trial.md) | `inv check --metrics`: measuring the value-law and path-law alarm rates apart |
 | [Evaluation](docs/evaluation.md) | the measured experiment and its verdict; the harness is in [evaluation/](evaluation) |
 | [Invariant-first](docs/design-guide.md) | the whole system for engineers: the two kinds of law, how each is checked, the architecture, a worked agent example, the limits |
 

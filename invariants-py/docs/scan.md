@@ -209,6 +209,18 @@ An unresolved finding a person has reviewed can be accepted, one site at a time,
 `mediation.allow_unresolved` (see "Accepting a reviewed unresolved site" below): it is then shown as
 `accepted` and does not fail the rule. A `bypass` or `forbidden` finding can never be accepted.
 
+**How `inv check` gates on them.** `inv scan` reports every finding and exits 3 on an unresolved one,
+as above. `inv check` splits them in two tiers. `bypass`, `forbidden` and `missing` findings **block**:
+each says in one line which call skips which door. `unresolved` findings are **advisory**: printed as
+`WARN` lines under `ok scan`. With `--base REF`, the scan also runs on REF's tree (read with
+`git archive`, with the current rule file, roots and excludes) and the two sets of unresolved sites are
+compared by rule, code, file and the line-free `sha`: a site on REF warns (`[on REF]`), and a site the
+change adds blocks (`[new since REF]`). A line shift is not a new site; a second copy of a site is.
+When REF's tree cannot be read (an unknown ref, a shallow clone, a root outside the repository), every
+unresolved site blocks (`[REF unreadable]`). `mediation.strict: true` on a rule, or
+`inv check --strict-scan`, makes every unresolved site block until it is accepted. Standing is
+unchanged: an unaccepted unresolved site still keeps a rule from `held`.
+
 Each finding carries the function it is in (`owner`, in `--format json`), which is what `allow`
 names to freeze it.
 

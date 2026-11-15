@@ -197,6 +197,7 @@ These changes are marked **WEAKENED**:
 - a target declared `effects: none`, or a target no longer covered;
 - `compares_to` removed, `compensable` set to true, or more `format_retries` or
   `semantic_resamples`;
+- `mediation.strict` turned off or removed (turning it on is a tightening);
 - a removed `mediation.residual_paths` entry (while one is listed `inv status` withholds `held`,
   so removing it can raise the rule's standing);
 - a `bad` that now matches fewer cases;

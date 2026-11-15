@@ -357,6 +357,40 @@ the code is free of other bugs. One problem found along the way is not fixed: on
 guard step raises a bare `KeyError` on a namespace subpackage inside a regular package (it fails
 closed).
 
+## Addendum, 2026-11-15: quieter path laws
+
+After an outside critique (static soundness in Python is an arms race; noise breeds approval fatigue),
+`inv check` gates unresolved scan sites diff-first, `inv init` writes fewer and shorter door rules, and
+a run-time door check covers dynamic dispatch on the paths tests run. Measured with `inv init
+--no-lock` on copies of three libraries and the three apps (with their rule files removed):
+
+| Codebase | Door rules (written / commented out) | Door-section lines, before → after | Rule file lines, before → after |
+|---|---|---|---|
+| rich (100 files) | 0 / 1 → 0 / 1 | 281 → 123 | 291 → 133 |
+| fastapi | none | 0 → 0 | 72 → 72 |
+| langchain_core | none | 10 → 10 | 101 → 101 |
+| fact-pipeline | 0 / 1 | 40 → 40 | 54 → 54 |
+| pool-service | 1 / 0 | 47 → 47 | 71 → 71 |
+| support-agent | 2 / 0 | 40 → 40 | 58 → 58 |
+
+On rich the cut comes from the listing caps (37 back doors and 66 unresolved sites now show five each)
+and from no longer drafting an `allow_unresolved` entry per site. Its one rule stays commented out
+for the right reason: back doors remain after freezing, because rich has no service layer to lock.
+No codebase here had more than two door candidates, so the new ranking and the default of three
+rules changed nothing on them.
+
+On a git copy of pool-service, a committed `getattr` call into the store passes `inv check --base
+main` with `WARN ... [on main]`, and a new untyped call that reaches `insert_lease` fails with
+`[new since main]`. Under `pytest --inv-doors`, support-agent's 51 tests pass with no violation, and a
+tool added for the test that reaches `StripeGateway.refund` through `getattr` fails the session. The
+other two apps have five tests that bypass a door on purpose (running the planted back doors, or
+testing a database trigger directly); each is a true finding, so those suites don't use the flag yet.
+
+Mutation testing on the changes caught 99 of 99 hand-written mutants (gating 31, run-time check 34,
+`inv init` 34; eight survived at first and were killed by added tests, and one equivalent mutant's
+redundant code was removed). The suite after the merge: invariants-py 6,969 (subset), 6,970
+(cel-expr), 6,969 (`-O`); the three packages 1,321, 638 and 98; mypy clean; the apps' CI passed.
+
 ## Method
 
 This method applies to both runs.

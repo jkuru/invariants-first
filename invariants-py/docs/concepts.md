@@ -375,6 +375,22 @@ an equal `Checked` over a copy of the value. A copy carries no extra trust: an e
 like any other. For edge tests, `invariants.testing.make_checked(cls, value, verdict=...)` builds a
 `Checked`.
 
+## Run-time door check
+
+A path law is checked statically by `inv check`. The scan cannot follow every dynamic call (a
+`getattr`, a dependency-injection container, a callback); where it can't tell it reports an unresolved
+site. The run-time door check is the backstop on the code that actually runs: `inv.doors.install()`
+(or `pytest --inv-doors`) wraps each rule's sinks, doors and `allow` entries. A door, or an allowed
+back door, marks itself active while it runs; a sink checks on entry that one of its doors is active
+(for the per-sink mapping form, a door of that sink). If none is, the call is a violation: recorded
+with point `door`, logged, and in `enforce` mode raised as `inv.BypassError` (the rule's status caps the
+mode, as for every enforcer). In pytest, any violation fails the session, even one a test caught.
+
+So the two cover each other: the scan sees code no test runs (a new script), and the run-time check
+sees dispatch the scan cannot follow, on every path the tests run. Tests that bypass a door on
+purpose (to show a planted back door, or to test a database trigger directly) fail under
+`--inv-doors`, so the example apps don't pass it yet. See [api.md](api.md#invariantsdoors-the-run-time-door-check).
+
 ## Async
 
 `model_call`, `edge` and `guard` also work on `async def` functions: replies and async providers

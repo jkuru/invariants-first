@@ -40,6 +40,37 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
   ../packages/invariants-schema-diff -e .`); the apps' `ci.sh` and the GitHub Action do.
 - `inv`'s note on which app module failed to import never names a library module (fix round 27).
 
+### Path laws: quiet on day one, with a run-time backstop
+
+- `inv check` gates the scan in two tiers. A bypass, forbidden or missing finding blocks. An
+  unresolved site warns (a `WARN` line under `ok scan`) and the step passes; an ablated `enforce` rule
+  still fails. `inv scan`'s own output and exit codes are unchanged.
+- Diff-first with `--base REF`: REF's scan roots are read with `git archive` and scanned with the
+  current rule file, and unresolved sites are compared by rule, code, file and the line-free `sha`. A
+  site on REF warns (`[on REF]`); one the change adds blocks (`[new since REF]`). An unreadable REF
+  (unknown, a shallow clone, a root outside the repository) makes every unresolved site block
+  (`[REF unreadable]`), with a hint to fetch history (`fetch-depth: 0`). Archive members that are
+  links, absolute or contain `..` are skipped.
+- `mediation.strict: true` (also in the short form) and `inv check --strict-scan` make every
+  unresolved site block until accepted, the behaviour before. Turning `strict` off is a weakening.
+- `inv check --metrics FILE` appends one JSON line per run: the value-law weakenings (schema and rule)
+  and the scan's blocking, new, legacy and accepted counts ([docs/trial.md](docs/trial.md)).
+- The MCP `check` tool returns the warnings apart, and `inv hook stop` does not block on them.
+- `inv init` writes a door rule whose only findings are unresolved sites as a rule (it was commented
+  out), and drafts `allow_unresolved` entries only with `inv init --strict-scan`.
+- `inv init` is quieter: at most three door rules by default (`--max-doors`, also in MCP
+  `propose_rules`), external gateways and clients ranked first and rules dominated by unresolved sites
+  last, and at most five back doors and five unresolved sites listed per rule ("… and N more"); the
+  `allow` entries themselves are never cut. On `rich` the door section went from 281 lines to 123.
+- The run-time door check: `inv.doors.install(mode="detect"|"enforce")` wraps each path law's sinks,
+  doors and `allow` entries on their owners (sync, async and generator functions, staticmethods and
+  classmethods, and module functions imported by name elsewhere). A door marks itself active in a
+  `ContextVar`; a sink reached with none of its doors active is recorded (point `door`), logged, and in
+  `enforce` (capped by the rule's status) raised as the new `inv.BypassError`. Retired and ablated
+  rules are skipped; `uninstall()` restores the exact originals. `pytest --inv-doors` installs it in
+  `enforce` for the session and fails it on any violation, even one a test caught; the report JSON
+  gains `doors`, merged across xdist workers.
+
 ### The rule file
 
 - One reviewed JSON or YAML file holds the laws: `targets` (the `py:` functions rules guard, with

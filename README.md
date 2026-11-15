@@ -46,8 +46,13 @@ model call, the payment client. The ratchet holds two kinds of law on those boun
   whatever sits behind the repository (SQLAlchemy, Django, MongoDB, DynamoDB, Stripe or raw SQL).
 
 People own the laws at the boundaries; agents are free inside the implementations. For what CI can't
-see, decorators check model replies and tool calls at run time, and a pytest plugin proves each check
-does real work by switching it off and watching a test fail.
+see, decorators check model replies and tool calls at run time, `pytest --inv-doors` checks at run time
+that every sink is reached through its door (catching `getattr`, containers and callbacks the static
+scan can't follow), and a pytest plugin proves each check does real work by switching it off and
+watching a test fail.
+
+The path-law scan is quiet on day one: a call it can't follow warns, and only one a change adds since
+the base branch fails.
 
 ## Try it
 
