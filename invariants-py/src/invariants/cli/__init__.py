@@ -120,8 +120,8 @@ def _init_options(it: argparse.ArgumentParser) -> None:
                     help="read a Graphify graph.json for door hints (default: graphify-out/graph.json when it "
                          "exists); every suggested door is still checked by the scan")
     it.add_argument("--no-graphify", action="store_true", help="do not read a Graphify graph")
-    it.add_argument("--max-doors", type=int, default=5, metavar="N",
-                    help="write at most N door rules, the most important first (default 5); the rest are listed")
+    it.add_argument("--max-doors", type=int, default=3, metavar="N",
+                    help="write at most N door rules, the most important first (default 3); the rest are listed")
 
 
 def _check_options(ck: argparse.ArgumentParser) -> None:

@@ -54,7 +54,7 @@ TOOLS: dict[str, tuple[Tool, str, str, dict[str, Any]]] = {
                       "Run `inv init`'s discovery as a dry run: proposed door rules (each checked by the scan), "
                       "contracts and suggested guards, plus the rule-file text. Writes nothing to the project.",
                       {"root": _PROJECT["root"], **_ROOTS,
-                       "max_doors": {"type": "integer", "minimum": 0, "description": "door rules to draft (default 5)"},
+                       "max_doors": {"type": "integer", "minimum": 0, "description": "door rules to draft (default 3)"},
                        "graphify": {"type": "string", "description": "a Graphify graph.json for door hints"},
                        "no_graphify": {"type": "boolean", "description": "do not read graphify-out/graph.json"}}),
 }
