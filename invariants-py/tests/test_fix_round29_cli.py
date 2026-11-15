@@ -74,7 +74,7 @@ def _entry(root: pathlib.Path, file: str, why: str) -> str:
 def test_the_hint_names_the_spelling_of_the_rules_form(tmp_path, rules, where):
     root = _project(tmp_path, rules)
     assert run_inv("lock", cwd=root).returncode == 0
-    c = run_inv("check", cwd=root)
+    c = run_inv("check", "--strict-scan", cwd=root)   # unresolved sites block only when strict
     assert c.returncode == 1 and "FAIL  scan" in c.stdout and f"hint: a person who reviewed an unresolved site can {where}" \
         in c.stdout, c.stdout
 

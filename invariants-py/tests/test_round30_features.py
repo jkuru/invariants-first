@@ -550,6 +550,7 @@ def test_init_drafts_a_site_seen_under_several_rules_once(tmp_path):
                       "def a(o):\n    place(o)\ndef b(o):\n    place(o)\ndef c(u):\n    join(u)\ndef d(u):\n    join(u)\n",
         "app/plug.py": "import importlib\ndef load(n):\n    importlib.import_module(n)\n"})
     found = doors.discover([root])
+    doors.apply_strict(found)            # drafting allow_unresolved is `inv init --strict-scan`'s
     assert len(found.doors) == 2 and all(len(d.unresolved) == 1 for d in found.doors)
     body = "\n".join(doors.render(found))
     shared = "\n".join(doors.render_shared(found))

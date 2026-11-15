@@ -20,6 +20,7 @@ from ..registry import isolated
 from .common import (ABLATED, ALLOW_WEAKENING_ENV, DEFAULT_FILES, FAILED, OK, UNRESOLVED, Usage, _captured, _compare,
                      _describe, _err, _out, _print_changes, _rule_file)
 from .git_base import _base_step, base_read, base_scan_default
+from .scan_gate import cmd_scan_gate
 from ..project import (_contract_modules, _exclude, _import_path, _load_app, _roots, outside_roots, scan_settings,
                       source_dirs, write_scan_settings)
 from .static_guards import guard_problems
@@ -220,6 +221,9 @@ def cmd_lock(a: argparse.Namespace) -> int:
             return FAILED
         changes, header = _against_stored(stored, damaged, fresh, imp, path, lock_path)
     if a.check:
+        record = getattr(a, "record", None)
+        if record is not None:
+            record.extend(changes)
         return _check_result(changes, path, lock_path)
     return _write_lock(a, lock_path, stored, fresh, changes, header)
 
@@ -526,6 +530,9 @@ def cmd_init(a: argparse.Namespace) -> int:
                     f"directory that holds your package)")
     if not a.no_doors:
         found.doors = _init_doors(a, path, project)
+        if getattr(a, "strict_scan", False):
+            from .. import doors
+            doors.apply_strict(found.doors)
     if not a.no_lock:
         _check_drafted_contracts(found, path, a.path)
     path.write_text(bootstrap.render(found, locked=not a.no_lock), encoding="utf-8")
@@ -641,6 +648,13 @@ def cmd_check(a: argparse.Namespace) -> int:
         allow_env = os.environ.get(ALLOW_WEAKENING_ENV) == "1"
     path = _rule_file(a.rulefile)
     lock_path = path.with_name(lock.LOCK_NAME)
+    a_metrics = getattr(a, "metrics", None)
+    if a_metrics:
+        try:                                         # an unwritable path fails now, never as a verdict
+            with open(a_metrics, "a", encoding="utf-8"):
+                pass
+        except OSError as e:
+            raise Usage(f"--metrics: cannot append to {a_metrics}: {e.strerror or e}") from e
     doc, where = read_located(path)
     raw_rules = [r for r in doc.get("rules") or [] if isinstance(r, dict)]
     importable = _importable(doc, a.imports)
@@ -670,15 +684,19 @@ def cmd_check(a: argparse.Namespace) -> int:
     if code != OK:
         _out("fail")
         return FAILED
-    code, text = _lock_step(a, path, lock_path, scan, imp)
+    lock_changes: list[lock.Change] = []
+    code, text = _lock_step(a, path, lock_path, scan, imp, lock_changes)
     step("lock", code, text, None if text.startswith("re-pinned") else f"{lock_path.name} matches")
     new_accepts: set[tuple[str, str]] = set()
+    weakenings: list[lock.Change] = lock_changes
     if a.base:
         allow = a.allow_weakening or allow_env
         base = imp.before(("base", a.base), lambda: base_read(lock_path, a.base))
         new_accepts = _new_accepts(base, raw_rules)
+        weakenings = []
         code, text = _captured(lambda ns: _base_step(path, lock_path, a.base, a.path, allow,
-                                                     _scan_read_first(ns, path, doc, imp), imp, base),
+                                                     _scan_read_first(ns, path, doc, imp), imp, base,
+                                                     record=weakenings),
                                argparse.Namespace(**scan))
         step(f"since {a.base}", code, text, text.splitlines()[0] if text else None)
     if importable:
@@ -687,19 +705,26 @@ def cmd_check(a: argparse.Namespace) -> int:
     else:
         _out("  skip  guards: nothing to import (no target, edge target or python contract; a guard on a "
              "targetless rule is checked with --import MODULE)")
+    gate: dict[str, Any] = {}
     if mediated:
-        code, text = imp.before("scan-step", lambda: _captured(cmd_scan, argparse.Namespace(
-            rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
+        code, text, gate = _scan_step(imp, path, a)
         accepted = [line for line in text.splitlines() if line.startswith("accepted ")]
+        warns = [line for line in text.splitlines() if line.startswith("WARN ")]
         ok_line = "no path skips a door or guard"
         fresh = [line for line in accepted if _is_new(line, new_accepts)]
         if accepted:      # reviewed sites pass, but the reader sees each one, never a bare "no path skips"
             ok_line += f"; {len(accepted)} reviewed unresolved site(s) accepted by allow_unresolved"
             ok_line += f" ({len(fresh)} new since {a.base})" if fresh else ""
+        if warns:         # advisory: the scan cannot follow these calls; they do not fail the check
+            ok_line += (f"; {len(warns)} unresolved site(s) to review (warnings: "
+                        + (f"on {a.base}, not new" if a.base else "with --base REF, only the ones new since REF fail")
+                        + ")")
         step("scan", code, text, ok_line if code == OK else None)
         if code == OK:
             for line in accepted:       # a site accepted since --base is marked: the change's own acceptance
                 _out(f"        {line}" + (f"  [new since {a.base}]" if line in fresh else ""))
+            for line in warns:
+                _out(f"        {line}")
         else:
             bare = [line.split()[1] for line in text.splitlines()
                     if line.startswith("unresolved ") and "[sha " not in line and len(line.split()) > 1]
@@ -707,8 +732,41 @@ def cmd_check(a: argparse.Namespace) -> int:
                 _out(f"        hint: {unresolved_hint(sorted(set(bare)), where.short_doors)}")
     else:
         _out("  skip  scan: no rule declares a sink or door")
+    if a_metrics:
+        write_metrics(a_metrics, a.base, weakenings, gate)
     _out("fail" if failed else "pass")
     return FAILED if failed else OK
+
+
+def _scan_step(imp: Imported, path: pathlib.Path, a: argparse.Namespace) -> tuple[int, str, dict[str, Any]]:
+    """The scan step's verdict, text and counts (scan_gate), computed once, before the child runs (it could
+    rewrite a source file), and replayed after."""
+    def run() -> tuple[int, str, dict[str, Any]]:
+        ns = argparse.Namespace(rulefile=str(path), root=a.root, exclude=a.exclude, base=a.base,
+                                strict_scan=bool(getattr(a, "strict_scan", False)), gate={})
+        code, text = _captured(cmd_scan_gate, ns)
+        return code, text, ns.gate
+    got: tuple[int, str, dict[str, Any]] = imp.before("scan-step", run)
+    return got
+
+
+def write_metrics(file: str, base: str | None, weakenings: list[lock.Change] | None, gate: dict[str, Any]) -> None:
+    """`inv check --metrics FILE`: append one JSON line about this run (for a trial: how often the value
+    laws and the path laws each raise an alarm). cmd_check opens the file before the checks run, so an
+    unwritable path is a usage error up front, never a verdict."""
+    import datetime
+    weak = [c for c in weakenings or [] if c.weakened]
+    schema = sum(1 for c in weak if c.where.split(" ", 1)[0] in ("schema", "contract", "target", "provider"))
+    line = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "base": base,
+            "value_weakenings": {"schema": schema, "rule": len(weak) - schema},
+            "scan_blocking": gate.get("blocking", 0), "scan_new_unresolved": gate.get("new"),
+            "scan_legacy_unresolved": gate.get("legacy"), "scan_unresolved": gate.get("unresolved", 0),
+            "accepted": gate.get("accepted", 0)}
+    try:
+        with open(file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, sort_keys=True) + "\n")
+    except OSError as e:
+        raise Usage(f"--metrics: cannot append to {file}: {e.strerror or e}") from e
 
 
 def _scan_read_first(a: argparse.Namespace, path: pathlib.Path, doc: dict[str, Any],
@@ -746,8 +804,7 @@ def _check_imports(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib
     if importable:
         imp.want_verify(a.imports)
     if any(isinstance(r, dict) and r.get("mediation") for r in doc.get("rules") or []):
-        imp.before("scan-step", lambda: _captured(cmd_scan, argparse.Namespace(
-            rulefile=str(path), root=a.root, exclude=a.exclude, format="text", output=None)))
+        _scan_step(imp, path, a)
     return imp
 
 
@@ -799,11 +856,12 @@ def _importable(doc: dict[str, Any], imports: Sequence[str]) -> list[str]:
 
 
 def _lock_step(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Path,
-               scan: dict[str, Any], imp: Imported) -> tuple[int, str]:
-    """`inv check`'s lock step: `inv lock --check`, and with --relock a re-pin that refuses a weakening."""
+               scan: dict[str, Any], imp: Imported, record: list[lock.Change] | None = None) -> tuple[int, str]:
+    """`inv check`'s lock step: `inv lock --check`, and with --relock a re-pin that refuses a weakening.
+    The changes against the stored lock are added to record (the trial metrics without --base)."""
     code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=True, update_artifacts=False,
                                                         lock=None, accept_weakening=False, path=a.path,
-                                                        imported=imp, **scan))
+                                                        imported=imp, record=record, **scan))
     if code != OK and a.relock and lock_path.exists():
         code, text = _captured(cmd_lock, argparse.Namespace(rulefile=str(path), check=False,
                                                             update_artifacts=False, lock=None,

@@ -43,7 +43,8 @@ TOOLS: dict[str, tuple[Tool, str, str, dict[str, Any]]] = {
              {**_PROJECT, **_ROOTS}),
     "check": (tool_check, "inv check",
               "Run `inv check` read-only (no --relock): rule file, lock freshness, guards and scan, with one verdict "
-              "and the result of each step.", {**_PROJECT, **_ROOTS, **_IMPORTS}),
+              "and the result of each step. Unresolved scan sites come back as warnings, which do not fail it.",
+              {**_PROJECT, **_ROOTS, **_IMPORTS}),
     "status": (tool_status, "Rule standing", "Run `inv status --json`: the standing of each rule (held, "
                "enforce(known-callers), ...) and why.", {**_PROJECT, **_IMPORTS}),
     "explain": (tool_explain, "Explain a rule or finding",

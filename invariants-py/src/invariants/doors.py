@@ -219,6 +219,9 @@ class Door:
     unresolved: list[tuple[str, str, str, str]] = dataclasses.field(default_factory=list)
     active: bool = True                      # written as a rule (False: commented out, with the reason)
     why_inactive: str = ""
+    # only unresolved sites are left: written active (each is a warning for `inv check`), but commented
+    # out with this reason under `inv init --strict-scan` (apply_strict), where each one would fail
+    why_strict: str = ""
     score: int = 0
     # fix round 30: each sink -> its own doors, when the writes have different doors (drafted as a sink
     # mapping, so a write moved into another write's door is a bypass); None: one set of doors for all
@@ -250,6 +253,7 @@ class DoorsFound:
     no_door: dict[str, list[str]]            # repository -> its write functions, when no shared door exists
     files: int
     graph: str | None = None                 # what was read from a Graphify graph, when one was
+    strict: bool = False                     # `inv init --strict-scan`: allow_unresolved entries are drafted
 
 
 SERVICE_MODULE = re.compile(r"^(services?|managers?|use_?cases?|domain|logic|workflows?|interactors?|commands?|"
@@ -497,10 +501,11 @@ def _freeze(d: Door, g: scanner.Graph, roots: list[pathlib.Path], exclude: list[
     found = report.for_rule(d.rid)
     d.unresolved = _unresolved(found)
     if found and all(f.kind == "unresolved" for f in found):
-        d.active = False
-        d.why_inactive = (f"{len(found)} unresolved site(s) need review first: read each one; when it cannot "
-                          f"reach the sink, accept it in allow_unresolved (drafted below: write why), else fix "
-                          f"it; then uncomment the rule")
+        # diff-first: written active, its unresolved sites listed; `inv check` warns about each (with --base
+        # only a new one fails); with --strict-scan each would fail, so the rule waits for review (apply_strict)
+        d.why_strict = (f"{len(found)} unresolved site(s) need review first: read each one; when it cannot "
+                        f"reach the sink, accept it in allow_unresolved (drafted below: write why), else fix "
+                        f"it; then uncomment the rule")
     elif report.rule_result(d.rid) != "pass":
         d.active = False
         d.why_inactive = ("the scan still fails with the back doors frozen; review the findings by hand" if d.allow
@@ -581,9 +586,9 @@ def render(found: DoorsFound) -> list[str]:
                              "  #   ")
             # a site seen under several drafted rules is drafted once, in the top-level allow_unresolved
             sites = [u for u in d.unresolved if u[0] and u[2] and (u[0], u[1], u[2]) not in multi]
-            if len(sites) < len([u for u in d.unresolved if u[0] and u[2]]):
+            if found.strict and len(sites) < len([u for u in d.unresolved if u[0] and u[2]]):
                 lines.append("  #   (a site seen under other drafted rules too is in allow_unresolved below)")
-            if sites:                              # why is empty: the rule does not load until each says why
+            if sites and found.strict:             # why is empty: the rule does not load until each says why
                 body.append("  allow_unresolved:   # once its site is read, write why it cannot reach the sink")
                 body += [f"    - {{at: {json.dumps(at)}, code: {code}, sha: {json.dumps(sha)}, why: \"\"}}"
                          for at, code, sha, _ in sites]
@@ -635,7 +640,7 @@ def render_shared(found: DoorsFound) -> list[str]:
     rules see, listing them. Commented out while any rule it lists is (a shared entry names rules that
     exist); why is empty, so it does not load until each says why."""
     shared = _shared_sites(found)
-    if not shared:
+    if not shared or not found.strict:            # drafted only under `inv init --strict-scan`
         return []
     lines = ["",
              "# Unresolved sites the scan sees under several drafted door rules: each entry is one reviewed",
@@ -646,6 +651,15 @@ def render_shared(found: DoorsFound) -> list[str]:
     body += [f"  - {{at: {json.dumps(at)}, code: {code}, sha: {json.dumps(sha)}, why: \"\", "
              f"rules: [{', '.join(sorted(d.rid for d in ds))}]}}" for (at, code, sha), ds in shared.items()]
     return lines + (body if live else [f"# {x}" for x in body])
+
+
+def apply_strict(found: DoorsFound) -> None:
+    """`inv init --strict-scan`: draft allow_unresolved entries, and comment out each rule only unresolved
+    sites are left in (with its reason), since `inv check --strict-scan` fails every one until reviewed."""
+    found.strict = True
+    for d in found.doors:
+        if d.active and d.why_strict:
+            d.active, d.why_inactive = False, d.why_strict
 
 
 def summary(found: DoorsFound) -> list[str]:

@@ -128,11 +128,13 @@ ORDERS = {
 def test_init_leaves_an_inferred_path_site_unresolved_for_review(tmp_path):
     from invariants import doors
     root = write_project(tmp_path, {**ORDERS, "app/poke.py": "def poke(r, o):\n    r.save_order(o)\n"})
-    d = doors.discover([root]).doors[0]
+    found = doors.discover([root])
+    doors.apply_strict(found)            # drafting allow_unresolved is `inv init --strict-scan`'s
+    d = found.doors[0]
     assert d.allow == ["app.api.c"], d.allow              # the extracted back door is frozen; poke is not
     assert [(u[0], u[1]) for u in d.unresolved] == [("app/poke.py:2:5", "unresolved/inferred-path")]
     assert not d.active and "allow_unresolved" in d.why_inactive
-    text = "\n".join(doors.render(doors.DoorsFound([d], [], {}, 0, None)))
+    text = "\n".join(doors.render(doors.DoorsFound([d], [], {}, 0, None, strict=True)))
     assert 'allow_unresolved:' in text and '{at: "app/poke.py:2:5", code: unresolved/inferred-path' in text
 
 
