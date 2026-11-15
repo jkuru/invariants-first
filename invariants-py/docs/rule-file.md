@@ -168,7 +168,7 @@ not a lock: two concurrent callers can both pass it.
 | `mediation` | `{chokepoint, residual_paths, sink, door, allow, allow_unresolved}`. `allow` lists known back doors the scan lets through (see "The door form" above). `allow_unresolved` lists unresolved findings a person reviewed and accepts, one site each: `{at: "path:line[:col]", code: "unresolved/...", sha, why}` ([scan.md](scan.md#accepting-a-reviewed-unresolved-site)). `chokepoint` is the positive mediation argument. `sink` and `door` drive `inv scan`; `sink` may map each sink to the doors that may reach it (see "The door form" above). |
 | `model_policy` | For a `model_call` enforcer: `{schema, format_retries, semantic_resamples, feedback: {format: parser_error \| none, semantic: none}, abstain: {field, value}}`. When the abstain field is a closed enum (a `Literal[...]`, also under `Annotated` or a `type X = ...` alias), its value must be a member, compared by value and type (`true` is not `1`; an `Enum` member stands for its value). A clause `!(reply.F in [...])` listing every member of F's enum (the abstain value aside, when one is configured) gets a note: the schema already holds it. |
 | `compares_to` | `held_data`: forces `semantic_resamples: 0`. |
-| `falsified_by` | pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. |
+| `falsified_by` | A list of pytest node ids (or prefixes) of tests that must fail when the rule is ablated. `pytest --inv-ablate` checks them. Each must be a non-empty string: a bare string, a number, `""` or `null` is a load error. |
 | `applies_to` | fnmatch pattern(s) over `targets:` keys; `inv lock` expands them. |
 | `evidence` | Computed; not hashed. |
 

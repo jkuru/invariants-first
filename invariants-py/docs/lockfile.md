@@ -203,9 +203,20 @@ These changes are marked **WEAKENED**:
 - a pinned schema (pydantic, dataclass, TypedDict or OpenAPI) that now accepts more input (see
   below); also a `{field: type}` contract, an Enum contract, and a dataclass or TypedDict a
   signature names, judged as the JSON Schema the pin describes (a field type widened, `int` to
-  `Any` or to `int | None`, a field removed, a `Literal` or Enum member added); and a changed
-  pinned schema whose old entry the stored lock does not hold (a hand-edited table entry), since
-  the change cannot be judged;
+  `Any` or to `int | None`, a field removed, a `Literal` or Enum member added, `tuple[int]` (exactly
+  one item) to `tuple[int, ...]`, a dict's key type widened, an opaque Python type such as `Decimal`
+  changed to `str` or removed, a constraint loosened on a pydantic model a dataclass names inside
+  `$defs`); and a changed pinned schema whose old entry the stored lock does not hold (a hand-edited
+  table entry), since the change cannot be judged. Changing a generic's arguments, or `str` to
+  `Decimal`, is flagged too: whether that narrows or widens cannot be told, so it is treated as a
+  weakening;
+- a whole schema removed: a pydantic schema taken off an entry, a contract's `schema` ref, an OpenAPI
+  parameter's `schema`, a `requestBody` (or its content or a media type), a response, or a target's
+  `reply_schema` (removing a schema that accepted anything is not a weakening, and adding one never
+  is);
+- a bound loosened across dialects: when either side is Draft 4, each side's bounds are read in its
+  own dialect, so 2020-12 `exclusiveMaximum: 10` changed to Draft 4 `exclusiveMaximum: true` with no
+  `maximum` is WEAKENED;
 - a parameter constraint (`param_schemas`) removed or loosened: `Annotated[int, Field(gt=0)]` to
   `int`, `lt=10` to `lt=100`, `MaxLen(3)` to `MaxLen(9)` (adding or tightening one is not);
 - a new or edited `mediation.chokepoint` (it can let the rule be `held`; removing it is a change

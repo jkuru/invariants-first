@@ -78,7 +78,9 @@ Two MCP servers, both read-only, run over stdio:
 
 - **Graphify** (`graphify-mcp`, from `pip install 'graphifyy[mcp]'`) answers questions about the code:
   the path from a new tool to the gateway, what a change touches, which functions sit together.
-- **invariants** (`inv-mcp`, installed with this package; `inv mcp [--root DIR] [rulefile]` runs the same server)
+- **invariants** (`inv-mcp`, installed with this package; `inv mcp [--root DIR] [rulefile]` runs the same server,
+  with `rulefile` named from the current directory as for every `inv` command, while `inv-mcp --rules FILE`
+  is relative to `--root`)
   answers questions about the laws: what each rule says, whether every path passes its door, and
   why a finding fails.
 
@@ -137,6 +139,10 @@ builds is fine). A plain value (a number, a string) is not checked. Every dotted
 name that `sys.modules` already holds (which no finder sees again, such as an entry the project's
 own code planted, `sys.modules["app.leak"] = os`) must have been loaded from inside `--root`,
 checked before the import and again after it.
+The guard step of `check` follows the same rules before it opens a file: it reads the source of the
+guarded functions to check their decorators, and never parses a module the child could not import
+(a symlink out of `--root`, a namespace portion outside it, the standard library), so its messages
+cannot tell the agent whether such a file or name exists.
 That holds below the top-level package too: while `INV_CONFINE_ROOT` is set, a finder first on
 `sys.meta_path` checks every module the child imports before its code runs, and refuses one of the
 project's (reached through a directory inside `--root`, such as a symlink `app/leak ->
@@ -186,7 +192,8 @@ ledger only through `BillingService`; `admin.goodwill_refund` is a back door tha
 ## 3. Verify
 
 Each proposed rule comes back already checked by the real scan (`scan` in the result: `pass`, or the
-findings that would make it fail). A suggestion from the graph or the agent that the scan cannot
+findings that would make it fail; `unresolved` when the scan could not prove it either way, which is
+never reported as `pass`). A suggestion from the graph or the agent that the scan cannot
 confirm is not a rule. After a person writes the file, `check` (or `inv check` itself) shows whether
 the whole set holds.
 

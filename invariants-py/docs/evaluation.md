@@ -312,6 +312,51 @@ project, and no real team has run it. The door chosen for each repository is a h
 template it correctly found none, which also means a codebase without a service layer gets no path
 laws from `inv init`.
 
+## Addendum, 2026-11-15: an external audit (round 35)
+
+An AI audit tool read the four packages and reported bugs by subsystem. No finding was taken on
+trust: each was first reproduced with a test that failed on the old code, and only then fixed. A
+claim that did not reproduce, or described intended behaviour, was rejected and the code left alone.
+
+| Area | Reported | Confirmed and fixed | Documented, not fixed | Rejected |
+|---|---|---|---|---|
+| CEL engines and type check | 10 | 9 | 1: eager projection on cel-expr against lazy evaluation on the subset can make one engine raise a `rule_error` where the other returns `false` (the two never return different values); in [cel.md](cel.md), Known engine differences | 0 |
+| path-law scan | 12 | 11, plus 3 more forms of the same kind (`object.__setattr__`, `__setattr__`, `__delattr__`) | 0 | 1: method calls on a variable typed as `dict`, `list` or `set` are not missed; an exact container cannot have such a method, and subclasses that define one are already followed |
+| weakening detection (schema-diff and the lock) | 7 | 7, plus 1 more of the same kind (`discriminator.mapping` stripped as prose) | 0 | 0 |
+| run time, CLI, MCP, the Action | 11 | 10 (two in part: the MCP confinement leak was in the confined process itself, not a parent; `not_scanned` cannot occur in `propose_rules`) | 0 | 1: `model_policy: {}` is refused at load on purpose (round 33) |
+
+One demo note in the audit, that the Anthropic integration's default model id was wrong, was also
+rejected: the id is current.
+
+The confirmed weakening misses are the ones that matter most, since a missed weakening breaks the
+ratchet: removing a whole schema (a `requestBody`, a contract's `schema`, a `reply_schema`) gave
+`weakened=False`, as did a loosened bound across Draft 4 and 2020-12, a loosened `Field(le=)` on a
+pydantic model inside `$defs`, and `Decimal` turned into `str`. All of them are now WEAKENED (the
+[changelog](../CHANGELOG.md) lists every fix).
+
+**Mutation testing.** Each fix was checked by hand-written mutants of the changed code (the fix
+reverted, a condition flipped, a bound moved by one, a new branch dropped), run against the suite.
+
+| Area | Mutants | Caught | Survived at first, then caught after a test was added |
+|---|---|---|---|
+| CEL | 33 | 32 | 0; the one left (a 21-digit bound raised to 22) is equivalent, since the range check after it refuses the same numbers; the opposite mutant (21 to 20) is caught |
+| scan | 23 | 23 | 6: two were equivalent because one cache check was written twice, so it was made one; four needed tests |
+| weakening | 32 | 32 | 2: one needed a test (`Any` to `Decimal`); one was dead code, removed |
+| run time, CLI, MCP, the Action | 22 | 22 | 2, each given a test |
+| **total** | **110** | **109** | |
+
+**After the merge.** On the merged `main`: `invariants-cel` 1,321 passed (2 skipped),
+`invariants-scan` 638, `invariants-schema-diff` 98, `invariants-first` 6,868 passed with the subset
+engine, 6,869 with cel-expr and 6,868 under `-O` (4 or 5 skipped), mypy clean on all four, and the
+three apps' CI passed (pool-service 73, fact-pipeline 92, support-agent 51 tests), with no new
+finding on their own code.
+
+**What this does not show.** The audit, the fixes and the mutants were all machine-made, and the
+same author's tests judged them. Mutants show the new tests constrain the changed lines, not that
+the code is free of other bugs. One problem found along the way is not fixed: on Python 3.14 the
+guard step raises a bare `KeyError` on a namespace subpackage inside a regular package (it fails
+closed).
+
 ## Method
 
 This method applies to both runs.

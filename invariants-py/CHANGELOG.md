@@ -194,6 +194,15 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
   path is listed, no live `allow` back door is left undeclared, verify passes, and the scan passes
   with no site accepted by `allow_unresolved`; with ablation results, a falsifier must also have
   been caught. Otherwise `enforce(known-callers)`, `monitored` or `candidate`, with the reasons.
+- An `@inv.edge` state parameter typed as a `TypedDict` must be a real `dict`: a dataclass or model
+  with a `__getitem__` passed the check and reached the consumer as itself, not as the checked copy.
+  A dataclass-typed state still takes a plain dict (round 35).
+- `inv.verify` (and `--inv-verify`) accepts a `model_call` rule without the optional
+  `model_policy.schema`; it raised CoverageError ("model_policy.schema is None") (round 35).
+- `inv.monitor()` events carry their `key` to observers and exporters: it was set after the event
+  was reported (round 35).
+- `bootstrap` never drafts a private (`_`-prefixed) pydantic model as a contract: `inv lock` pinned
+  it, then the contract check failed with "has no '_Req'" (round 35).
 
 ### CEL
 
@@ -392,6 +401,30 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
 - A `$ref` added beside other keywords was judged by both sides' shared dialect, so an OpenAPI 3.0
   contract moved to 3.1 that added one was WEAKENED ("ignored next to it"), though JSON Schema
   2020-12 still applies them. The new side's own dialect decides (round 33).
+
+Round 35 (an external audit) closed these missed weakenings:
+
+- A whole schema removed is WEAKENED: a pydantic schema taken off an entry, a contract's `schema`
+  ref, a parameter's `schema`, a `requestBody` (or its content or a media type) or a response, and a
+  target's `reply_schema`. Each gave `weakened=False`. A removed schema that accepted anything, and
+  an added one, are not weakenings.
+- Bounds are read in each side's own dialect when either side is Draft 4: 2020-12
+  `exclusiveMaximum: 10` turned into Draft 4 `exclusiveMaximum: true` with no `maximum`, or into
+  `{maximum: 11, exclusiveMaximum: true}`, was not flagged, because both sides were read as Draft 4.
+- CEL `-(-9223372036854775808)` is not folded into a number int64 cannot hold: it stays a negation,
+  an error site, so `x < 1` changed to it is "unknown", not "stronger".
+- A pin's Python types are judged as JSON Schema: a `{"pydantic": ...}` inside `$defs` (a pydantic
+  model a dataclass reply names) is unpacked and its refs re-pointed, so a loosened `Field(le=)` there
+  is WEAKENED; a changed or removed opaque type (`x-python-type`, `x-args`: `Decimal` to `str`) is
+  WEAKENED; `tuple[int]` is exactly one item (`prefixItems`, `minItems`, `maxItems`); a dict's key
+  type is pinned as `propertyNames` (for non-`str` keys in a stdlib schema, as pydantic does).
+  Changing a generic's arguments, or `str` to `Decimal`, is flagged too: the judge cannot tell a
+  narrowing from a widening there, so it errs on the safe side.
+- `strip_prose` keeps property names inside `dependentRequired`, `dependencies` and an OpenAPI
+  `discriminator.mapping` (a property called `title` or `description` there is a name, not prose).
+- A lock whose `"schemas"` is `null` reports every entry whose `$ref` points at the missing table.
+- Re-pinning may change existing locks: schemas with prose-named properties inside those maps, and
+  stdlib dataclass contracts with fixed-length tuples or non-`str` dict keys, pin more than before.
 
 ### Static checks
 
@@ -624,6 +657,23 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
 - A key repeated in one mapping of the rule file (YAML or JSON) was read as its last value; it is a
   LoadError naming the lines. A lock with a repeated key is not read either.
 - `inv status` reports each rule's standing with its reasons.
+- Round 35 (an external audit) closed these scan gaps:
+  - Replacing a sink through an instance's `__dict__` (`r.__dict__["save"] = v`, `del`, `.update(save=v)`,
+    `.update({"save": v})`, `.setdefault`) or through `object.__setattr__(r, "save", v)`,
+    `r.__setattr__(...)` and `r.__delattr__(...)` is `forbidden/monkeypatch`, as `r.save = v` is; so is
+    `setattr` or `delattr` of a name another module imports the door or sink under.
+  - A method taken as a value on an untyped receiver (`f = obj.run; f()`) counts as escaped, so
+    `door_only` no longer hides the calls inside it.
+  - Files in skipped directories (`.venv/`, `build/`) no longer name modules: a vendored
+    `_pytest/pathlib.py` made `pathlib.Path` look like project code. A skipped file importable under
+    the project's own package names still counts.
+  - The inferred-path basis is keyed only by call fans that stay alive: a temporary tuple's reused
+    `id()` could list calls that never reach the site.
+  - `super(Cls, other)` with `other` not `self` is name-matched; an imported singleton bound again
+    (`s = Repo()`, or through `global s`) is no longer typed as the import; a function parameter that
+    shadows a module class or function is a runtime value; a `def m(self)` after a class-body alias
+    `m = other` is the method.
+  - A non-mapping `subject` or non-list `rules` is a `ScanConfigError`; `rules: "R"` scanned nothing.
 
 ### CLI
 
@@ -759,6 +809,18 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
 - `inv check` (and `inv lock --check`) on a lock stale only because reviewed `allow_unresolved` sites
   moved, which weakens nothing, says to re-pin with `inv check --relock` instead of `review the
   changes, then run inv lock`.
+- `falsified_by` must be a list of non-empty strings: a string (read character by character), `[1]`,
+  `[""]` or `[None]` loaded and later crashed `--inv-ablate`. `model_policy: {}` is still refused at
+  load, on purpose (round 35).
+- `inv mcp <dir>/invariants.yaml --root <dir>` reads that file: the rule file is named from the
+  current directory and passed on absolute, where it was joined to `--root` twice
+  (`app/app/invariants.yaml`). `inv-mcp --rules` stays relative to `--root` (round 35).
+- Under `inv mcp`, the guard step of `inv check` never opens a module outside the confined root: it
+  followed a symlinked module or package, a namespace portion outside the root and the standard
+  library, and its messages could tell an agent whether such a file and name existed (round 35).
+- `propose_rules` reports a draft it could not prove as `unresolved`, not `pass` (round 35).
+- The GitHub Action strips a trailing `\r` from each line it reads, so `--site` and `--path` work
+  with a Windows `python.exe` (round 35).
 
 ### pytest plugin
 
@@ -831,3 +893,6 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
   backend only.
 - Every provider bound to a name a clause reads runs on every call. A check on an API's arguments is
   not a lock: two concurrent callers can both pass.
+- On Python 3.14, the guard step of `inv check` raises a bare `KeyError` on a namespace subpackage
+  inside a regular package (`PathFinder` looks the parent up in `sys.modules`). The check fails
+  closed, but the message does not say why.

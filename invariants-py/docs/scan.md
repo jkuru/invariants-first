@@ -33,7 +33,9 @@ with the shortest path from the first entrypoint that reaches it: two calls of t
 function are two findings, and two entrypoints through the same helper call are one. A call the scan
 name-matches on a receiver it cannot type (`repo.save(x)`, `repo` unannotated) is one finding too, the
 `unresolved/inferred-path` with its path. A rule on an `effects: none` target needs no sink: the guard wraps the function itself, and
-the scan reports it as "not scanned (mediation declares no sink)".
+the scan reports it as "not scanned (mediation declares no sink)". A rule document whose `rules` is
+not a list, or a rule whose `subject` is not a mapping, is a `ScanConfigError`, never a scan of
+nothing.
 
 ```text
 $ inv scan
@@ -310,7 +312,12 @@ name-matched edge from `Helper.run` to `_send`, so `Helper().run()` reaching the
 `unresolved/inferred-path` even when the replacement is installed inside a door. A write through the
 object's class (`type(x).save = v`, `x.__class__.save = v`, `type(self).save = v`) is a write on x's class
 (or a subclass of it): over a sink or a door it is `forbidden/monkeypatch`, and it distrusts the method
-as a write on the class does (where the scan cannot type x, every class with a method of that name). A
+as a write on the class does (where the scan cannot type x, every class with a method of that name).
+Replacing or deleting a sink or door method on an instance by reflection is `forbidden/monkeypatch`
+too, as `r.save = v` is: `r.__dict__["save"] = v`, `del r.__dict__["save"]`, `r.__dict__.update(save=v)`
+or `.update({"save": v})`, `r.__dict__.setdefault("save", v)`, `object.__setattr__(r, "save", v)`,
+`r.__setattr__("save", v)` and `r.__delattr__("save")`; so is `setattr` or `delattr` on a name another
+module imports the sink or door under (`setattr(helper, "pay_back", v)`). A
 `x.__class__ = Other` on a local makes that local untyped; on `obj.attr`, that attribute; on anything
 the scan cannot place (or a `__bases__` write it cannot place), every class is distrusted. A
 reflective write of an attribute (`object.__setattr__(self, "r", v)`, `self.__dict__["r"] = v`,
