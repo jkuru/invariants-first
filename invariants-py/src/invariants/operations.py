@@ -30,8 +30,7 @@ def monitor(rule_id: str, rows: Iterable[tuple[Any, dict[str, Any]]],
     for key, base in rows:
         started = time.time_ns()
         o = evaluate(rule, base, key_i, reg)
-        ev = report(reg, rule, {**enf, "mode": "detect"}, o, "report", started=started)
-        ev["key"] = key
+        report(reg, rule, {**enf, "mode": "detect"}, o, "report", started=started, key=key)
         out.append((key, o))
     return out
 

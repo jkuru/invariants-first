@@ -150,15 +150,19 @@ def evaluate(rule: Rule, base: dict[str, Any], enf_index: Any = "rule", reg: Reg
     return evaluate_env(rule, env, reg)
 
 
+_NO_KEY: Any = object()          # report() without a monitor row's key
+
+
 def report(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome, action: str,
            attempts: list[dict[str, Any]] | None = None, started: int | None = None,
-           refused: bool = False) -> dict[str, Any]:
+           refused: bool = False, key: Any = _NO_KEY) -> dict[str, Any]:
     """Count the evaluation and emit its event.
 
     started: time.time_ns() when the check began (the guarded call's check phase, the model call,
     the edge call); the event then carries start_ns and end_ns (now), for spans and latency.
     refused: the outcome is an edge's refusal of a received non-ok verdict, acted on by on_violation;
     the event then carries refused: True (only then).
+    key: a monitor row's key; the event then carries it (observers and exporters see it).
     """
     ev = {"rule": rule.id, "rev": rule.raw.get("rev"), "outcome": out.kind, "mode": reg.mode(rule, enf),
           "point": enf.get("point"), "timing": enf.get("timing"), "messages": out.messages,
@@ -167,6 +171,8 @@ def report(reg: Registry, rule: Rule, enf: dict[str, Any], out: Outcome, action:
         ev["start_ns"], ev["end_ns"] = started, time.time_ns()
     if refused:
         ev["refused"] = True
+    if key is not _NO_KEY:
+        ev["key"] = key
     reg.record(rule.id, out.kind, ev)
     level = (logging.DEBUG if out.kind == "ok" else logging.ERROR if action == "page"
              else reg.violation_log_level)

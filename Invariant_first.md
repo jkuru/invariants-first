@@ -165,7 +165,7 @@ wrote invariants.yaml
   read 13 source file(s)
   pinned 4 pydantic model(s) with 23 constraint(s)
   suggested 1 rule(s) from function preconditions (commented out; see the file)
-  door LEDGER-REPO-DOOR: support_agent.repo.LedgerRepo through support_agent.service.BillingService.cancel or support_agent.service.BillingService.credit or support_agent.service.BillingService.refund (3 caller(s))
+  door LEDGER-REPO-DOOR: support_agent.repo.LedgerRepo through support_agent.service.BillingService.cancel or support_agent.service.BillingService.credit or support_agent.service.BillingService.refund (3 caller(s), each write through its own door(s))
   door STRIPE-GATEWAY-DOOR: support_agent.repo.StripeGateway through support_agent.service.BillingService.refund (1 caller(s))
     found 1 back door(s) in support_agent/admin.py; frozen in allow, so check passes and a new one fails
 running `inv lock` to pin them ...
