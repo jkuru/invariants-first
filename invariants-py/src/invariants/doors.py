@@ -688,6 +688,6 @@ def summary(found: DoorsFound) -> list[str]:
 
 # The run-time door check lives in doors_runtime; `inv.doors.install(...)` names it through this module.
 from .doors_runtime import (  # noqa: E402
-    BypassError as BypassError, DoorsHandle as DoorsHandle, active as active, install as install,
-    installed as installed,
+    BypassError as BypassError, DoorsHandle as DoorsHandle, active as active, expected as expected,
+    install as install, installed as installed,
 )

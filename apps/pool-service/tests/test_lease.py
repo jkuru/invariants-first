@@ -52,6 +52,7 @@ def test_unknown_pool_is_rule_error(conn: sqlite3.Connection) -> None:
     assert e.value.outcome.kind == "rule_error"
 
 
+@pytest.mark.inv_bypass("R-21", "R-22", "R-23", reason="calls the store directly to test the database trigger")
 def test_trigger_refuses_shrink_below_leased(conn: sqlite3.Connection) -> None:
     pid = pool(conn, 5)
     service.lease_slots(conn, pid, 4, "a")
@@ -86,6 +87,7 @@ def _trigger(size: int, held: list[int], n: int) -> bool:
         return False
 
 
+@pytest.mark.inv_bypass("R-20", reason="calls the store directly to check the trigger agrees with the door")
 @settings(max_examples=150, deadline=None)
 @given(size=st.integers(1, 40), data=st.data())
 def test_r20_door_and_trigger_agree(size: int, data: st.DataObject) -> None:

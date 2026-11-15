@@ -82,6 +82,7 @@ def _rogue():
     return mod
 
 
+@pytest.mark.inv_bypass("R-20", "R-21", "R-22", "R-23", reason="runs the planted rogue code to show it bypasses the door")
 def test_the_bypass_really_bypasses(conn: sqlite3.Connection) -> None:
     """Why the scan matters: the rogue resize skips R-21 at run time (only the store's own trigger still
     refuses an over-lease, which no rule relies on)."""

@@ -53,6 +53,7 @@ def test_monitor_flags_stale_believed_fact(pipe: Pipeline) -> None:
     assert [(f.rule, f.key, f.outcome) for f in found] == [("K-16", fid, "violation")]
 
 
+@pytest.mark.inv_bypass("K-12", "K-16", reason="runs the planted backfill that writes around the door")
 def test_monitor_catches_a_write_that_bypassed_the_door(pipe: Pipeline) -> None:
     pipe.process("test://s1", S1, "newswire-a")
     fid = pipe.store.facts()[0]["id"]

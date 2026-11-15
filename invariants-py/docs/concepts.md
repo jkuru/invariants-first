@@ -387,9 +387,13 @@ with point `door`, logged, and in `enforce` mode raised as `inv.BypassError` (th
 mode, as for every enforcer). In pytest, any violation fails the session, even one a test caught.
 
 So the two cover each other: the scan sees code no test runs (a new script), and the run-time check
-sees dispatch the scan cannot follow, on every path the tests run. Tests that bypass a door on
-purpose (to show a planted back door, or to test a database trigger directly) fail under
-`--inv-doors`, so the example apps don't pass it yet. See [api.md](api.md#invariantsdoors-the-run-time-door-check).
+sees dispatch the scan cannot follow, on every path the tests run. A test that bypasses a door on
+purpose (to run a planted back door, or to test a database trigger by calling the store directly)
+says so: `@pytest.mark.inv_bypass("R-21", "R-22", reason="...")` makes its misses of those rules
+expected, counted apart and never a violation (`inv.doors.expected(...)` is the same block in code). A
+sink shared by several rules needs each of them named. Under `--inv-doors` a marker that names no rule,
+or a rule not checked at run time, is a usage error; without the flag it does nothing. The three
+example apps pass `--inv-doors` this way. See [api.md](api.md#invariantsdoors-the-run-time-door-check).
 
 ## Async
 

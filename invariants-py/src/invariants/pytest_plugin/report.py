@@ -25,7 +25,8 @@ class _Report(_Ablation):
                 "verify": {"problems": self.verify_problems, "count": self.verify_count},
                 "usage": self.usage_problem,
                 "doors": {"installed": list(self.doors_installed),
-                          "violations": [[r, s, t, n] for (r, s, t), n in self.doors_violations.items()]}}
+                          "violations": [[r, s, t, n] for (r, s, t), n in self.doors_violations.items()],
+                          "expected": [[r, s, t, n] for (r, s, t), n in self.doors_expected.items()]}}
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodedown(self, node: Any, error: Any) -> None:
@@ -55,6 +56,8 @@ class _Report(_Ablation):
         self.doors_installed += [r for r in doors.get("installed") or [] if r not in self.doors_installed]
         for r, s, t, n in doors.get("violations") or []:
             self.doors_violations[(r, s, t)] = self.doors_violations.get((r, s, t), 0) + int(n)
+        for r, s, t, n in doors.get("expected") or []:
+            self.doors_expected[(r, s, t)] = self.doors_expected.get((r, s, t), 0) + int(n)
         verify = data["verify"]
         self.verify_problems += [p for p in verify["problems"] if p not in self.verify_problems]
         if verify["count"] is not None:
@@ -85,13 +88,16 @@ class _Report(_Ablation):
         """--inv-doors: the rules checked at run time, and each (rule, sink, test) that missed a door."""
         return {"installed": list(self.doors_installed),
                 "violations": [{"rule": r, "sink": s, "test": t, "count": n}
-                               for (r, s, t), n in self.doors_violations.items()]}
+                               for (r, s, t), n in self.doors_violations.items()],
+                "expected": [{"rule": r, "sink": s, "test": t, "count": n}
+                             for (r, s, t), n in self.doors_expected.items()]}
 
     def _write_doors(self, tr: Any) -> None:
         rows = self.doors_data()["violations"]
         n = sum(v["count"] for v in rows)
+        expected = sum(self.doors_expected.values())
         head = (f"invariants doors: {len(self.doors_installed)} path law(s) checked at run time, "
-                f"{n} violation(s)")
+                f"{n} violation(s)" + (f", {expected} expected (inv_bypass)" if expected else ""))
         if not rows:
             tr.write_sep("-", head, green=True)
             return

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import pytest
 
@@ -55,6 +55,7 @@ class _SessionState:
         self.doors_installed: list[str] = []            # the rules it checks (merged from the workers)
         # its violations, one row per (rule, sink, test) with a count (merged from the workers)
         self.doors_violations: dict[tuple[str, str, str | None], int] = {}
+        self.doors_expected: dict[tuple[str, str, str | None], int] = {}   # misses an inv_bypass marker expects
 
     def _shown(self, path: pathlib.Path | None) -> str | None:
         """path relative to the pytest rootdir when it is under it (reports carry no local absolute paths)."""
@@ -115,8 +116,9 @@ class _SessionState:
             self._saved = Registry().install(default_registry())
             default_registry().install(self.rules)
 
-    def install_doors(self) -> None:
-        """--inv-doors: check the session's path laws at run time, in enforce mode (once, after collection)."""
+    def install_doors(self, items: Sequence[pytest.Item] = ()) -> None:
+        """--inv-doors: check the session's path laws at run time, in enforce mode (once, after collection).
+        Each `inv_bypass` marker on the collected items must name rules that are checked."""
         if self.doors is not None:
             return
         from .. import doors_runtime
@@ -125,6 +127,19 @@ class _SessionState:
         except LoadError as e:
             raise pytest.UsageError(f"--inv-doors: {e}") from e
         self.doors_installed = list(self.doors.rules)
+        for item in items:
+            for m in item.iter_markers("inv_bypass"):
+                if not m.args or not all(isinstance(r, str) and r for r in m.args):
+                    raise pytest.UsageError(f"--inv-doors: {item.nodeid}: inv_bypass needs one or more rule ids")
+                unknown = sorted(set(m.args) - set(self.doors_installed))
+                if unknown:
+                    raise pytest.UsageError(f"--inv-doors: {item.nodeid}: inv_bypass names {', '.join(unknown)}, "
+                                            f"which is not a path law checked at run time")
+
+    @staticmethod
+    def bypass_rules(item: pytest.Item) -> list[str]:
+        """The rule ids the item's `inv_bypass` markers name."""
+        return [r for m in item.iter_markers("inv_bypass") for r in m.args]
 
     def uninstall_doors(self) -> None:
         if self.doors is not None:
@@ -140,7 +155,8 @@ class _SessionState:
         self._doors_counted += len(new)
         for v in new:
             k = (v["rule"], v["sink"], nodeid)
-            self.doors_violations[k] = self.doors_violations.get(k, 0) + 1
+            into = self.doors_expected if v.get("expected") else self.doors_violations
+            into[k] = into.get(k, 0) + 1
 
     def restore_default(self) -> None:
         if self._saved is not None:

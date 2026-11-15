@@ -39,6 +39,7 @@ Limits:
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import dataclasses
 import functools
@@ -47,7 +48,7 @@ import sys
 import threading
 import types
 import typing
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Callable, Iterable, Iterator, Literal
 
 from .errors import BypassError, LoadError
 from .model import Rule, effective_mode
@@ -61,6 +62,30 @@ _ACTIVE: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar("inv_do
 _LOCK = threading.RLock()                        # install and uninstall, one at a time
 _INSTALLED: dict[Any, DoorsHandle] = {}          # config key -> the live handle (install twice: the same one)
 _MISSING: Any = object()
+
+_EXPECTED: dict[str, int] = {}                   # rule id -> open expected() blocks naming it (process-wide)
+_ELOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def expected(*rules: str) -> Iterator[None]:
+    """A block in which these rules' sinks are reached without a door on purpose (a test that runs a planted
+    back door, or tests a database trigger by calling the store directly). A miss of one of them is noted on
+    the handle as expected: never recorded as a violation, never raised. Process-wide, so it also covers
+    threads the block starts. pytest's `@pytest.mark.inv_bypass("R-1", reason=...)` opens it for one test."""
+    if not rules or not all(isinstance(r, str) and r for r in rules):
+        raise TypeError("expected() takes one or more rule ids")
+    with _ELOCK:
+        for r in rules:
+            _EXPECTED[r] = _EXPECTED.get(r, 0) + 1
+    try:
+        yield
+    finally:
+        with _ELOCK:
+            for r in rules:
+                _EXPECTED[r] -= 1
+                if not _EXPECTED[r]:
+                    del _EXPECTED[r]
 
 
 def active() -> frozenset[str]:
@@ -215,6 +240,11 @@ class DoorsHandle:
         when the mode in force (the handle's, capped by the rule's status) is enforce."""
         reg = self.registry if self.registry is not None else current()
         if reg.skips(d.rule):
+            return
+        if d.rule in _EXPECTED:
+            with self._vlock:
+                self.violations.append({"rule": d.rule, "sink": d.sink, "mode": "expected", "expected": True})
+            log.info("invariant %s: %s reached without its door, as the test expects", d.rule, d.sink)
             return
         mode = effective_mode(self.mode, d.status)
         msg = (f"{d.rule}: {d.sink} was reached without passing its door "
@@ -472,4 +502,4 @@ def installed() -> list[DoorsHandle]:
         return list(_INSTALLED.values())
 
 
-__all__ = ["BypassError", "DoorsHandle", "Mode", "POINT", "active", "install", "installed"]
+__all__ = ["BypassError", "DoorsHandle", "Mode", "POINT", "active", "expected", "install", "installed"]

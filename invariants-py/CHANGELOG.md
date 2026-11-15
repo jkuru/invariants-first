@@ -69,7 +69,9 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
   `enforce` (capped by the rule's status) raised as the new `inv.BypassError`. Retired and ablated
   rules are skipped; `uninstall()` restores the exact originals. `pytest --inv-doors` installs it in
   `enforce` for the session and fails it on any violation, even one a test caught; the report JSON
-  gains `doors`, merged across xdist workers.
+  gains `doors`, merged across xdist workers. A test that bypasses a door on purpose is marked
+  `@pytest.mark.inv_bypass("R-1", ..., reason=...)` (or uses `inv.doors.expected(...)`): its misses are
+  counted as expected, not violations. The three example apps pass `--inv-doors` with five such tests marked.
 
 ### The rule file
 

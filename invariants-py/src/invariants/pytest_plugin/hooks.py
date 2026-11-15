@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from .. import registry
-from .session import STASH, InvSession
+from .session import STASH, Bypass, InvSession
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -31,9 +31,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     registry.pytest_session_started()      # env ablation logs quietly only inside a real session
+    config.addinivalue_line("markers", "inv_bypass(*rule_ids, reason=''): under --inv-doors, the test reaches "
+                            "these path laws' sinks without a door on purpose; those misses are expected")
     sess = InvSession(config)
     config.stash[STASH] = sess
     config.pluginmanager.register(sess, "invariants-session")
+    config.pluginmanager.register(Bypass(sess), "invariants-bypass")
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

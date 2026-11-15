@@ -50,7 +50,7 @@ class InvSession(_Report):
         if self.load_rules() is not None:
             self.install_default()
         if self.doors_on and not session.config.option.collectonly:
-            self.install_doors()
+            self.install_doors(session.items)
         reg = self.session_registry()
         self.statuses = {rid: r.status for rid, r in reg.rules.items()}
         if self.ablate_on:
@@ -127,6 +127,24 @@ class InvSession(_Report):
         no_worker = self.controller and self.ablate_on and not self.workers_reported
         return bool(self.verify_problems or self.not_load_bearing or (self.ablate_on and self.unverified)
                     or no_worker or self.doors_violations)
+
+
+class Bypass:
+    """A plugin of its own (InvSession's pytest_runtest_protocol is the ablation's, so a wrapper there would
+    replace it): a test marked `inv_bypass(rule, ...)` reaches those rules' sinks without a door on purpose,
+    so under --inv-doors its misses of them are expected (doors_runtime.expected), not violations."""
+
+    def __init__(self, sess: InvSession) -> None:
+        self.sess = sess
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_protocol(self, item: pytest.Item, nextitem: Any) -> Iterator[Any]:
+        rules = self.sess.bypass_rules(item) if self.sess.doors is not None else []
+        if not rules:
+            return (yield)
+        from .. import doors_runtime
+        with doors_runtime.expected(*rules):
+            return (yield)
 
 
 STASH: pytest.StashKey[InvSession] = pytest.StashKey()

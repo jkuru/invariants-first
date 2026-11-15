@@ -5,6 +5,8 @@ import importlib
 import pathlib
 import sys
 
+import pytest
+
 from fact_pipeline import monitor
 from fact_pipeline.fake_model import FakeModel
 from fact_pipeline.pipeline import Pipeline
@@ -15,6 +17,7 @@ from .conftest import S1, S2
 BYPASS = pathlib.Path(__file__).resolve().parents[1] / "bypass"
 
 
+@pytest.mark.inv_bypass("K-12", "K-16", reason="step 7 runs the planted backfill that writes around the door")
 def test_worked_flow_7_6(store: Store, model: FakeModel) -> None:
     pipe = Pipeline(store, model)
     # Two registered companies share the name "Beta Ltd": the resolver must not guess.

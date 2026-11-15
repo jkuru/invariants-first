@@ -11,10 +11,12 @@ Options (all off by default; without them the plugin only adds the fixtures):
   --inv-doors            check every path law (mediation sink/door/allow) at run time, in enforce mode:
                          inv.doors.install after collection, so a sink reached without its door (through
                          getattr, a DI container, a callback) raises inv.BypassError; any such call fails
-                         the session, even one a test caught (with no --inv-rules, the rootdir's rule file)
+                         the session, even one a test caught (with no --inv-rules, the rootdir's rule file);
+                         a test marked @pytest.mark.inv_bypass("R-1", reason=...) reaches those rules'
+                         sinks without a door on purpose: its misses of them are expected, not violations
   --inv-report           print per-rule reach / violation / rule_error counts at session end
   --inv-report-json PATH also write those counts (and verify/ablation results) as JSON; with --inv-doors,
-                         doors: {installed: [rule ids], violations: [{rule, sink, test, count}]}
+                         doors: {installed: [rule ids], violations and expected: [{rule, sink, test, count}]}
 
 Fixtures: inv_registry (an isolated registry, holding the session rules if any), inv_ablated(rule_id),
 inv_events (every event recorded during the test, in any registry), inv_scan (run `inv scan` the way

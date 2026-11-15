@@ -384,7 +384,8 @@ main` with `WARN ... [on main]`, and a new untyped call that reaches `insert_lea
 `[new since main]`. Under `pytest --inv-doors`, support-agent's 51 tests pass with no violation, and a
 tool added for the test that reaches `StripeGateway.refund` through `getattr` fails the session. The
 other two apps have five tests that bypass a door on purpose (running the planted back doors, or
-testing a database trigger directly); each is a true finding, so those suites don't use the flag yet.
+testing a database trigger directly); each is a true finding, and each is now marked
+`@pytest.mark.inv_bypass(...)`, after which all three apps pass `--inv-doors` with no violation.
 
 Mutation testing on the changes caught 99 of 99 hand-written mutants (gating 31, run-time check 34,
 `inv init` 34; eight survived at first and were killed by added tests, and one equivalent mutant's

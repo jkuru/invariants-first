@@ -495,7 +495,8 @@ def test_inv_doors_fails_the_session_on_a_swallowed_violation(pytester):
                             "*GW-DOOR*py:shop.Gateway.refund*test_app.py::test_swallowed*", "*2 passed*"])
     data = json.loads((pytester.path / "rep.json").read_text())
     assert data["doors"] == {"installed": ["GW-DOOR"], "violations": [
-        {"rule": "GW-DOOR", "sink": "py:shop.Gateway.refund", "test": "test_app.py::test_swallowed", "count": 1}]}
+        {"rule": "GW-DOOR", "sink": "py:shop.Gateway.refund", "test": "test_app.py::test_swallowed", "count": 1}],
+        "expected": []}
     assert data["rules"]["GW-DOOR"]["violation"] == 1
 
 
@@ -577,3 +578,68 @@ def test_support_agent_getattr_tool_fails_under_inv_doors(tmp_path):
         {"rule": "STRIPE-GATEWAY-DOOR", "sink": "py:support_agent.repo.StripeGateway.refund",
          "test": "tests/test_sneaky.py::test_sneaky_tool_refunds", "count": 1}]
     assert "STRIPE-GATEWAY-DOOR" in data["doors"]["installed"]
+
+
+# --- inv_bypass: a test that skips a door on purpose -------------------------------------------------------
+MARKED = textwrap.dedent('''
+    import pytest, shop
+
+    @pytest.mark.inv_bypass("GW-DOOR", reason="runs the planted back door")
+    def test_planted_back_door():
+        assert shop.tool_getattr(shop.Gateway(), 5) == ("refunded", 5)
+    ''')
+
+
+def test_an_inv_bypass_test_runs_its_bypass_and_passes_the_session(pytester):
+    _plugin_project(pytester)
+    pytester.makepyfile(test_app=MARKED)
+    r = pytester.runpytest_subprocess("-p", "no:cacheprovider", "--inv-doors", "--inv-report-json", "rep.json")
+    assert r.ret == 0, r.stdout.str()
+    r.stdout.fnmatch_lines(["*invariants doors*0 violation(s), 1 expected (inv_bypass)*", "*1 passed*"])
+    data = json.loads((pytester.path / "rep.json").read_text())
+    assert data["doors"]["violations"] == []
+    assert data["doors"]["expected"] == [{"rule": "GW-DOOR", "sink": "py:shop.Gateway.refund",
+                                          "test": "test_app.py::test_planted_back_door", "count": 1}]
+    assert data["rules"]["GW-DOOR"]["violation"] == 0
+
+
+def test_inv_bypass_excuses_only_the_test_it_marks(pytester):
+    _plugin_project(pytester)
+    pytester.makepyfile(test_app=MARKED + textwrap.dedent('''
+        def test_unmarked():
+            try:
+                shop.tool_getattr(shop.Gateway(), 5)
+            except Exception:
+                pass
+        '''))
+    r = pytester.runpytest_subprocess("-p", "no:cacheprovider", "--inv-doors")
+    assert r.ret == 1, r.stdout.str()
+    r.stdout.fnmatch_lines(["*1 violation(s), 1 expected*", "*GW-DOOR*test_app.py::test_unmarked*"])
+
+
+@pytest.mark.parametrize("marker, why", [('@pytest.mark.inv_bypass("NOPE")', "names NOPE"),
+                                         ("@pytest.mark.inv_bypass()", "needs one or more rule ids")])
+def test_an_inv_bypass_marker_must_name_a_checked_rule(pytester, marker, why):
+    _plugin_project(pytester)
+    pytester.makepyfile(test_app=f"import pytest\n\n{marker}\ndef test_x():\n    pass\n")
+    r = pytester.runpytest_subprocess("-p", "no:cacheprovider", "--inv-doors")
+    assert r.ret == 4, r.stdout.str()
+    assert why in r.stderr.str(), r.stderr.str()
+
+
+def test_without_inv_doors_the_marker_is_inert(pytester):
+    _plugin_project(pytester)
+    pytester.makepyfile(test_app=f'import pytest\n\n@pytest.mark.inv_bypass("NOPE")\ndef test_x():\n    pass\n')
+    r = pytester.runpytest_subprocess("-p", "no:cacheprovider", "--strict-markers")
+    assert r.ret == 0, r.stdout.str()
+
+
+def test_expected_blocks_nest_and_close():
+    with doors_runtime.expected("A", "B"):
+        with doors_runtime.expected("A"):
+            assert doors_runtime._EXPECTED == {"A": 2, "B": 1}
+        assert doors_runtime._EXPECTED == {"A": 1, "B": 1}
+    assert doors_runtime._EXPECTED == {}
+    with pytest.raises(TypeError):
+        with doors_runtime.expected():
+            pass
