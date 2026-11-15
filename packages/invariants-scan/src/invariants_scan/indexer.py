@@ -43,6 +43,7 @@ class _Index:
         self.foreign: set[str] | None = None             # attribute names set from outside their object
         self.returns: dict[str, str | None] = {}         # function -> the scanned class its return annotation names
         self._values: dict[str, dict[str, ast.expr]] = {}  # module -> its names bound once (module_values)
+        self._bind_counts: dict[str, collections.Counter[str]] = {}  # module -> bind_counts
         self._subs: dict[str, list[str]] | None = None     # class -> its scanned subclasses (subclasses)
         self._short: set[str] | None = None                # the last name of every scanned function
         self._bases: dict[str, list[str | None]] = {}      # class -> _base_names (once the index is built)
@@ -569,6 +570,8 @@ class _Index:
             for kind, name, what in events:
                 if kind != "alias":
                     local[name] = what or None
+                    if kind == "def":                  # fix round 35: a def after `m = other` is the method
+                        info["methods"][name] = what
                     continue
                 target = self.alias_target(info["module"], what, local)
                 local[name] = target
@@ -863,6 +866,16 @@ class _Index:
                 found[st.target.id] = st.value
             elif _TYPE_ALIAS is not None and isinstance(st, _TYPE_ALIAS) and isinstance(st.name, ast.Name):
                 found[st.name.id] = st.value
+        binds = self.bind_counts(module)
+        self._values[module] = out = {k: v for k, v in found.items() if binds[k] == 1}
+        return out
+
+    def bind_counts(self, module: str) -> collections.Counter[str]:
+        """How many times a module binds each name anywhere (a global or nonlocal counts as two)."""
+        got = self._bind_counts.get(module)
+        if got is not None:
+            return got
+        tree = self.modules[module].tree
         binds: collections.Counter[str] = collections.Counter()
         for n in _walk_of(tree, ast.Name, *DEFS, ast.Global, ast.Nonlocal, *IMPORTS):
             if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
@@ -877,8 +890,9 @@ class _Index:
         # `case {**x}`), which rebind a singleton as any other assignment does
         from .inference import _module_binds
         scope = _module_binds(tree)
-        self._values[module] = out = {k: v for k, v in found.items() if max(binds[k], scope[k]) == 1}
-        return out
+        binds |= scope
+        self._bind_counts[module] = binds
+        return binds
 
 
 _BEFORE_PATH: dict[str, bool] = {}

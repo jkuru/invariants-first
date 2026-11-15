@@ -43,7 +43,10 @@ def _mediation(rid: str, raw: dict[str, Any], med: dict[str, Any]) -> Mediation:
     if isinstance(med["sink"], dict):
         return _paired(rid, med)
     sinks = _str_list(med["sink"], f"{rid}: mediation.sink")
-    default_door = (raw.get("subject") or {}).get("target")
+    subject = raw.get("subject") or {}
+    if not isinstance(subject, dict):                 # fix round 35: a clean error, not an AttributeError
+        raise ScanConfigError(f"{rid}: subject must be a mapping (its target is the default door)")
+    default_door = subject.get("target")
     if "door" in med:
         doors = _str_list(med["door"], f"{rid}: mediation.door")
     elif isinstance(default_door, str):

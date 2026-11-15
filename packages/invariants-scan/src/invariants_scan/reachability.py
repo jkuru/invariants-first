@@ -90,6 +90,9 @@ def door_only(idx: _Index, edges: list[_Call], sites: list[_Site], entries: list
     free = _reach(entries, edges, trusted)
     from_trusted = _reach([e.callee for e in _flat(c for c in edges if c.caller in trusted)], edges, trusted)
     escaped = {s.detail for s in sites if s.what == "ref"}
+    # `.m` taken as a value on a receiver the scan cannot type may be any scanned method named m (fix
+    # round 35: `f = obj.run` let Helper.run's own sites go unreported)
+    escaped.update(m for s in sites if s.what == "attrref" for m in idx.fan(s.detail))
     return {f for f in from_trusted - free - escaped if f in idx.funcs and idx.funcs[f].node is not None}
 
 
