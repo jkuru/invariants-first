@@ -229,7 +229,11 @@ def _mediation_changes(where: str, old: Any, new: Any, subject_old: Any = None,
         out.append(_residual_change(where, ra, rb))
     if not same(a.get("allow_unresolved"), b.get("allow_unresolved")):
         out += _accept_changes(where, a.get("allow_unresolved"), b.get("allow_unresolved"))
-    for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow", "allow_unresolved"}):
+    if (a.get("strict") is True) != (b.get("strict") is True):     # false and left out are the same
+        off = a.get("strict") is True                 # was strict: every unresolved site failed the check
+        out.append(Change(where, "mediation.strict", a.get("strict"), b.get("strict"), off,
+                          "an unresolved scan site that is not new no longer fails `inv check`" if off else ""))
+    for k in sorted((set(a) | set(b)) - {"sink", "door", "residual_paths", "allow", "allow_unresolved", "strict"}):
         if not same(a.get(k), b.get(k)):
             out += _field_change(where, f"mediation.{k}", f"rule.mediation.{k}", a.get(k), b.get(k))
     return out

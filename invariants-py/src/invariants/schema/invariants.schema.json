@@ -135,6 +135,8 @@
                   "description": "Door rule: known back doors, frozen (empty or null: none left). Each may keep its own path to the sink; a new caller that reaches the sink through one is still a back door. Adding one is a weakening. When sink: is a mapping, allow maps each back door to the sink(s) it may reach (it excuses no other)."},
         "allow_unresolved": {"$ref": "#/$defs/allowUnresolved",
                              "description": "Door rule: unresolved findings a person reviewed and accepts, one site each. Expands to mediation.allow_unresolved. Adding or widening one is a weakening."},
+        "strict": {"type": "boolean",
+                   "description": "Door rule: every unresolved scan site fails `inv check`, not only the new ones. Expands to mediation.strict. Turning it off is a weakening."},
         "rev": {"type": "integer"},
         "status": {"enum": ["candidate", "contested", "detect", "enforce", "retired"]},
         "class": {"enum": ["law", "policy"]},
@@ -161,7 +163,9 @@
             "sink": {"$ref": "#/$defs/sinks"},
             "door": {"$ref": "#/$defs/pyRefs"},
             "allow": {"oneOf": [{"$ref": "#/$defs/pyRefs"}, {"$ref": "#/$defs/allowMap"}]},
-            "allow_unresolved": {"$ref": "#/$defs/allowUnresolved"}
+            "allow_unresolved": {"$ref": "#/$defs/allowUnresolved"},
+            "strict": {"type": "boolean",
+                       "description": "true: every unresolved scan site of this rule fails `inv check` (by default an unresolved site is a warning, and with --base only one new since the base fails). Turning it off is a weakening."}
           }
         },
         "model_policy": {"$ref": "#/$defs/modelPolicy"},

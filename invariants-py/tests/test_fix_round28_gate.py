@@ -430,7 +430,7 @@ def test_unresolved_findings_say_how_to_accept_a_reviewed_site(tmp_path):
     s = run_inv("status", cwd=root)
     assert "allow_unresolved (inv scan --format json gives its sha)" in s.stdout, s.stdout
     assert "freeze a known one in allow:" not in s.stdout
-    c = run_inv("check", cwd=root)
+    c = run_inv("check", "--strict-scan", cwd=root)   # unresolved sites block only when strict
     assert c.returncode == 1 and "FAIL  scan" in c.stdout
     assert "hint: a person who reviewed an unresolved site can accept it in mediation.allow_unresolved" in c.stdout
 

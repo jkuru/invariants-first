@@ -118,8 +118,10 @@ def tool_check(server_root: pathlib.Path, default_rules: pathlib.Path | None, ar
             steps.append({"step": m.group(2).strip(), "result": m.group(1).lower(), "detail": [m.group(3)] if m.group(3) else []})
         elif line.startswith("        ") and steps:
             steps[-1]["detail"].append(line.strip())
+    # advisory scan findings (unresolved sites, shown as WARN): they never fail the check
+    warnings = [d for st in steps for d in st["detail"] if d.startswith("WARN ")]
     return {"rule_file": _rel(str(rule_file), root), "passed": code == 0, "exit_code": code, "steps": steps,
-            "output": out.strip(), "stderr": err.strip()}
+            "warnings": warnings, "output": out.strip(), "stderr": err.strip()}
 
 
 def tool_status(server_root: pathlib.Path, default_rules: pathlib.Path | None, args: dict[str, Any]) -> dict[str, Any]:
@@ -147,7 +149,9 @@ FIXES = {
                   "variant of it to allow."],
     "unresolved": ["Make the call statically resolvable: a direct call, a constructor call, or a receiver "
                    "annotated with its class (see docs/scan.md, Method calls).",
-                   "An unresolved call is never counted as passed: `inv check` keeps failing until it resolves.",
+                   "An unresolved call is never counted as passed: `inv check` warns about it, fails on one new "
+                   "since --base (or on every one with --strict-scan or mediation.strict: true), and `inv status` "
+                   "withholds held until it resolves or is accepted.",
                    "If a person reads the site and finds it cannot reach the sink, only they may accept it in "
                    "mediation.allow_unresolved ({accept}, with a why). That is a weakening, which `inv lock` "
                    "refuses without --accept-weakening."],

@@ -6,6 +6,11 @@
 # from that environment's site-packages (--site), after invariants' own, and its .pth files are not run.
 # Installing a pull request still runs its code in this job (a build backend, setup.py): see
 # docs/start.md, "Make the check unskippable", for what that means and how to install without it.
+# With a base (a pull request's base branch by default), `inv check --base` also scans the base's copy of
+# the source: an unresolved scan site (a call the scan cannot follow) fails only when it is new since the
+# base, and one already there is a warning. The base must be in the git history: this action fetches the
+# base branch's tip; with another base ref, check out with `actions/checkout` and `fetch-depth: 0`. When
+# the base cannot be read, every unresolved site fails (fail closed).
 name: invariants check
 description: Fail a pull request that weakens a rule, a pinned pydantic constraint or a door rule.
 branding:
@@ -88,6 +93,8 @@ runs:
         args=()
         if [ -n "$INV_RULE_FILE" ]; then args+=("$INV_RULE_FILE"); fi
         if [ -n "$INV_BASE" ]; then
+          # the base's tree is read (the lock and the scan roots at it); a base that is not a branch of
+          # origin must already be in the history (actions/checkout with fetch-depth: 0)
           if [ "${INV_BASE#origin/}" != "$INV_BASE" ]; then
             branch="${INV_BASE#origin/}"
             git fetch --no-tags --depth=1 origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"

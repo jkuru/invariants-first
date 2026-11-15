@@ -85,15 +85,31 @@ def test_d1_a_tool_that_skips_billing_service_fails(app: pathlib.Path, body: str
 
 
 # --- 2. the gateway itself registered as a tool ----------------------------------------------------
+def _commit(root: pathlib.Path) -> None:
+    """The copy as a git repository on main, as the pull request's base branch."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "base"]):
+        subprocess.run(["git", *cmd], cwd=root, check=True, env=env, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_d2_the_sink_in_the_tool_registry_fails(app: pathlib.Path) -> None:
+    _commit(app)
     edit(app / "src/support_agent/tools.py", '    "CANCEL": (CancelToolInput, cancel_subscription_tool),\n',
          '    "CANCEL": (CancelToolInput, cancel_subscription_tool),\n'
          '    "VIP": (RefundToolInput, StripeGateway.refund),                # type: ignore[dict-item]\n')
     edit(app / "src/support_agent/tools.py", "from .context import AgentContext\n",
          "from .context import AgentContext\nfrom .repo import StripeGateway\n")
-    r = check(app)
-    assert r.returncode == 1, r.stdout + r.stderr                    # unresolved: check never passes it
+    # unresolved, and new since the base: CI's `inv check --base` fails it (diff-first)
+    r = check(app, "--base", "main")
+    assert r.returncode == 1, r.stdout + r.stderr
     assert "the sink support_agent.repo.StripeGateway.refund is used as a value" in r.stdout
+    assert "[new since main]" in r.stdout, r.stdout
+    # without a base (pre-commit) it is a warning; --strict-scan fails it there too
+    r = check(app)
+    assert r.returncode == 0 and "WARN  unresolved" in r.stdout, r.stdout + r.stderr
+    assert check(app, "--strict-scan").returncode == 1
 
 
 # --- 3. a raised refund cap on the tool's input --------------------------------------------------

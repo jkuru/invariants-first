@@ -173,9 +173,11 @@ def _base_scan_default(path: pathlib.Path, ref: str) -> dict[str, list[str]]:
 
 def _base_step(path: pathlib.Path, lock_path: pathlib.Path, ref: str, extra: Sequence[str], allow: bool,
                scan: dict[str, Any] | None = None, imported: Imported | None = None,
-               base: BaseRead | None = None) -> int:
+               base: BaseRead | None = None, record: list[lock.Change] | None = None) -> int:
     try:
         changes, why = base_changes(path, lock_path, ref, extra, scan, imported, base)
+        if record is not None and changes:
+            record.extend(changes)
     except BaseUnavailable as e:
         if allow and e.acceptable:
             _out(f"{e} (allowed by a reviewer)")

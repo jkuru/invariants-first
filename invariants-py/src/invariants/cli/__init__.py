@@ -120,6 +120,10 @@ def _init_options(it: argparse.ArgumentParser) -> None:
                     help="read a Graphify graph.json for door hints (default: graphify-out/graph.json when it "
                          "exists); every suggested door is still checked by the scan")
     it.add_argument("--no-graphify", action="store_true", help="do not read a Graphify graph")
+    it.add_argument("--strict-scan", action="store_true",
+                    help="draft an allow_unresolved entry for each unresolved site (for `inv check --strict-scan`, "
+                         "where each fails until reviewed); without it a door rule is written with its "
+                         "unresolved sites listed as comments, which `inv check` reports as warnings")
     it.add_argument("--max-doors", type=int, default=5, metavar="N",
                     help="write at most N door rules, the most important first (default 5); the rest are listed")
 
@@ -133,11 +137,20 @@ def _check_options(ck: argparse.ArgumentParser) -> None:
                          "pre-commit hook)")
     ck.add_argument("--base", metavar="REF",
                     help="also fail when the rules weaken since the lock committed at git REF (e.g. origin/main), "
-                         "even if the change re-pinned the lock with --accept-weakening")
+                         "even if the change re-pinned the lock with --accept-weakening; and scan REF's copy of the "
+                         "source, so an unresolved scan site fails only when it is new since REF (the git "
+                         "history must hold REF: in CI, fetch it or check out with fetch-depth: 0)")
     ck.add_argument("--accept-weakening", dest="allow_weakening", action="store_true",
                     help=f"with --base: report weakenings but pass (also {ALLOW_WEAKENING_ENV}=1); for a "
                          f"reviewer to set, not the change's author")
     _weakening_alias(ck, "--allow-weakening", "allow_weakening")
+    ck.add_argument("--strict-scan", action="store_true",
+                    help="scan: fail on every unresolved site (a call the scan cannot follow), as a rule with "
+                         "mediation.strict: true does; by default they are warnings, and with --base only the "
+                         "ones new since REF fail")
+    ck.add_argument("--metrics", metavar="FILE",
+                    help="append one JSON line about this run to FILE (weakenings, blocking and new or legacy "
+                         "unresolved scan sites, accepted sites), for a trial")
     ck.add_argument("--root", action="append", default=[], metavar="DIR",
                     help="scan this source root (repeatable; as `inv scan --root`, also [tool.invariants.scan] roots)")
     ck.add_argument("--exclude", action="append", default=[], metavar="GLOB",

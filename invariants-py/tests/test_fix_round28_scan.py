@@ -353,6 +353,7 @@ def test_init_lists_unresolved_sites_apart_and_drafts_them_for_review(tmp_path):
         "app/api.py": "from app.order_service import place, place2\ndef a(o):\n    place(o)\ndef b(o):\n    place2(o)\n",
         "app/plug.py": "import importlib\nfrom . import missing\ndef load(n):\n    importlib.import_module(n)\n"})
     found = doors.discover([root])
+    doors.apply_strict(found)            # drafting allow_unresolved is `inv init --strict-scan`'s
     d = found.doors[0]
     assert d.back_doors == [] and len(d.unresolved) == 2 and not d.active, (d.back_doors, d.unresolved)
     text = "\n".join(doors.render(found))

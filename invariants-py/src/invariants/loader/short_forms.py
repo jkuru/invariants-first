@@ -5,9 +5,9 @@ from typing import Any
 
 from ..errors import LoadError
 
-SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "allow", "allow_unresolved"})
+SHORT_FIELDS = frozenset({"guard", "tests", "door", "sink", "allow", "allow_unresolved", "strict"})
 SHORT_ENFORCER = {"point": "decorator", "timing": "pre_effect", "mode": "enforce"}
-DOOR_FIELDS = ("door", "sink", "allow", "allow_unresolved")
+DOOR_FIELDS = ("door", "sink", "allow", "allow_unresolved", "strict")
 STRUCTURE_ENFORCER = {"point": "structure", "timing": "pre_effect", "mode": "enforce"}
 
 
@@ -76,6 +76,8 @@ def _expand_door(raw: dict[str, Any], rid: str) -> None:
         new["allow"] = allow
     if "allow_unresolved" in raw:                      # reviewed unresolved sites, as written
         new["allow_unresolved"] = raw.pop("allow_unresolved")
+    if "strict" in raw:                                # every unresolved site fails `inv check`
+        new["strict"] = raw.pop("strict")
     if not doors and not paired and "guard" not in raw:
         raise LoadError(f"{rid}: a door rule names its door: add door: py:module.function (the function every "
                         f"write must go through), or guard: to make the guarded function the door")

@@ -68,7 +68,7 @@ FIELD_POLICY: dict[str, str] = {
     # the lock judges the subject.target, enforcer and falsified_by it becomes
     "rule.guard": ANALYSED, "rule.tests": NEUTRAL,
     "rule.door": ANALYSED, "rule.sink": ANALYSED, "rule.allow": ANALYSED,   # short door form
-    "rule.allow_unresolved": ANALYSED,
+    "rule.allow_unresolved": ANALYSED, "rule.strict": ANALYSED,
     "rule.id": ANALYSED, "rule.rev": NEUTRAL, "rule.status": RANKED,
     "rule.class": PROSE, "rule.owner": PROSE, "rule.statement": PROSE, "rule.why": PROSE,
     "rule.subject": WEAKENING, "rule.subject.contract": WEAKENING, "rule.subject.target": WEAKENING,
@@ -80,6 +80,7 @@ FIELD_POLICY: dict[str, str] = {
     "rule.mediation.chokepoint": ANALYSED, "rule.mediation.residual_paths": ANALYSED,
     "rule.mediation.sink": ANALYSED, "rule.mediation.door": ANALYSED,
     "rule.mediation.allow": ANALYSED, "rule.mediation.allow_unresolved": ANALYSED,
+    "rule.mediation.strict": ANALYSED,
     "clause.when": ANALYSED, "clause.message": NEUTRAL,
     # enforcers (point and target identify the enforcer: a change is a removal plus an addition)
     "enforcer.point": ANALYSED, "enforcer.target": ANALYSED, "enforcer.timing": RANKED, "enforcer.mode": RANKED,
