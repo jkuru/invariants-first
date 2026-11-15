@@ -25,6 +25,7 @@ PUBLIC_API = {
     "check_snapshot", "Escalation", "Routed",
     # the other outcomes and errors
     "InvariantError", "Rejected", "Halted", "LoadError", "CoverageError", "ParseError", "ReviewNotOpened",
+    "BypassError",
     # loading, evaluation and records
     "parse", "read_document", "schema_path", "verify_coverage", "evaluate", "evaluate_env", "fill_view",
     "effective_mode", "Outcome", "Rule", "Provider",

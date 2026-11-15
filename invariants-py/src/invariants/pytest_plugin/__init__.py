@@ -8,8 +8,13 @@ Options (all off by default; without them the plugin only adds the fixtures):
                          every enforce rule needs at least one falsifier that is caught; with no rules
                          loaded (from a file or by the tests) it is a usage error, exit 4, never a pass
   --inv-ablate-lenient   with --inv-ablate, fail only on a falsifier that still passes
+  --inv-doors            check every path law (mediation sink/door/allow) at run time, in enforce mode:
+                         inv.doors.install after collection, so a sink reached without its door (through
+                         getattr, a DI container, a callback) raises inv.BypassError; any such call fails
+                         the session, even one a test caught (with no --inv-rules, the rootdir's rule file)
   --inv-report           print per-rule reach / violation / rule_error counts at session end
-  --inv-report-json PATH also write those counts (and verify/ablation results) as JSON
+  --inv-report-json PATH also write those counts (and verify/ablation results) as JSON; with --inv-doors,
+                         doors: {installed: [rule ids], violations: [{rule, sink, test, count}]}
 
 Fixtures: inv_registry (an isolated registry, holding the session rules if any), inv_ablated(rule_id),
 inv_events (every event recorded during the test, in any registry), inv_scan (run `inv scan` the way

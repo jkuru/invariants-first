@@ -66,6 +66,11 @@ class Routed(InvariantError):
     """on_violation: route. A review was opened (review_id); the call does not proceed."""
 
 
+class BypassError(InvariantError):
+    """inv.doors.install(mode="enforce") (and `pytest --inv-doors`): a path law's sink was reached at run time
+    without passing one of its doors. The message names the rule, the sink and the doors; never a value."""
+
+
 class ReviewNotOpened(InvariantError):
     """route or escalate (or an abstain) could not open a review: the review store failed, and so did
     the review_fallback if one is configured. The call does not proceed, as with Routed/Escalation.
