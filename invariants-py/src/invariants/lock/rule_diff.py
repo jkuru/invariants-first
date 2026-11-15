@@ -605,6 +605,9 @@ def _pin_changes(where: str, kind: str, f: str, a: dict[str, Any], b: dict[str, 
         why = constraint_weakening(p, xv, yv, a, b) if kind == "contract" else None
         if why is None and kind == "contract" and f == "operations":
             why = parameter_flag_weakening(p, xv, yv)
+        if why is None and kind == "target" and p == "reply_schema" and xv is not None and yv is None:
+            # fix round 35: the model-call reply is no longer checked against the schema it had
+            why = "reply schema removed: what the model replies is no longer checked against it"
         op = p.split(".")
         if f == "operations" and len(op) == 2 and yv is None:
             users = named.get(op[1])

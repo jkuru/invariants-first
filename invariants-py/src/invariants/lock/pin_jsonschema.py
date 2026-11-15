@@ -95,12 +95,19 @@ def _json_type(t: Any, defs: dict[str, Any], depth: int) -> dict[str, Any]:
         return {"const": vals[0]} if len(vals) == 1 else {"enum": vals}
     if ti.is_union(t):
         return {"anyOf": [_json_type(a, defs, d) for a in args]}
+    if origin is tuple and Ellipsis not in args:
+        # fix round 35: tuple[int] (tuple[int, str]) holds exactly that many items, as pydantic writes it
+        return {"type": "array", **({"prefixItems": [_json_type(a, defs, d) for a in args]} if args else {}),
+                "minItems": len(args), "maxItems": len(args)}
     if origin in _ARRAYS or t in _ARRAYS:
         items = [a for a in args if a is not Ellipsis]
         return {"type": "array", **({"items": _json_type(items[0], defs, d)} if len(items) == 1 else
                                     {"prefixItems": [_json_type(a, defs, d) for a in items]} if items else {})}
     if origin in _MAPS or t in _MAPS:
-        return {"type": "object", **({"additionalProperties": _json_type(args[1], defs, d)} if len(args) == 2 else {})}
+        # fix round 35: a key type other than str bounds the keys (dict[Literal["a", "b"], int])
+        keys = {"propertyNames": _json_type(args[0], defs, d)} if len(args) == 2 and args[0] is not str else {}
+        return {"type": "object", **keys,
+                **({"additionalProperties": _json_type(args[1], defs, d)} if len(args) == 2 else {})}
     if ti.is_enum(t):
         return {"enum": [_plain(m.value) for m in t]}
     if isinstance(t, type) and (dataclasses.is_dataclass(t) or ti.is_typeddict(t)):

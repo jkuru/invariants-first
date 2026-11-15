@@ -201,8 +201,8 @@ def schema_problems(lock: dict[str, Any]) -> list[str]:
     """What is wrong with a lock's schemas table: an entry whose key is not the sha256 of its body
     (hand-edited, or a bad merge), a `$ref` that names no entry, an entry nothing refers to. Empty when
     the table is sound."""
-    if not isinstance(lock.get("schemas", {}), dict):
-        return []
+    if not isinstance(lock.get("schemas") or {}, dict):     # fix round 35: "schemas": null holds no
+        return []                                           # entry, so each $ref names nothing
     table: dict[str, Any] = lock.get("schemas") or {}
     out = [f"schemas.{k}: the key is not the sha256 of its body (edited by hand, or a bad merge)"
            for k, body in sorted(table.items()) if _sha(canonical(body)) != k]
