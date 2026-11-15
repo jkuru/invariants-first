@@ -10,6 +10,7 @@ from typing import Any, Callable
 from .astutil import (
     CODE_ATTRS,
     _HARMLESS_DUNDERS,
+    _attr_writes,
     _computed_dict_writes,
     _dotted,
     _comp_targets,
@@ -689,7 +690,24 @@ class _Walker(_Inference):
         self._exprs([recv, key] if len(node.args) == 1 else [f.value, recv, key], owner, local, me)
         return True
 
+    def _named_dict_write(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        """fix round 35: `o.__dict__["save"] = v`, `del o.__dict__["save"]`, `o.__dict__.update(save=v)` (or
+        `{"save": v}`), `.setdefault("save", v)`, `object.__setattr__(o, "save", v)`, `o.__setattr__("save",
+        v)`, `o.__delattr__("save")`: a setattr (delattr) of that name on o, as the builtin's is."""
+        f = node.func if isinstance(node, ast.Call) else None
+        if not (isinstance(node, ast.Subscript) or (isinstance(f, ast.Attribute) and (
+                f.attr in ("__setattr__", "__delattr__")
+                or (isinstance(f.value, ast.Attribute) and f.value.attr == "__dict__")))):
+            return
+        how = "delattr" if isinstance(getattr(node, "ctx", None), ast.Del) or (
+            isinstance(f, ast.Attribute) and f.attr == "__delattr__") else "setattr"
+        for obj, name, _ in _attr_writes(node):
+            if name is not None:
+                got = self._resolve(obj, local, me) if _dotted(obj) else None
+                self._site(how, owner, node, f"{got or '?'}|{name}")
+
     def _expr(self, node: ast.AST, owner: str, local: set[str], me: tuple[str, str] | None) -> None:
+        self._named_dict_write(node, owner, local, me)
         if self._reflect(node, owner, local, me):
             return
         if isinstance(node, ast.Call):

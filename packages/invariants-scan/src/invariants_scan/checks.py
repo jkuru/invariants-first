@@ -486,6 +486,11 @@ class _Idioms:
                                f"{how} with a computed name{recv}: the scan cannot tell whether it reaches "
                                f"the sink", s)
         if s.what in ("setattr", "delattr") and lit and obj and not obj.startswith(("self:", "?")) \
+                and self.idx.canon(f"{obj}.{lit}") in self.trusted:
+            return self._found("forbidden", "forbidden/monkeypatch",   # fix round 35: an alias of the door
+                               f"{s.what} on {lit!r} replaces {self.idx.canon(f'{obj}.{lit}')}, the sink or door, "
+                               f"at run time", s)
+        if s.what in ("setattr", "delattr") and lit and obj and not obj.startswith(("self:", "?")) \
                 and _holds(self.idx, self.idx.canon(f"{obj}.{lit}"), self.trusted):
             return self._found("forbidden", "forbidden/monkeypatch",
                                f"{s.what} on {lit!r} replaces {self.idx.canon(f'{obj}.{lit}')}, which holds the "

@@ -53,7 +53,10 @@ def mediations(doc: dict[str, Any]) -> tuple[dict[str, Mediation], dict[str, str
     """Scan fields per rule, and the reason each other rule is not scanned."""
     scanned: dict[str, Mediation] = {}
     skipped: dict[str, str] = {}
-    for raw in doc.get("rules") or []:
+    rules = doc.get("rules") or []
+    if not isinstance(rules, (list, tuple)):            # fix round 35: a clean error, not a TypeError
+        raise ScanConfigError(f"rules must be a list of rules, got {type(rules).__name__}")
+    for raw in rules:
         if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
             continue
         rid, med = raw["id"], raw.get("mediation") or {}
@@ -159,8 +162,14 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
     paths = [pathlib.Path(r) for r in roots]
     idx.roots = [r.resolve() for r in paths]
     found = _layout(paths, exclude, walked)
-    names = {s.name for s in found}
-    for s in found:                                    # what a file under the roots is named, from any root
+    # a file in an always-skipped directory names nothing the code imports (a virtualenv's packages, a
+    # build/lib copy) unless it is importable under the project's own package names (app/build/jobs.py):
+    # else `_pytest/pathlib.py` in .venv/ made pathlib a file under the roots (fix round 35)
+    own = {s.name.split(".")[0] for s in found if not (s.pattern is not None and s.skip)}
+    named = [s for s in found if not (s.pattern is not None and s.skip) or (
+        s.name.split(".")[0] in own and all(p.isidentifier() for p in s.name.split(".")))]
+    names = {s.name for s in named}
+    for s in named:                                    # what a file under the roots is named, from any root
         for n in (s.name, *s.aliases):
             idx.files_named.add(n)
             idx.module_files.add(n)
@@ -170,7 +179,7 @@ def _index(roots: Iterable[str | pathlib.Path], exclude: Iterable[str],
             for i in range(1, len(parts)):
                 idx.files_named.add(".".join(parts[:i]))
                 idx.package_names.add(".".join(parts[:i]))
-    for s in found:                                    # every other root's name for a file is an alias
+    for s in named:                                    # every other root's name for a file is an alias
         if s.shadowed_by is None:
             for a in s.aliases:
                 if a not in names:

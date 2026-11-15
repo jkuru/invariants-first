@@ -339,18 +339,22 @@ class InferredBasis:
                 m ^= one
         for s in sorted(set(self.starts) & seen):
             add(entry, reach[s], f"entrypoint {s}")
-        fans: dict[int, int] = {}                # a name's callees -> the sites they reach
+        # a fan's callees (the tuple every call of the name shares, kept alive by the fan) -> the sites they
+        # reach; a single edge's 1-tuple is made fresh and freed, so its id is not a key (fix round 35)
+        fans: dict[int, int] = {}
         for c in sorted(seen):
             for e in succ.get(c, ()):
                 if not e.inferred:
                     continue
                 cs = self._callees(e)
-                m = fans.get(id(cs))
+                key = id(cs) if isinstance(e, _Fan) else -1
+                m = fans.get(key)
                 if m is None:
                     m = 0
                     for x in cs:
                         m |= reach.get(x, 0)
-                    fans[id(cs)] = m
+                    if key != -1:
+                        fans[key] = m
                 if c in bit and any(x in self.goals for x in cs):
                     m |= bit[c]                  # the site's own name-matched call into the sink
                 add(calls, m, f"{c} -> .{cs[0].rsplit('.', 1)[-1]}")

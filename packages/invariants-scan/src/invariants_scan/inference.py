@@ -23,6 +23,7 @@ from .astutil import (
     _own_under,
     _under,
     _dotted,
+    _locals,
     _own_nodes,
     _pairs,
     _scope_binds,
@@ -527,6 +528,8 @@ class _Inference:
             fq = self._resolve(node, local, me)
             if fq is None:
                 fq = f"{self.mod.name}.{node.id}"
+            elif self.idx.bind_counts(self.mod.name)[node.id] > 1:
+                return None                                    # fix round 35: imported, then bound again here
         elif isinstance(node, ast.Attribute) and _dotted(node):
             fq = self._resolve(node, local, me)
         else:
@@ -587,6 +590,8 @@ class _Inference:
                 and self._resolve(v.func, local, me) == "builtins.super"):
             return None
         start = me[1]
+        if len(v.args) > 1 and not (isinstance(v.args[1], ast.Name) and v.args[1].id == me[0]):
+            return []                                          # fix round 35: super(Cls, other) is other's MRO
         if v.args:
             named = self._resolve(v.args[0], local, me) if _dotted(v.args[0]) else None
             if named not in self.idx.classes:
@@ -1165,9 +1170,8 @@ class _Subversions:
                 me = around[-1][1] if around else {}
             child = order[k]
             inner = me
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                cls = self.methods.get(id(child))
-                inner = {**me, _positional(child)[0].arg: cls} if cls and _positional(child) else me
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                inner = self._inner(child, me)
             elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
                 for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
                     self.values[id(t)] = child.value
@@ -1181,13 +1185,28 @@ class _Subversions:
                 around.append((child.__dict__["_inv_span"][2], inner))
                 me = inner
 
+    def _inner(self, fn: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, me: dict[str, str]) -> dict[str, str]:
+        """me inside fn: its own names are locals ("": a runtime value, never the module's object of that
+        name; fix round 35: `def patch(Other): Other.__bases__ = ...` is not ops.Other), and a method's first
+        parameter is its class."""
+        own = _locals(fn)
+        inner = {**me, **{n: "" for n in own}} if own else me
+        cls = self.methods.get(id(fn))
+        return {**inner, _positional(fn)[0].arg: cls} if cls and not isinstance(fn, ast.Lambda) and _positional(fn) \
+            else inner
+
+    def _local(self, node: ast.AST | None, me: dict[str, str]) -> bool:
+        """node (a dotted name) starts at a local of the function around it."""
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and me.get(node.id) == ""
+
     def _writes(self, node: ast.AST, me: dict[str, str]) -> None:
         """Writes that alter a class, walked with the enclosing methods' first parameters (me: name -> class)."""
         for child in ast.iter_child_nodes(node):
             inner = me
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                cls = self.methods.get(id(child))
-                inner = {**me, _positional(child)[0].arg: cls} if cls and _positional(child) else me
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                inner = self._inner(child, me)
             elif isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
                 for t in child.targets if isinstance(child, ast.Assign) else [child.target]:
                     self.values[id(t)] = child.value
@@ -1209,7 +1228,9 @@ class _Subversions:
                 self._write(obj, name, me, value, retypes, on=c)
             return
         cls = me.get(obj.id) if isinstance(obj, ast.Name) and on is None else None
-        fq = on or cls or self._fq(obj)
+        fq = on or cls or (None if self._local(obj, me) else self._fq(obj))
+        if value is not None and self._local(value, me):
+            value = None                                       # a local's value: a function the scan cannot name
         if cls and name is None and retypes:
             self.found.add(cls)          # fix round 29: setattr(self, k, v) may set self.__class__, as assigning it does
             return
