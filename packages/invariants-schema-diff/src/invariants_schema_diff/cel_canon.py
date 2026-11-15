@@ -183,7 +183,9 @@ class _Canon:
             return self.negate(n[2], ren)
         if k == "un" and n[1] == "-":
             x = n[2]
-            if x[0] == "lit" and type(x[1]) in (int, float):
+            # fix round 35: -(-9223372036854775808) overflows int64 at run time, so it is not folded
+            # (it stays a unary minus, an error site), never a literal no int can reach
+            if x[0] == "lit" and (type(x[1]) is float or (type(x[1]) is int and -x[1] <= _INT64[1])):
                 return _lit(-x[1])
             return ("un", "-", self.canon(x, ren))
         if k == "bin":

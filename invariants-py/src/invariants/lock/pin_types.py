@@ -18,8 +18,11 @@ from .contracts import MAX_DEFS
 # --- schemas: stripping, content addressing --------------------------------------------------------
 SCHEMA_PROSE = frozenset({"title", "description", "summary", "tags", "examples", "example", "$comment",
                           "externalDocs"})
+# fix round 35: dependentRequired and dependencies are keyed by property names too, and a
+# discriminator's mapping by the values it maps: a property called `title` is not prose there either
 _NAME_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties", "dependentSchemas", "fields",
-                        "responses", "content", "schemas", "headers", "encoding"})
+                        "responses", "content", "schemas", "headers", "encoding", "dependentRequired",
+                        "dependencies", "mapping"})
 _DATA_KEYS = frozenset({"enum", "const", "default", "literal", "values", "required"})
 
 

@@ -606,16 +606,24 @@ def _values_weakening(key: str, on: Any, nn: Any) -> str | None:
         f"{key} changed: {_short(extra[0])} now passes"
 
 
-def _draft4_bound(key: str, on: Any, nn: Any) -> str | None:
+def _draft4_bound(key: str, on: Any, nn: Any, dialects: tuple[str, str] = ("draft4", "draft4")) -> str | None:
     """Draft 4 / OpenAPI 3.0: exclusiveMaximum (exclusiveMinimum) is a flag on maximum (minimum), and
-    on its own (a number included) bounds nothing. The bound and its flag are judged together."""
+    on its own (a number included) bounds nothing. The bound and its flag are judged together, each
+    side read in its own dialect (`dialects`, old and new): a Draft 2020-12 `exclusiveMaximum: 10` is a
+    bound, a Draft 4 `exclusiveMaximum: true` with no maximum is none."""
     upper = key in ("maximum", "exclusiveMaximum")
     mk, ek = ("maximum", "exclusiveMaximum") if upper else ("minimum", "exclusiveMinimum")
 
-    def bound(n: Any) -> tuple[Any, bool] | None:
-        m = n.get(mk) if isinstance(n, dict) else None
-        return (m, bool(n.get(ek))) if _number(m) else None
-    a, b = bound(on), bound(nn)
+    def bound(n: Any, dialect: str) -> tuple[Any, bool] | None:
+        if not isinstance(n, dict):
+            return None
+        m = n.get(mk)
+        if dialect == "draft4":
+            return (m, bool(n.get(ek))) if _number(m) else None
+        # fix round 35: Draft 6 and later: the tighter of the inclusive and the exclusive bound
+        got: list[tuple[Any, bool]] = [(v, x) for v, x in ((m, False), (n.get(ek), True)) if _number(v)]
+        return min(got, key=lambda b: (b[0] if upper else -b[0], not b[1]), default=None)
+    a, b = bound(on, dialects[0]), bound(nn, dialects[1])
     if a is None:
         return None
     if b is None:
@@ -696,7 +704,12 @@ def _verdict(loc: tuple[str, tuple[Any, ...], Any, Any], da: _Doc, db: _Doc) -> 
     ra, rb = da.entry, db.entry
     if kind == "root":
         ov, nv = _at(ra, nk), _at(rb, nk)
-        return None if ov is MISSING or nv is MISSING else _schema_replaced("the schema", ov, nv)
+        if ov is MISSING:
+            return None                                          # a schema added only tightens
+        if nv is MISSING:                                        # fix round 35: a pinned schema removed
+            return None if _loose(ov) else f"the schema at {'.'.join(map(str, nk))} removed: what it " \
+                                           f"checked is no longer checked"
+        return _schema_replaced("the schema", ov, nv)
     if kind == "item":
         ov, nv = _at(ra, (*nk, k, sub)), _at(rb, (*nk, k, sub))
         return _schema_replaced(f"{k}[{sub}]", ov, nv) or _evaluates_more(list(nk), k, ov, nv, ra)
@@ -775,8 +788,8 @@ def _kw_verdict(nk: tuple[Any, ...], k: str, da: _Doc, db: _Doc) -> str | None:
         why = None if o is None else _type_weakening("", o, n)
     elif k == "minContains":
         why = _contains_bound(o, n)
-    elif da.dialect == "draft4" and k in _TWIN_BOUNDS:
-        why = _draft4_bound(k, on, nn)
+    elif "draft4" in (da.own, db.own) and k in _TWIN_BOUNDS:
+        why = _draft4_bound(k, on, nn, (da.own, db.own))
     else:
         why = _keyword_rules([*nk, k], "", o, n, ra, rb)
     if why is not None or k not in APPLICATORS or (k in _REF_KEYS and o is not None):
@@ -869,6 +882,16 @@ def constraint_weakening(path: str, old: Any, new: Any, old_root: Any = None, ne
     if keys is not None:
         da, db = _docs(old_root, new_root, head)
         loc = _locate(keys, da, db)
+        if loc is None:
+            # fix round 35: a change above the schemas (a request body, a parameter, a response, its
+            # content map, removed or replaced whole): each schema root under it judged as a whole
+            below = [r for r in dict.fromkeys([*da.roots, *db.roots]) if len(r) > len(keys) and list(r[:len(keys)]) == keys]
+            for r in below:
+                fwd = _verdict(("root", r, None, None), da, db)
+                if fwd is not None and 1 in polarity:
+                    return fwd
+                if -1 in polarity and _verdict(("root", r, None, None), db, da) is not None:
+                    return _flip_note(path)
         if loc is not None:
             kind, nk, k, sub = loc
             here = nk
@@ -959,6 +982,11 @@ def _keyword_rules(segs: list[str], suffix: str, old: Any, new: Any, old_root: A
     old_node = _node(old_root, segs[:-1])
     if key == "$ref":
         return _ref_changed(segs[0], old, new, old_root, new_root)
+    if key in ("x-python-type", "x-args"):
+        # fix round 35: a Python type with no JSON form (Decimal, a generic class): which values it
+        # takes is not known here, so another one (or none) may take more (Decimal -> str)
+        return None if old is None or same(old, new) else \
+            f"{key} {_short(old)} -> {_short(new)}: another Python type may accept more input"
     if key == "patternProperties" and old is None and new is not None:
         return _opens_closed(old_node, "patternProperties added")
     if key in ("nullable", "x-nullable"):                       # OpenAPI 3.0 / Swagger 2.0
@@ -1155,7 +1183,8 @@ def pin_json_schema(entry: Any) -> Any:
     OpenAPI) or that holds neither fields nor a type."""
     if not isinstance(entry, dict) or any(k in entry for k in JUDGED_SCHEMAS):
         return None
-    defs = {_pin_def(k): _pin_type(v) for k, v in (entry.get("$defs") or {}).items()} \
+    defs = {_pin_def(k): _pin_nested(_pin_def(k), v) if isinstance(v, dict) and isinstance(v.get("pydantic"), dict)
+            else _pin_type(v) for k, v in (entry.get("$defs") or {}).items()} \
         if isinstance(entry.get("$defs"), dict) else {}
     if isinstance(entry.get("fields"), dict):
         top = _pin_type({k: v for k, v in entry.items() if k in ("fields", "required")})
@@ -1168,6 +1197,24 @@ def pin_json_schema(entry: Any) -> Any:
 
 def _pin_def(ref: str) -> str:
     return ref.replace(".", ":")                       # a path segment of _json_paths holds no "."
+
+
+def _pin_nested(key: str, entry: dict[str, Any]) -> Any:
+    """fix round 35: a pydantic model a dataclass or mapping names, pinned in its $defs as
+    {"pydantic": its JSON Schema}: that schema, its own `#/$defs/...` references re-pointed under
+    $defs.<key>, so its constraints are judged like any other."""
+    base = "#/$defs/" + key.replace("~", "~0").replace("/", "~1")
+
+    def walk(n: Any, depth: int = 0) -> Any:
+        if depth > 4 * MAX_DEPTH:
+            return n
+        if isinstance(n, dict):
+            return {k: (base + v[1:] if k == "$ref" and isinstance(v, str) and (v == "#" or v.startswith("#/"))
+                        else v if k in _DATA_KEYWORDS else walk(v, depth + 1)) for k, v in n.items()}
+        if isinstance(n, list):
+            return [walk(x, depth + 1) for x in n]
+        return n
+    return walk(entry["pydantic"])
 
 
 def _pin_type(t: Any, depth: int = 0) -> Any:
@@ -1195,11 +1242,14 @@ def _pin_type(t: Any, depth: int = 0) -> Any:
     if isinstance(t.get("generic"), str) and isinstance(t.get("args"), list):
         name, args = t["generic"], [_pin_type(x, d) for x in t["args"] if x != "Ellipsis"]
         if name in _PIN_ARRAYS:
-            if name == "tuple" and len(args) > 1:
-                return {"type": "array", "prefixItems": args, "maxItems": len(args)}
+            # fix round 35: tuple[int] holds exactly one item, tuple[int, ...] any number of them
+            if name == "tuple" and "Ellipsis" not in t["args"]:
+                return {"type": "array", **({"prefixItems": args} if args else {}), "minItems": len(args),
+                        "maxItems": len(args)}
             return {"type": "array", **({"items": args[0]} if args else {})}
-        if name in _PIN_MAPS:
-            return {"type": "object", **({"additionalProperties": args[1]} if len(args) == 2 else {})}
+        if name in _PIN_MAPS:                          # fix round 35: the key type too
+            return {"type": "object", **({"propertyNames": args[0], "additionalProperties": args[1]}
+                                         if len(args) == 2 else {})}
         return {"x-python-type": name, "x-args": args}
     return {"x-python-type": canonical(t).decode()}
 
