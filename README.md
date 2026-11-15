@@ -95,4 +95,4 @@ python -m pytest tests -q
 ../apps/pool-service/ci.sh && ../apps/fact-pipeline/ci.sh && ../apps/support-agent/ci.sh
 ```
 
-Licensed under Apache-2.0; see [`invariants-py/LICENSE`](invariants-py/LICENSE).
+Licensed under Apache-2.0; see [`LICENSE`](LICENSE) (each package carries the same file).
