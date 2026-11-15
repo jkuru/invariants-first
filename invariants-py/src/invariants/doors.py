@@ -17,7 +17,8 @@ picks each sink's door, and checks the proposed rule with the real scan, so the 
 are exactly what `inv check` would fail on. Known back doors are frozen in `allow:` (the way ArchUnit
 freezes existing violations): today's code passes, a new back door fails, and removing an `allow`
 entry once it is fixed is a tightening. Rules are ranked by names that suggest money, quotas or
-approvals; at most `limit` are written and the rest are listed.
+approvals, then external clients and gateways (Stripe, an HTTP client: a write that leaves the process),
+less a rule whose findings are mostly unresolved sites; at most `limit` are written and the rest are listed.
 """
 from __future__ import annotations
 
@@ -37,6 +38,14 @@ IMPORTANT = ("balance", "ledger", "payment", "pay", "refund", "invoice", "credit
              "payout", "account", "wallet", "fund", "quota", "usage", "limit", "budget", "allowance", "approv",
              "permission", "role", "grant", "order", "stock", "inventory", "subscription", "billing", "price",
              "lease", "pool", "seat", "token", "expense")
+# A class or module that names an external client or gateway: its writes leave the process (a charge, a
+# request), so a door around them is a crown jewel. "api" counts in a class name only (an api module is
+# usually the routes)
+EXTERNAL = frozenset({"gateway", "gateways", "client", "stripe", "http", "https", "httpx", "requests", "paypal",
+                      "braintree", "adyen", "plaid", "twilio", "sendgrid", "psp"})
+EXTERNAL_BONUS = 2                # as two telling names
+UNRESOLVED_PENALTY = 2            # a rule whose findings are mostly unresolved sites: review before it protects
+LIST_CAP = 5                      # back doors and unresolved sites listed per rule; `inv scan` lists them all
 MIN_CALLERS = 2                   # a door is shared: at least two callers go through it
 MAX_FREEZE_ROUNDS = 5             # freeze, re-scan: a path found later through other callers is frozen too
 
@@ -312,6 +321,38 @@ def _score(*names: str) -> int:
     return sum(1 for k in IMPORTANT if k in text)
 
 
+def _external(*names: str) -> bool:
+    """True when a dotted class or module name names an external client or gateway (StripeGateway,
+    HTTPClient, stripe_client, PaymentApi)."""
+    for name in names:
+        for seg in name.split("."):
+            words = set(re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])|([A-Z])([A-Z][a-z])", r"\1\3_\2\4",
+                                                        seg).lower()))
+            if words & EXTERNAL or (seg[:1].isupper() and "api" in words):
+                return True
+    return False
+
+
+def _dominated(unresolved: int, other: int) -> bool:
+    """A rule dominated by unresolved sites: more of them than back doors."""
+    return unresolved > other
+
+
+def _demote_unresolved(found: list[Door], g: scanner.Graph, roots: list[pathlib.Path],
+                       exclude: list[str]) -> None:
+    """Lower the score of each drafted rule whose findings, before anything is frozen, are mostly unresolved
+    sites: one scan of every candidate at once (the graph is shared), so ranking costs a single scan."""
+    from .loader import expand_short_forms
+    for i, d in enumerate(found):
+        d.rid = f"RANK-{i}"                  # for this scan only: the rule ids are given after ranking
+    report = scanner.scan(expand_short_forms({"rules": [d.rule() for d in found]}), roots, exclude, g=g)
+    for d in found:
+        fs = report.for_rule(d.rid)
+        unresolved = sum(1 for f in fs if f.kind == "unresolved")
+        if _dominated(unresolved, len(fs) - unresolved):
+            d.score -= UNRESOLVED_PENALTY
+
+
 def _rule_id(d: Door, taken: set[str]) -> str:
     label = d.resource.rsplit(".", 1)[-1]
     label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", label)
@@ -351,7 +392,7 @@ def sinks_of(g: scanner.Graph) -> dict[str, set[str]]:
     return groups
 
 
-def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: int = 5,
+def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: int = 3,
              graph: pathlib.Path | None = None, project: pathlib.Path | None = None) -> DoorsFound:
     """Door rules for the repositories in the roots: which service API every call to a repository's
     write API must pass.
@@ -397,7 +438,11 @@ def discover(roots: Iterable[pathlib.Path], exclude: Iterable[str] = (), limit: 
         # repository write no door calls keeps every door, as in the list form)
         pairs = ({w: per[w] or list(door_list) for w in sinks}
                  if len({tuple(sorted(per[w])) for w in sinks if per[w]}) > 1 else None)
-        found.append(Door("", res, door_list, sinks, via, score=_score(res, *door_list, *sinks), pairs=pairs))
+        owners = [res, *(g.idx.funcs[s].cls or "" for s in sinks)]     # a class's name holds its module's
+        score = _score(res, *door_list, *sinks) + (EXTERNAL_BONUS if _external(*owners) else 0)
+        found.append(Door("", res, door_list, sinks, via, score=score, pairs=pairs))
+    if len(found) > 1:
+        _demote_unresolved(found, g, roots, exclude)
     found.sort(key=lambda d: (-d.score, -len(d.callers), d.resource))
     kept, dropped = found[:limit], found[limit:]
     taken: set[str] = set()
@@ -514,7 +559,7 @@ def render(found: DoorsFound) -> list[str]:
         if d.back_doors:
             verb = "frozen in allow (fix each one, then delete it from allow)" if d.active else "found"
             lines.append(f"  # {len(d.back_doors)} back door(s) {verb}:")
-            lines += [f"  #   {b}" for b in d.back_doors]
+            lines += _capped([f"  #   {b}" for b in d.back_doors], "  #   ")
         r = d.rule()
         if d.pairs is not None:                    # each write with its own doors (fix round 30)
             lines.append("  # each write has its own door(s): a door of one write is no door for another")
@@ -532,7 +577,8 @@ def render(found: DoorsFound) -> list[str]:
             body += [f"    - {json.dumps(a)}" for a in r["allow"]]
         if d.unresolved:
             lines.append(f"  # {len(d.unresolved)} unresolved site(s) to review (the scan cannot follow them):")
-            lines += [f"  #   {at} {msg}" if at else f"  #   {msg}" for at, _, _, msg in d.unresolved]
+            lines += _capped([f"  #   {at} {msg}" if at else f"  #   {msg}" for at, _, _, msg in d.unresolved],
+                             "  #   ")
             # a site seen under several drafted rules is drafted once, in the top-level allow_unresolved
             sites = [u for u in d.unresolved if u[0] and u[2] and (u[0], u[1], u[2]) not in multi]
             if len(sites) < len([u for u in d.unresolved if u[0] and u[2]]):
@@ -557,6 +603,20 @@ def render(found: DoorsFound) -> list[str]:
         lines += [f"  #   {t}: {', '.join(w)}" for t, w in shared.items()]
         lines.append("")
     return lines
+
+
+def _capped(lines: list[str], prefix: str) -> list[str]:
+    """At most LIST_CAP of the lines, then one that says how many more there are."""
+    if len(lines) <= LIST_CAP:
+        return lines
+    return lines[:LIST_CAP] + [f"{prefix}… and {len(lines) - LIST_CAP} more (`inv scan` lists them all)"]
+
+
+def _files(names: Iterable[str]) -> str:
+    """The first LIST_CAP file names, then how many more."""
+    xs = sorted(set(names))
+    more = f", … and {len(xs) - LIST_CAP} more" if len(xs) > LIST_CAP else ""
+    return ", ".join(xs[:LIST_CAP]) + more
 
 
 def _shared_sites(found: DoorsFound) -> dict[tuple[str, str, str], list[Door]]:
@@ -596,13 +656,11 @@ def summary(found: DoorsFound) -> list[str]:
         out.append(f"door {d.rid}: {d.resource} through {' or '.join(d.doors)} ({len(d.callers)} "
                    f"caller(s){paired}){state}")
         if d.back_doors:
-            files = sorted({b.split(":", 1)[0] for b in d.back_doors})
-            out.append(f"  found {len(d.back_doors)} back door(s) in {', '.join(files)}"
+            out.append(f"  found {len(d.back_doors)} back door(s) in {_files(b.split(':', 1)[0] for b in d.back_doors)}"
                        + ("; frozen in allow, so check passes and a new one fails" if d.active else ""))
         if d.unresolved:
-            files = sorted({u[0].split(":", 1)[0] for u in d.unresolved if u[0]})
-            out.append(f"  found {len(d.unresolved)} unresolved site(s) to review"
-                       + (f" in {', '.join(files)}" if files else ""))
+            files = _files(u[0].split(":", 1)[0] for u in d.unresolved if u[0])
+            out.append(f"  found {len(d.unresolved)} unresolved site(s) to review" + (f" in {files}" if files else ""))
     if not found.doors:
         # the rule _doors_for applies: a service-layer caller, a layer between two others in the graph,
         # a caller only route handlers call, else one at least MIN_CALLERS callers go through
