@@ -99,10 +99,12 @@ runs:
           args+=(--base "$INV_BASE")
         fi
         while IFS= read -r dir; do
+          dir="${dir%$'\r'}"     # a Windows runner's line ends keep their \r through read -r
           if [ -n "$dir" ]; then args+=(--path "$dir"); fi
         done <<< "$INV_PATH"
         # the project's site-packages, asked without running its site hooks (-S: no .pth file runs)
         while IFS= read -r dir; do
+          dir="${dir%$'\r'}"     # python.exe prints \r\n
           if [ -n "$dir" ]; then args+=(--site "$dir"); fi
         done < <("$INV_PYTHON" -I -S -c 'import sysconfig; p = sysconfig.get_paths(); print("\n".join(dict.fromkeys([p["purelib"], p["platlib"]])))')
         # ${args[@]+...}: with set -u, bash before 4.4 (macOS /bin/bash 3.2) calls an empty "${args[@]}" unbound

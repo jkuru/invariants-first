@@ -392,7 +392,14 @@ def _check_state(obj: Any, declared: Any, who: str) -> None:
     plain dict), or an instance of exactly the dataclass or pydantic model the parameter is annotated
     with. A subclass could answer the consumer's reads (a property, __getattribute__) with something
     other than the Checked the edge re-checked."""
-    if isinstance(obj, dict) or not isinstance(declared, type) or issubclass(declared, dict):
+    if not isinstance(declared, type):
+        return
+    if issubclass(declared, dict):      # a TypedDict: a dict, never an object answering a dict's reads
+        if not isinstance(obj, dict):
+            raise TypeError(f"{who} accepts only a dict state ({declared.__name__}), not a "
+                            f"{type(obj).__name__}: the consumer gets a plain dict copy of the state")
+        return
+    if isinstance(obj, dict):
         return
     if type(obj) is not declared:
         raise TypeError(f"{who} accepts only a {declared.__name__} state, not a {type(obj).__name__}: the "

@@ -23,6 +23,7 @@ import pathlib
 import sys
 from typing import Any, Sequence
 
+from ..confinement import _places, _through, confine_root, inside
 from ..model import GUARD_POINTS
 from .common import SITE
 from ..project import import_roots
@@ -52,6 +53,34 @@ class _Source:
         self.path = path
         self._mods: dict[str, tuple[pathlib.Path, bool] | None] = {}
         self._trees: dict[pathlib.Path, ast.Module] = {}
+        self.top = confine_root()       # under `inv mcp` (INV_CONFINE_ROOT): read only what the child imports
+        self._inside: set[str] = set()  # modules found inside top (every place)
+        self._project: set[str] = set()  # top-level packages of the project: a place inside top
+
+    def _confine(self, name: str, spec: importlib.machinery.ModuleSpec) -> None:
+        """Under INV_CONFINE_ROOT, as the child imports (confinement.import_module, ConfinedFinder): a
+        module of the project that resolves outside the root (a symlink inside it leads out, or a
+        submodule of a package found inside it) is not read; _Unreadable before the file is opened."""
+        if self.top is None:
+            return
+        places = _places(spec)
+        out = [p for p in places if not inside(p, self.top)]
+        if "." not in name and len(out) < len(places):
+            self._project.add(name)
+        if not out:
+            if places:
+                self._inside.add(name)
+            return
+        if any(_through(p, self.top) for p in out) or ("." in name and name.split(".")[0] in self._project):
+            raise _Unreadable(f"module {name} resolves outside {self.top}, the --root `inv mcp` confines "
+                              f"reads to; not read")
+
+    def confine_head(self, name: str) -> None:
+        """Under INV_CONFINE_ROOT, a target's top-level module is a file inside the root (as the child's
+        import_module requires: the standard library and installed packages are outside it)."""
+        if self.top is not None and self.find(name) is not None and name not in self._inside:
+            raise _Unreadable(f"module {name} is not a file inside {self.top}, the --root `inv mcp` "
+                              f"confines reads to; not read")
 
     def find(self, name: str) -> tuple[pathlib.Path, bool] | None:
         """(source file, is a package) of an importable module, None if there is none. A module
@@ -73,6 +102,7 @@ class _Source:
         if spec is None:
             self._mods[name] = None
             return None
+        self._confine(name, spec)
         is_pkg = spec.submodule_search_locations is not None
         origin = spec.origin
         if origin is None or origin == "namespace" or not origin.endswith(".py"):
@@ -267,6 +297,7 @@ def _locate(src: _Source, key: str) -> tuple[str, ast.FunctionDef | ast.AsyncFun
     parts = key[3:].split(".")
     if not key.startswith("py:") or not all(p.isidentifier() for p in parts):
         raise _Unreadable("not a py:module.function name")
+    src.confine_head(parts[0])
     for i in range(len(parts), 0, -1):
         if src.find(".".join(parts[:i])) is not None:
             if i == len(parts):

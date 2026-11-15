@@ -78,6 +78,14 @@ def tool_propose_rules(server_root: pathlib.Path, default_rules: pathlib.Path | 
                      + (f" The project already has {existing}; `inv init` would refuse to overwrite it." if existing else "")),
             "door_rules": door_rules, "no_door": found.doors.no_door, "contracts": contracts,
             "suggested_guards": guards, "summary": bootstrap.summary(found),
-            "scan": {"verdict": "fail" if any(r["result"] == "fail" for r in rows.values()) else "pass",
+            "scan": {"verdict": _verdict({r["result"] for r in rows.values()}),
                      "rules": rows, "findings": [dict(f.as_dict(), id=finding_id(f.as_dict())) for f in report.findings]},
             "rule_file": text}
+
+
+def _verdict(results: set[str]) -> str:
+    """The draft's scan verdict, as `inv scan` decides it: pass only when every drafted rule passed."""
+    for v in ("fail", "unresolved", "not_scanned"):
+        if v in results:
+            return v
+    return "pass"

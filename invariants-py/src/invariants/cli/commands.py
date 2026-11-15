@@ -818,4 +818,7 @@ def _lock_step(a: argparse.Namespace, path: pathlib.Path, lock_path: pathlib.Pat
 
 def cmd_mcp(a: argparse.Namespace) -> int:
     from .. import mcp
-    return mcp.main(["--root", a.root, *(["--rules", a.rulefile] if a.rulefile else [])])
+    # the rule file is named from the current directory, as for every `inv` command; inv-mcp's own
+    # --rules is relative to --root, so it is handed over absolute (never joined to --root twice)
+    rules = str(pathlib.Path(a.rulefile).absolute()) if a.rulefile else None
+    return mcp.main(["--root", a.root, *(["--rules", rules] if rules else [])])

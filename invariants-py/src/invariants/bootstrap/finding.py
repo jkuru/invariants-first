@@ -219,6 +219,8 @@ def _models(module: str, tree: ast.Module, known: set[str]) -> list[Model]:
     for n in tree.body:
         if not isinstance(n, ast.ClassDef) or not any(_base_name(b) in known for b in n.bases):
             continue
+        if n.name.startswith("_"):          # a pydantic contract ref names a public class (resolve_ref)
+            continue
         terms, validators = [], 0
         for st in n.body:
             if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):

@@ -117,6 +117,9 @@ def _check_rule_fields(rid: str, raw: Any) -> None:
         raise LoadError(f"{rid}: missing status (set only by human review)")
     if "bad" not in raw:
         raise LoadError(f"{rid}: missing bad")
+    fb = raw.get("falsified_by")
+    if fb is not None and not (isinstance(fb, list) and all(isinstance(t, str) and t for t in fb)):
+        raise LoadError(f"{rid}: falsified_by must be a list of pytest node ids, got {fb!r}")
 
 
 def _bad_clauses(rid: str, raw: dict[str, Any]) -> list[Any]:

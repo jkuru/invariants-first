@@ -194,14 +194,10 @@ On `apps/support-agent`, `inv init` automatically discovers that `LedgerRepo`'s 
 ```yaml
 rules:
   - id: LEDGER-REPO-DOOR
-    door:
-      - "py:support_agent.service.BillingService.cancel"
-      - "py:support_agent.service.BillingService.credit"
-      - "py:support_agent.service.BillingService.refund"
     sink:
-      - "py:support_agent.repo.LedgerRepo.cancel_subscription"
-      - "py:support_agent.repo.LedgerRepo.insert_credit"
-      - "py:support_agent.repo.LedgerRepo.record_refund"
+      "py:support_agent.repo.LedgerRepo.cancel_subscription": ["py:support_agent.service.BillingService.cancel"]
+      "py:support_agent.repo.LedgerRepo.insert_credit": ["py:support_agent.service.BillingService.credit"]
+      "py:support_agent.repo.LedgerRepo.record_refund": ["py:support_agent.service.BillingService.refund"]
 ```
 
 ### 3. Suggested Guard Rules from Python Preconditions ([bootstrap.py](invariants-py/src/invariants/bootstrap.py))

@@ -194,7 +194,8 @@ def _target_problems(rule: Rule) -> list[str]:
                             f"{', '.join(missing)}")
         elif rule.policy and getattr(rule.target, "__inv_kind__", "") != "model_call":
             problems.append(f"{rule.id}: has model_policy but target is not @inv.model_call")
-        elif rule.policy and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy.get("schema"):
+        elif (rule.policy and rule.policy.get("schema") is not None
+              and getattr(rule.target.__inv_schema__, "__name__", "") != rule.policy["schema"]):
             got = getattr(rule.target.__inv_schema__, "__name__", "an unnamed schema")
             problems.append(f"{rule.id}: @inv.model_call on {rule.target_key} parses into {got}, but "
                             f"model_policy.schema is {rule.policy.get('schema')!r}: name the same schema in both")

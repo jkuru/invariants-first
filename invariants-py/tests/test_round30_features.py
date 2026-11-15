@@ -242,10 +242,14 @@ SA_MAPPING = (f'    sink:\n      "{SA}record_refund": ["{SB}refund"]\n      "{SA
               f'      "{SA}cancel_subscription": ["{SB}cancel"]\n')
 
 
-def _paired(text: str) -> str:
+SA_LIST = (f'    door: ["{SB}cancel", "{SB}credit", "{SB}refund"]\n'
+           f'    sink: ["{SA}cancel_subscription", "{SA}insert_credit", "{SA}record_refund"]\n')
+
+
+def _paired(text: str, body: str = SA_MAPPING) -> str:
     start = text.index("  - id: LEDGER-REPO-DOOR\n")
     end = text.index("\n\n", start)
-    return text[:start] + "  - id: LEDGER-REPO-DOOR\n" + SA_MAPPING.rstrip("\n") + text[end:]
+    return text[:start] + "  - id: LEDGER-REPO-DOOR\n" + body.rstrip("\n") + text[end:]
 
 
 def test_support_agent_a_refund_written_in_cancel_is_caught_only_with_the_pairing(tmp_path):
@@ -256,6 +260,7 @@ def test_support_agent_a_refund_written_in_cancel_is_caught_only_with_the_pairin
         "        self.ledger.cancel_subscription(customer_id)\n"
         "        self.ledger.record_refund(\"goodwill\", customer_id, 500)\n"))
     rules = app / "invariants.yaml"
+    rules.write_text(_paired(rules.read_text(), SA_LIST))       # the app's rule as the list form
     rep = scan.scan(read_document(rules), [app / "src"])
     assert rep.rule_result("LEDGER-REPO-DOOR") == "pass", rep.findings          # the list form: any door
     rules.write_text(_paired(rules.read_text()))
