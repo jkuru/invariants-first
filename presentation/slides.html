@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>invariants-first Ratchet</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1f2630;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --purple: #bc8cff;
+    --code-bg: #0b0f14;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --surface-2: #f0f3f6;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #59636e;
+      --accent: #0969da;
+      --green: #1a7f37;
+      --red: #cf222e;
+      --amber: #9a6700;
+      --purple: #8250df;
+      --code-bg: #f3f5f8;
+      --shadow: 0 10px 28px rgba(31, 35, 40, 0.12);
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface-2: #f0f3f6;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #59636e;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --red: #cf222e;
+    --amber: #9a6700;
+    --purple: #8250df;
+    --code-bg: #f3f5f8;
+    --shadow: 0 10px 28px rgba(31, 35, 40, 0.12);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  .deck {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+  }
+
+  .stage {
+    flex: 1;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    padding: 36px 56px 64px;
+    overflow: hidden;
+  }
+
+  .slide {
+    display: none;
+    width: 100%;
+    max-width: 1180px;
+    height: 100%;
+    max-height: 760px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 44px 54px;
+    box-shadow: var(--shadow);
+    flex-direction: column;
+    justify-content: flex-start;
+    overflow-y: auto;
+  }
+  .slide.active { display: flex; }
+  .slide.title-slide { justify-content: center; }
+
+  .eyebrow {
+    font-size: 13px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 10px;
+  }
+  h1 {
+    font-size: 56px; line-height: 1.08; margin: 0 0 18px; font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  h2 {
+    font-size: 34px; line-height: 1.18; margin: 0 0 22px; font-weight: 750;
+    letter-spacing: -0.015em; border-bottom: 1px solid var(--border); padding-bottom: 12px;
+  }
+  h3 { font-size: 20px; margin: 16px 0 8px; color: var(--accent); }
+  p, li { font-size: 20px; line-height: 1.48; }
+  ul, ol { margin: 8px 0 14px; padding-left: 26px; }
+  li { margin-bottom: 8px; }
+  .lead { font-size: 26px; line-height: 1.4; color: var(--muted); max-width: 900px; }
+  .lead strong { color: var(--text); }
+  .meta { margin-top: 28px; font-size: 16px; color: var(--muted); display: flex; gap: 20px; flex-wrap: wrap; }
+
+  .pill {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 650; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text);
+  }
+  .pill.green { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+  .pill.red { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+  .pill.amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 8px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 10px; }
+  .card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .card h3 { margin-top: 0; font-size: 19px; }
+  .card p, .card li { font-size: 17px; }
+
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 17px;
+  }
+  th, td {
+    text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 14.5px;
+    line-height: 1.45;
+    margin: 10px 0;
+  }
+  .tok-ok { color: var(--green); font-weight: 700; }
+  .tok-fail { color: var(--red); font-weight: 700; }
+  .tok-dim { color: var(--muted); }
+  .tok-accent { color: var(--accent); font-weight: 600; }
+
+  blockquote {
+    margin: 14px 0 0;
+    padding: 12px 18px;
+    border-left: 4px solid var(--accent);
+    background: var(--surface-2);
+    border-radius: 0 8px 8px 0;
+    font-size: 18px;
+  }
+
+  .flow {
+    display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin: 14px 0;
+  }
+  .flow-box {
+    flex: 1; min-width: 140px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .flow-box .tag { font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; }
+  .flow-box .name { font-size: 16px; font-weight: 700; margin: 4px 0; }
+  .flow-box .desc { font-size: 13.5px; color: var(--muted); line-height: 1.35; }
+  .flow-arrow { display: flex; align-items: center; color: var(--muted); font-size: 20px; font-weight: 700; }
+
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 12px 0; }
+  .stat {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .stat .num { font-size: 30px; font-weight: 800; color: var(--accent); }
+  .stat .lbl { font-size: 13.5px; color: var(--muted); margin-top: 4px; }
+
+  /* HUD & Notes */
+  .hud {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: calc(48px + env(safe-area-inset-bottom, 0px)); padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding-left: max(24px, env(safe-area-inset-left, 0px)); padding-right: max(24px, env(safe-area-inset-right, 0px));
+    font-size: 13px; color: var(--muted); z-index: 20;
+  }
+  .hud-left, .hud-right { display: flex; align-items: center; gap: 10px; }
+  .btn {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px; font-size: 12.5px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .progress {
+    position: fixed; bottom: calc(48px + env(safe-area-inset-bottom, 0px)); left: 0; height: 3px;
+    background: var(--accent); transition: width 0.2s ease; z-index: 21;
+  }
+
+  .notes-drawer {
+    position: fixed; right: 20px; bottom: 60px; width: 420px; max-width: calc(100vw - 40px);
+    max-height: 240px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--accent);
+    border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow);
+    display: none; z-index: 30;
+  }
+  .notes-drawer.open { display: block; }
+  .notes-drawer h4 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; color: var(--accent); }
+  .notes-drawer p, .notes-drawer li { font-size: 14px; line-height: 1.45; margin: 4px 0; }
+
+  .overview {
+    position: fixed; inset: 0 0 calc(48px + env(safe-area-inset-bottom, 0px)) 0; background: color-mix(in srgb, var(--bg) 94%, transparent);
+    padding: 32px; overflow-y: auto; display: none; z-index: 25;
+  }
+  .overview.open { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; align-content: start; }
+  .ov-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; cursor: pointer;
+  }
+  .ov-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .ov-card .ov-num { font-size: 12px; color: var(--accent); font-weight: 700; }
+  .ov-card .ov-title { font-size: 16px; font-weight: 700; margin-top: 4px; }
+
+  @media (max-width: 900px) {
+    .stage { padding-block: 14px 58px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+    .slide { padding: 24px 18px; }
+    .hud { padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); }
+    #slide-title { display: none; }
+    .hud-right { gap: 6px; }
+    .btn { padding: 5px 8px; font-size: 12px; }
+    .notes-drawer { right: max(16px, env(safe-area-inset-right, 0px)); width: auto; left: max(16px, env(safe-area-inset-left, 0px)); max-width: none; }
+    .grid-2, .grid-3, .stat-row { grid-template-columns: 1fr; }
+    h1 { font-size: 36px; }
+    h2 { font-size: 26px; }
+    p, li { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="stage">
+
+    <!-- Slide 1 -->
+    <section class="slide title-slide active" data-title="Title: invariants-first">
+      <div class="eyebrow">Presentation &bull; November 18, 2026</div>
+      <h1>invariants-first</h1>
+      <p class="lead"><strong>A ratchet for your API rules.</strong><br/>A change can tighten them freely, but loosening one &mdash; by a person or a coding agent &mdash; fails CI until a reviewer says yes.</p>
+      <div class="meta">
+        <span class="pill">Value Laws (Pydantic + OpenAPI + CEL)</span>
+        <span class="pill">Path Laws (Static Call-Graph Scan)</span>
+        <span class="pill">Runtime Guards + Ablation</span>
+        <span class="pill amber">Alpha 0.1.0 &bull; Apache-2.0</span>
+      </div>
+      <aside class="notes">
+        <p><strong>0:00 &ndash; 1:00:</strong> Lead with the ratchet thesis, not "a CEL/AST framework." Every developer who works with coding agents or LLM tool-calling recognizes the failure mode immediately.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 2 -->
+    <section class="slide" data-title="1. The Problem: Tests Pass, Production Breaks">
+      <div class="eyebrow">1. Hook (2 min)</div>
+      <h2>The "Tests Pass, Production Breaks" Failure Mode</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3><span class="pill red">Coding Agents in PRs</span></h3>
+          <p>Agents optimize to make the test suite green. When a rule is in the way, they:</p>
+          <ul>
+            <li>Raise a limit (<code>le=50_000 &rarr; 500_000</code>) or widen a schema</li>
+            <li>Delete an assertion or validation check</li>
+            <li>Call <code>StripeGateway.refund()</code> directly to skip <code>BillingService.refund()</code></li>
+          </ul>
+          <p><strong>Every diff looks plausible in review. All tests pass.</strong></p>
+        </div>
+        <div class="card">
+          <h3><span class="pill amber">LLM Agents at Run Time</span></h3>
+          <p>The twin failure mode: <strong>valid shape, invalid behavior</strong>.</p>
+          <ul>
+            <li>Model emits valid JSON matching your Pydantic schema</li>
+            <li>Refunds <em>another customer's</em> order or exceeds <code>remaining_cents</code></li>
+            <li>Or ledger state shifts between planning and execution</li>
+          </ul>
+          <p><strong>JSON Schema checks shape &mdash; not reality.</strong></p>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>1:00 &ndash; 3:00:</strong> Contrast the two failure modes: coding-agent drift in CI vs. semantic/held-data violations by LLM agents at runtime.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 3 -->
+    <section class="slide" data-title="2. Core Idea: Shape, Laws, Bodies">
+      <div class="eyebrow">2. Core Idea (3 min)</div>
+      <h2>Separate Shape, Laws, and Bodies</h2>
+      <p>Every layer of a system is an API: HTTP route, service method, repository, model call, payment gateway.</p>
+      <table>
+        <thead>
+          <tr><th>Concern</th><th>Who Owns It</th><th>What Lives Here</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Shape</strong></td>
+            <td>Pydantic / OpenAPI</td>
+            <td>Types, field bounds, <code>Literal</code>s, enums</td>
+          </tr>
+          <tr>
+            <td><strong>Laws</strong></td>
+            <td>People (<code>invariants.yaml</code> + <code>invariants.lock</code>)</td>
+            <td><strong>Value laws</strong> (inputs/outputs never allowed) &amp; <strong>Path laws</strong> (which API may call which)</td>
+          </tr>
+          <tr>
+            <td><strong>Bodies</strong></td>
+            <td>People or coding agents</td>
+            <td>Implementations inside functions &mdash; <strong>agents are free to rewrite</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      <blockquote>Path laws hold on the API boundary regardless of what sits behind the sink: SQLAlchemy, Django, MongoDB, Stripe, or raw SQL.</blockquote>
+      <aside class="notes">
+        <p><strong>3:00 &ndash; 5:30:</strong> Highlight the division of labor: humans lock the boundary laws; coding agents keep full freedom inside function bodies.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 4 -->
+    <section class="slide" data-title="3. The One-Way Ratchet">
+      <div class="eyebrow">2. Core Idea (continued)</div>
+      <h2>How the One-Way Ratchet Works</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3><span class="pill">1. Day-1 Lock</span></h3>
+          <p><code>inv init</code> reads your existing code with zero hand-written rules:</p>
+          <ul>
+            <li>Pins Pydantic constraints into <code>contracts</code></li>
+            <li>Discovers service &rarr; repo <code>door</code> rules</li>
+            <li>Freezes legacy back doors in <code>allow:</code> so CI passes on day 1</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><span class="pill green">2. Tighten Freely</span></h3>
+          <p>Narrow a limit, tighten a CEL rule, or add a new invariant:</p>
+          <ul>
+            <li>Run <code>inv lock</code></li>
+            <li><code>inv check --base main</code> sees 0 weakenings</li>
+            <li>Passes automatically &mdash; no human bottleneck</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><span class="pill red">3. Loosen &rarr; Human Gate</span></h3>
+          <p>Raise a cap, widen a type, delete a rule, or add a bypass:</p>
+          <ul>
+            <li><strong>Even if the agent runs <code>inv lock --accept-weakening</code></strong>, <code>inv check --base main</code> compares against <code>main</code> and fails</li>
+            <li>Only a reviewer (e.g. PR label) can accept</li>
+          </ul>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>5:30 &ndash; 7:30:</strong> Emphasize why comparing against <code>--base main</code> defeats self-re-pinning: an agent cannot hide a weakening by updating <code>invariants.lock</code>.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 5 -->
+    <section class="slide" data-title="4. Live Demo 1A: Open-Source FastAPI">
+      <div class="eyebrow">3. Live Demo 1A (Open-Source Library)</div>
+      <h2>Zero-Config <code>inv init</code> &amp; Ratchet on FastAPI</h2>
+      <p>Run <code>./presentation/demo.sh 1</code> on a clean copy of <strong>FastAPI</strong> (zero hand-written rules):</p>
+      <pre><span class="tok-accent">$ inv init --root . --path .</span>
+wrote invariants.yaml
+  read 52 source file(s)
+  pinned 4 pydantic model(s) with 12 constraint(s)      <span class="tok-dim"># ServerVariable, Schema, HTTPBearer, ServerSentEvent</span>
+  suggested 6 rule(s) from function preconditions (commented out)
+wrote invariants.lock: 0 rule(s), 0 target(s), 0 provider(s), 4 contract(s), 4 schema(s)</pre>
+      <p>Now simulate an agent weakening <code>fastapi/openapi/models.py</code> (<code>multipleOf: gt=0 &rarr; ge=0</code>) and running <code>inv lock --accept-weakening</code> to hide it:</p>
+      <pre><span class="tok-accent">$ inv check --base main</span>
+  <span class="tok-fail">FAIL</span>  since main
+        2 change(s) since main weaken a rule:
+          schema fastapi.openapi.models.Schema: pydantic.$defs.Schema.properties.multipleOf.anyOf[0].exclusiveMinimum: 0 -&gt; (none)  <span class="tok-fail">WEAKENED</span> (exclusiveMinimum removed: no lower bound)
+        a person must accept these: re-run with --accept-weakening or INV_ALLOW_WEAKENING=1</pre>
+      <aside class="notes">
+        <p><strong>7:30 &ndash; 10:00:</strong> Run <code>./presentation/demo.sh 1</code> live. Point out honestly that FastAPI gets no door rule because a web framework has no service/repository layer &mdash; it pins the contract laws it does have.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 6 -->
+    <section class="slide" data-title="5. Live Demo 1B: Open-Source LangChain Core">
+      <div class="eyebrow">3. Live Demo 1B (Open-Source Library)</div>
+      <h2>Tighten Passes, Weaken Fails on <code>langchain_core</code></h2>
+      <p>On <strong><code>langchain_core</code></strong> (187 files), <code>inv init</code> pins <strong>35 Pydantic models, 47 constraints</strong> (<code>AgentAction</code>, <code>AIMessage</code>, <code>Document</code>, <code>ChoiceAnswer</code>, <code>NoulAnswer</code>):</p>
+      <div class="grid-2">
+        <div class="card">
+          <h3><span class="pill green">Safe Tightening</span></h3>
+          <p><code>Choice.criteria</code>: <code>min_length=1 &rarr; min_length=2</code></p>
+          <pre><span class="tok-accent">$ inv lock &amp;&amp; inv check --base main</span>
+  <span class="tok-ok">ok</span>    lock: invariants.lock matches
+  <span class="tok-ok">ok</span>    since main: 1 change(s), none weakens a rule
+<span class="tok-ok">pass</span> (exit 0)</pre>
+        </div>
+        <div class="card">
+          <h3><span class="pill red">Sneaky Weakening</span></h3>
+          <p><code>NoulAnswer</code>: <code>le=1.0 &rarr; le=2.0</code> + agent re-locks</p>
+          <pre><span class="tok-accent">$ inv check --base main</span>
+  <span class="tok-fail">FAIL</span>  since main
+        schema langchain_core.decisions.types.NoulAnswer:
+        pydantic.properties.noul.maximum: 1.0 -&gt; 2.0  <span class="tok-fail">WEAKENED</span>
+<span class="tok-fail">fail</span> (exit 1)</pre>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>10:00 &ndash; 12:00:</strong> Highlight how real-world agent SDK models (like confidence scores in <code>[0.0, 1.0]</code>) are protected automatically from silent widening.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 7 -->
+    <section class="slide" data-title="6. Live Demo 2: Hooks &amp; CI Defects">
+      <div class="eyebrow">3. Live Demo 2</div>
+      <h2>Making the Ratchet Unskippable (Hooks + CI)</h2>
+      <p>Run <code>./presentation/demo.sh 2</code> in <code>apps/support-agent</code>:</p>
+      <pre><span class="tok-accent">$ echo '{"tool_name":"Edit","tool_input":{"file_path":"invariants.lock"}}' | inv hook pretool</span>
+<span class="tok-fail">invariants: blocked a direct edit of invariants.lock.</span> The lock is written only by `inv lock` or `inv check --relock`, which refuse a weakening. (exit 2)</pre>
+      <p><strong><code>tests/test_ci_defects.py</code> (7 CI defects + safe changes):</strong></p>
+      <ul>
+        <li><strong>D1 / D2:</strong> New tool calls <code>StripeGateway.refund</code> directly, or puts it in <code>TOOLS</code> dict &rarr; caught by <code>inv scan</code></li>
+        <li><strong>D3 / D4:</strong> Refund cap <code>50_000 &rarr; 500_000</code> (even after agent re-locks) or <code>semantic_resamples: 1 &rarr; 5</code> &rarr; <code>WEAKENED</code></li>
+        <li><strong>D5:</strong> New tool routes through frozen legacy back door in <code>allow:</code> &rarr; caught (an allowed back door is not a door)</li>
+        <li><strong>D11 / D12:</strong> Agent deletes <code>@inv.guard("BILL-1")</code> or deletes rule <code>BILL-2</code> &rarr; caught by <code>verify</code> / <code>lock</code></li>
+      </ul>
+      <aside class="notes">
+        <p><strong>12:00 &ndash; 14:30:</strong> Point out D5 specifically: freezing today's legacy <code>admin.goodwill_refund</code> in <code>allow:</code> does not let an agent route new tools through it.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 8 -->
+    <section class="slide" data-title="7. Live Demo 3: Static Path-Law Scan">
+      <div class="eyebrow">4. Live Demo 3</div>
+      <h2>Static Path-Law Bypass Scan (<code>inv scan</code>)</h2>
+      <p>AST + type-inference call-graph scan on <code>apps/pool-service</code> (<code>./presentation/demo.sh 3</code>):</p>
+      <pre><span class="tok-accent">$ PYTHONPATH=src inv scan invariants.yaml --root src --root bypass</span>
+<span class="tok-fail">bypass</span>               R-23  bypass/pool_service/rogue.py:39:11  ... -> store.set_size without ResizeService.resize_door
+<span class="tok-fail">forbidden/unwrap</span>     R-20  bypass/pool_service/rogue.py:48:11  unwrapping __wrapped__ bypasses the guard
+<span class="tok-fail">forbidden/getattr-sink</span> R-23 bypass/pool_service/rogue.py:55:11 getattr(store, "set_size") reaches a sink dynamically
+<span class="tok-dim">... 10 findings across 4 rules in &lt; 1s</span></pre>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Why Not Just Grep?</h3>
+          <p><code>invariants-scan</code> tracks imports, aliases, factory return types, escaped function references, <code>__wrapped__</code>, and <code>getattr</code> / <code>__dict__</code> tricks.</p>
+        </div>
+        <div class="card">
+          <h3>Fast &amp; Practical on OSS Code</h3>
+          <p>Scans <strong>104 modules / 1,852 functions in 1.17s</strong>. On OSS <code>rich</code> (100 files), <code>inv init</code> finds 37 back doors &amp; 66 unresolved dynamic sites and lists five of each: its door section went from 281 to 123 lines.</p>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>14:30 &ndash; 17:00:</strong> Run <code>./presentation/demo.sh 3</code>. Show clean pass on <code>src</code>, then 10 findings when <code>--root bypass</code> is included.</p>
+      </aside>
+    </section>
+
+    <!-- Slide: quiet path laws -->
+    <section class="slide" data-title="7b. Quiet on Day One: Diff-First + Run-Time Doors">
+      <div class="eyebrow">4. Path Laws Without the Noise</div>
+      <h2>Quiet on Day One: Diff-First Scan + Run-Time Door Check</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Two Tiers in <code>inv check</code></h3>
+          <ul>
+            <li><strong>Blocks:</strong> a call that skips a door, <code>getattr</code> on a sink, <code>__wrapped__</code>, monkeypatching</li>
+            <li><strong>Warns:</strong> a call the scan can't follow (an untyped <code>x.save()</code>)</li>
+            <li><strong>Diff-first with <code>--base main</code>:</strong> a site already on <code>main</code> warns; one the PR adds fails</li>
+            <li><code>strict: true</code> on a rule, or <code>--strict-scan</code>, for sinks that need every site reviewed</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Run-Time Backstop: <code>pytest --inv-doors</code></h3>
+          <ul>
+            <li>A door marks itself active while it runs; a sink checks that one of its doors is</li>
+            <li>Catches <code>getattr</code>, DI containers and callbacks on every path the tests run</li>
+            <li>A tool reaching <code>StripeGateway.refund</code> through <code>getattr</code> fails the session, even if the test swallowed the error</li>
+            <li><code>inv.doors.install(mode="detect")</code> for staging</li>
+          </ul>
+        </div>
+      </div>
+      <pre><span class="tok-accent">$ inv check --base main</span>
+  ok    scan: no path skips a door or guard
+        WARN  unresolved/inferred-path  ... [on main]
+<span class="tok-dim"># an agent adds a new untyped call into the store:</span>
+  <span class="tok-fail">FAIL</span>  scan
+        unresolved/inferred-path  ... insert_lease  [new since main]</pre>
+      <aside class="notes">
+        <p>The static scan stays simple and quiet: legacy dynamic calls are warnings, so there is no day-one annotation tax, but an agent can't add a new one unnoticed. The run-time door check covers what static analysis of Python can't follow. Start with the one to three sinks an agent must never reach directly.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 9 -->
+    <section class="slide" data-title="8. Live Demo 4: Runtime Defense-in-Depth">
+      <div class="eyebrow">4. Live Demo 4</div>
+      <h2>Runtime Defense-in-Depth (<code>apps/support-agent</code>)</h2>
+      <div class="flow">
+        <div class="flow-box">
+          <div class="tag">@inv.model_call</div>
+          <div class="name">PLAN-1 (planner)</div>
+          <div class="desc">Closed <code>Plan</code> schema, 2 format retries, 1 blind resample vs. live ledger, or <code>ESCALATE_TO_HUMAN</code></div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+          <div class="tag">@inv.edge</div>
+          <div class="name">execute_plan</div>
+          <div class="desc">Requires unforgeable <code>CheckedPlan</code> token &amp; re-checks <code>PLAN-1</code> against current ledger</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+          <div class="tag">@inv.guard</div>
+          <div class="name">BillingService doors</div>
+          <div class="desc"><code>BILL-1</code> &amp; <code>BILL-2</code> enforce invariants whoever calls (agent, script, admin)</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+          <div class="tag">Sinks</div>
+          <div class="name">Stripe / Ledger</div>
+          <div class="desc"><code>fakestripe.REFUNDS</code> stays empty on all defects D6&ndash;D10</div>
+        </div>
+      </div>
+      <p>Run <code>./presentation/demo.sh 4</code> (<code>tests/test_runtime_defects.py</code>):</p>
+      <ul>
+        <li><strong>D6 / D7 / D8:</strong> Over-refund, cross-customer order, invalid JSON, or model <code>ESCALATE_TO_HUMAN</code> &rarr; stopped before execution</li>
+        <li><strong>D9 / D10:</strong> Forged <code>CheckedPlan</code>, mutated plan in graph state, or ledger balance shrunk mid-flight &rarr; caught at <code>@inv.edge</code></li>
+      </ul>
+      <aside class="notes">
+        <p><strong>17:00 &ndash; 19:30:</strong> Run <code>./presentation/demo.sh 4</code>. Emphasize D10: even if the planner checked a valid plan, if the ledger or graph state changed before execution, <code>@inv.edge</code> catches it.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 10 -->
+    <section class="slide" data-title="9. Live Demo 5: Mutation Testing via --inv-ablate">
+      <div class="eyebrow">5. Proving Guards Aren't Theater (3 min)</div>
+      <h2>Mutation Testing via <code>pytest --inv-ablate</code></h2>
+      <p>How do you prove a guard isn't dead code or a tautology? <strong>Switch each rule off and verify a test fails.</strong></p>
+      <pre><span class="tok-accent">$ ./apps/fact-pipeline/ci.sh &amp;&amp; inv status invariants.yaml --import fact_pipeline.pipeline --ablation build/inv-report.json</span>
+----------------------------- invariants ablation ------------------------------
+  K-1:  <span class="tok-ok">load-bearing</span>  caught  tests/test_store_rules.py::test_k1_guard_refuses_fact_without_evidence
+  K-2:  <span class="tok-ok">load-bearing</span>  caught  tests/test_extract.py::test_k2_persistent_misquote_escalates
+  ...
+-- Standing report --
+K-1 (enforce: blocks a bad call; <span class="tok-ok">held</span>)
+  ablation proved it: <span class="tok-ok">yes</span></pre>
+      <blockquote>Run <code>inv status --ablation build/inv-report.json</code> <em>after</em> <code>pytest --inv-ablate</code> to inspect promoted <code>held</code> standing.</blockquote>
+      <aside class="notes">
+        <p><strong>19:30 &ndash; 21:30:</strong> Run <code>./presentation/demo.sh 5</code>. Note the <code>ci.sh</code> ordering quirk (it prints <code>inv status</code> before <code>pytest --inv-ablate</code>, so running <code>inv status --ablation</code> afterward shows <code>held</code>).</p>
+      </aside>
+    </section>
+
+    <!-- Slide 11 -->
+    <section class="slide" data-title="10. Evaluation &amp; Performance">
+      <div class="eyebrow">6. Results &amp; Benchmarks (4 min)</div>
+      <h2>Controlled Evaluation &amp; Overhead</h2>
+      <div class="stat-row">
+        <div class="stat"><div class="num">8 / 8</div><div class="lbl">Covered defects caught in CI (vs. 4/7 plain code + tests)</div></div>
+        <div class="stat"><div class="num">18 &rarr; 2</div><div class="lbl">Lock failures across 24 changes after contract-level pins</div></div>
+        <div class="stat"><div class="num">7.1 &micro;s</div><div class="lbl">Median guard overhead (1 clause, no providers)</div></div>
+        <div class="stat"><div class="num">1.17 s</div><div class="lbl"><code>inv scan</code> over 104 modules / 1,852 functions</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Controlled Study (24 Seeded Changes)</h3>
+          <ul>
+            <li>Benign lock false positives dropped <strong>6/8 &rarr; 1/8</strong> after switching from module hashes to schema/CEL diffing</li>
+            <li>Reflex <code>inv lock</code> accepted <strong>0</strong> weakenings</li>
+            <li><strong>Graphify 0.9.107 (5 codebases):</strong> 0 missed doors over naming heuristics (communities follow feature call chains, not layers)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Monorepo Health (Alpha 0.1.0)</h3>
+          <ul>
+            <li>4 packages: <code>invariants-first</code> (<strong>6,969</strong> tests), <code>invariants-cel</code>, <code>invariants-scan</code>, <code>invariants-schema-diff</code> (<strong>2,057</strong> tests)</li>
+            <li>3 example apps: <code>pool-service</code> (<strong>73</strong>), <code>fact-pipeline</code> (<strong>92</strong>), <code>support-agent</code> (<strong>51</strong>)</li>
+            <li><code>mypy</code> clean across all 124 source files</li>
+          </ul>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>21:30 &ndash; 24:00:</strong> Highlight the contract-level lock redesign: hashing raw Python files breaks benign refactors (18/24 failures); pinning normalized JSON Schema + CEL semantics dropped benign breaks to 1/8.</p>
+      </aside>
+    </section>
+
+    <!-- Slide 12 -->
+    <section class="slide" data-title="11. Honest Limits &amp; Try It">
+      <div class="eyebrow">6. Honest Limits &amp; Next Steps</div>
+      <h2>Boundaries &amp; How to Start</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Honest Boundaries (Preempting Q&amp;A)</h3>
+          <ul>
+            <li><strong>Nothing below the API:</strong> Concurrency races (<code>R-20</code> stays <code>enforce(known-callers)</code> due to <code>residual_paths</code>; DB triggers handle races) &amp; buggy providers.</li>
+            <li><strong>Dynamic Python:</strong> Arbitrary <code>eval</code> / C-extension dispatch is out of scope for static AST scanning.</li>
+            <li><strong>Evaluation &amp; Alpha Status:</strong> Self-authored apps/defects with fake/replay models. An external audit&rsquo;s findings were each reproduced with a failing test before being fixed (round 35); <strong>109 of 110</strong> hand-written mutants of the fixes are caught (the last is equivalent).</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>3-Step Adoption</h3>
+          <pre><span class="tok-dim"># 1. Start with zero prod code changes</span>
+inv init
+inv check --base main
+
+<span class="tok-dim"># 2. Protect critical boundaries</span>
+@inv.model_call / @inv.edge / @inv.guard
+
+<span class="tok-dim"># 3. Prove guards are load-bearing</span>
+pytest --inv-verify --inv-ablate</pre>
+          <p><strong>Demo script:</strong> <code>./presentation/demo.sh all</code></p>
+        </div>
+      </div>
+      <aside class="notes">
+        <p><strong>24:00 &ndash; 28:00:</strong> Close with credibility: clearly state what the tool does not cover, then invite the audience to try Step 1 (<code>inv init</code> + <code>inv check --base main</code>) with zero production code edits.</p>
+      </aside>
+    </section>
+
+  </div>
+
+  <div class="progress" id="progress"></div>
+  <div class="hud">
+    <div class="hud-left">
+      <strong id="counter">1 / 12</strong>
+      <span id="slide-title">Title: invariants-first</span>
+    </div>
+    <div class="hud-right">
+      <button class="btn" id="btn-prev" title="Previous (Left Arrow)">&larr; Prev</button>
+      <button class="btn" id="btn-next" title="Next (Right Arrow / Space)">Next &rarr;</button>
+      <button class="btn" id="btn-notes" title="Speaker Notes (S)">Notes [S]</button>
+      <button class="btn" id="btn-overview" title="Slide Grid (O)">Grid [O]</button>
+      <button class="btn" id="btn-theme" title="Toggle Theme (T)">Theme [T]</button>
+    </div>
+  </div>
+</div>
+
+<div class="notes-drawer" id="notes-drawer">
+  <h4>Speaker Notes</h4>
+  <div id="notes-body"></div>
+</div>
+
+<div class="overview" id="overview"></div>
+
+<script>
+(() => {
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const counter = document.getElementById('counter');
+  const titleEl = document.getElementById('slide-title');
+  const progress = document.getElementById('progress');
+  const notesDrawer = document.getElementById('notes-drawer');
+  const notesBody = document.getElementById('notes-body');
+  const overview = document.getElementById('overview');
+  let idx = 0;
+  function toggleTheme() {
+    const root = document.documentElement;
+    const cur = root.getAttribute('data-theme')
+      || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    root.setAttribute('data-theme', cur === 'light' ? 'dark' : 'light');
+  }
+
+  function renderOverview() {
+    overview.innerHTML = '';
+    slides.forEach((s, i) => {
+      const card = document.createElement('div');
+      card.className = 'ov-card' + (i === idx ? ' current' : '');
+      card.innerHTML = `<div class="ov-num">Slide ${i + 1}</div><div class="ov-title">${s.dataset.title || ''}</div>`;
+      card.onclick = () => { show(i); overview.classList.remove('open'); };
+      overview.appendChild(card);
+    });
+  }
+
+  function show(n) {
+    idx = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    counter.textContent = `${idx + 1} / ${slides.length}`;
+    titleEl.textContent = slides[idx].dataset.title || '';
+    progress.style.width = `${((idx + 1) / slides.length) * 100}%`;
+    const notes = slides[idx].querySelector('aside.notes');
+    notesBody.innerHTML = notes ? notes.innerHTML : '<p>No speaker notes for this slide.</p>';
+    renderOverview();
+  }
+
+  document.getElementById('btn-prev').onclick = () => show(idx - 1);
+  document.getElementById('btn-next').onclick = () => show(idx + 1);
+  document.getElementById('btn-notes').onclick = () => notesDrawer.classList.toggle('open');
+  document.getElementById('btn-overview').onclick = () => overview.classList.toggle('open');
+  document.getElementById('btn-theme').onclick = () => {
+    toggleTheme();
+  };
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); show(idx + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(idx - 1); }
+    else if (e.key.toLowerCase() === 's') { notesDrawer.classList.toggle('open'); }
+    else if (e.key.toLowerCase() === 'o') { overview.classList.toggle('open'); }
+    else if (e.key.toLowerCase() === 't') {
+      const cur = document.documentElement.getAttribute('data-theme');
+      document.documentElement.setAttribute('data-theme', cur === 'light' ? 'dark' : 'light');
+    } else if (e.key === 'Escape') {
+      overview.classList.remove('open');
+      notesDrawer.classList.remove('open');
+    }
+  });
+
+  show(0);
+})();
+</script>
+</body>
+</html>
