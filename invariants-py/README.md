@@ -1,7 +1,12 @@
 # invariants
 
-**OpenAPI and pydantic define the shape of your APIs. Invariants define their laws, at every layer, so
-coding agents can't break a law or go around an API.**
+**A ratchet for your API rules. A change can tighten them freely, but loosening one, by a person or a
+coding agent, fails CI until a reviewer says yes.**
+
+Coding agents make tests pass by relaxing whatever is in the way: they raise a limit, widen a type,
+or call the repository directly instead of going through the service. `inv init` locks the laws your
+code already has, and from then on `inv check` fails any change that loosens one or adds a way around
+a service, until a person accepts it.
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](../.github/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white)](pyproject.toml)
