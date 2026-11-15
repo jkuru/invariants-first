@@ -49,6 +49,8 @@ class InvSession(_Report):
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         if self.load_rules() is not None:
             self.install_default()
+        if self.doors_on and not session.config.option.collectonly:
+            self.install_doors()
         reg = self.session_registry()
         self.statuses = {rid: r.status for rid, r in reg.rules.items()}
         if self.ablate_on:
@@ -64,12 +66,21 @@ class InvSession(_Report):
             except CoverageError as e:
                 self.verify_problems = str(e).split("; ")
 
+    # --inv-doors: the violations between a test's logstart and logfinish (its setup, call, teardown and
+    # any --inv-ablate re-runs, which _Ablation.pytest_runtest_protocol brackets the same way) are its
+    def pytest_runtest_logstart(self, nodeid: str, location: Any) -> None:
+        self.note_doors(None)                       # any from before it (outside a test)
+
+    def pytest_runtest_logfinish(self, nodeid: str, location: Any) -> None:
+        self.note_doors(nodeid)
+
     @pytest.hookimpl(wrapper=True)
     def pytest_runtestloop(self, session: pytest.Session) -> Iterator[Any]:
         try:
             return (yield)
         finally:
             self.counting = False
+            self.note_doors(None)                       # any after the last test's protocol
             if self._unobserve is not None:
                 self._unobserve()
                 self._unobserve = None
@@ -104,6 +115,8 @@ class InvSession(_Report):
                 tr.write_sep("-", f"invariants verify: {self.verify_count} targeted rule(s) guarded", green=True)
         if self.ablate_on:
             self._write_ablation(tr)
+        if self.doors_on:
+            self._write_doors(tr)
         if self.report_on:
             self._write_report(tr)
         if self.json_path:
@@ -113,7 +126,7 @@ class InvSession(_Report):
     def failed(self) -> bool:
         no_worker = self.controller and self.ablate_on and not self.workers_reported
         return bool(self.verify_problems or self.not_load_bearing or (self.ablate_on and self.unverified)
-                    or no_worker)
+                    or no_worker or self.doors_violations)
 
 
 STASH: pytest.StashKey[InvSession] = pytest.StashKey()

@@ -26,6 +26,7 @@ class _SessionState:
         self.lenient: bool = opt("inv_ablate_lenient")
         self.report_on: bool = opt("inv_report")
         self.json_path: str | None = opt("inv_report_json")
+        self.doors_on: bool = opt("inv_doors")
         self.discovered = False                     # the rule file was found in the rootdir
         self.rules_path = self._rules_path()
         self.rules: Registry | None = None          # the loaded rule file (not installed anywhere)
@@ -49,6 +50,11 @@ class _SessionState:
         self.worker = hasattr(config, "workerinput")    # a pytest-xdist worker: the controller reports
         self.workers_reported = 0
         self.usage_problem: str | None = None           # a worker's usage error: the controller exits 4
+        self.doors: Any = None                          # the --inv-doors handle (doors_runtime.DoorsHandle)
+        self._doors_counted = 0                         # how many of its violations are in doors_violations
+        self.doors_installed: list[str] = []            # the rules it checks (merged from the workers)
+        # its violations, one row per (rule, sink, test) with a count (merged from the workers)
+        self.doors_violations: dict[tuple[str, str, str | None], int] = {}
 
     def _shown(self, path: pathlib.Path | None) -> str | None:
         """path relative to the pytest rootdir when it is under it (reports carry no local absolute paths)."""
@@ -69,8 +75,8 @@ class _SessionState:
             return str(self.config.rootpath)
 
     def _rules_path(self) -> pathlib.Path | None:
-        """--inv-rules, else the inv_rules ini option, else (with --inv-ablate or --inv-verify, which
-        need rules) the invariants.yaml, .yml or .json in pytest's rootdir."""
+        """--inv-rules, else the inv_rules ini option, else (with --inv-ablate, --inv-verify or --inv-doors,
+        which need rules) the invariants.yaml, .yml or .json in pytest's rootdir."""
         cli = self.config.getoption("inv_rules")
         if cli:
             return pathlib.Path(self.config.invocation_params.dir, cli).resolve()
@@ -78,7 +84,7 @@ class _SessionState:
         if ini:
             base = self.config.inipath.parent if self.config.inipath else self.config.rootpath
             return pathlib.Path(base, ini).resolve()
-        if self.ablate_on or self.verify_on:
+        if self.ablate_on or self.verify_on or self.doors_on:
             for name in DEFAULT_RULE_FILES:
                 found = pathlib.Path(self.config.rootpath, name)
                 if found.is_file():
@@ -108,6 +114,33 @@ class _SessionState:
         if self.rules is not None and self._saved is None:
             self._saved = Registry().install(default_registry())
             default_registry().install(self.rules)
+
+    def install_doors(self) -> None:
+        """--inv-doors: check the session's path laws at run time, in enforce mode (once, after collection)."""
+        if self.doors is not None:
+            return
+        from .. import doors_runtime
+        try:
+            self.doors = doors_runtime.install(default_registry(), mode="enforce")
+        except LoadError as e:
+            raise pytest.UsageError(f"--inv-doors: {e}") from e
+        self.doors_installed = list(self.doors.rules)
+
+    def uninstall_doors(self) -> None:
+        if self.doors is not None:
+            self.note_doors(None)
+            self.doors.uninstall()
+            self.doors = None
+
+    def note_doors(self, nodeid: str | None) -> None:
+        """Count the --inv-doors violations not counted yet as the test nodeid's (None: outside a test)."""
+        if self.doors is None:
+            return
+        new = self.doors.violations[self._doors_counted:]
+        self._doors_counted += len(new)
+        for v in new:
+            k = (v["rule"], v["sink"], nodeid)
+            self.doors_violations[k] = self.doors_violations.get(k, 0) + 1
 
     def restore_default(self) -> None:
         if self._saved is not None:

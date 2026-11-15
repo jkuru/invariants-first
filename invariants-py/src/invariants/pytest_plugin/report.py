@@ -23,7 +23,9 @@ class _Report(_Ablation):
                 "results": [[rid, nodeid, res] for (rid, nodeid), res in self._results.items()],
                 "notes": list(self.ablation_notes), "totals": self.totals,
                 "verify": {"problems": self.verify_problems, "count": self.verify_count},
-                "usage": self.usage_problem}
+                "usage": self.usage_problem,
+                "doors": {"installed": list(self.doors_installed),
+                          "violations": [[r, s, t, n] for (r, s, t), n in self.doors_violations.items()]}}
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodedown(self, node: Any, error: Any) -> None:
@@ -49,6 +51,10 @@ class _Report(_Ablation):
             mine = self.totals.setdefault(rid, {})
             for k, v in row.items():
                 mine[k] = mine.get(k, 0) + v
+        doors = data.get("doors") or {}
+        self.doors_installed += [r for r in doors.get("installed") or [] if r not in self.doors_installed]
+        for r, s, t, n in doors.get("violations") or []:
+            self.doors_violations[(r, s, t)] = self.doors_violations.get((r, s, t), 0) + int(n)
         verify = data["verify"]
         self.verify_problems += [p for p in verify["problems"] if p not in self.verify_problems]
         if verify["count"] is not None:
@@ -66,12 +72,33 @@ class _Report(_Ablation):
         data: dict[str, Any] = {"rules_file": self._shown(self.rules_path), "rules": rules}
         if self.verify_on:
             data["verify"] = {"ok": not self.verify_problems, "problems": self.verify_problems}
+        if self.doors_on:
+            data["doors"] = self.doors_data()
         if self.ablate_on:
             # digests: which version of each rule the results are for (inv status checks it)
             data["ablation"] = {"not_load_bearing": self.not_load_bearing, "unverified": self.unverified,
                                 "rules": self.ablation, "notes": self.ablation_notes,
                                 "digests": dict(self.digests)}
         return data
+
+    def doors_data(self) -> dict[str, Any]:
+        """--inv-doors: the rules checked at run time, and each (rule, sink, test) that missed a door."""
+        return {"installed": list(self.doors_installed),
+                "violations": [{"rule": r, "sink": s, "test": t, "count": n}
+                               for (r, s, t), n in self.doors_violations.items()]}
+
+    def _write_doors(self, tr: Any) -> None:
+        rows = self.doors_data()["violations"]
+        n = sum(v["count"] for v in rows)
+        head = (f"invariants doors: {len(self.doors_installed)} path law(s) checked at run time, "
+                f"{n} violation(s)")
+        if not rows:
+            tr.write_sep("-", head, green=True)
+            return
+        tr.write_sep("=", head, red=True, bold=True)
+        for v in rows:
+            tr.write_line(f"  {v['rule']}: {v['sink']} reached without its door in {v['test'] or '(outside a test)'}"
+                          + (f" ({v['count']} times)" if v["count"] > 1 else ""))
 
     def _write_report(self, tr: Any) -> None:
         rules = self.report_data()["rules"]

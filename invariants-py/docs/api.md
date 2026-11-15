@@ -172,6 +172,7 @@ Stacking `@inv.guard` with other decorators:
 | `Halted` | class(InvariantError) | on_violation: halt. An internal invariant broke: a bug. |
 | `Escalation` | class(InvariantError) | on_violation: escalate, and an abstain at effective `enforce` (below it an abstain is recorded and the call proceeds). Carries the attempt record. |
 | `Routed` | class(InvariantError) | on_violation: route. A review was opened (review_id); the call does not proceed. |
+| `BypassError` | class(InvariantError) | `inv.doors.install(mode="enforce")` or `pytest --inv-doors`: a path law's sink was reached at run time without one of its doors. |
 | `ReviewNotOpened` | class(InvariantError) | route or escalate (or an abstain) could not open a review: the review store failed, and so did the review_fallback if one is configured. The call does not proceed, as with Routed/Escalation. |
 
 ### Module attributes

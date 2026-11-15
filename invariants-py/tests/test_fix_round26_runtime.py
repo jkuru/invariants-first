@@ -290,7 +290,8 @@ def test_the_pytest_report_counts_and_shows_abstains():
             self.lines.append(s)
 
     me = types.SimpleNamespace(statuses={"M-1": "detect"}, totals={"M-1": {"runs": 2, "ok": 1, "abstain": 1}},
-                               verify_on=False, ablate_on=False, rules_path=None, _shown=lambda p: p)
+                               verify_on=False, ablate_on=False, doors_on=False, rules_path=None,
+                               _shown=lambda p: p)
     data = _Report.report_data(me)  # type: ignore[arg-type]
     assert data["rules"]["M-1"]["abstain"] == 1
     me.report_data = lambda: data

@@ -30,7 +30,7 @@ _drop_cwd_for_inv()
 from importlib import metadata as _metadata  # noqa: E402
 
 from . import cel
-from .errors import (CoverageError, Escalation, Halted, InvariantError, LoadError, ParseError, Rejected,
+from .errors import (BypassError, CoverageError, Escalation, Halted, InvariantError, LoadError, ParseError, Rejected,
                      ReviewNotOpened, Routed)
 from .evaluate import evaluate, evaluate_env, fill_view
 from .guard import Checked, edge, guard, model_call, parse
@@ -66,6 +66,14 @@ def _pydantic_closed(model: type) -> type:
 
 _schemas.pydantic_closed = _pydantic_closed
 
+# inv.doors: `invariants.doors` is the module of `inv init` (finding doors in the source); the run-time
+# door check (doors_runtime) puts its API on it, so `inv.doors.install(...)` and `from invariants import
+# doors` (inv init's) name the same module.
+from . import doors, doors_runtime as _doors_runtime  # noqa: E402
+
+for _name in ("install", "installed", "active", "DoorsHandle", "BypassError"):
+    setattr(doors, _name, getattr(_doors_runtime, _name))
+
 try:
     __version__ = _metadata.version("invariants-first")
 except _metadata.PackageNotFoundError:      # running from a source tree that is not installed
@@ -81,5 +89,5 @@ __all__ = [
     "Handoff", "ReviewStore", "MemoryReviews", "JsonlReviews", "ErrorSpike",
     "Outcome", "Rule", "Provider",
     "LoadError", "CoverageError", "ParseError", "InvariantError", "Rejected", "Halted", "Escalation", "Routed",
-    "ReviewNotOpened", "cel", "CEL_BACKEND", "__version__",
+    "ReviewNotOpened", "BypassError", "cel", "CEL_BACKEND", "__version__",
 ]
