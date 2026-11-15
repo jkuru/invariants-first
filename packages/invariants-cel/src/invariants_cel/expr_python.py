@@ -251,23 +251,29 @@ def _static_flags(n: Any) -> int:
 
 
 def _long_duration_literal(n: Any) -> bool:
-    """True if n is duration('<text>') past cel-cpp's int64-nanosecond range."""
-    if n[0] == "call" and n[1] == "duration" and n[2] is None and len(n[3]) == 1 and n[3][0][0] == "lit" \
-            and isinstance(n[3][0][1], str):
+    """True if n is timestamp('<text>') or duration('<text>') that cel-cpp would read differently from
+    values.parse_timestamp / parse_duration: a duration past cel-cpp's int64-nanosecond range, or text
+    the subset's parser refuses (cel-cpp takes a leap second, 23:59:60, and truncates a duration finer
+    than a microsecond: fix round 35)."""
+    if n[0] == "call" and n[1] in ("timestamp", "duration") and n[2] is None and len(n[3]) == 1 \
+            and n[3][0][0] == "lit" and isinstance(n[3][0][1], str):
         try:
+            if n[1] == "timestamp":
+                values.parse_timestamp(n[3][0][1])
+                return False
             d = values.parse_duration(n[3][0][1])
         except CelError:
-            return False                # not a duration: the type checker or the engine says so
+            return True                 # refused at run time by the subset's parser, as on the subset
         return abs(d // datetime.timedelta(microseconds=1)) > MAX_DURATION_US
     return False
 
 
 def _long_durations_at_run_time(n: Any) -> Any:
-    """The tree with each duration literal past cel-cpp's range read through dyn(), so the backend
-    converts it in Python (values.parse_duration, then to_engine): a rule_error when evaluated, as
-    on the subset, which refuses a duration past CEL's own range at run time too."""
+    """The tree with each such literal (_long_duration_literal) read through dyn(), so the backend
+    converts it in Python (values.parse_timestamp / parse_duration, then to_engine): a rule_error when
+    evaluated, as on the subset, which refuses it at run time too."""
     if _long_duration_literal(n):
-        return ("call", "duration", None, [("call", "dyn", None, [n[3][0]])])
+        return ("call", n[1], None, [("call", "dyn", None, [n[3][0]])])
     return _engine_map_kids(n, _long_durations_at_run_time)
 
 

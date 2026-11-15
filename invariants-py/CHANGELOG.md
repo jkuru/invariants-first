@@ -272,6 +272,28 @@ below; the extras are `schema` (jsonschema, for `inv validate`), `cel` (the cel-
 - A pydantic model read whole (`size()`, `==`, `in`, `[]`, the macros) has its `@computed_field`s
   as fields, as `model_dump()` does, on both backends: `o.total` was readable while `size(o)` and
   `o.exists(k, k == "total")` left it out.
+- A record read whole also has its extra fields (pydantic `extra="allow"`, as `model_dump()` has
+  them), its public `@property`s (which a rule reads by name), every slot of its class and its bases,
+  and a `__slots__` that is one string as one slot: `o.y == 2 && size(o) == 1` was `true` on the subset
+  and a `rule_error` on cel-expr, which converts `o` whole for `size()`.
+- On cel-expr, `uint()` of a string literal (`uint("9007199254740993")`) is checked like `uint()` of
+  a value: it was taken for a `5u` literal, so an int past 2^53 met a double unchecked and
+  `uint("9007199254740993") == 9007199254740992.0` was `true`.
+- `duration()` of a number of more than 4,300 digits is "duration out of range" (or finer than a
+  microsecond), not a `ValueError` at load: a whole part past 21 digits or a fraction past 30
+  significant digits is never read.
+- `timestamp()` refuses an offset with 60 or more minutes (`+00:60`, RFC 3339), and on cel-expr a
+  `timestamp()` or `duration()` literal the subset's parser refuses (a leap second `23:59:60`, a
+  duration finer than a microsecond or past ±292 years) is read by that parser too, a `rule_error`
+  as on the subset, where cel-cpp read it itself.
+- cel-expr's `matches()` checks a string literal operand against the string-size and pattern limits,
+  as the subset does; inv.sum's int64 overflow there is "value out of range", not "evaluation error".
+- The subset's regex parser refuses `\x{+41}`, `\x{ 41}`, `\x{4_1}`, `\p{Lx}`, `\p{Cn}`, `\p{LC}` and
+  `\p{^^L}`, as RE2 does (a script, `\p{Greek}`, is still left to RE2).
+- The type checker refuses an index on a value that is not a list or map (`args.n[0]` on an int), a
+  map literal key that is a double or null (`{1.5: "a"}`), `null in m` on a map, a timezone on a
+  duration getter (`d.getHours("UTC")`), and a pydantic `@computed_field` whose return type the
+  mapping refuses (a `Decimal`), read by name or with the model whole: each was an error on every call.
 
 ### The lock
 
