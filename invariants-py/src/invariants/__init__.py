@@ -66,13 +66,9 @@ def _pydantic_closed(model: type) -> type:
 
 _schemas.pydantic_closed = _pydantic_closed
 
-# inv.doors: `invariants.doors` is the module of `inv init` (finding doors in the source); the run-time
-# door check (doors_runtime) puts its API on it, so `inv.doors.install(...)` and `from invariants import
-# doors` (inv init's) name the same module.
-from . import doors, doors_runtime as _doors_runtime  # noqa: E402
-
-for _name in ("install", "installed", "active", "DoorsHandle", "BypassError"):
-    setattr(doors, _name, getattr(_doors_runtime, _name))
+# inv.doors: `invariants.doors` is the module of `inv init` (finding doors in the source), and it
+# re-exports the run-time door check (doors_runtime), so `inv.doors.install(...)` type-checks.
+from . import doors  # noqa: E402
 
 try:
     __version__ = _metadata.version("invariants-first")

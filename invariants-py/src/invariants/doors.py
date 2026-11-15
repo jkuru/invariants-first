@@ -670,3 +670,10 @@ def summary(found: DoorsFound) -> list[str]:
                    + f"from a function only route handlers call, or from a function {MIN_CALLERS} or more "
                      f"callers go through)")
     return out
+
+
+# The run-time door check lives in doors_runtime; `inv.doors.install(...)` names it through this module.
+from .doors_runtime import (  # noqa: E402
+    BypassError as BypassError, DoorsHandle as DoorsHandle, active as active, install as install,
+    installed as installed,
+)
