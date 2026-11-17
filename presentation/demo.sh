@@ -55,7 +55,11 @@ colour() {   # highlight what the audience should look at
   perl -pe 's/\b(FAIL|WEAKENED|fail)\b/$ENV{C_BAD}$1$ENV{C_R}/g;
             s/^(\s*)(ok|pass)\b/$1$ENV{C_OK}$2$ENV{C_R}/;
             s/(\S+ -> \S+)/$ENV{C_FOCUS}$1$ENV{C_R}/g;
-            s/(pinned \d+ pydantic model\(s\) with \d+ constraint\(s\))/$ENV{C_FOCUS}$1$ENV{C_R}/'
+            s/(pinned \d+ pydantic model\(s\) with \d+ constraint\(s\))/$ENV{C_FOCUS}$1$ENV{C_R}/;
+            s/: (pass)\b/: $ENV{C_OK}$1$ENV{C_R}/; s/: (fail)\b/: $ENV{C_BAD}$1$ENV{C_R}/;
+            s/\b(load-bearing|held|yes)\b/$ENV{C_OK}$1$ENV{C_R}/g; s/\b(passed)\b/$ENV{C_OK}$1$ENV{C_R}/;
+            s/^(bypass|forbidden)\b/$ENV{C_BAD}$1$ENV{C_R}/; s/\b(blocked)\b/$ENV{C_BAD}$1$ENV{C_R}/;
+            s/(rogue\.py:\d+)/$ENV{C_FOCUS}$1$ENV{C_R}/'
 }
 run_inv() {  # show the command as typed, run it, colour the output; returns its exit code
   local disp="inv $*"
@@ -185,47 +189,106 @@ shutil.copytree(src, pathlib.Path('$tmp_lc') / 'langchain_core', ignore=shutil.i
 }
 
 demo_2_hooks_and_ci() {
-  banner "DEMO 2: Claude Code PreToolUse Hook + support-agent CI Defects"
+  banner "DEMO 2: Stop the agent before it even tries (support-agent)"
+  printf '\n%s┏━━ WHAT A HOOK IS ━━%s\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  A script Claude Code runs before each action the agent takes.\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  It reads the action as JSON. %sExit code 2%s means: blocked, and the agent is told why.\n' "$C_HEAD" "$C_R" "$C_FOCUS" "$C_R"
+  printf '%s┃%s  Here we play the agent: we send the hook the action Claude Code would send.\n' "$C_HEAD" "$C_R"
+  printf '%s┗━━%s\n' "$C_HEAD" "$C_R"
+  pause
   (
     cd "$ROOT/apps/support-agent"
-    echo "-- Simulated Claude Code Edit on invariants.lock --"
-    set +e
-    printf '{"tool_name":"Edit","tool_input":{"file_path":"invariants.lock"},"cwd":"%s"}\n' "$PWD" | "$INV" hook pretool
-    rc=$?
-    set -e
-    echo "(hook exit code: $rc)"
-    [ "$rc" -eq 2 ]
 
-    echo ""
-    echo "-- Running support-agent CI defects (D1-D5, D11-D12) --"
-    PYTHONPATH=src "$SA_PY" -m pytest tests/test_ci_defects.py -v -W ignore::DeprecationWarning
+    step "1/3" "The agent tries to ${C_BAD}edit invariants.lock${C_R} by hand"
+    say "Action: ${C_FOCUS}{\"tool_name\": \"Edit\", \"file_path\": \"invariants.lock\"}${C_R}"
+    printf '   %s$ inv hook pretool%s\n' "$C_CMD" "$C_R"
+    set +e
+    printf '{"tool_name":"Edit","tool_input":{"file_path":"invariants.lock"},"cwd":"%s"}\n' "$PWD" \
+      | "$INV" hook pretool 2>&1 | colour | fold -s -w 100 | sed 's/^/     /'
+    rc=${PIPESTATUS[1]}
+    set -e
+    expect 2 "$rc" "blocked: only inv lock may write the lock"
+    pause
+
+    step "2/3" "The agent tries to ${C_BAD}accept its own loosening${C_R}"
+    say "Action: ${C_FOCUS}{\"tool_name\": \"Bash\", \"command\": \"inv lock --accept-weakening\"}${C_R}"
+    printf '   %s$ inv hook pretool%s\n' "$C_CMD" "$C_R"
+    set +e
+    printf '{"tool_name":"Bash","tool_input":{"command":"inv lock --accept-weakening"},"cwd":"%s"}\n' "$PWD" \
+      | "$INV" hook pretool 2>&1 | colour | fold -s -w 100 | sed 's/^/     /'
+    rc=${PIPESTATUS[1]}
+    set -e
+    expect 2 "$rc" "blocked: accepting a loosening is a person's decision"
+    pause
+
+    step "3/3" "And if a shortcut gets past the hook, ${C_OK}CI catches it${C_R}"
+    say "Each test makes a change an agent might make, then checks that inv check fails."
+    say "The three 'safe' tests check that honest changes still pass."
+    if run_tests "" tests/test_ci_defects.py; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "every shortcut caught, every honest change passes"
   )
 }
 
 demo_3_scan() {
-  banner "DEMO 3: Static Path-Law Bypass Scan (pool-service)"
+  banner "DEMO 3: The scan finds back doors (pool-service)"
+  printf '\n%s┏━━ THE APP: pool-service (in this repo, apps/pool-service) ━━%s\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  What:   a service that leases slots in worker pools, and resizes pools with approval\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  Doors:  %slease_slots%s, %sResizeService.resize_door%s (the safe ways in)\n' "$C_HEAD" "$C_R" "$C_FOCUS" "$C_R" "$C_FOCUS" "$C_R"
+  printf '%s┃%s  Sinks:  %sstore.insert_lease%s, %sstore.set_size%s (the writes behind them)\n' "$C_HEAD" "$C_R" "$C_FOCUS" "$C_R" "$C_FOCUS" "$C_R"
+  printf '%s┃%s  How:    inv scan reads the code. It does not run it.\n' "$C_HEAD" "$C_R"
+  printf '%s┗━━%s\n' "$C_HEAD" "$C_R"
+  pause
   (
     cd "$ROOT/apps/pool-service"
-    echo "-- Clean scan (src only) --"
-    PYTHONPATH=src "$INV" scan invariants.yaml --root src
-    echo ""
-    echo "-- Scan including bypass/ (expected to FAIL with 10 findings) --"
+    export PYTHONPATH=src
+    shorten() { sed -E 's#pool_service/rogue\.py:([0-9]+):[0-9]+#rogue.py:\1#; s/pool_service\.(service|store|rogue)\.//g;
+                       s/ reaches the sink without passing / skips the door /'; }
+
+    step "1/3" "Scan the real code"
+    printf '   %s$ inv scan invariants.yaml --root src%s\n' "$C_CMD" "$C_R"
     set +e
-    PYTHONPATH=src "$INV" scan invariants.yaml --root src --root bypass
-    rc=$?
+    "$INV" scan invariants.yaml --root src 2>&1 | grep -v 'not scanned' | colour | sed 's/^/     /'
+    rc=${PIPESTATUS[0]}
     set -e
-    echo "(scan exit code: $rc)"
-    [ "$rc" -eq 1 ]
+    expect 0 "$rc" "no back doors in the real code"
+    pause
+
+    step "2/3" "An agent adds an 'ops hotfix' file"
+    say "Four ways to reach a sink without its door:"
+    for ln in 10 15 20 25; do
+      code=$(sed -n "${ln}p" bypass/pool_service/rogue.py | sed 's/^ *//')
+      case $ln in
+        10) why="calls the sink directly";;
+        15) why="unwraps the guard with __wrapped__";;
+        20) why="hides the name with getattr";;
+        25) why="writes a lease without its door";;
+      esac
+      printf '     %srogue.py:%s%s  %s\n         %s← %s%s\n' "$C_FOCUS" "$ln" "$C_R" "$code" "$C_DIM" "$why" "$C_R"
+    done
+    pause
+
+    step "3/3" "Scan again, with that file"
+    printf '   %s$ inv scan invariants.yaml --root src --root bypass%s\n' "$C_CMD" "$C_R"
+    set +e
+    out=$("$INV" scan invariants.yaml --root src --root bypass 2>&1); rc=$?
+    set -e
+    printf '%s\n' "$out" | grep -E '^(bypass|forbidden)' | shorten | colour | sed 's/^/     /'
+    n=$(printf '%s\n' "$out" | grep -cE '^(bypass|forbidden)')
+    printf '\n     %s%s findings%s, all in rogue.py. A text search would miss the getattr and __wrapped__ ones.\n' "$C_BAD" "$n" "$C_R"
+    expect 1 "$rc" "the scan fails CI on every back door"
   )
 }
 
-run_tests() {   # run_tests KEYWORDS: run the matching run-time tests, one line per test, coloured
-  printf '   %s$ pytest tests/test_runtime_defects.py -k "%s"%s\n' "$C_CMD" "$1" "$C_R"
+run_tests() {   # run_tests KEYWORDS [FILE]: run the matching support-agent tests, one line per test, coloured
+  local file="${2:-tests/test_runtime_defects.py}" sel=()
+  [ -n "$1" ] && sel=(-k "$1")
+  if [ -n "$1" ]; then printf '   %s$ pytest %s -k "%s"%s\n' "$C_CMD" "$file" "$1" "$C_R"
+  else printf '   %s$ pytest %s%s\n' "$C_CMD" "$file" "$C_R"; fi
   set +e
-  PYTHONPATH=src "$SA_PY" -m pytest tests/test_runtime_defects.py -vv -k "$1" --no-header --tb=short \
+  PYTHONPATH=src "$SA_PY" -m pytest "$file" -vv ${sel[@]+"${sel[@]}"} --no-header --tb=short \
       -W ignore::DeprecationWarning 2>&1 \
     | grep -E '::|passed|failed|error|Error|assert' \
-    | sed -E 's/^tests\/test_runtime_defects\.py:://; s/ +\[ *[0-9]+%\]$//' \
+    | sed -E 's/^tests\/[a-z_]+\.py:://; s/ +\[ *[0-9]+%\]$//' \
     | { if [ -n "$C_R" ]; then perl -pe 's/\bPASSED\b/$ENV{C_OK}PASSED$ENV{C_R}/g;
             s/\b(FAILED|ERROR)\b/$ENV{C_BAD}$1$ENV{C_R}/g; s/(\d+ passed)/$ENV{C_OK}$1$ENV{C_R}/'; else cat; fi; } \
     | sed 's/^/     /'
@@ -286,13 +349,40 @@ demo_4_runtime() {
 }
 
 demo_5_ablation() {
-  banner "DEMO 5: Proving Guards Are Load-Bearing via --inv-ablate (fact-pipeline)"
+  banner "DEMO 5: Is each guard real? Switch it off and see (fact-pipeline)"
+  printf '\n%s┏━━ THE APP: fact-pipeline (in this repo, apps/fact-pipeline) ━━%s\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  What:   an AI reads documents and proposes facts\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  Rules:  like %sK-1: no fact exists without evidence%s\n' "$C_HEAD" "$C_R" "$C_FOCUS" "$C_R"
+  printf '%s┃%s  Idea:   switch one guard off, rerun its test. The test must now fail.\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s          If it does, the guard is %sload-bearing%s.\n' "$C_HEAD" "$C_R" "$C_OK" "$C_R"
+  printf '%s┗━━%s\n' "$C_HEAD" "$C_R"
+  pause
   (
-    "$ROOT/apps/fact-pipeline/ci.sh"
     cd "$ROOT/apps/fact-pipeline"
-    echo ""
-    echo "-- Standing report after ablation (rules promoted to held) --"
-    PYTHONPATH=src "$INV" status invariants.yaml --import fact_pipeline.pipeline --ablation build/inv-report.json
+    FP_PY="$PWD/.venv/bin/python"
+    if [ ! -x "$FP_PY" ]; then say "(first run: setting up the app's environment via ci.sh)"; ./ci.sh >/dev/null; fi
+    export PYTHONPATH=src
+
+    step "1/2" "Switch each guard off, one at a time, and rerun its test"
+    printf '   %s$ pytest --inv-ablate%s\n' "$C_CMD" "$C_R"
+    set +e
+    "$FP_PY" -m pytest -q --inv-ablate --inv-report-json build/inv-report.json -W ignore::DeprecationWarning 2>&1 \
+      | grep -E 'K-[0-9]+:|caught|not checked|missed|[0-9]+ (passed|failed)' \
+      | sed -E 's#caught +tests/#caught  #' | colour | sed 's/^/     /'
+    rc=${PIPESTATUS[0]}
+    set -e
+    expect 0 "$rc" "every guard is load-bearing: its test noticed it was gone"
+    pause
+
+    step "2/2" "inv status: each rule's standing"
+    say "A rule is ${C_OK}held${C_R} when its guard is wired, the scan passes, and ablation proved it."
+    printf '   %s$ inv status --ablation build/inv-report.json%s\n' "$C_CMD" "$C_R"
+    set +e
+    "$INV" status invariants.yaml --import fact_pipeline.pipeline --ablation build/inv-report.json 2>&1 \
+      | grep -E '^K-[0-9]+ ' | colour | sed 's/^/     /'
+    rc=${PIPESTATUS[0]}
+    set -e
+    expect 0 "$rc" "proven, not just claimed"
   )
 }
 
