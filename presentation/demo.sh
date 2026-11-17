@@ -219,11 +219,69 @@ demo_3_scan() {
   )
 }
 
+run_tests() {   # run_tests KEYWORDS: run the matching run-time tests, one line per test, coloured
+  printf '   %s$ pytest tests/test_runtime_defects.py -k "%s"%s\n' "$C_CMD" "$1" "$C_R"
+  set +e
+  PYTHONPATH=src "$SA_PY" -m pytest tests/test_runtime_defects.py -vv -k "$1" --no-header --tb=short \
+      -W ignore::DeprecationWarning 2>&1 \
+    | grep -E '::|passed|failed|error|Error|assert' \
+    | sed -E 's/^tests\/test_runtime_defects\.py:://; s/ +\[ *[0-9]+%\]$//' \
+    | { if [ -n "$C_R" ]; then perl -pe 's/\bPASSED\b/$ENV{C_OK}PASSED$ENV{C_R}/g;
+            s/\b(FAILED|ERROR)\b/$ENV{C_BAD}$1$ENV{C_R}/g; s/(\d+ passed)/$ENV{C_OK}$1$ENV{C_R}/'; else cat; fi; } \
+    | sed 's/^/     /'
+  local rc=${PIPESTATUS[0]}; set -e
+  return "$rc"
+}
+
 demo_4_runtime() {
-  banner "DEMO 4: Runtime Defense-in-Depth (support-agent D6-D10)"
+  banner "DEMO 4: When the AI model gets it wrong, at run time (support-agent)"
+  printf '\n%s┏━━ THE APP: support-agent (in this repo, apps/support-agent) ━━%s\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  What:   a support agent that reads a ticket, asks an AI planner what to do, and refunds\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  Flow:   AI planner %s→%s execute_plan %s→%s BillingService.refund %s→%s Stripe\n' "$C_HEAD" "$C_R" "$C_DIM" "$C_R" "$C_DIM" "$C_R" "$C_DIM" "$C_R"
+  printf '%s┃%s  Checks: %s@inv.model_call%s on the planner, %s@inv.edge%s on execute_plan, %s@inv.guard%s on the door\n' "$C_HEAD" "$C_R" "$C_FOCUS" "$C_R" "$C_FOCUS" "$C_R" "$C_FOCUS" "$C_R"
+  printf '%s┃%s  Model:  a fake that we tell to misbehave, so no API key is needed\n' "$C_HEAD" "$C_R"
+  printf '%s┃%s  Money:  a fake Stripe that records every refund, so we can see what moved\n' "$C_HEAD" "$C_R"
+  printf '%s┗━━%s\n' "$C_HEAD" "$C_R"
+  pause
   (
     cd "$ROOT/apps/support-agent"
-    PYTHONPATH=src "$SA_PY" -m pytest tests/test_runtime_defects.py -v -W ignore::DeprecationWarning
+
+    step "1/6" "The model refunds ${C_BAD}more than what's left${C_R}"
+    say "It is asked once more, fresh. If it is still wrong, a person decides."
+    if run_tests "over_refund_is_resampled or one_bad_sample or over_credit_is_escalated"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "too much never reaches Stripe; an honest retry does"
+    pause
+
+    step "2/6" "The model picks ${C_BAD}another customer's order${C_R}"
+    say "Handed to a person, and a plan checked for one customer cannot run for another."
+    if run_tests "another_customer or cannot_run_for_another"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "the wrong customer is never refunded"
+    pause
+
+    step "3/6" "The model sends ${C_BAD}invalid JSON or an unknown tool${C_R}, or says it can't"
+    say "Retried with the parser error, at most twice. Then a person decides."
+    if run_tests "d7 or d8"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "a broken reply never becomes an action"
+    pause
+
+    step "4/6" "Someone runs a ${C_BAD}forged \"approved\" plan${C_R}"
+    say "The edge does not trust the stamp. It checks the plan again."
+    if run_tests "forged"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "only the fair plan ran; the forged ones were refused"
+    pause
+
+    step "5/6" "The plan or the balance ${C_BAD}changes after the check${C_R}"
+    say "The edge reads the live ledger again, just before paying."
+    if run_tests "d10"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "a stale or tampered plan is refused"
+    pause
+
+    step "6/6" "Other code calls ${C_BAD}refund() directly${C_R} with too much"
+    say "The guard sits on the door itself, so it does not matter who calls."
+    if run_tests "door_refuses"; then rc=0; else rc=$?; fi
+    expect 0 "$rc" "the door refuses, whoever calls it"
+
+    printf '\n   %s15 tests, 6 kinds of mistake: no bad action ever reached Stripe.%s\n' "$C_OK" "$C_R"
   )
 }
 
